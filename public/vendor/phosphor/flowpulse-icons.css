@@ -1,0 +1,31 @@
+@font-face {
+  font-family: "Phosphor";
+  src: url("/vendor/phosphor/Phosphor.woff2") format("woff2");
+  font-style: normal;
+  font-weight: normal;
+  font-display: block;
+}
+
+.ph {
+  display: inline-block;
+  font-family: "Phosphor" !important;
+  font-style: normal;
+  font-weight: normal !important;
+  font-variant: normal;
+  line-height: 1;
+  text-transform: none;
+  speak: never;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.ph-browser::before { content: "\e0f4"; }
+.ph-shopping-cart-simple::before { content: "\e420"; }
+.ph-credit-card::before { content: "\e1d2"; }
+.ph-queue::before { content: "\e6ac"; }
+.ph-calculator::before { content: "\e538"; }
+.ph-shield-check::before { content: "\e40c"; }
+.ph-git-commit::before { content: "\e27a"; }
+.ph-robot::before { content: "\e762"; }
+.ph-scales::before { content: "\e750"; }
+.ph-database::before { content: "\e1de"; }

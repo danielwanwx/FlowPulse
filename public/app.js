@@ -1,5 +1,7 @@
 import {
+  PULSE_SLOTS,
   TWIN_STAGES,
+  TWIN_ICONS,
   TWIN_NODES,
   TWIN_EDGES,
   availableStage,
@@ -125,6 +127,7 @@ function setMetric(name, value, note) {
 }
 
 function renderCanvas() {
+  els["twin-canvas"].classList.toggle("is-compare-mode", mode === "compare");
   if (mode === "compare") {
     const { incident, recovered } = compareFrames();
     els["canvas-layers"].innerHTML = `${renderTwinLayer(recovered, "after", true)}${renderTwinLayer(incident, "before", false)}`;
@@ -145,10 +148,11 @@ function renderTwinLayer(frame, layerName, interactive) {
   const suffix = `${layerName}-${frame.index}`;
   const edges = TWIN_EDGES.map((edge) => {
     const status = frame.edgeStates[edge.id] || "quiet";
+    const pulseSlot = PULSE_SLOTS[edge.id] ?? 0;
     const accessible = interactive ? `role="button" tabindex="0" aria-label="${escapeHtml(edge.label)} from ${escapeHtml(labelFor(edge.from))} to ${escapeHtml(labelFor(edge.to))}" data-edge-id="${edge.id}"` : "aria-hidden=\"true\"";
     return `<g class="edge-group edge-${edge.id}">
       <path class="edge-line is-${status}" d="${edge.path}" />
-      <path class="pulse-flow is-${status}" d="${edge.path}" aria-hidden="true" />
+      <path class="pulse-flow pulse-slot-${pulseSlot} is-${status}" d="${edge.path}" pathLength="1" aria-hidden="true" />
       <path class="edge-hit" d="${edge.path}" ${accessible} />
     </g>`;
   }).join("");
@@ -158,11 +162,13 @@ function renderTwinLayer(frame, layerName, interactive) {
     const entering = frame.index === 2 && status === "impact" ? " is-entering" : "";
     const interaction = interactive ? `data-node-id="${node.id}" aria-label="${escapeHtml(kindLabel(node.kind))} ${escapeHtml(node.label)}, ${escapeHtml(statusLabel(status))}"` : "tabindex=\"-1\" aria-hidden=\"true\"";
     return `<button class="twin-node node-${node.id} sequence-${sequence} kind-${node.kind} is-${status}${entering}" type="button" ${interaction}>
-      <span class="node-beacon" aria-hidden="true"></span>
-      <strong>${escapeHtml(node.label)}</strong>
-      <span class="node-detail">${escapeHtml(node.detail)}</span>
-      <span class="node-status">${escapeHtml(statusLabel(status))}</span>
-      <span class="state-ring" aria-hidden="true"></span>
+      <span class="node-icon icon-${node.id}" aria-hidden="true"><i class="ph ph-${TWIN_ICONS[node.id]}"></i></span>
+      <span class="node-copy">
+        <strong>${escapeHtml(node.label)}</strong>
+        <span class="node-detail">${escapeHtml(node.detail)}</span>
+        <span class="node-status">${escapeHtml(statusLabel(status))}</span>
+      </span>
+      <span class="node-status-dot" aria-hidden="true"></span>
     </button>`;
   }).join("");
   return `<div class="twin-layer layer-${layerName}" data-layer="${suffix}">

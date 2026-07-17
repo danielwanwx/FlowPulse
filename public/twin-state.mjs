@@ -22,6 +22,32 @@ export const TWIN_NODES = [
   { id: "ledger", label: "Evidence ledger", detail: "append-only SQLite", kind: "database", x: 87, y: 76 }
 ];
 
+export const TWIN_ICONS = {
+  frontend: "browser",
+  checkout: "shopping-cart-simple",
+  payment: "credit-card",
+  kafka: "queue",
+  accounting: "calculator",
+  fraud: "shield-check",
+  deployment: "git-commit",
+  agent: "robot",
+  evaluator: "scales",
+  ledger: "database"
+};
+
+export const PULSE_SLOTS = {
+  "frontend-checkout": 1,
+  "deployment-checkout": 0,
+  "checkout-payment": 2,
+  "checkout-kafka": 3,
+  "kafka-accounting": 4,
+  "kafka-fraud": 5,
+  "agent-evaluator": 0,
+  "evaluator-ledger": 1,
+  "checkout-ledger": 2,
+  "kafka-ledger": 3
+};
+
 export const TWIN_EDGES = [
   { id: "frontend-checkout", from: "frontend", to: "checkout", label: "cart request", path: "M 155 239 C 185 239 205 239 225 239" },
   { id: "checkout-payment", from: "checkout", to: "payment", label: "payment call", path: "M 332 226 C 382 226 378 125 430 125" },

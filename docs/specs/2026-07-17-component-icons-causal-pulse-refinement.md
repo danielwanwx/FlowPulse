@@ -38,7 +38,7 @@ Increase component recognition and perceived quality without changing FlowPulse 
 ## Completeness and layout
 
 - Remove clip paths and decorative pseudo-elements that can mask labels or icons.
-- Long labels remain single-line with ellipsis; detail and state rows stay fully visible.
+- Node width must keep every current label, detail, and state row fully visible at the target viewports; ellipsis remains only as a defensive fallback for future data.
 - Node dimensions remain fixed and deterministic. Per-layer overlap checks must return zero at 1440 x 900 and 1280 x 800.
 
 ## Checks
@@ -50,6 +50,12 @@ Increase component recognition and perceived quality without changing FlowPulse 
 - Propagation delays increase in causal order and seeking the same stage reconstructs the same markup.
 - Existing tests, owner approval, evaluator rejection, recovery, and evolve stages remain green.
 - Browser console has zero errors and warnings.
+
+## Reference record
+
+- NASA Crew Dragon instrument panel: sparse cockpit chrome and one dominant operational view.
+- NASA Open MCT: synchronized time context, status-led telemetry, and selection-driven inspection.
+- No SpaceX or NASA code, artwork, icon assets, layout, or brand treatment is copied into FlowPulse.
 
 ## Stop conditions
 

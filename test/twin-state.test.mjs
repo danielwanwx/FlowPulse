@@ -1,7 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  PULSE_SLOTS,
   TWIN_EDGES,
+  TWIN_ICONS,
   TWIN_NODES,
   TWIN_STAGES,
   availableStage,
@@ -9,6 +11,16 @@ import {
   eventsAtStage,
   frameFor
 } from "../public/twin-state.mjs";
+
+test("every component has a vector icon and causal pulses remain sequential", () => {
+  assert.deepEqual(Object.keys(TWIN_ICONS).sort(), TWIN_NODES.map(({ id }) => id).sort());
+  assert.deepEqual(Object.keys(PULSE_SLOTS).sort(), TWIN_EDGES.map(({ id }) => id).sort());
+  assert.ok(PULSE_SLOTS["deployment-checkout"] < PULSE_SLOTS["frontend-checkout"]);
+  assert.ok(PULSE_SLOTS["frontend-checkout"] < PULSE_SLOTS["checkout-payment"]);
+  assert.ok(PULSE_SLOTS["checkout-payment"] < PULSE_SLOTS["checkout-kafka"]);
+  assert.ok(PULSE_SLOTS["checkout-kafka"] < PULSE_SLOTS["kafka-accounting"]);
+  assert.ok(PULSE_SLOTS["kafka-accounting"] < PULSE_SLOTS["kafka-fraud"]);
+});
 
 test("digital twin keeps stable component identities and coordinates across every stage", () => {
   const identities = TWIN_NODES.map(({ id, x, y }) => ({ id, x, y }));
