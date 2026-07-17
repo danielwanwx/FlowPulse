@@ -1,0 +1,4 @@
+services:
+  otel-collector:
+    volumes:
+      - ${FLOWPULSE_CAPTURE_DIR}:/flowpulse

@@ -1,6 +1,6 @@
 # FlowPulse
 
-FlowPulse is an evidence-grounded incident control loop for production systems. It unifies telemetry, change data, adversarial evaluation, owner-approved remediation, recovery verification, and regression learning in one inspectable record.
+FlowPulse is an evidence-grounded incident control loop for production systems. Its generic Production Workspace unifies real or captured telemetry, change data, adversarial evaluation, owner-approved remediation, recovery verification, and regression learning in one inspectable record.
 
 The flagship incident uses captured OpenTelemetry Astronomy Shop evidence. A checkout change makes payment unreachable, retries amplify traffic, Kafka lag grows, and accounting and fraud processing fall behind. The investigator first blames Kafka. The evaluator rejects that unsupported diagnosis, the investigator replans across deploy, commit, trace, log, and metric evidence, then proposes a checkout-only rollback for owner approval.
 
@@ -44,11 +44,40 @@ npm test
 
 The primary interface is one deterministic system canvas with three views of the same component identities:
 
-- **Live** shows the ledger's current or last-known captured state. It is explicitly labeled captured-live because this build does not claim a streaming collector.
+- **Live** shows only services and dependencies observed in a connected OTLP source. With no source it displays an honest `Disconnected` state rather than fixture topology.
 - **Replay** reconstructs any incident milestone from immutable events. Play, pause, step, restart, seek, and speed controls all use the same projection function.
 - **Compare** places the impact and verified recovery projections on the same geometry with an interactive split.
 
 The canvas keeps the architecture visible while moving dense telemetry and reasoning into a contextual drawer. Metrics, logs, traces, deploys, evidence citations, agent reasoning, adversarial evaluation, repair, verification, and evolve gates remain reachable by selecting a node, edge, or event.
+
+## Real local development loop
+
+FlowPulse includes an opt-in integration with the official OpenTelemetry Astronomy Shop. It pins upstream commit `18b36c73ccc2dbc86759dab2e0ef05175a7a8ca5`, starts the full Kafka profile, and fans actual Collector output into hashed trace, metric, and log JSONL streams. The upstream source and raw captures stay under the gitignored `outputs/live` runtime directory.
+
+Prerequisites are Docker Engine with Compose, about 6 GB of available memory, and about 14 GB of free disk. Enable local mutations only for this disposable environment:
+
+```bash
+export FLOWPULSE_DEVELOPMENT_ENABLED=1
+npm run live:check
+npm run live:setup
+npm run live:start
+```
+
+Restart FlowPulse with the same environment variable, open **Live**, and use **Start real case**. The working path is:
+
+1. Apply the repository-owned `paymentUnreachable` change through the real flagd UI API.
+2. Wait for fresh checkout/payment OTLP failure evidence.
+3. Run **Investigate live evidence**. The evaluator rejects unsupported payment-service blame, correlates the versioned change with actual failure telemetry, and proposes the single allowlisted repair.
+4. Approve the owner gate. FlowPulse restores the known-good flag and recreates only the local checkout container.
+5. Use **Verify recovery** after fresh post-repair OTLP appears. The ledger records verification, a hashed regression capture reference, and deterministic policy gates.
+
+Stop the disposable stack without removing captures:
+
+```bash
+npm run live:stop
+```
+
+The local adapter accepts no free-form model command. It resolves a checked-in change manifest and a single command ID, validates the pinned checkout, and refuses mutation unless `FLOWPULSE_DEVELOPMENT_ENABLED=1`.
 
 ## Live GPT-5.6 mode
 
@@ -90,7 +119,7 @@ When configured, the live loop mirrors a parent incident observation plus nested
 ## Architecture
 
 ```text
-captured evidence bundle
+real Collector JSONL or captured evidence bundle
         |
         v
 allowlisted evidence tools <-> GPT-5.6 investigator
@@ -113,10 +142,10 @@ The runtime is intentionally small:
 - SQLite triggers reject every update and delete to the event table.
 - Starting a new replay appends a new run; it never clears history.
 - UI state is projected from immutable events.
-- Replay and live mode share the same ledger and safety boundaries.
+- Replay and real-development mode share the same ledger and safety boundaries.
 - Consequential remediation cannot execute before an `approval.granted` event.
 
-The original product contract is in [`docs/specs/2026-07-16-flowpulse-design.md`](docs/specs/2026-07-16-flowpulse-design.md). The current Incident Digital Twin contract is in [`docs/specs/2026-07-16-incident-digital-twin-redesign.md`](docs/specs/2026-07-16-incident-digital-twin-redesign.md).
+The original product contract is in [`docs/specs/2026-07-16-flowpulse-design.md`](docs/specs/2026-07-16-flowpulse-design.md). The current Incident Digital Twin contract is in [`docs/specs/2026-07-16-incident-digital-twin-redesign.md`](docs/specs/2026-07-16-incident-digital-twin-redesign.md). The real Production Workspace contract is in [`docs/specs/2026-07-17-live-development-workspace.md`](docs/specs/2026-07-17-live-development-workspace.md).
 
 ## Evidence bundle
 
@@ -150,10 +179,10 @@ Candidate policy `evidence-policy-v2` must pass six deterministic gates: false-d
 
 ## Safety contract
 
-- Evidence scope is restricted to the selected incident bundle.
+- Evidence scope is restricted to the selected incident bundle or the registered local OTLP spool.
 - Tool names and schemas are fixed in code.
 - Evidence references are validated after model generation.
-- Only `rollback_deployment` against `checkout` is accepted.
+- Only the checked-in checkout rollback boundary and allowlisted local command ID are accepted.
 - The judge repair is a captured replay, never a production mutation.
 - Owner approval is mandatory and immutable.
 - Tool loops stop after six rounds; evaluator feedback gets one replan.
@@ -163,7 +192,7 @@ Candidate policy `evidence-policy-v2` must pass six deterministic gates: false-d
 
 Codex was the primary engineering environment for this repository. It was used to define the bounded product design, implement the ledger and state machine, build the cockpit, author the incident bundle, add the OpenAI and Langfuse adapters, write tests, run browser verification, and keep the repository scoped to the competition demo.
 
-GPT-5.6 is part of the product, not only a development aid. In live mode it performs evidence acquisition through function tools, produces a structured causal diagnosis and bounded repair proposal, and independently evaluates that diagnosis against an adversarial rubric. Deterministic replay exists alongside the live loop so judges can evaluate the complete product even without credentials or network access.
+GPT-5.6 is part of the product, not only a development aid. In credentialed model mode it performs evidence acquisition through function tools against the captured bundle, produces a structured causal diagnosis and bounded repair proposal, and independently evaluates that diagnosis against an adversarial rubric. The real local-development path uses the same ledger and evidence/evaluator gates with actual OTLP data and a code-owned allowlisted adapter; it remains usable without model credentials. Deterministic replay exists alongside both paths so judges can evaluate the complete product without network access.
 
 ## Repository map
 
@@ -172,8 +201,12 @@ data/incidents/                 captured incident and regression evidence
 docs/specs/                     approved design contract
 docs/judge-script.md            under-three-minute presentation path
 public/                         dependency-free Incident Digital Twin
+integrations/astronomy-shop/    pinned runtime and allowlisted change
 src/ledger.mjs                  append-only SQLite authority
 src/runtime.mjs                 bounded replay state machine
+src/live-source.mjs             OTLP provenance and topology projection
+src/development-runtime.mjs     local agent/evaluator/owner loop
+src/development-adapter.mjs     allowlisted flag and Docker adapter
 src/openai.mjs                  live GPT-5.6 tool and evaluator loop
 src/observability.mjs           Langfuse OpenTelemetry mirror
 src/policy.mjs                  deterministic promotion gates
@@ -183,7 +216,7 @@ test/                           ledger, runtime, determinism, and API checks
 
 ## Limitations
 
-The competition build intentionally ships one incident, one repair type, and captured production evidence. Live mode is therefore an honest last-known ledger projection, not a claim of continuous external telemetry. A live OpenTelemetry collector and Kubernetes rollback adapter are clear extension points, but they are not judge-path dependencies and are not granted production authority in this repository.
+The competition build ships one real local incident, one local repair type, and one complex captured judge incident. The real path requires a warmed Docker environment and treats Collector JSONL as a bounded append-only spool rather than a general telemetry warehouse. It does not connect to production, Kubernetes, or any external deployment authority. The complex Kafka-causality story remains captured replay because the live path claims only the simpler checkout/payment mechanism supported by observed local telemetry.
 
 ## License
 

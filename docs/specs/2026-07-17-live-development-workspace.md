@@ -1,7 +1,7 @@
 # FlowPulse Live Development Workspace
 
 Date: 2026-07-17  
-Status: approved design, awaiting written-spec review  
+Status: implemented and verified against a pinned local runtime
 Selected product direction: A — Production Workspace
 
 ## Decision summary
@@ -373,7 +373,8 @@ Existing commands remain compatible:
 New opt-in local-development commands:
 
 - `npm run live:check` — read-only prerequisite and resource diagnostics
-- `npm run live:setup` — fetch the pinned upstream and start the full disposable environment
+- `npm run live:setup` — fetch and verify the pinned upstream checkout
+- `npm run live:start` — start the full disposable environment and Collector capture
 - `npm run live:case` — apply the approved bad checkout change and start capture/investigation
 - `npm run live:stop` — stop the disposable integration without deleting verified captures
 

@@ -21,6 +21,7 @@ const NODE_BY_ID = new Map(TWIN_NODES.map((node) => [node.id, node]));
 const EDGE_BY_ID = new Map(TWIN_EDGES.map((edge) => [edge.id, edge]));
 
 let state;
+let developmentStatus;
 let mode = "replay";
 let cursor = 0;
 let playing = false;
@@ -32,10 +33,13 @@ let activeTab = "evidence";
 let toastTimer;
 
 for (const button of document.querySelectorAll("[data-mode]")) button.addEventListener("click", () => setMode(button.dataset.mode));
+for (const button of document.querySelectorAll("[data-nav-tab]")) button.addEventListener("click", () => handleNavigation(button.dataset.navTab));
 for (const button of document.querySelectorAll("[data-focus-entity]")) button.addEventListener("click", () => openDrawer({ type: "node", id: button.dataset.focusEntity }, "metrics"));
 els["retry-button"].addEventListener("click", refresh);
 els["live-button"].addEventListener("click", runLive);
 els["details-button"].addEventListener("click", () => openDrawer({ type: "run", id: state?.run_id }, "evidence"));
+els["open-incident-button"].addEventListener("click", () => openDrawer({ type: "run", id: state?.run_id }, "agent"));
+els["development-button"].addEventListener("click", handleDevelopmentAction);
 els["drawer-close"].addEventListener("click", closeDrawer);
 els["restart-button"].addEventListener("click", restartReplay);
 els["back-button"].addEventListener("click", () => seek(cursor - 1));
@@ -62,7 +66,10 @@ await refresh();
 async function refresh() {
   setLoading(true);
   try {
-    state = await request("/api/state");
+    [state, developmentStatus] = await Promise.all([
+      request("/api/state"),
+      request("/api/development/status").catch(() => null)
+    ]);
     cursor = availableStage(state.events);
     hideError();
     render();
@@ -80,6 +87,7 @@ function render() {
   renderCanvas();
   renderTimeline();
   renderApproval();
+  renderDevelopmentControl();
   renderDrawer();
   updateControls();
 }
@@ -90,11 +98,14 @@ function renderHeader() {
   els["incident-summary"].textContent = state.incident.summary;
   els.severity.textContent = state.incident.severity;
   els.environment.textContent = state.incident.environment;
-  els.stage.textContent = mode === "compare" ? "Incident vs verified" : frame.stage.label;
+  els["incident-stage"].textContent = state.stage;
+  els.stage.textContent = mode === "live" ? sourceState().label : mode === "compare" ? "Incident vs verified" : timelineStages()[cursor].label;
   els["status-text"].textContent = modeStatus();
   els["ledger-state"].textContent = `${state.events.length} immutable events`;
-  els["capture-label"].textContent = mode === "live" ? "Last-known captured state" : mode === "compare" ? "Verified comparison" : "Immutable replay";
+  els["capture-label"].textContent = mode === "live" ? sourceState().label : mode === "compare" ? "Verified comparison" : state.mode === "development" ? "Replay · Hashed local capture" : "Replay · Captured evidence";
+  els["capture-label"].className = `capture-label source-${sourceState().status}`;
   els["canvas-caption"].textContent = modeCaption(frame);
+  els["live-button"].hidden = !state.live_available;
   for (const button of document.querySelectorAll("[data-mode]")) {
     const active = button.dataset.mode === mode;
     button.classList.toggle("is-active", active);
@@ -111,6 +122,19 @@ function renderHeader() {
 }
 
 function renderMetrics() {
+  if (mode === "live" || state.mode === "development") {
+    const source = sourceState();
+    els["metric-checkout-label"].textContent = "Services";
+    els["metric-payment-label"].textContent = "Trace batches";
+    els["metric-kafka-label"].textContent = "Source age";
+    setMetric("checkout", String(source.topology?.nodes?.length || 0), "observed service.name");
+    setMetric("payment", String(source.counts?.traces || 0), "hashed OTLP records");
+    setMetric("kafka", source.freshness_ms == null ? "—" : formatAge(source.freshness_ms), source.status);
+    return;
+  }
+  els["metric-checkout-label"].textContent = "Checkout errors";
+  els["metric-payment-label"].textContent = "Payment";
+  els["metric-kafka-label"].textContent = "Kafka lag";
   if (mode === "compare") {
     setMetric("checkout", "38.4% → 0.8%", "incident to verified");
     setMetric("payment", "61.6% → 99.98%", "reachability");
@@ -128,6 +152,15 @@ function setMetric(name, value, note) {
 
 function renderCanvas() {
   els["twin-canvas"].classList.toggle("is-compare-mode", mode === "compare");
+  els["twin-canvas"].classList.toggle("is-live-source", mode === "live" || (state.mode === "development" && mode === "replay"));
+  if (mode === "live") {
+    renderLiveCanvas();
+    return;
+  }
+  if (state.mode === "development" && mode === "replay") {
+    renderLiveCanvas();
+    return;
+  }
   if (mode === "compare") {
     const { incident, recovered } = compareFrames();
     els["canvas-layers"].innerHTML = `${renderTwinLayer(recovered, "after", true)}${renderTwinLayer(incident, "before", false)}`;
@@ -142,6 +175,37 @@ function renderCanvas() {
   els["compare-handle"].hidden = true;
   els["annotation-layer"].innerHTML = frame.annotations.slice(-2).map(renderAnnotation).join("");
   els["twin-canvas"].setAttribute("aria-label", `${mode === "live" ? "Last-known captured" : "Replay"} system state at ${frame.stage.label}`);
+}
+
+function renderLiveCanvas() {
+  const source = sourceState();
+  els["compare-handle"].hidden = true;
+  els["annotation-layer"].innerHTML = "";
+  if (!source.topology?.nodes?.length) {
+    els["canvas-layers"].innerHTML = `<div class="source-empty">
+      <i class="ph ph-plugs" aria-hidden="true"></i>
+      <strong>${escapeHtml(source.label)}</strong>
+      <span>${source.status === "disconnected" ? "No OTLP capture is registered. Connect the pinned local runtime or use Replay." : "The collector files exist but do not contain a complete OTLP record yet."}</span>
+    </div>`;
+    els["twin-canvas"].setAttribute("aria-label", `${source.label}. No observed service topology is available.`);
+    return;
+  }
+  const positioned = positionLiveNodes(source.topology.nodes);
+  const positions = new Map(positioned.map((node) => [node.id, node]));
+  const edges = source.topology.edges.filter((edge) => positions.has(edge.from) && positions.has(edge.to)).map((edge, index) => {
+    const from = positions.get(edge.from);
+    const to = positions.get(edge.to);
+    const path = liveEdgePath(from, to);
+    return `<g class="edge-group"><path class="edge-line is-healthy" d="${path}"/><path class="pulse-flow pulse-slot-${index % 4} is-healthy" d="${path}" pathLength="1" aria-hidden="true"/><path class="edge-hit" d="${path}" role="button" tabindex="0" aria-label="${escapeHtml(edge.label)} from ${escapeHtml(from.label)} to ${escapeHtml(to.label)}" data-edge-id="${escapeHtml(edge.id)}"/></g>`;
+  }).join("");
+  const nodes = positioned.map((node) => `<button class="twin-node live-node grid-slot-${node.slot} kind-${escapeHtml(node.kind)} is-healthy" type="button" data-node-id="${escapeHtml(node.id)}" aria-label="Observed ${escapeHtml(kindLabel(node.kind))} ${escapeHtml(node.label)}">
+    <span class="node-icon" aria-hidden="true"><i class="ph ph-${iconForLive(node)}"></i></span>
+    <span class="node-copy"><strong>${escapeHtml(node.label)}</strong><span class="node-detail">observed service.name</span><span class="node-status">${mode === "live" ? "LIVE OTLP" : "HASHED CAPTURE"}</span></span>
+    <span class="node-status-dot" aria-hidden="true"></span>
+  </button>`).join("");
+  els["canvas-layers"].innerHTML = `<div class="twin-layer layer-current"><svg class="edge-map" viewBox="0 0 1000 520" preserveAspectRatio="none">${edges}</svg>${nodes}</div>`;
+  els["annotation-layer"].innerHTML = mode === "replay" ? developmentAnnotations(cursor).map(renderAnnotation).join("") : "";
+  els["twin-canvas"].setAttribute("aria-label", `${mode === "live" ? "Live OTLP" : "Hashed local capture"} topology with ${positioned.length} observed services`);
 }
 
 function renderTwinLayer(frame, layerName, interactive) {
@@ -199,7 +263,8 @@ function setComparePercent(value) {
 
 function renderTimeline() {
   const available = availableStage(state.events);
-  els["stage-track"].innerHTML = TWIN_STAGES.map((stage, index) => {
+  const stages = timelineStages();
+  els["stage-track"].innerHTML = stages.map((stage, index) => {
     const enabled = index <= available || (index === 1 && available >= 2);
     return `<button class="stage-marker ${enabled ? "is-available" : ""} ${index === cursor && mode !== "compare" ? "is-current" : ""}" type="button" data-stage-index="${index}" ${enabled ? "" : "disabled"}>
       <span>${stage.time}</span><strong>${escapeHtml(stage.label)}</strong>
@@ -209,8 +274,8 @@ function renderTimeline() {
   els["timeline-range"].max = String(available);
   els["timeline-range"].value = String(Math.min(cursor, available));
   els["timeline-range"].disabled = mode !== "replay";
-  els["timeline-time"].textContent = mode === "compare" ? "Before / after" : TWIN_STAGES[cursor].time;
-  els["timeline-title"].textContent = mode === "compare" ? "Incident vs verified" : TWIN_STAGES[cursor].label;
+  els["timeline-time"].textContent = mode === "compare" ? "Before / after" : stages[cursor].time;
+  els["timeline-title"].textContent = mode === "compare" ? "Incident vs verified" : stages[cursor].label;
   els["timeline-copy"].textContent = timelineCopy(mode === "compare" ? 6 : cursor);
   els["compare-control"].hidden = mode !== "compare";
   els["timeline-current"].hidden = mode === "compare";
@@ -219,6 +284,9 @@ function renderTimeline() {
 function renderApproval() {
   const visible = state.waiting_for_approval && mode !== "compare" && (mode === "live" || cursor >= 5);
   els["approval-banner"].hidden = !visible;
+  els["incident-strip"].hidden = visible || mode !== "live";
+  els["approval-copy"].textContent = state.mode === "development" ? "Restore the known-good flag and recreate only the local checkout container." : "Rollback is bounded to checkout:2.18.0.";
+  els["approve-button"].textContent = state.mode === "development" ? "Approve local checkout rollback" : "Approve checkout rollback";
 }
 
 function renderDrawer() {
@@ -237,11 +305,11 @@ function renderDrawer() {
 
 function selectionMeta(focus) {
   if (focus.type === "node") {
-    const node = NODE_BY_ID.get(focus.id);
+    const node = NODE_BY_ID.get(focus.id) || sourceState().topology?.nodes?.find((item) => item.id === focus.id);
     return { kind: kindLabel(node?.kind || "component"), title: node?.label || focus.id, subtitle: node?.detail || "System component" };
   }
   if (focus.type === "edge") {
-    const edge = EDGE_BY_ID.get(focus.id);
+    const edge = EDGE_BY_ID.get(focus.id) || sourceState().topology?.edges?.find((item) => item.id === focus.id);
     return { kind: "Dependency path", title: edge?.label || focus.id, subtitle: `${labelFor(edge?.from)} to ${labelFor(edge?.to)}` };
   }
   if (focus.type === "annotation") return { kind: "Causal annotation", title: annotationTitle(focus.id), subtitle: TWIN_STAGES[cursor].label };
@@ -297,14 +365,15 @@ function renderEventRecord(event) {
 
 function renderRepairDetail(events) {
   const records = events.filter((event) => ["repair.proposed", "approval.requested", "approval.granted", "repair.executed"].includes(event.type));
-  const boundary = `<div class="detail-intro"><strong>Checkout-only rollback boundary</strong><span>${escapeHtml(state.repair.from)} to ${escapeHtml(state.repair.to)}. Abort if ${escapeHtml(state.repair.abort_if)}.</span></div>`;
+  const repair = records.find((event) => event.type === "repair.proposed")?.payload || state.repair;
+  const boundary = `<div class="detail-intro"><strong>Checkout-only rollback boundary</strong><span>${escapeHtml(repair.from)} to ${escapeHtml(repair.to)}. Abort if ${escapeHtml(repair.abort_if)}.</span></div>`;
   return boundary + (records.length ? records.map(renderEventRecord).join("") : emptyDetail("A bounded repair has not been proposed at this replay position."));
 }
 
 function renderVerificationDetail(events) {
   const verification = events.find((event) => event.type === "verification.completed");
   if (!verification) return emptyDetail("Verification waits for an approved and executed repair.");
-  return `<div class="detail-intro"><strong>Recovery thresholds passed</strong><span>Verification uses captured post-repair evidence from the immutable incident bundle.</span></div>${verification.payload.checks.map((check) => `<div class="verification-grid">
+  return `<div class="detail-intro"><strong>Recovery thresholds passed</strong><span>${state.mode === "development" ? "Verification uses fresh OTLP evidence recorded after the real local rollback." : "Verification uses captured post-repair evidence from the immutable incident bundle."}</span></div>${verification.payload.checks.map((check) => `<div class="verification-grid">
     <div class="verification-value"><span>Before</span><strong>${formatMetric(check.metric, check.before)}</strong></div>
     <div class="verification-value after"><span>${escapeHtml(check.threshold)}</span><strong>${formatMetric(check.metric, check.after)}</strong></div>
   </div>`).join("")}${renderEventRecord(verification)}`;
@@ -343,10 +412,11 @@ function filterEventsBySelection(events) {
 }
 
 function selectionEntities() {
-  if (selected?.type === "node" && state.topology.services.some((service) => service.id === selected.id)) return new Set([selected.id]);
+  const serviceIds = new Set([...(state.topology?.services || []).map((service) => service.id), ...(sourceState().topology?.nodes || []).map((node) => node.id)]);
+  if (selected?.type === "node" && serviceIds.has(selected.id)) return new Set([selected.id]);
   if (selected?.type === "edge") {
-    const edge = EDGE_BY_ID.get(selected.id);
-    return new Set([edge?.from, edge?.to].filter((id) => state.topology.services.some((service) => service.id === id)));
+    const edge = EDGE_BY_ID.get(selected.id) || sourceState().topology?.edges?.find((item) => item.id === selected.id);
+    return new Set([edge?.from, edge?.to].filter((id) => serviceIds.has(id)));
   }
   return new Set();
 }
@@ -392,6 +462,10 @@ function closeDrawer() {
 
 function setMode(nextMode) {
   stopPlayback();
+  if (nextMode === "compare" && state.mode === "development") {
+    showToast("Compare is available for the verified complex replay. Restart Replay to open it.", true);
+    return;
+  }
   if (nextMode === "compare" && availableStage(state.events) < 6) {
     showToast("Complete recovery verification before opening Compare.", true);
     return;
@@ -501,8 +575,9 @@ async function restartReplay() {
 async function approveRepair() {
   setBusy(true);
   try {
-    state = await request("/api/approve", { method: "POST", body: JSON.stringify({ owner: "Commerce incident owner" }) });
-    showToast("Checkout-only rollback approved and recorded.");
+    const path = state.mode === "development" ? "/api/development/approve" : "/api/approve";
+    state = await request(path, { method: "POST", body: JSON.stringify({ owner: state.mode === "development" ? "Local development owner" : "Commerce incident owner" }) });
+    showToast(state.mode === "development" ? "Local checkout rollback executed after owner approval." : "Checkout-only rollback approved and recorded.");
     render();
   } catch (error) {
     showToast(error.message, true);
@@ -510,7 +585,40 @@ async function approveRepair() {
   } finally {
     setBusy(false);
   }
-  await playReplay();
+  if (state.mode !== "development") await playReplay();
+}
+
+async function handleDevelopmentAction() {
+  if (!developmentStatus?.enabled) return;
+  setBusy(true);
+  try {
+    const action = developmentAction();
+    if (action === "connect") {
+      showToast("Preparing the pinned Astronomy Shop runtime. This can take several minutes.");
+      await request("/api/development/setup", { method: "POST", body: "{}" });
+      await request("/api/development/start", { method: "POST", body: "{}" });
+      showToast("Pinned local runtime started. Waiting for real OTLP telemetry.");
+    } else if (action === "case") {
+      state = await request("/api/development/case", { method: "POST", body: "{}" });
+      mode = "live";
+      showToast("Versioned payment-unreachable change applied to the local checkout runtime.");
+    } else if (action === "investigate") {
+      state = await request("/api/development/investigate", { method: "POST", body: "{}" });
+      mode = "replay";
+      cursor = availableStage(state.events);
+      showToast("Evidence agent rejected weak service blame and reached the owner gate.");
+    } else if (action === "verify") {
+      state = await request("/api/development/verify", { method: "POST", body: "{}" });
+      mode = "replay";
+      cursor = availableStage(state.events);
+      showToast("Fresh post-repair telemetry verified recovery and produced a regression record.");
+    }
+    await refresh();
+  } catch (error) {
+    showToast(error.message, true);
+  } finally {
+    setBusy(false);
+  }
 }
 
 async function runLive() {
@@ -563,6 +671,7 @@ function updateControls() {
   els["live-button"].disabled = busy || playing;
   els["details-button"].disabled = busy;
   els["approve-button"].disabled = busy;
+  els["development-button"].disabled = busy || playing;
 }
 
 function stopPlayback() {
@@ -608,7 +717,7 @@ function eventPresentation(event) {
     case "approval.requested": return { title: "Owner approval requested", copy: p.reason, tone: "approval" };
     case "approval.granted": return { title: "Owner approved the rollback", copy: `${p.owner} approved ${p.scope}.`, tone: "accepted" };
     case "repair.executed": return { title: "Checkout rollback executed", copy: `${p.from} restored to ${p.to}.`, tone: "accepted" };
-    case "verification.completed": return { title: "Recovery thresholds passed", copy: "Payment recovered, checkout errors fell, and Kafka lag drained without a Kafka repair.", tone: "verified" };
+    case "verification.completed": return { title: "Recovery thresholds passed", copy: state.mode === "development" ? "Fresh post-repair checkout/payment OTLP verified the local rollback." : "Payment recovered, checkout errors fell, and Kafka lag drained without a Kafka repair.", tone: "verified" };
     case "outcome.classified": return { title: "Outcome classified", copy: `${p.classification}. Learning: ${p.secondary_learning}. ${p.explanation}`, tone: "verified" };
     case "regression.created": return { title: "Regression case created", copy: p.name, tone: "verified" };
     case "policy.evaluated": return { title: "Candidate policy evaluated", copy: `${p.candidate} is ${(p.promotion || "blocked").replaceAll("_", " ")}.`, tone: p.passed ? "verified" : "rejected" };
@@ -621,6 +730,16 @@ function eventPresentation(event) {
 }
 
 function timelineCopy(index) {
+  if (state?.mode === "development") return [
+    "Local runtime selected",
+    "Versioned payment-unreachable change applied",
+    "Fresh checkout/payment failures observed",
+    "Unsupported payment-service blame rejected",
+    "Change and failure telemetry establish root cause",
+    "Checkout-only local rollback waits for approval",
+    "Fresh post-repair OTLP verifies recovery",
+    "Hashed capture and policy gates recorded"
+  ][index];
   return [
     "Captured system baseline",
     "checkout:2.18.0 enters the system",
@@ -634,7 +753,7 @@ function timelineCopy(index) {
 }
 
 function modeStatus() {
-  if (mode === "live") return "Latest authoritative snapshot";
+  if (mode === "live") return sourceState().status === "live" ? "Fresh authoritative telemetry" : "Source truth preserved";
   if (mode === "compare") return "Interactive state delta";
   if (state.waiting_for_approval && cursor >= 5) return "Paused at human gate";
   if (state.complete && cursor >= 7) return "Verified and recorded";
@@ -642,8 +761,14 @@ function modeStatus() {
 }
 
 function modeCaption(frame) {
-  if (mode === "live") return `Last-known captured state at ${frame.stage.time}. No streaming collector is connected.`;
+  if (mode === "live") {
+    const source = sourceState();
+    return source.status === "live"
+      ? `Real OTLP via Collector · last record ${formatAge(source.freshness_ms)} ago · ${source.evidence.length} hashed records in view.`
+      : `${source.label}. This canvas does not synthesize services or telemetry.`;
+  }
   if (mode === "compare") return "Drag the split to compare incident impact with verified recovery.";
+  if (state.mode === "development") return `${timelineStages()[cursor].time} reconstruction from the hashed local OTLP capture and immutable ledger.`;
   return `${frame.stage.time} incident reconstruction from immutable ledger events.`;
 }
 
@@ -672,8 +797,92 @@ function annotationTitle(id) {
   return ({ deploy: "Deployment entered", propagation: "Failure propagated", rejected: "Kafka hypothesis rejected", replan: "Investigator replanned", root: "Root cause confirmed", gate: "Owner approval required", recovery: "Recovery verified", learning: "Regression recorded" })[id] || id;
 }
 
+function timelineStages() {
+  if (state?.mode !== "development") return TWIN_STAGES;
+  return TWIN_STAGES.map((stage, index) => index === 3 ? { ...stage, label: "Wrong service blame rejected" } : stage);
+}
+
+function developmentAnnotations(index) {
+  const notes = [];
+  if (index >= 1) notes.push({ id: "deploy", tone: "change", title: "Versioned change applied", copy: "paymentUnreachable enabled through flagd" });
+  if (index >= 2 && index < 6) notes.push({ id: "propagation", tone: "impact", title: "Real failure telemetry", copy: "Fresh checkout/payment OTLP spans failed" });
+  if (index >= 3 && index < 6) notes.push({ id: "rejected", tone: "rejected", title: "Weak service blame rejected", copy: "Failure spans did not prove payment initiated it" });
+  if (index >= 4 && index < 6) notes.push({ id: "root", tone: "root", title: "Root cause confirmed", copy: "Versioned checkout flag preceded the failures" });
+  if (index >= 6) notes.push({ id: "recovery", tone: "verified", title: "Recovery verified", copy: "Fresh healthy post-repair OTLP captured" });
+  if (index >= 7) notes.push({ id: "learning", tone: "learned", title: "Hashed regression recorded", copy: "Live evidence policy passed deterministic gates" });
+  return notes.slice(-2);
+}
+
 function kindLabel(kind) {
   return ({ client: "Client", service: "Service", api: "API", stream: "Stream", worker: "Worker", change: "Deployment change", agent: "Investigation agent", evaluator: "Adversarial evaluator", database: "Evidence database" })[kind] || "Component";
+}
+
+function renderDevelopmentControl() {
+  if (!developmentStatus?.enabled) {
+    els["development-button"].hidden = true;
+    return;
+  }
+  els["development-button"].hidden = false;
+  const action = developmentAction();
+  els["development-button"].textContent = ({ connect: "Connect local runtime", case: "Start real case", investigate: "Investigate live evidence", verify: "Verify recovery", complete: "Live case complete" })[action];
+  els["development-button"].disabled = busy || action === "complete";
+}
+
+function developmentAction() {
+  if (!developmentStatus?.ready) return "connect";
+  if (state?.mode !== "development") return "case";
+  const has = (type) => state.events.some((event) => event.type === type);
+  if (has("policy.evaluated")) return "complete";
+  if (has("repair.executed")) return "verify";
+  if (!has("approval.requested")) return "investigate";
+  return "complete";
+}
+
+function handleNavigation(tab) {
+  for (const button of document.querySelectorAll("[data-nav-tab]")) button.classList.toggle("is-active", button.dataset.navTab === tab);
+  if (tab === "map") closeDrawerWithoutFocus();
+  if (tab === "incidents") openDrawer({ type: "run", id: state?.run_id }, "agent");
+  if (tab === "changes") openDrawer({ type: "run", id: state?.run_id }, "changes");
+  if (tab === "evaluations") openDrawer({ type: "run", id: state?.run_id }, "eval");
+}
+
+function sourceState() {
+  return state?.source || { status: "disconnected", label: "Disconnected", topology: { nodes: [], edges: [] }, evidence: [], counts: {}, freshness_ms: null };
+}
+
+function positionLiveNodes(nodes) {
+  const order = [
+    "load-generator", "frontend-web", "frontend-proxy", "frontend", "checkout", "payment",
+    "flagd-ui", "flagd", "cart", "currency", "shipping", "kafka",
+    "image-provider", "ad", "product-catalog", "recommendation", "email", "accounting",
+    "telemetry-docs", "otelcol-contrib", "quote", "astronomy-db", "fraud-detection"
+  ];
+  const priority = new Map(order.map((id, index) => [id, index]));
+  const sorted = [...nodes].sort((a, b) => (priority.get(a.id) ?? 1_000) - (priority.get(b.id) ?? 1_000) || a.id.localeCompare(b.id));
+  const xs = [6, 18.5, 31, 43.5, 56.5, 69, 81.5, 94];
+  const lastXs = [18.5, 31, 43.5, 56.5, 69, 81.5];
+  const ys = [25, 42, 58];
+  return sorted.map((node, index) => ({
+    ...node,
+    slot: index,
+    x: index < 16 ? xs[index % 8] : lastXs[index - 16],
+    y: ys[Math.floor(index / 8)] ?? 58
+  }));
+}
+
+function liveEdgePath(from, to) {
+  const forward = to.x >= from.x;
+  const x1 = from.x * 10 + (forward ? 72 : -72);
+  const x2 = to.x * 10 + (forward ? -72 : 72);
+  const y1 = from.y * 5.2;
+  const y2 = to.y * 5.2;
+  const mid = (x1 + x2) / 2;
+  return `M ${x1} ${y1} C ${mid} ${y1} ${mid} ${y2} ${x2} ${y2}`;
+}
+
+function iconForLive(node) {
+  const known = { frontend: "browser", "frontend-proxy": "arrows-left-right", checkout: "shopping-cart-simple", payment: "credit-card", kafka: "queue", accounting: "calculator", "fraud-detection": "shield-check", cart: "shopping-bag", shipping: "truck", currency: "currency-circle-dollar" };
+  return known[node.id] || ({ client: "browser", api: "plugs-connected", stream: "queue", worker: "gear", database: "database" })[node.kind] || "cube";
 }
 
 function statusLabel(status) {
@@ -689,6 +898,7 @@ function percent(value) { return value == null ? "" : `${Math.round(value * 100)
 function formatOffset(ms) { return `T+${Math.floor(ms / 60000)}:${String(Math.floor((ms % 60000) / 1000)).padStart(2, "0")}`; }
 function formatTime(value) { return new Date(value).toISOString().slice(11, 19); }
 function formatMetric(metric, value) { return metric.includes("percent") ? `${value}%` : Number(value).toLocaleString(); }
+function formatAge(value) { return value == null ? "—" : value < 1000 ? "<1s" : value < 60_000 ? `${Math.floor(value / 1000)}s` : `${Math.floor(value / 60_000)}m`; }
 
 async function request(path, options) {
   const response = await fetch(path, { headers: { "content-type": "application/json" }, ...options });

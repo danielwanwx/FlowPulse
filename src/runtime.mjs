@@ -15,13 +15,14 @@ export class IncidentRuntime {
     return this.ledger.latestRun(this.bundle.incident.id) ?? this.startRun();
   }
 
-  startRun(mode = this.mode) {
+  startRun(mode = this.mode, incident = this.bundle.incident) {
     const runId = `run-${randomUUID()}`;
     this.append(runId, "run.started", "runtime", { mode, schema_version: 1 });
     this.append(runId, "incident.opened", "runtime", {
-      title: this.bundle.incident.title,
-      severity: this.bundle.incident.severity,
-      summary: this.bundle.incident.summary
+      title: incident.title,
+      severity: incident.severity,
+      summary: incident.summary,
+      environment: incident.environment || this.bundle.incident.environment
     });
     return runId;
   }
@@ -69,7 +70,7 @@ export class IncidentRuntime {
       complete,
       events,
       evidence: evidenceById(this.bundle, evidenceIds),
-      incident: this.bundle.incident,
+      incident: incidentFor(events, this.bundle.incident),
       topology: this.bundle.topology,
       thresholds: this.bundle.thresholds,
       repair: this.bundle.repair,
@@ -209,4 +210,9 @@ function stageFor(events) {
   if (events.some((event) => event.type === "evaluation.rejected")) return "Replanning";
   if (events.some((event) => event.type === "hypothesis.proposed")) return "Adversarial evaluation";
   return "Evidence collection";
+}
+
+function incidentFor(events, fallback) {
+  const opened = events.find((event) => event.type === "incident.opened")?.payload;
+  return opened ? { ...fallback, ...opened } : fallback;
 }

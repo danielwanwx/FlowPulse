@@ -32,6 +32,10 @@ test("judge API serves state and advances the replay", async (context) => {
   const module = await fetch(`http://127.0.0.1:${port}/twin-state.mjs`);
   assert.equal(module.status, 200);
   assert.match(module.headers.get("content-type"), /text\/javascript/);
+
+  const crossOriginStyleMutation = await fetch(`http://127.0.0.1:${port}/api/development/case`, { method: "POST" });
+  assert.equal(crossOriginStyleMutation.status, 409);
+  assert.match((await crossOriginStyleMutation.json()).error, /application\/json is required/);
 });
 
 function waitForServer(child, port) {

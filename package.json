@@ -7,7 +7,12 @@
   "scripts": {
     "demo": "node src/server.mjs",
     "test": "node --test test/*.test.mjs",
-    "judge": "npm test && node src/server.mjs"
+    "judge": "npm test && node src/server.mjs",
+    "live:check": "node scripts/live-demo.mjs check",
+    "live:setup": "node scripts/live-demo.mjs setup",
+    "live:start": "node scripts/live-demo.mjs start",
+    "live:case": "node scripts/live-demo.mjs case",
+    "live:stop": "node scripts/live-demo.mjs stop"
   },
   "engines": {
     "node": ">=20"

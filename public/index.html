@@ -4,8 +4,8 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="light">
-    <meta name="description" content="FlowPulse Incident Digital Twin">
-    <title>FlowPulse | Incident Digital Twin</title>
+    <meta name="description" content="FlowPulse production investigation workspace">
+    <title>FlowPulse | Production Workspace</title>
     <link rel="stylesheet" href="/vendor/phosphor/flowpulse-icons.css">
     <link rel="stylesheet" href="/styles.css">
   </head>
@@ -16,10 +16,17 @@
         <div class="brand" aria-label="FlowPulse">
           <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
           <span>FlowPulse</span>
-          <span class="product-name">Incident Digital Twin</span>
+          <span class="product-name">Production workspace</span>
         </div>
+        <nav class="primary-nav" aria-label="Workspace views">
+          <button class="nav-button is-active" type="button" data-nav-tab="map">System map</button>
+          <button class="nav-button" type="button" data-nav-tab="incidents">Incidents</button>
+          <button class="nav-button" type="button" data-nav-tab="changes">Changes</button>
+          <button class="nav-button" type="button" data-nav-tab="evaluations">Evaluations</button>
+        </nav>
         <div class="topbar-status">
-          <span id="capture-label" class="capture-label">Authoritative ledger</span>
+          <span class="environment-label">dev / astronomy-shop</span>
+          <span id="capture-label" class="capture-label">Checking source</span>
           <a id="langfuse-link" class="text-link is-disabled" href="#" target="_blank" rel="noreferrer">Tracing not configured</a>
           <span id="ledger-state" class="ledger-state">Loading events</span>
         </div>
@@ -31,11 +38,11 @@
       </div>
 
       <main>
-        <section class="mission-bar" aria-labelledby="incident-title">
+        <section class="mission-bar" aria-labelledby="workspace-title">
           <div class="mission-summary">
-            <div class="mission-meta"><span id="severity">SEV-1</span><span id="environment">astronomy-shop-demo</span></div>
-            <h1 id="incident-title">Loading incident</h1>
-            <p id="incident-summary">Reading immutable incident state.</p>
+            <div class="mission-meta"><span>SYSTEM MAP</span><span id="environment">dev / astronomy-shop</span></div>
+            <h1 id="workspace-title">Production system map</h1>
+            <p>Observed services, dependencies, changes, and incident state from authoritative sources.</p>
           </div>
 
           <div class="mode-switch" aria-label="Digital twin mode">
@@ -51,6 +58,7 @@
               <small id="status-text">Loading authoritative state</small>
             </div>
             <button id="live-button" class="button secondary" type="button">Run GPT-5.6</button>
+            <button id="development-button" class="button secondary" type="button" hidden>Connect local runtime</button>
             <button id="details-button" class="button secondary" type="button">Inspect run</button>
           </div>
         </section>
@@ -59,18 +67,18 @@
           <div class="canvas-shell">
             <div class="canvas-toolbar">
               <div>
-                <h2>System state</h2>
+                <h2>Observed topology</h2>
                 <p id="canvas-caption">Immutable replay projection</p>
               </div>
               <div class="metric-cluster" aria-label="Incident metrics">
                 <button class="metric" type="button" data-focus-entity="checkout">
-                  <span>Checkout errors</span><strong id="metric-checkout">0.7%</strong><small id="metric-checkout-note">captured baseline</small>
+                  <span id="metric-checkout-label">Checkout errors</span><strong id="metric-checkout">0.7%</strong><small id="metric-checkout-note">captured baseline</small>
                 </button>
                 <button class="metric" type="button" data-focus-entity="payment">
-                  <span>Payment</span><strong id="metric-payment">Nominal</strong><small id="metric-payment-note">pre-incident</small>
+                  <span id="metric-payment-label">Payment</span><strong id="metric-payment">Nominal</strong><small id="metric-payment-note">pre-incident</small>
                 </button>
                 <button class="metric" type="button" data-focus-entity="kafka">
-                  <span>Kafka lag</span><strong id="metric-kafka">182</strong><small id="metric-kafka-note">lag baseline</small>
+                  <span id="metric-kafka-label">Kafka lag</span><strong id="metric-kafka">182</strong><small id="metric-kafka-note">lag baseline</small>
                 </button>
               </div>
               <div class="state-key" aria-label="State legend">
@@ -90,12 +98,19 @@
                 <div id="compare-handle" class="compare-handle" aria-hidden="true" hidden><span></span></div>
                 <div id="annotation-layer" class="annotation-layer" aria-live="polite"></div>
                 <div id="approval-banner" class="approval-banner" hidden>
-                  <div><strong>Owner approval required</strong><span>Rollback is bounded to checkout:2.18.0.</span></div>
+                  <div><strong>Owner approval required</strong><span id="approval-copy">Rollback is bounded to checkout:2.18.0.</span></div>
                   <button id="approve-button" class="button approve" type="button">Approve checkout rollback</button>
                 </div>
               </div>
             </div>
           </div>
+
+          <section id="incident-strip" class="incident-strip" aria-label="Active incident">
+            <div class="incident-severity"><span id="severity">SEV-1</span><small>ACTIVE INCIDENT</small></div>
+            <div class="incident-copy"><strong id="incident-title">Loading incident</strong><span id="incident-summary">Reading immutable incident state.</span></div>
+            <div class="incident-stage"><span>Investigation</span><strong id="incident-stage">Evidence collection</strong></div>
+            <button id="open-incident-button" class="button secondary" type="button">Open incident</button>
+          </section>
 
           <aside id="context-drawer" class="context-drawer" aria-labelledby="drawer-title" hidden>
             <div class="drawer-header">

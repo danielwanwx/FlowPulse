@@ -6,7 +6,7 @@ Build under test: standalone FlowPulse repository, latest working tree served at
 
 ## Automated checks
 
-- `npm test`: 13 tests passed, 0 failed.
+- `npm test`: 18 tests passed, 0 failed.
 - `npm audit --audit-level=high`: 0 vulnerabilities.
 - `node --check public/app.js`: passed.
 - `node --check public/twin-state.mjs`: passed.
@@ -31,6 +31,18 @@ The focused state tests prove stable component identities and coordinates, compl
 - Browser console: 0 errors, 0 warnings.
 
 ## Screenshot set
+
+### Production Workspace and real OTLP
+
+- `production-workspace-live-otlp.png` - 22 real Astronomy Shop services observed from current Collector output.
+- `production-workspace-replay-propagation.png` - deterministic cross-system propagation stage.
+- `production-workspace-replay-root-cause.png` - evaluator-backed checkout/payment causal finding.
+- `production-workspace-owner-gate.png` - consequential rollback paused at the owner gate.
+- `production-workspace-recovery.png` - verified recovery and learning state.
+- `production-workspace-compare.png` - incident and verified state on shared geometry.
+- `production-workspace-source-comparison.png` - selected Production Workspace source and implementation in one comparison image.
+
+The real local smoke used official OpenTelemetry Astronomy Shop commit `18b36c73ccc2dbc86759dab2e0ef05175a7a8ca5`. The Collector produced advancing trace, metric, and log JSONL files; FlowPulse discovered 22 observed services including Checkout, Payment, Kafka, Accounting, and Fraud Detection. The live case applied `paymentUnreachable`, rejected unsupported payment-service blame, reached an owner gate, restored the known-good flag, recreated only Checkout, verified fresh post-repair traces, and wrote capture manifest `capture-4fda1c22d47c297b` with SHA-256 `4fda1c22d47c297bfc64641d64bcfeaf5836c2d2d6caac4f45ec5666c9068b6a`.
 
 - `live-last-known.png` - honest captured-live ledger projection.
 - `replay-propagation.png` - red propagation through checkout, payment, Kafka, and workers.
@@ -63,6 +75,6 @@ The latest pass removes clipped irregular silhouettes, glowing status halos, and
 
 ## Runtime truth boundary
 
-Real in this build: append-only SQLite authority, runtime state machine, API/tool/evaluator orchestration, owner approval ordering, deterministic policy gates, optional GPT-5.6 loop, optional Langfuse observations, and the UI projection from ledger events.
+Real in this build: official local Astronomy Shop containers, current Collector OTLP traces/metrics/logs, observed topology, flagd change, checkout-only Docker recreation, append-only SQLite authority, evaluator loop, owner approval ordering, post-repair verification, hashed capture manifest, deterministic policy gates, optional GPT-5.6 loop, optional Langfuse observations, and the UI projection from runtime state.
 
-Captured fixture behavior: Astronomy Shop OTLP evidence, the production rollback effect, before/after recovery values, and the default guided investigation narrative. The UI labels captured-live state explicitly and never represents the replay as an active external telemetry stream or a production mutation.
+Captured fixture behavior: the complex Kafka propagation evidence, its production rollback effect, exact before/after recovery values, and the default guided judge narrative. The UI distinguishes that immutable replay from `Live OTLP` and from the hashed local capture.

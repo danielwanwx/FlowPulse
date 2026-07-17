@@ -29,3 +29,11 @@
 .ph-robot::before { content: "\e762"; }
 .ph-scales::before { content: "\e750"; }
 .ph-database::before { content: "\e1de"; }
+.ph-arrows-left-right::before { content: "\e0a0"; }
+.ph-cube::before { content: "\e1da"; }
+.ph-currency-circle-dollar::before { content: "\e54c"; }
+.ph-gear::before { content: "\e270"; }
+.ph-plugs::before { content: "\eb56"; }
+.ph-plugs-connected::before { content: "\eb5a"; }
+.ph-shopping-bag::before { content: "\e416"; }
+.ph-truck::before { content: "\e4b4"; }

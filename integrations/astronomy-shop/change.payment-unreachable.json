@@ -1,0 +1,13 @@
+{
+  "id": "change-payment-unreachable-v1",
+  "author_type": "ai-generated",
+  "target": "checkout",
+  "flag": "paymentUnreachable",
+  "before": "off",
+  "after": "on",
+  "repair_id": "repair-payment-reachable-v1",
+  "repair_command_id": "astronomy.restore-payment-and-recreate-checkout",
+  "known_good": "off",
+  "timeout_seconds": 120,
+  "abort_if": "checkout does not become healthy or fresh OTLP telemetry does not resume"
+}
