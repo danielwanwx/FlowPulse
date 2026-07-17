@@ -125,7 +125,7 @@ const server = createServer(async (request, response) => {
     }
     if (url.pathname === "/api/next" && request.method === "POST") {
       const runId = runtime.ensureRun();
-      runtime.next(runId);
+      agentControl.advance(runId, "timeline-advance");
       return json(response, 200, await stateWithSource(runId));
     }
     if (url.pathname === "/api/approve" && request.method === "POST") {
@@ -149,7 +149,7 @@ const server = createServer(async (request, response) => {
     }
     if (url.pathname === "/api/health" && request.method === "GET") {
       const source = await liveSource.project();
-      return json(response, 200, { ok: true, ledger: "sqlite-append-only", agent_control: "ledger-governed", langfuse: langfuseEnabled, source: source.status });
+      return json(response, 200, { ok: true, ledger: "sqlite-append-only", agent_control: "ledger-governed-agent-team-harness", langfuse: langfuseEnabled, source: source.status });
     }
     if (request.method !== "GET") return json(response, 404, { error: "Not found" });
     return serveStatic(url.pathname, response);

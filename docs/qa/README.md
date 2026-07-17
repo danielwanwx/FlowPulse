@@ -6,7 +6,7 @@ Build under test: standalone FlowPulse repository, latest working tree served at
 
 ## Automated checks
 
-- `npm test`: 35 tests passed, 0 failed.
+- `npm test`: 38 tests passed, 0 failed.
 - `npm audit --audit-level=high`: 0 vulnerabilities.
 - `node --check public/app.js`: passed.
 - `node --check public/twin-state.mjs`: passed.
@@ -112,6 +112,18 @@ The Compare range now updates the canvas handle, incident clip, dock range, and 
 The visible browser completed the full owner-gated flow and confirmed the evaluator's 22% Kafka diagnosis rejection, evidence replan, checkout/payment root cause, bounded checkout-only rollback, verification, regression creation, and policy backtest. The Manager chat is ledger-grounded and cannot manufacture an approval; the consequential action remains a separate control. The Agent Operations projection is delivered over ledger-derived server-sent events, and every active handoff is reconstructed from attributed immutable events. Geometry checks found zero node intersections for 13 Agent Operations components and 22 Live components at 1280 x 800. Live rendered 23 single-segment pulse paths with deterministic delays; browser console inspection returned 0 errors and 0 warnings.
 
 Langfuse was intentionally shown as `Not configured` during this local QA because no credentials were supplied. The integration path mirrors manager, agent, tool, and evaluator observations when credentials exist, while the append-only incident ledger remains runtime authority. No direct ClickHouse internal-schema dependency is used.
+
+### Compact Architecture, routed Live, and typed orchestration harness
+
+- `orchestrated-architecture-stack-1440x900.png` - 22 current OTLP-observed services in a compact four-tier, line-free architecture stack.
+- `orchestrated-live-routed-1440x900.png` - the wide Live world with orthogonal boundary routes and an explicit dependency-evidence-gap column.
+- `orchestrated-owner-gate-1440x900.png` - the rejected Kafka diagnosis, confirmed checkout/payment cause, bounded repair, evidence citations, and separate owner control.
+- `orchestrated-agent-harness-1440x900.png` - the completed online/offline agent team reconstructed from the same immutable run.
+- `orchestrated-compare-drag-1440x900.png` - the canvas split after a real pointer drag to 69% incident.
+
+The latest server health projection reported `ledger-governed-agent-team-harness`. The complete replay finished with 61 immutable events and 14 sealed specialist proposals, including independent evaluator rejection/acceptance, verification, two Evolve candidates, and a Test backtest. Browser inspection of the Evolve role exposed proposal model/version, prompt hash, role budget, parent event, evidence IDs, and content hash. The executor step remained a code-owned owner-gate/allowlist transition rather than a model proposal.
+
+At both 1440 x 900 and 1280 x 800, the Architecture stack had zero component intersections or out-of-bounds cards. Live had zero card intersections, zero invalid endpoints, and zero routed segments crossing a non-endpoint component. Current source services without an observed dependency were labeled `Evidence gap`; FlowPulse did not synthesize a relationship. Eight animation samples found at most one active Live pulse, advancing through deterministic 420 ms topology slots. Zoom in/out/reset, pointer panning, the Compare pointer drag, light theme, keyboard names, and the full evaluator/owner/recovery/evolve story passed. Browser console inspection returned 0 errors and 0 warnings.
 
 ## Runtime truth boundary
 

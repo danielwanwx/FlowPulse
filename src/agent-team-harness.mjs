@@ -106,7 +106,7 @@ const ROLE_PROPOSAL_LIMITS = Object.freeze({
   adversarial_evaluator: 2,
   remediation_planner: 2,
   verification: 3,
-  evolve: 1
+  evolve: 2
 });
 
 const REQUIRED_ENVELOPE_FIELDS = [

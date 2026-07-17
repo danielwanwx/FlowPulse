@@ -15,9 +15,11 @@ import {
   eventsAtStage,
   frameFor,
   liveEdgePath,
+  liveEdgeRoute,
   liveIncidentNodeStates,
   livePulseSlots,
-  livePositions
+  livePositions,
+  topologyIntegrity
 } from "../public/twin-state.mjs";
 
 const indexHtml = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
@@ -43,18 +45,21 @@ test("the product opens on architecture and keeps advanced actions in an accessi
 });
 
 test("architecture layout is deterministic, layered, and leaves room for complete cards", () => {
-  const nodes = ARCHITECTURE_LAYERS.flatMap((layer) => layer.ids.map((id, index) => ({ id, label: id, kind: index === 0 ? "client" : "service" })));
+  const observed = new Set(["load-generator", "frontend-web", "frontend-proxy", "frontend", "checkout", "cart", "payment", "currency", "shipping", "product-catalog", "recommendation", "ad", "email", "kafka", "accounting", "fraud-detection", "quote", "image-provider", "flagd", "telemetry-docs", "otelcol-contrib", "astronomy-db"]);
+  const nodes = ARCHITECTURE_LAYERS.flatMap((layer) => layer.ids.filter((id) => observed.has(id)).map((id, index) => ({ id, label: id, kind: index === 0 ? "client" : "service" })));
   const first = architecturePositions(nodes);
   const second = architecturePositions([...nodes].reverse());
   const coordinates = (items) => Object.fromEntries(items.map(({ id, layer, x, y }) => [id, { layer, x, y }]));
   assert.deepEqual(coordinates(first), coordinates(second));
   assert.deepEqual([...new Set(first.map(({ layer }) => layer))], ARCHITECTURE_LAYERS.map(({ id }) => id));
-  assert.ok(first.every(({ x, y }) => x >= 6 && x <= 94 && y >= 17 && y <= 81));
+  assert.ok(first.every(({ x, y }) => x >= 6 && x <= 94 && y >= 18 && y <= 82));
+  assert.deepEqual([...new Set(first.map(({ layerSize }) => layerSize))], [2, 4, 6, 10]);
   for (const y of new Set(first.map((node) => node.y))) {
     const xs = first.filter((node) => node.y === y).map((node) => node.x).sort((a, b) => a - b);
-    for (let index = 1; index < xs.length; index++) assert.ok((xs[index] - xs[index - 1]) * 11 >= 124);
+    for (let index = 1; index < xs.length; index++) assert.ok((xs[index] - xs[index - 1]) * 12.8 >= 116);
   }
-  assert.match(appJs, /arch-count-\$\{node\.layerSize\}/);
+  assert.match(appJs, /if \(layout === "architecture"\) \{[\s\S]+architecture-stack/);
+  assert.doesNotMatch(appJs.match(/if \(layout === "architecture"\) \{[\s\S]+?return;/)?.[0] || "", /edge-map|pulse-flow/);
   assert.doesNotMatch(appJs, /style="left:\$\{node\.x\}/);
 });
 
@@ -65,10 +70,29 @@ test("live layout keeps the same deterministic layers with more room for depende
   const coordinates = (items) => Object.fromEntries(items.map(({ id, layer, x, y }) => [id, { layer, x, y }]));
   assert.deepEqual(coordinates(first), coordinates(second));
   assert.deepEqual([...new Set(first.map(({ layer }) => layer))], LIVE_LAYERS.map(({ id }) => id));
-  assert.deepEqual([...new Set(first.map(({ y }) => y))], [17, 39, 61, 83]);
-  assert.match(stylesCss, /\.architecture-guides span \{ border-top: 1px dashed/);
-  assert.match(stylesCss, /\.live-guides span \{[^}]+border-top: 1px dotted/s);
+  assert.deepEqual([...new Set(first.map(({ x }) => x))], [10, 30, 50, 70]);
+  assert.ok(first.every(({ y }) => y >= 16 && y <= 84));
+  assert.doesNotMatch(stylesCss, /\.architecture-guides/);
+  assert.match(stylesCss, /\.live-guides span[^}]+top: 10px/s);
   assert.match(appJs, /livePositions\(topology\.nodes\)/);
+  assert.match(indexHtml, /id="zoom-out"[^>]+aria-label="Zoom out"/);
+  assert.match(indexHtml, /id="zoom-in"[^>]+aria-label="Zoom in"/);
+  assert.match(appJs, /minScale: \.6, maxScale: 1\.6/);
+});
+
+test("live topology normalizes endpoints and explains true telemetry islands", () => {
+  const projected = topologyIntegrity({
+    nodes: [{ id: "Frontend Web" }, { id: "checkout" }, { id: "telemetry_docs" }],
+    edges: [
+      { id: "web-checkout", from: "frontend_web", to: "checkout" },
+      { id: "bad", from: "checkout", to: "missing-service" }
+    ]
+  });
+  assert.deepEqual(projected.edges.map(({ from, to }) => [from, to]), [["frontend-web", "checkout"]]);
+  assert.deepEqual(projected.invalid_edges.map(({ id }) => id), ["bad"]);
+  assert.deepEqual(projected.unlinked_node_ids, ["telemetry-docs"]);
+  assert.equal(projected.nodes.find(({ id }) => id === "telemetry-docs").connectivity, "unlinked");
+  assert.match(appJs, /Insufficient dependency evidence/);
 });
 
 test("manager and agent operations stay separate from chat approval", () => {
@@ -156,17 +180,19 @@ test("compare uses incident and verified frames without changing layout", () => 
   assert.match(indexHtml, /id="compare-range"[^>]+step="1"/);
   assert.match(indexHtml, /id="compare-canvas-range"[^>]+type="range"[^>]+step="1"/);
   assert.match(appJs, /--compare-percent/);
+  assert.match(appJs, /addEventListener\("pointerdown", startCompareDrag\)/);
+  assert.match(appJs, /function updateCompareFromPointer\(clientX\)/);
   assert.doesNotMatch(appJs, /Math\.round\(comparePercent \/ 10\)/);
   assert.doesNotMatch(stylesCss, /\.compare-value-\d+/);
 });
 
 test("live connector paths terminate at card boundaries for target viewport widths", () => {
   const from = { x: 6, y: 25 };
-  const to = { x: 18.5, y: 25 };
+  const to = { x: 31, y: 25 };
   for (const canvasWidth of [1100, 1280, 1440]) {
-    const path = liveEdgePath(from, to, { canvasWidth, canvasHeight: 520, nodeWidth: 144, nodeHeight: 58 });
-    const numbers = path.match(/-?\d+(?:\.\d+)?/g).map(Number);
-    const [startX, startY, , , , , endX, endY] = numbers;
+    const route = liveEdgeRoute(from, to, { canvasWidth, canvasHeight: 520, nodeWidth: 144, nodeHeight: 58 });
+    const { x: startX, y: startY } = route[0];
+    const { x: endX, y: endY } = route.at(-1);
     const halfCard = (144 / canvasWidth) * 500;
     assert.ok(Math.abs(startX - (from.x * 10 + halfCard)) < 0.01);
     assert.ok(Math.abs(endX - (to.x * 10 - halfCard)) < 0.01);
@@ -174,20 +200,52 @@ test("live connector paths terminate at card boundaries for target viewport widt
     assert.equal(endY, to.y * 5.2);
   }
 
-  const crossLayer = liveEdgePath({ x: 31, y: 17 }, { x: 68, y: 61 }, {
+  const crossLayer = liveEdgeRoute({ x: 31, y: 17 }, { x: 68, y: 61 }, {
     canvasWidth: 1440,
     canvasHeight: 620,
     nodeWidth: 144,
     nodeHeight: 58,
     lane: 1
   });
-  const [startX, startY, , , , , endX, endY] = crossLayer.match(/-?\d+(?:\.\d+)?/g).map(Number);
-  const scaledHalfHeight = 58 * (520 / 620) / 2;
-  assert.equal(startX, 310);
-  assert.equal(endX, 680);
-  assert.ok(Math.abs(startY - (17 * 5.2 + scaledHalfHeight)) < 0.01);
-  assert.ok(Math.abs(endY - (61 * 5.2 - scaledHalfHeight)) < 0.01);
+  const scaledHalfWidth = 144 * (1000 / 1440) / 2;
+  assert.ok(Math.abs(crossLayer[0].x - (310 + scaledHalfWidth)) < 0.01);
+  assert.ok(Math.abs(crossLayer.at(-1).x - (680 - scaledHalfWidth)) < 0.01);
+  assert.ok(crossLayer.some(({ y }) => y < 40 || y > 480));
+  assert.match(liveEdgePath(from, to), /^M .+ L /);
 });
+
+test("reserved live routes avoid every non-endpoint card", () => {
+  const topology = topologyIntegrity({
+    nodes: [
+      { id: "frontend", kind: "client" }, { id: "checkout", kind: "service" }, { id: "cart", kind: "service" },
+      { id: "payment", kind: "api" }, { id: "kafka", kind: "stream" }, { id: "flagd", kind: "service" }
+    ],
+    edges: [
+      { id: "front-checkout", from: "frontend", to: "checkout" },
+      { id: "checkout-cart", from: "checkout", to: "cart" },
+      { id: "checkout-payment", from: "checkout", to: "payment" },
+      { id: "cart-flagd", from: "cart", to: "flagd" }
+    ]
+  });
+  const positions = livePositions(topology.nodes);
+  const byId = new Map(positions.map((node) => [node.id, node]));
+  const halfWidth = 144 * (1000 / 1480) / 2;
+  const halfHeight = 58 * (520 / 680) / 2;
+  for (const [index, edge] of topology.edges.entries()) {
+    const lane = index % 2 ? Math.ceil(index / 2) : -Math.ceil((index + 1) / 2);
+    const route = liveEdgeRoute(byId.get(edge.from), byId.get(edge.to), { canvasWidth: 1480, canvasHeight: 680, lane });
+    for (const node of positions.filter(({ id }) => ![edge.from, edge.to].includes(id))) {
+      const rect = { left: node.x * 10 - halfWidth, right: node.x * 10 + halfWidth, top: node.y * 5.2 - halfHeight, bottom: node.y * 5.2 + halfHeight };
+      for (let point = 1; point < route.length; point++) assert.equal(segmentHitsRect(route[point - 1], route[point], rect), false, `${edge.id} crosses ${node.id}`);
+    }
+  }
+});
+
+function segmentHitsRect(a, b, rect) {
+  if (a.x === b.x) return a.x > rect.left && a.x < rect.right && Math.max(Math.min(a.y, b.y), rect.top) < Math.min(Math.max(a.y, b.y), rect.bottom);
+  if (a.y === b.y) return a.y > rect.top && a.y < rect.bottom && Math.max(Math.min(a.x, b.x), rect.left) < Math.min(Math.max(a.x, b.x), rect.right);
+  return false;
+}
 
 test("live pulses follow deterministic topology depth with one segment per edge", () => {
   const topology = {

@@ -51,23 +51,23 @@ export const PULSE_SLOTS = {
 export const ARCHITECTURE_LAYERS = [
   {
     id: "experience",
-    label: "Experience & entry",
-    ids: ["load-generator", "frontend-web", "frontend-proxy", "frontend"]
+    label: "Experience",
+    ids: ["load-generator", "frontend-web"]
   },
   {
     id: "commerce",
-    label: "Commerce services",
-    ids: ["checkout", "cart", "product-catalog", "recommendation", "ad", "currency", "shipping"]
+    label: "Entry & commerce",
+    ids: ["frontend-proxy", "frontend", "checkout", "cart"]
   },
   {
     id: "processing",
-    label: "Payment & async processing",
-    ids: ["payment", "kafka", "accounting", "fraud-detection", "fraud", "email", "quote", "image-provider"]
+    label: "Commerce services",
+    ids: ["payment", "currency", "shipping", "product-catalog", "recommendation", "ad"]
   },
   {
     id: "platform",
-    label: "Platform, telemetry & data",
-    ids: ["flagd-ui", "flagd", "telemetry-docs", "otelcol-contrib", "astronomy-db"]
+    label: "Processing, platform & data",
+    ids: ["email", "kafka", "accounting", "fraud-detection", "fraud", "quote", "image-provider", "flagd-ui", "flagd", "telemetry-docs", "otelcol-contrib", "astronomy-db"]
   }
 ];
 
@@ -94,6 +94,8 @@ export const LIVE_LAYERS = [
   }
 ];
 
+export const LIVE_UNLINKED_LAYER = Object.freeze({ id: "unlinked", label: "Unlinked telemetry" });
+
 export function architecturePositions(nodes = []) {
   const knownLayer = new Map(ARCHITECTURE_LAYERS.flatMap((layer, index) => layer.ids.map((id, order) => [id, { index, order }])));
   const buckets = ARCHITECTURE_LAYERS.map(() => []);
@@ -115,33 +117,75 @@ export function architecturePositions(nodes = []) {
       layerPosition: index,
       layerSize: sorted.length,
       x: spreadCoordinate(index, sorted.length),
-      y: [17, 38, 60, 81][layerIndex]
+      y: [18, 39, 61, 82][layerIndex]
     }));
   });
 }
 
 export function livePositions(nodes = []) {
   const knownLayer = new Map(LIVE_LAYERS.flatMap((layer, index) => layer.ids.map((id, order) => [id, { index, order }])));
-  const buckets = LIVE_LAYERS.map(() => []);
+  const buckets = [...LIVE_LAYERS.map(() => []), []];
   const fallbackLayer = { client: 0, api: 1, service: 1, stream: 2, worker: 2, database: 3 };
   for (const node of nodes) {
     const known = knownLayer.get(node.id);
-    const layerIndex = known?.index ?? fallbackLayer[node.kind] ?? 3;
+    const layerIndex = node.connectivity === "unlinked" ? LIVE_LAYERS.length : known?.index ?? fallbackLayer[node.kind] ?? 3;
     buckets[layerIndex].push({ node, order: known?.order ?? 1_000 });
   }
   return buckets.flatMap((bucket, layerIndex) => {
     const sorted = bucket.sort((a, b) => a.order - b.order || a.node.id.localeCompare(b.node.id));
     return sorted.map(({ node }, index) => ({
       ...node,
-      layer: LIVE_LAYERS[layerIndex].id,
-      layerLabel: LIVE_LAYERS[layerIndex].label,
+      layer: LIVE_LAYERS[layerIndex]?.id ?? LIVE_UNLINKED_LAYER.id,
+      layerLabel: LIVE_LAYERS[layerIndex]?.label ?? LIVE_UNLINKED_LAYER.label,
       layerIndex,
       layerPosition: index,
       layerSize: sorted.length,
-      x: spreadCoordinate(index, sorted.length),
-      y: [17, 39, 61, 83][layerIndex]
+      x: [10, 30, 50, 70, 90][layerIndex],
+      y: spreadVertical(index, sorted.length)
     }));
   });
+}
+
+export function topologyIntegrity(topology = {}) {
+  const nodes = [];
+  const byId = new Map();
+  for (const input of topology.nodes || []) {
+    const normalized = normalizeServiceId(input.id);
+    if (!normalized || byId.has(normalized)) continue;
+    const node = { ...input, id: normalized };
+    nodes.push(node);
+    byId.set(normalized, node);
+  }
+
+  const invalidEdges = [];
+  const edgeIds = new Set();
+  const edges = [];
+  for (const input of topology.edges || []) {
+    const from = normalizeServiceId(input.from);
+    const to = normalizeServiceId(input.to);
+    if (!byId.has(from) || !byId.has(to)) {
+      invalidEdges.push({ ...input, from, to });
+      continue;
+    }
+    const baseId = String(input.id || `${from}->${to}`);
+    const id = edgeIds.has(baseId) ? `${baseId}:${edges.length}` : baseId;
+    edgeIds.add(id);
+    edges.push({ ...input, id, from, to });
+  }
+
+  const connected = new Set(edges.flatMap((edge) => [edge.from, edge.to]));
+  return {
+    ...topology,
+    nodes: nodes.map((node) => ({ ...node, connectivity: connected.has(node.id) ? "connected" : "unlinked" })),
+    edges,
+    invalid_edges: invalidEdges,
+    unlinked_node_ids: nodes.filter((node) => !connected.has(node.id)).map((node) => node.id)
+  };
+}
+
+export function normalizeServiceId(value) {
+  const normalized = String(value || "").trim().toLowerCase().replace(/[\s_.]+/g, "-").replace(/-+/g, "-");
+  return ({ fraud: "fraud-detection" })[normalized] || normalized;
 }
 
 export const TWIN_EDGES = [
@@ -310,38 +354,45 @@ export function liveEdgePath(from, to, {
   nodeHeight = 58,
   lane = 0
 } = {}) {
+  return liveEdgeRoute(from, to, { canvasWidth, canvasHeight, nodeWidth, nodeHeight, lane })
+    .map((point, index) => `${index ? "L" : "M"} ${round(point.x)} ${round(point.y)}`)
+    .join(" ");
+}
+
+export function liveEdgeRoute(from, to, {
+  canvasWidth = 1100,
+  canvasHeight = 520,
+  nodeWidth = 144,
+  nodeHeight = 58,
+  lane = 0
+} = {}) {
   const startCenter = { x: from.x * 10, y: from.y * 5.2 };
   const endCenter = { x: to.x * 10, y: to.y * 5.2 };
   const halfWidth = nodeWidth * (1000 / canvasWidth) / 2;
   const halfHeight = nodeHeight * (520 / canvasHeight) / 2;
-  const verticalDistance = endCenter.y - startCenter.y;
-  const horizontalDistance = endCenter.x - startCenter.x;
-  if (Math.abs(verticalDistance) > halfHeight * 2) {
-    const direction = Math.sign(verticalDistance);
-    const start = { x: startCenter.x, y: startCenter.y + direction * halfHeight };
-    const end = { x: endCenter.x, y: endCenter.y - direction * halfHeight };
-    const railY = (start.y + end.y) / 2 + lane * 2.2;
-    return `M ${round(start.x)} ${round(start.y)} C ${round(start.x)} ${round(railY)} ${round(end.x)} ${round(railY)} ${round(end.x)} ${round(end.y)}`;
+  const portOffset = Math.max(-halfHeight + 4, Math.min(halfHeight - 4, lane * 2.6));
+  const sameColumn = Math.abs(endCenter.x - startCenter.x) < halfWidth * 2;
+  const direction = sameColumn ? (lane >= 0 ? 1 : -1) : Math.sign(endCenter.x - startCenter.x) || 1;
+  const start = { x: startCenter.x + direction * halfWidth, y: startCenter.y + portOffset };
+  const end = { x: endCenter.x + (sameColumn ? direction : -direction) * halfWidth, y: endCenter.y - portOffset };
+  const gutterOffset = 12 + Math.min(12, Math.abs(lane) * 1.8);
+  const sourceGutter = start.x + direction * gutterOffset;
+  const targetGutter = end.x + (sameColumn ? direction : -direction) * gutterOffset;
+
+  if (sameColumn) {
+    return [start, { x: sourceGutter, y: start.y }, { x: sourceGutter, y: end.y }, end];
   }
-  if (Math.abs(horizontalDistance) > 180) {
-    const direction = lane >= 0 ? 1 : -1;
-    const start = { x: startCenter.x, y: startCenter.y + direction * halfHeight };
-    const end = { x: endCenter.x, y: endCenter.y + direction * halfHeight };
-    const railY = startCenter.y + direction * (halfHeight + 10 + Math.abs(lane) * 2.2);
-    return `M ${round(start.x)} ${round(start.y)} C ${round(start.x)} ${round(railY)} ${round(end.x)} ${round(railY)} ${round(end.x)} ${round(end.y)}`;
-  }
-  const start = rectangleBoundary(startCenter, endCenter, halfWidth, halfHeight);
-  const end = rectangleBoundary(endCenter, startCenter, halfWidth, halfHeight);
-  if (Math.abs(end.x - start.x) < 1) {
-    const midY = (start.y + end.y) / 2 + lane * 2.2;
-    return `M ${round(start.x)} ${round(start.y)} C ${round(start.x)} ${round(midY)} ${round(end.x)} ${round(midY)} ${round(end.x)} ${round(end.y)}`;
-  }
-  if (Math.abs(end.y - start.y) > Math.abs(end.x - start.x) * .55) {
-    const midY = (start.y + end.y) / 2 + lane * 2.2;
-    return `M ${round(start.x)} ${round(start.y)} C ${round(start.x)} ${round(midY)} ${round(end.x)} ${round(midY)} ${round(end.x)} ${round(end.y)}`;
-  }
-  const midX = (start.x + end.x) / 2;
-  return `M ${round(start.x)} ${round(start.y)} C ${round(midX)} ${round(start.y)} ${round(midX)} ${round(end.y)} ${round(end.x)} ${round(end.y)}`;
+
+  const laneIndex = Math.abs(Math.trunc(lane)) % 5;
+  const corridorY = lane < 0 ? 22 + laneIndex * 4 : 498 - laneIndex * 4;
+  return [
+    start,
+    { x: sourceGutter, y: start.y },
+    { x: sourceGutter, y: corridorY },
+    { x: targetGutter, y: corridorY },
+    { x: targetGutter, y: end.y },
+    end
+  ];
 }
 
 function stageEventTypes(index) {
@@ -383,14 +434,6 @@ function attributeValue(attributes = [], key) {
   return attribute?.value?.stringValue || attribute?.value?.string_value || null;
 }
 
-function rectangleBoundary(from, to, halfWidth, halfHeight) {
-  const dx = to.x - from.x;
-  const dy = to.y - from.y;
-  if (!dx && !dy) return from;
-  const scale = 1 / Math.max(Math.abs(dx) / halfWidth, Math.abs(dy) / halfHeight);
-  return { x: from.x + dx * scale, y: from.y + dy * scale };
-}
-
 function round(value) {
   return Math.round(value * 1000) / 1000;
 }
@@ -398,5 +441,11 @@ function round(value) {
 function spreadCoordinate(index, count) {
   if (count <= 1) return 50;
   const span = Math.min(88, Math.max(36, (count - 1) * 12.4));
+  return 50 - span / 2 + (span * index) / (count - 1);
+}
+
+function spreadVertical(index, count) {
+  if (count <= 1) return 50;
+  const span = Math.min(68, Math.max(32, (count - 1) * 10));
   return 50 - span / 2 + (span * index) / (count - 1);
 }

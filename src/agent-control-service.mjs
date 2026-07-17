@@ -1,4 +1,4 @@
-import { ROLE_MANIFESTS } from "./agent-team-harness.mjs";
+import { AGENT_SCHEMA_VERSION, AgentTeamHarness, ROLE_MANIFESTS, sealAgentProposal } from "./agent-team-harness.mjs";
 
 export const AGENT_ACTIONS = Object.freeze({
   summarize: { label: "Summarize incident", consequential: false },
@@ -45,6 +45,7 @@ export class AgentControlService {
   constructor({ runtime, langfuseEnabled = false }) {
     if (!runtime?.ledger?.list || !runtime?.state || !runtime?.append) throw new Error("AgentControlService requires an IncidentRuntime");
     this.runtime = runtime;
+    this.harness = new AgentTeamHarness({ runtime });
     this.langfuseEnabled = Boolean(langfuseEnabled);
   }
 
@@ -71,7 +72,8 @@ export class AgentControlService {
       report: managerReport(state),
       actions: allowedActions(state),
       graph: { nodes, edges },
-      activity: agentActivity(events)
+      activity: agentActivity(events),
+      orchestration: orchestrationProjection(events)
     };
   }
 
@@ -98,14 +100,65 @@ export class AgentControlService {
     const state = this.runtime.state(runId);
     const allowed = new Set(allowedActions(state).map((item) => item.id));
     if (!allowed.has(actionId)) throw new Error(`Agent action is not available: ${actionId}`);
-    if (actionId !== "advance") return this.project(runId);
-    this.runtime.append(runId, "manager.delegation.created", "manager", {
-      action: "advance",
-      target: nextRole(state.events),
-      consequential: false
-    });
-    this.runtime.next(runId);
+    if (!["advance", "verify_recovery"].includes(actionId)) return this.project(runId);
+    this.advance(runId, actionId);
     return this.project(runId);
+  }
+
+  advance(runId = this.runtime.ensureRun(), action = "advance") {
+    const state = this.runtime.state(runId);
+    if (state.waiting_for_approval) return { waiting_for_approval: true, event: null };
+    if (state.complete) return { complete: true, event: null };
+    const stepIndex = state.events.filter((event) => event.type.startsWith("loop.")).length;
+    const step = recordedStep(stepIndex, this.runtime.bundle);
+    if (!step) return this.runtime.next(runId);
+
+    const parentId = state.events.at(-1)?.id ?? null;
+    const delegation = this.runtime.append(runId, "manager.delegation.created", "manager", {
+      action,
+      orchestration_step: stepIndex,
+      target: step.role,
+      expected_runtime_event: step.expected,
+      consequential: step.role === "executor"
+    }, step.evidenceRefs, 0, parentId);
+
+    const proposalIds = [];
+    let proposalParent = delegation.id;
+    for (const [index, proposal] of step.before.entries()) {
+      const accepted = this.harness.propose(recordedEnvelope({
+        state,
+        stepIndex,
+        index,
+        parentId: proposalParent,
+        proposal
+      }));
+      proposalIds.push(accepted.id);
+      proposalParent = accepted.id;
+    }
+
+    const result = this.runtime.next(runId);
+    const afterState = this.runtime.state(runId);
+    for (const [index, proposal] of step.after.entries()) {
+      const accepted = this.harness.propose(recordedEnvelope({
+        state: afterState,
+        stepIndex,
+        index: step.before.length + index,
+        parentId: result.event?.id ?? proposalParent,
+        proposal
+      }));
+      proposalIds.push(accepted.id);
+      proposalParent = accepted.id;
+    }
+
+    const completion = this.runtime.append(runId, "orchestration.step.completed", "coordinator", {
+      orchestration_step: stepIndex,
+      target: step.role,
+      validation: step.before.length || step.after.length ? "agent_team_harness" : "owner_gate_and_allowlist",
+      proposal_event_ids: proposalIds,
+      result_event_id: result.event?.id ?? null,
+      expected_runtime_event: step.expected
+    }, step.evidenceRefs, 0, result.event?.id ?? proposalParent);
+    return { ...result, orchestration_event: completion };
   }
 }
 
@@ -244,16 +297,17 @@ function agentActivity(events) {
 
 function nodeForEvent(type) {
   if (type.startsWith("manager.")) return "manager";
+  if (type === "orchestration.step.completed") return "manager";
   if (["incident.opened", "change.applied", "deployment.completed"].includes(type)) return "monitor";
-  if (["evidence.queried", "tool.called", "plan.revised", "loop.symptoms_collected", "loop.causal_evidence_collected"].includes(type)) return "evidence";
-  if (type === "hypothesis.proposed") return "diagnosis";
+  if (["evidence.requested", "evidence.manifest.proposed", "evidence.gap.proposed", "evidence.queried", "tool.called", "plan.revised", "loop.symptoms_collected", "loop.causal_evidence_collected"].includes(type)) return "evidence";
+  if (["diagnosis.proposed", "hypothesis.proposed"].includes(type)) return "diagnosis";
   if (type.startsWith("evaluation.") || type === "outcome.classified") return "evaluator";
   if (type === "repair.proposed") return "planner";
   if (type.startsWith("approval.")) return "owner";
   if (type === "repair.executed") return "executor";
-  if (type === "verification.completed") return "verification";
-  if (type === "regression.created") return "evolve";
-  if (type === "policy.evaluated") return "test";
+  if (["verification.proposed", "verification.completed"].includes(type)) return "verification";
+  if (["regression.candidate.proposed", "policy.candidate.proposed", "regression.created"].includes(type)) return "evolve";
+  if (["backtest.completed", "policy.evaluated"].includes(type)) return "test";
   return null;
 }
 
@@ -267,6 +321,133 @@ function nextRole(events) {
   if (!events.some((item) => item.type === "evaluation.accepted")) return "evidence";
   if (!events.some((item) => item.type === "repair.proposed")) return "remediation_planner";
   return "manager";
+}
+
+function orchestrationProjection(events) {
+  const proposals = events.filter((event) => event.payload?._agent_proposal).map((event) => ({
+    event_id: event.id,
+    sequence: event.sequence,
+    type: event.type,
+    agent_id: event.payload._agent_proposal.agent_id,
+    agent_version: event.payload._agent_proposal.agent_version,
+    model: event.payload._agent_proposal.model,
+    prompt_hash: event.payload._agent_proposal.prompt_hash,
+    content_sha256: event.payload._agent_proposal.content_sha256,
+    budget: event.payload._agent_proposal.budget,
+    parent_event_ids: event.payload._agent_proposal.parent_event_ids,
+    evidence_refs: event.evidence_refs
+  }));
+  const completed = events.filter((event) => event.type === "orchestration.step.completed");
+  return {
+    mode: "ledger-governed-agent-team-harness",
+    proposal_count: proposals.length,
+    proposals: proposals.slice(-12),
+    last_step: completed.at(-1)?.payload ?? null
+  };
+}
+
+function recordedEnvelope({ state, stepIndex, index, parentId, proposal }) {
+  const createdAt = state.events.find((event) => event.type === "run.started")?.recorded_at ?? state.events[0]?.recorded_at ?? new Date(0).toISOString();
+  const deadlineAt = new Date(Date.parse(createdAt) + 3_600_000).toISOString();
+  return sealAgentProposal({
+    schema_version: AGENT_SCHEMA_VERSION,
+    message_id: `${state.run_id}:step-${stepIndex}:proposal-${index}`,
+    idempotency_key: `${state.run_id}:step-${stepIndex}:${proposal.agentId}:${proposal.eventType}:${index}`,
+    incident_id: state.incident.id,
+    run_id: state.run_id,
+    agent_id: proposal.agentId,
+    agent_version: "recorded-adapter-v1",
+    prompt_hash: "sha256:flowpulse-recorded-adapter-v1",
+    model: "recorded-fixture",
+    created_at: createdAt,
+    parent_event_ids: parentId ? [parentId] : [],
+    evidence_refs: proposal.evidenceRefs,
+    budget: {
+      tool_calls_remaining: Math.max(1, ROLE_MANIFESTS[proposal.agentId]?.tools.length || 1),
+      turns_remaining: 1,
+      tokens_remaining: 1_800,
+      deadline_at: deadlineAt
+    },
+    event_type: proposal.eventType,
+    payload_type: proposal.payloadType,
+    payload: proposal.payload
+  });
+}
+
+function recordedStep(index, bundle) {
+  const symptoms = ["ev-metric-checkout-errors", "ev-metric-kafka-lag", "ev-log-consumer-delay"];
+  const counter = ["ev-metric-kafka-healthy", "ev-timing-error-before-lag"];
+  const causal = ["ev-deploy-checkout", "ev-trace-payment-refused", "ev-log-endpoint-fallback", "ev-commit-checkout"];
+  const verification = bundle.repair.verification_evidence;
+  const steps = [
+    {
+      role: "evidence", expected: "loop.symptoms_collected", evidenceRefs: symptoms,
+      before: [
+        proposal("evidence", "evidence.requested", "EvidencePlan", { queries: ["query_symptoms"] }),
+        proposal("evidence", "evidence.manifest.proposed", "EvidenceManifest", { evidence_ids: symptoms }, symptoms)
+      ], after: []
+    },
+    {
+      role: "diagnosis", expected: "loop.initial_hypothesis", evidenceRefs: symptoms.slice(1),
+      before: [proposal("diagnosis", "diagnosis.proposed", "DiagnosisCandidate", {
+        id: "hyp-kafka", title: "Kafka broker degradation initiated the incident", claim: "Growing consumer lag delayed accounting and fraud processing.", confidence: 0.72
+      }, symptoms.slice(1))], after: []
+    },
+    {
+      role: "adversarial_evaluator", expected: "loop.hypothesis_rejected", evidenceRefs: counter,
+      before: [proposal("adversarial_evaluator", "evaluation.rejected", "EvaluationVerdict", {
+        hypothesis_id: "hyp-kafka", accepted: false, score: 0.22, reason: "Kafka lag is downstream; payment failures lead it by 171 seconds."
+      }, counter)], after: []
+    },
+    {
+      role: "evidence", expected: "loop.replanned", evidenceRefs: [],
+      before: [proposal("evidence", "evidence.requested", "EvidencePlan", { queries: ["query_causal_gaps"] })], after: []
+    },
+    {
+      role: "evidence", expected: "loop.causal_evidence_collected", evidenceRefs: causal,
+      before: [
+        proposal("evidence", "evidence.requested", "EvidencePlan", { queries: ["query_deploys", "query_traces", "query_logs", "query_commits"] }),
+        proposal("evidence", "evidence.manifest.proposed", "EvidenceManifest", { evidence_ids: causal }, causal)
+      ], after: []
+    },
+    {
+      role: "adversarial_evaluator", expected: "loop.root_cause_confirmed", evidenceRefs: causal,
+      before: [
+        proposal("diagnosis", "diagnosis.proposed", "DiagnosisCandidate", {
+          id: "hyp-checkout-config", title: "Checkout deployment selected an unreachable payment endpoint", claim: "checkout:2.18.0 fell back to payment:9090 after commit c7e1b9a renamed the payment environment key.", confidence: 0.96
+        }, causal),
+        proposal("adversarial_evaluator", "evaluation.accepted", "EvaluationVerdict", {
+          hypothesis_id: "hyp-checkout-config", accepted: true, score: 0.94, reason: "Change, mechanism, timing, and propagation are cited."
+        }, causal)
+      ], after: []
+    },
+    {
+      role: "remediation_planner", expected: "loop.approval_requested", evidenceRefs: ["ev-deploy-checkout", "ev-commit-checkout"],
+      before: [proposal("remediation_planner", "repair.proposed", "RemediationProposal", { ...bundle.repair, bounded: true }, ["ev-deploy-checkout", "ev-commit-checkout"])], after: []
+    },
+    { role: "executor", expected: "loop.repair_executed", evidenceRefs: ["ev-deploy-checkout"], before: [], after: [] },
+    {
+      role: "verification", expected: "loop.learning_complete", evidenceRefs: verification,
+      before: [proposal("verification", "verification.proposed", "VerificationReport", {
+        passed: true,
+        checks: [
+          { metric: "payment_reachability_percent", threshold: ">=99.9", passed: true },
+          { metric: "checkout_error_percent", threshold: "<=1.0", passed: true },
+          { metric: "kafka_lag", threshold: "<=1000", passed: true }
+        ]
+      }, verification)],
+      after: [
+        proposal("evolve", "regression.candidate.proposed", "RegressionCandidate", { id: bundle.regression.id, name: bundle.regression.name }, causal),
+        proposal("evolve", "policy.candidate.proposed", "PolicyCandidate", { id: "policy-grounded-causality-v2" }),
+        proposal("test", "backtest.completed", "BacktestReport", { candidate_id: "policy-grounded-causality-v2", passed: true, gates: ["deterministic_replay", "owner_gate", "false_positive_rejection"] })
+      ]
+    }
+  ];
+  return steps[index] ?? null;
+}
+
+function proposal(agentId, eventType, payloadType, payload, evidenceRefs = []) {
+  return { agentId, eventType, payloadType, payload, evidenceRefs };
 }
 
 function currentAgent(statuses) {

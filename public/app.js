@@ -1,6 +1,7 @@
 import {
   ARCHITECTURE_LAYERS,
   LIVE_LAYERS,
+  LIVE_UNLINKED_LAYER,
   PULSE_SLOTS,
   TWIN_STAGES,
   TWIN_ICONS,
@@ -14,7 +15,8 @@ import {
   liveEdgePath,
   liveIncidentNodeStates,
   livePulseSlots,
-  livePositions
+  livePositions,
+  topologyIntegrity
 } from "./twin-state.mjs";
 
 const els = Object.fromEntries([...document.querySelectorAll("[id]")].map((element) => [element.id, element]));
@@ -26,6 +28,7 @@ const DETAIL_TABS = [
 const IMPACT_SEQUENCE = { checkout: 0, payment: 1, kafka: 2, accounting: 3, fraud: 4 };
 const NODE_BY_ID = new Map(TWIN_NODES.map((node) => [node.id, node]));
 const EDGE_BY_ID = new Map(TWIN_EDGES.map((edge) => [edge.id, edge]));
+const LIVE_WORLD = Object.freeze({ width: 1480, height: 680, minScale: .6, maxScale: 1.6, step: .1 });
 
 let state;
 let developmentStatus;
@@ -43,6 +46,9 @@ let streamedRunId;
 let streamRefreshTimer;
 let managerOpen = false;
 let managerReply = "";
+let liveView = { scale: 1, x: 0, y: 0, initialized: false };
+let livePan = null;
+let compareDrag = null;
 
 for (const button of document.querySelectorAll("[data-mode]")) button.addEventListener("click", () => setMode(button.dataset.mode));
 for (const button of document.querySelectorAll("[data-nav-tab]")) button.addEventListener("click", () => handleNavigation(button.dataset.navTab));
@@ -79,6 +85,17 @@ els["compare-incident"].addEventListener("click", () => setComparePercent(70));
 els["compare-even"].addEventListener("click", () => setComparePercent(50));
 els["compare-verified"].addEventListener("click", () => setComparePercent(30));
 els["theme-toggle"].addEventListener("click", toggleTheme);
+els["zoom-out"].addEventListener("click", () => setLiveZoom(liveView.scale - LIVE_WORLD.step));
+els["zoom-in"].addEventListener("click", () => setLiveZoom(liveView.scale + LIVE_WORLD.step));
+els["zoom-reset"].addEventListener("click", resetLiveView);
+els["twin-canvas"].addEventListener("pointerdown", startLivePan);
+els["twin-canvas"].addEventListener("pointermove", moveLivePan);
+els["twin-canvas"].addEventListener("pointerup", endLivePan);
+els["twin-canvas"].addEventListener("pointercancel", endLivePan);
+els["twin-canvas"].addEventListener("pointerdown", startCompareDrag);
+els["twin-canvas"].addEventListener("pointermove", moveCompareDrag);
+els["twin-canvas"].addEventListener("pointerup", endCompareDrag);
+els["twin-canvas"].addEventListener("pointercancel", endCompareDrag);
 els["timeline-current"].addEventListener("click", () => openDrawer({ type: "stage", id: TWIN_STAGES[cursor].id }, tabForStage(cursor)));
 els["canvas-layers"].addEventListener("click", handleCanvasSelection);
 els["canvas-layers"].addEventListener("keydown", handleCanvasKeydown);
@@ -138,6 +155,8 @@ function renderHeader() {
   els["ledger-state"].textContent = `${state.events.length} immutable events`;
   els["capture-label"].textContent = captureLabel();
   els["capture-label"].className = `capture-label source-${source.status}`;
+  els["zoom-controls"].hidden = mode !== "live";
+  updateZoomControls();
   els["canvas-caption"].textContent = modeCaption(frame);
   els["app-shell"].dataset.mode = mode;
   els["timeline-dock"].hidden = !["replay", "agents", "compare"].includes(mode);
@@ -182,17 +201,17 @@ function renderMetrics() {
     els["metric-kafka-label"].textContent = "Control events";
     setMetric("checkout", String(control.graph.nodes.length), "isolated roles and systems");
     setMetric("payment", String(active), control.current_agent_id.replaceAll("_", " "));
-    setMetric("kafka", String(control.activity.length), control.langfuse === "observing" ? "Langfuse observing" : "ledger only");
+    setMetric("kafka", String(control.orchestration?.proposal_count || 0), control.langfuse === "observing" ? "harness + Langfuse" : "harness validated");
     return;
   }
   if (mode === "architecture" || mode === "live" || state.mode === "development") {
     const source = sourceState();
-    const topology = mode === "architecture" ? architectureTopology() : source.topology;
+    const topology = topologyIntegrity(mode === "architecture" ? architectureTopology() : source.topology);
     els["metric-checkout-label"].textContent = "Services";
     els["metric-payment-label"].textContent = "Dependencies";
     els["metric-kafka-label"].textContent = "Source age";
     setMetric("checkout", String(topology?.nodes?.length || 0), "observed service.name");
-    setMetric("payment", String(topology?.edges?.length || 0), mode === "architecture" ? "observed calls" : `${source.counts?.traces || 0} trace batches`);
+    setMetric("payment", String(topology?.edges?.length || 0), mode === "architecture" ? "hidden in Architecture" : topology.unlinked_node_ids.length ? `${topology.unlinked_node_ids.length} evidence gap${topology.unlinked_node_ids.length === 1 ? "" : "s"}` : `${source.counts?.traces || 0} trace batches`);
     setMetric("kafka", source.freshness_ms == null ? "—" : formatAge(source.freshness_ms), source.status);
     return;
   }
@@ -220,6 +239,7 @@ function renderCanvas() {
   els["twin-canvas"].classList.toggle("is-architecture-source", mode === "architecture");
   els["twin-canvas"].classList.toggle("is-live-source", mode === "live");
   els["twin-canvas"].classList.toggle("is-agent-source", mode === "agents");
+  configureCanvasWorld(mode === "live");
   if (mode === "architecture") {
     renderSourceCanvas("architecture");
     return;
@@ -252,7 +272,7 @@ function renderCanvas() {
 
 function renderSourceCanvas(layout) {
   const source = sourceState();
-  const topology = layout === "architecture" ? architectureTopology() : source.topology;
+  const topology = topologyIntegrity(layout === "architecture" ? architectureTopology() : source.topology);
   els["compare-handle"].hidden = true;
   els["compare-canvas-range"].hidden = true;
   setAnnotations([]);
@@ -270,40 +290,54 @@ function renderSourceCanvas(layout) {
   const nodeStates = layout === "live" ? liveIncidentNodeStates({ mode: state.mode, events: state.events, source }) : {};
   const pulseSlots = livePulseSlots(topology);
   const edgeLayout = {
-    canvasWidth: els["twin-canvas"].clientWidth || 1100,
-    canvasHeight: els["twin-canvas"].clientHeight || 520,
-    nodeWidth: 144,
-    nodeHeight: 58
+    canvasWidth: layout === "live" ? LIVE_WORLD.width : els["twin-canvas"].clientWidth || 1100,
+    canvasHeight: layout === "live" ? LIVE_WORLD.height : els["twin-canvas"].clientHeight || 520,
+    nodeWidth: layout === "architecture" ? 116 : 144,
+    nodeHeight: layout === "live" ? 64 : 58
   };
   const pulseCycle = Math.max(6.4, topology.edges.length * .42 + 1.4);
   const edges = topology.edges.filter((edge) => positions.has(edge.from) && positions.has(edge.to)).map((edge, index) => {
     const from = positions.get(edge.from);
     const to = positions.get(edge.to);
-    const path = liveEdgePath(from, to, { ...edgeLayout, lane: index % 5 - 2 });
+    const lane = index % 2 ? Math.ceil(index / 2) : -Math.ceil((index + 1) / 2);
+    const path = liveEdgePath(from, to, { ...edgeLayout, lane });
     const edgeState = nodeStates[from.id] === "impact" && nodeStates[to.id] === "impact" ? "impact" : "observed";
     const pulseDelay = (pulseSlots[edge.id] || 0) * .42;
-    return `<g class="edge-group path-runtime"><path class="edge-line is-${edgeState}" d="${path}"/><path class="pulse-flow is-${edgeState}" data-pulse-delay="${pulseDelay}" data-pulse-cycle="${pulseCycle}" d="${path}" pathLength="1" aria-hidden="true"/><path class="edge-hit" d="${path}" role="button" tabindex="0" aria-label="${escapeHtml(edge.label)} from ${escapeHtml(from.label)} to ${escapeHtml(to.label)}" data-edge-id="${escapeHtml(edge.id)}"/></g>`;
+    return `<g class="edge-group path-runtime"><path class="edge-line is-${edgeState}" d="${path}"/><path class="pulse-flow is-${edgeState}" data-pulse-delay="${pulseDelay}" data-pulse-cycle="${pulseCycle}" d="${path}" pathLength="1" aria-hidden="true"/><path class="edge-hit" d="${path}" role="button" tabindex="0" aria-label="${escapeHtml(edge.label)} from ${escapeHtml(from.label)} to ${escapeHtml(to.label)}" data-edge-id="${escapeHtml(edge.id)}" data-edge-from="${escapeHtml(edge.from)}" data-edge-to="${escapeHtml(edge.to)}"/></g>`;
   }).join("");
   const nodes = positioned.map((node) => {
-    const positionClass = `${layout === "architecture" ? "arch" : "live"}-layer-${node.layerIndex} arch-count-${node.layerSize} arch-index-${node.layerPosition}`;
-    const nodeState = nodeStates[node.id] || "observed";
-    const nodeStatus = nodeState === "impact" ? "Failure observed" : source.status === "live" ? "Observed" : "Last known";
-    return `<button class="twin-node source-node plane-runtime kind-${escapeHtml(node.kind)} is-${nodeState} ${positionClass}" type="button" data-node-id="${escapeHtml(node.id)}" data-transition-key="${escapeHtml(transitionKey(node.id))}" aria-label="${escapeHtml(kindLabel(node.kind))} ${escapeHtml(node.label)}, ${escapeHtml(nodeStatus)}">
+    const positionClass = layout === "architecture"
+      ? `arch-layer-${node.layerIndex} arch-count-${node.layerSize} arch-index-${node.layerPosition}`
+      : `live-column-${node.layerIndex} live-count-${node.layerSize} live-index-${node.layerPosition}`;
+    const nodeState = node.connectivity === "unlinked" && layout === "live" ? "unlinked" : nodeStates[node.id] || "observed";
+    const nodeStatus = nodeState === "impact" ? "Failure observed" : nodeState === "unlinked" ? "Evidence gap" : source.status === "live" ? "Observed" : "Last known";
+    const ariaStatus = nodeState === "unlinked" ? "Insufficient dependency evidence" : nodeStatus;
+    const origin = layout === "architecture" ? node.layerLabel : `RUNTIME · ${sourceOrigin(layout)}`;
+    return `<button class="twin-node source-node plane-runtime kind-${escapeHtml(node.kind)} is-${nodeState} ${positionClass}" type="button" data-node-id="${escapeHtml(node.id)}" data-transition-key="${escapeHtml(transitionKey(node.id))}" aria-label="${escapeHtml(kindLabel(node.kind))} ${escapeHtml(node.label)}, ${escapeHtml(ariaStatus)}">
     <span class="node-icon" aria-hidden="true"><i class="ph ph-${iconForLive(node)}"></i></span>
-    <span class="node-copy"><span class="node-origin">RUNTIME · ${escapeHtml(sourceOrigin(layout))}</span><strong>${escapeHtml(node.label)}</strong><span class="node-detail">${escapeHtml(node.detail || "observed service.name")}</span><span class="node-status">${escapeHtml(nodeStatus)}</span></span>
+    <span class="node-copy"><span class="node-origin">${escapeHtml(origin)}</span><strong>${escapeHtml(node.label)}</strong><span class="node-detail">${escapeHtml(node.detail || (nodeState === "unlinked" ? "dependency not observed" : "observed service.name"))}</span><span class="node-status">${escapeHtml(nodeStatus)}</span></span>
     <span class="node-status-dot" aria-hidden="true"></span>
   </button>`;
   }).join("");
-  const guideLayers = layout === "architecture" ? ARCHITECTURE_LAYERS : LIVE_LAYERS;
-  const guides = `<div class="${layout === "architecture" ? "architecture" : "live"}-guides" aria-hidden="true">${guideLayers.map((layer, index) => `<span class="${layout}-guide-${index}">${escapeHtml(layer.label)}</span>`).join("")}</div>`;
+  if (layout === "architecture") {
+    els["canvas-layers"].innerHTML = `<div class="twin-layer layer-current architecture-stack">${nodes}</div>`;
+    els["twin-canvas"].dataset.invalidEdges = String(topology.invalid_edges.length);
+    els["twin-canvas"].dataset.unlinkedNodes = "0";
+    els["twin-canvas"].setAttribute("aria-label", `Architecture block stack with ${positioned.length} observed services from ${sourceOrigin(layout)}. Dependency lines are intentionally hidden.`);
+    return;
+  }
+  const guideLayers = [...LIVE_LAYERS, ...(topology.unlinked_node_ids.length ? [LIVE_UNLINKED_LAYER] : [])];
+  const guides = `<div class="live-guides" aria-hidden="true">${guideLayers.map((layer, index) => `<span class="live-guide-${index}">${escapeHtml(layer.label)}</span>`).join("")}</div>${topology.invalid_edges.length ? `<div class="topology-warning"><i class="ph ph-warning" aria-hidden="true"></i>${topology.invalid_edges.length} invalid dependency endpoint${topology.invalid_edges.length === 1 ? "" : "s"} omitted</div>` : ""}`;
   const change = layout === "live" ? renderLiveChange(positioned, edgeLayout) : { edge: "", node: "" };
   els["canvas-layers"].innerHTML = `${guides}<div class="twin-layer layer-current"><svg class="edge-map" viewBox="0 0 1000 520" preserveAspectRatio="none">${edges}${change.edge}</svg>${nodes}${change.node}</div>`;
   for (const pulse of els["canvas-layers"].querySelectorAll("[data-pulse-delay]")) {
     pulse.style.setProperty("--pulse-delay", `${pulse.dataset.pulseDelay}s`);
     pulse.style.setProperty("--pulse-cycle", `${pulse.dataset.pulseCycle}s`);
   }
+  els["twin-canvas"].dataset.invalidEdges = String(topology.invalid_edges.length);
+  els["twin-canvas"].dataset.unlinkedNodes = String(topology.unlinked_node_ids.length);
   setAnnotations(mode === "replay" ? developmentAnnotations(cursor) : []);
-  els["twin-canvas"].setAttribute("aria-label", `${layout === "architecture" ? "Architecture" : "Runtime"} topology with ${positioned.length} observed services from ${sourceOrigin(layout)}`);
+  els["twin-canvas"].setAttribute("aria-label", `Runtime topology with ${positioned.length} observed services, ${topology.edges.length} authoritative dependencies, and ${topology.unlinked_node_ids.length} components with insufficient dependency evidence from ${sourceOrigin(layout)}`);
 }
 
 function renderLiveChange(positioned, edgeLayout) {
@@ -311,14 +345,14 @@ function renderLiveChange(positioned, edgeLayout) {
   if (!repair) return { edge: "", node: "" };
   const checkout = positioned.find((node) => node.id === "checkout");
   if (!checkout) return { edge: "", node: "" };
-  const changeNode = { x: 88, y: 7 };
+  const changeNode = { x: 82, y: 8 };
   const path = liveEdgePath(changeNode, checkout, { ...edgeLayout, lane: -2 });
   const executed = state.events.some((event) => event.type === "repair.executed");
   const approved = state.events.some((event) => event.type === "approval.granted");
   const status = executed ? "verified" : approved ? "active" : "approval";
   const label = executed ? "Checkout rollback deployed" : approved ? "Rollback deployment queued" : "Checkout rollback proposed";
   return {
-    edge: `<g class="edge-group path-control"><path class="edge-line is-${status}" d="${path}"/><path class="pulse-flow is-${status}" d="${path}" pathLength="1" aria-hidden="true"/><path class="edge-hit" d="${path}" role="button" tabindex="0" aria-label="${escapeHtml(label)} to checkout" data-edge-id="live-repair-checkout"/></g>`,
+    edge: `<g class="edge-group path-control"><path class="edge-line is-${status}" d="${path}"/><path class="pulse-flow is-${status}" d="${path}" pathLength="1" aria-hidden="true"/><path class="edge-hit" d="${path}" role="button" tabindex="0" aria-label="${escapeHtml(label)} to checkout" data-edge-id="live-repair-checkout" data-edge-from="deployment" data-edge-to="checkout"/></g>`,
     node: `<button class="twin-node source-node live-change-node plane-control kind-change is-${status}" type="button" data-node-id="deployment" data-transition-key="deployment" aria-label="Deployment change, ${escapeHtml(label)}"><span class="node-icon" aria-hidden="true"><i class="ph ph-git-commit"></i></span><span class="node-copy"><span class="node-origin">LEDGER CHANGE</span><strong>Checkout recovery</strong><span class="node-detail">${escapeHtml(repair.payload.target || "checkout")}</span><span class="node-status">${escapeHtml(statusLabel(status))}</span></span><span class="node-status-dot" aria-hidden="true"></span></button>`
   };
 }
@@ -413,6 +447,33 @@ function renderComparePosition() {
 function setComparePercent(value) {
   comparePercent = value;
   renderComparePosition();
+}
+
+function startCompareDrag(event) {
+  if (mode !== "compare" || event.button !== 0 || event.target.closest(".twin-node, .causal-note, .edge-hit")) return;
+  compareDrag = event.pointerId;
+  els["compare-handle"].classList.add("is-dragging");
+  els["twin-canvas"].setPointerCapture?.(event.pointerId);
+  updateCompareFromPointer(event.clientX);
+  event.preventDefault();
+}
+
+function moveCompareDrag(event) {
+  if (compareDrag !== event.pointerId) return;
+  updateCompareFromPointer(event.clientX);
+}
+
+function endCompareDrag(event) {
+  if (compareDrag !== event.pointerId) return;
+  updateCompareFromPointer(event.clientX);
+  compareDrag = null;
+  els["compare-handle"].classList.remove("is-dragging");
+  els["twin-canvas"].releasePointerCapture?.(event.pointerId);
+}
+
+function updateCompareFromPointer(clientX) {
+  const rect = els["twin-canvas"].getBoundingClientRect();
+  setComparePercent(Math.round(Math.max(0, Math.min(1, (clientX - rect.left) / rect.width)) * 100));
 }
 
 function renderTimeline() {
@@ -548,8 +609,8 @@ function renderDrawer() {
 
 function selectionMeta(focus) {
   if (focus.type === "node") {
-    const node = NODE_BY_ID.get(focus.id) || sourceState().topology?.nodes?.find((item) => item.id === focus.id) || agentControl().graph.nodes.find((item) => item.id === focus.id);
-    return { kind: kindLabel(node?.kind || "component"), title: node?.label || focus.id, subtitle: node?.detail || "System component" };
+    const node = NODE_BY_ID.get(focus.id) || topologyIntegrity(sourceState().topology).nodes.find((item) => item.id === focus.id) || agentControl().graph.nodes.find((item) => item.id === focus.id);
+    return { kind: kindLabel(node?.kind || "component"), title: node?.label || focus.id, subtitle: node?.connectivity === "unlinked" ? "Insufficient dependency evidence in the authoritative OTLP window" : node?.detail || "System component" };
   }
   if (focus.type === "agent-edge") {
     const edge = agentControl().graph.edges.find((item) => item.id === focus.id);
@@ -595,9 +656,11 @@ function renderAgentOperationDetail(id) {
   const node = control.graph.nodes.find((item) => item.id === id);
   if (!node) return emptyDetail("Agent operation detail is unavailable.");
   const activity = control.activity.filter((item) => item.agent_id === id);
+  const proposals = (control.orchestration?.proposals || []).filter((item) => item.agent_id === node.role);
   const manifest = node.manifest;
   return `<div class="detail-intro"><strong>${escapeHtml(agentStatusLabel(node.status))}</strong><span>${escapeHtml(node.detail)}. State is reconstructed from ledger sequence ${control.last_sequence}.</span></div>
     ${manifest ? `<article class="detail-record"><header><span>${escapeHtml(manifest.plane)}</span><span>${escapeHtml(manifest.mode)}</span></header><h3>Role boundary</h3><p>May emit: ${escapeHtml(manifest.emits.join(", "))}</p><div class="citation-list">${manifest.tools.map((tool) => `<span class="citation">${escapeHtml(tool)}</span>`).join("") || '<span class="citation">No direct tools</span>'}</div><pre class="payload">${escapeHtml(JSON.stringify(manifest, null, 2))}</pre></article>` : `<article class="detail-record"><h3>System-owned boundary</h3><p>This component is deterministic infrastructure, not an LLM role.</p></article>`}
+    ${proposals.map((item) => `<article class="detail-record is-accepted"><header><span>Harness validated</span><span>sequence ${item.sequence}</span></header><h3>${escapeHtml(item.type)}</h3><p>${escapeHtml(item.model)} · ${escapeHtml(item.agent_version)}</p><div class="citation-list"><span class="citation">${escapeHtml(item.content_sha256.slice(0, 12))}</span>${item.evidence_refs.map((ref) => `<span class="citation">${escapeHtml(ref)}</span>`).join("")}</div><pre class="payload">${escapeHtml(JSON.stringify({ prompt_hash: item.prompt_hash, budget: item.budget, parent_event_ids: item.parent_event_ids }, null, 2))}</pre></article>`).join("")}
     ${activity.length ? activity.map((item) => `<article class="detail-record"><header><span>${escapeHtml(item.actor)}</span><span>sequence ${item.sequence}</span></header><h3>${escapeHtml(item.type)}</h3><p>${escapeHtml(item.summary)}</p>${item.evidence_refs.length ? `<div class="citation-list">${item.evidence_refs.map((ref) => `<span class="citation">${escapeHtml(ref)}</span>`).join("")}</div>` : ""}</article>`).join("") : emptyDetail("This role has not emitted an event in the current run.")}`;
 }
 
@@ -745,6 +808,80 @@ function setMode(nextMode) {
   if (mode === "live" || mode === "agents") cursor = availableStage(state.events);
   if (mode === "compare") closeDrawerWithoutFocus();
   render();
+}
+
+function configureCanvasWorld(active) {
+  const world = els["canvas-layers"];
+  world.classList.toggle("is-live-world", active);
+  els["twin-canvas"].classList.toggle("is-pan-enabled", active);
+  if (!active) {
+    world.style.width = "";
+    world.style.height = "";
+    world.style.inset = "";
+    world.style.transform = "";
+    return;
+  }
+  world.style.width = `${LIVE_WORLD.width}px`;
+  world.style.height = `${LIVE_WORLD.height}px`;
+  world.style.inset = "auto";
+  if (!liveView.initialized || renderedMode !== "live") resetLiveView();
+  else applyLiveView();
+}
+
+function setLiveZoom(nextScale) {
+  if (mode !== "live") return;
+  const scale = Math.max(LIVE_WORLD.minScale, Math.min(LIVE_WORLD.maxScale, Math.round(nextScale * 10) / 10));
+  const rect = els["twin-canvas"].getBoundingClientRect();
+  const center = { x: rect.width / 2, y: rect.height / 2 };
+  const worldPoint = { x: (center.x - liveView.x) / liveView.scale, y: (center.y - liveView.y) / liveView.scale };
+  liveView = { ...liveView, scale, x: center.x - worldPoint.x * scale, y: center.y - worldPoint.y * scale, initialized: true };
+  applyLiveView();
+}
+
+function resetLiveView() {
+  const rect = els["twin-canvas"].getBoundingClientRect();
+  liveView = {
+    scale: 1,
+    x: (rect.width - LIVE_WORLD.width) / 2,
+    y: (rect.height - LIVE_WORLD.height) / 2,
+    initialized: true
+  };
+  applyLiveView();
+}
+
+function applyLiveView() {
+  if (mode !== "live") return;
+  els["canvas-layers"].style.transform = `translate(${Math.round(liveView.x)}px, ${Math.round(liveView.y)}px) scale(${liveView.scale})`;
+  updateZoomControls();
+}
+
+function updateZoomControls() {
+  if (!els["zoom-level"]) return;
+  els["zoom-level"].textContent = `${Math.round(liveView.scale * 100)}%`;
+  els["zoom-out"].disabled = mode !== "live" || liveView.scale <= LIVE_WORLD.minScale;
+  els["zoom-in"].disabled = mode !== "live" || liveView.scale >= LIVE_WORLD.maxScale;
+  els["zoom-reset"].disabled = mode !== "live" || (liveView.scale === 1 && Math.abs(liveView.x - (els["twin-canvas"].clientWidth - LIVE_WORLD.width) / 2) < 1 && Math.abs(liveView.y - (els["twin-canvas"].clientHeight - LIVE_WORLD.height) / 2) < 1);
+}
+
+function startLivePan(event) {
+  if (mode !== "live" || event.button !== 0 || event.target.closest(".twin-node, .edge-hit, button, input, summary")) return;
+  livePan = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, x: liveView.x, y: liveView.y };
+  els["twin-canvas"].classList.add("is-panning");
+  els["twin-canvas"].setPointerCapture?.(event.pointerId);
+  event.preventDefault();
+}
+
+function moveLivePan(event) {
+  if (!livePan || event.pointerId !== livePan.pointerId) return;
+  liveView = { ...liveView, x: livePan.x + event.clientX - livePan.startX, y: livePan.y + event.clientY - livePan.startY, initialized: true };
+  applyLiveView();
+}
+
+function endLivePan(event) {
+  if (!livePan || event.pointerId !== livePan.pointerId) return;
+  livePan = null;
+  els["twin-canvas"].classList.remove("is-panning");
+  els["twin-canvas"].releasePointerCapture?.(event.pointerId);
 }
 
 async function togglePlayback() {
@@ -1258,7 +1395,7 @@ function statusLabel(status) {
 
 function labelFor(id) { return NODE_BY_ID.get(id)?.label || id || "unknown"; }
 function agentLabel(id) { return agentControl().graph.nodes.find((node) => node.id === id)?.label || id || "unknown"; }
-function agentControl() { return state?.agent_control || { authority: "append-only-ledger", langfuse: "not_configured", current_agent_id: "manager", last_sequence: 0, report: { title: "Agent control unavailable", summary: "No agent projection is available.", stage: state?.stage || "Unknown", data_mode: "captured_deterministic_replay", citations: [] }, actions: [], graph: { nodes: [], edges: [] }, activity: [] }; }
+function agentControl() { return state?.agent_control || { authority: "append-only-ledger", langfuse: "not_configured", current_agent_id: "manager", last_sequence: 0, report: { title: "Agent control unavailable", summary: "No agent projection is available.", stage: state?.stage || "Unknown", data_mode: "captured_deterministic_replay", citations: [] }, actions: [], graph: { nodes: [], edges: [] }, activity: [], orchestration: { mode: "unavailable", proposal_count: 0, proposals: [], last_step: null } }; }
 function agentIcon(id) { return ({ manager: "chats-circle", monitor: "activity", evidence: "magnifying-glass", diagnosis: "brain", evaluator: "scales", planner: "clipboard-text", owner: "user-focus", executor: "wrench", verification: "shield-check", evolve: "git-branch", test: "flask", ledger: "database", langfuse: "waveform" })[id] || "robot"; }
 function agentNodeKind(node) { return ({ ledger: "database", langfuse: "database", executor: "change", owner: "evaluator", evaluator: "evaluator" })[node.id] || "agent"; }
 function agentNodeTone(status) { return ({ running: "active", waiting: "approval", rejected: "rejected", complete: "verified", recording: "recording", observing: "learned", unconfigured: "quiet", standby: "quiet" })[status] || "quiet"; }

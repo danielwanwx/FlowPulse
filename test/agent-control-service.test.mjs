@@ -58,8 +58,32 @@ test("safe advance delegates one deterministic step while owner-gated actions re
 
   assert.ok(runtime.ledger.list(runId).length > before);
   assert.equal(runtime.ledger.list(runId).some((event) => event.type === "manager.delegation.created"), true);
+  assert.equal(runtime.ledger.list(runId).some((event) => event.type === "evidence.requested" && event.actor === "agent:evidence"), true);
+  assert.equal(runtime.ledger.list(runId).some((event) => event.type === "orchestration.step.completed" && event.payload.validation === "agent_team_harness"), true);
+  assert.equal(projection.orchestration.proposal_count, 2);
   assert.equal(projection.activity.some((event) => event.agent_id === "manager"), true);
   assert.throws(() => service.act(runId, "approve_repair"), /not available/);
+});
+
+test("the complete replay crosses the typed harness before every specialist runtime step", () => {
+  const { runtime, runId, service } = setup();
+  for (let step = 0; step < 7; step++) service.advance(runId);
+  assert.equal(runtime.state(runId).waiting_for_approval, true);
+  runtime.approve(runId, "Test owner");
+  service.advance(runId);
+  service.advance(runId);
+
+  const state = runtime.state(runId);
+  const projection = service.project(runId);
+  const completed = state.events.filter((event) => event.type === "orchestration.step.completed");
+
+  assert.equal(state.complete, true);
+  assert.equal(completed.length, 9);
+  assert.equal(completed.filter((event) => event.payload.validation === "agent_team_harness").length, 8);
+  assert.equal(completed.find((event) => event.payload.target === "executor").payload.validation, "owner_gate_and_allowlist");
+  assert.equal(projection.orchestration.proposal_count, 14);
+  assert.equal(projection.orchestration.proposals.every((item) => item.content_sha256.length === 64), true);
+  assert.equal(state.events.some((event) => event.type === "backtest.completed" && event.actor === "agent:test"), true);
 });
 
 test("verification, evolve, and test become visible after owner-approved recovery", () => {
