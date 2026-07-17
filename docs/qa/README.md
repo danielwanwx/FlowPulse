@@ -6,7 +6,7 @@ Build under test: standalone FlowPulse repository, latest working tree served at
 
 ## Automated checks
 
-- `npm test`: 20 tests passed, 0 failed.
+- `npm test`: 22 tests passed, 0 failed.
 - `npm audit --audit-level=high`: 0 vulnerabilities.
 - `node --check public/app.js`: passed.
 - `node --check public/twin-state.mjs`: passed.
@@ -80,6 +80,16 @@ The latest pass removes clipped irregular silhouettes, glowing status halos, and
 - `runtime-control-recovery-light-1440.png` - light recovery state with distinct verification and regression outcomes.
 
 This approved refinement separates observed runtime entities from the FlowPulse control plane through source labels, solid versus dashed relationships, and distinct node material. Red halos now apply only to impacted runtime nodes, while evaluator rejection remains a control-plane state. Recovery and regression render as selectable derived outcomes rather than component cards. The Light/Pure black toggle preserves all semantic colors and accessible names. Browser geometry checks reported zero node, annotation, or plane-label intersections at both target viewports; browser console remained at 0 errors and 0 warnings.
+
+### Architecture-first navigation refinement
+
+- `architecture-first-1440.png` - default Architecture projection from 21 current OTLP-observed services.
+- `architecture-first-propagation-1280.png` - Diagnose propagation at 1280 x 800.
+- `architecture-first-owner-gate-1280.png` - checkout/payment root cause and bounded owner gate.
+- `architecture-first-recovery-1280.png` - verified recovery after owner approval.
+- `architecture-first-compare-1280.png` - interactive incident-versus-verified split.
+
+The app now opens on a four-layer Architecture view, then reuses stable service identities when switching to Live or Diagnose. Global navigation, tracing state, immutable event count, Run GPT-5.6, and Inspect run remain accessible from the native workspace menu. Geometry audits at 1440 x 900 and 1280 x 800 found zero source-node intersections, clipped cards, document overflow, mission-bar overflow, or topbar overflow. Light and pure-black themes passed, the full evaluator/owner/recovery/evolve story completed, and the browser console reported 0 errors and 0 warnings.
 
 ## Runtime truth boundary
 

@@ -48,6 +48,55 @@ export const PULSE_SLOTS = {
   "kafka-ledger": 3
 };
 
+export const ARCHITECTURE_LAYERS = [
+  {
+    id: "experience",
+    label: "Experience & entry",
+    ids: ["load-generator", "frontend-web", "frontend-proxy", "frontend"]
+  },
+  {
+    id: "commerce",
+    label: "Commerce services",
+    ids: ["checkout", "cart", "product-catalog", "recommendation", "ad", "currency", "shipping"]
+  },
+  {
+    id: "processing",
+    label: "Payment & async processing",
+    ids: ["payment", "kafka", "accounting", "fraud-detection", "fraud", "email", "quote", "image-provider"]
+  },
+  {
+    id: "platform",
+    label: "Platform, telemetry & data",
+    ids: ["flagd-ui", "flagd", "telemetry-docs", "otelcol-contrib", "astronomy-db"]
+  }
+];
+
+export function architecturePositions(nodes = []) {
+  const knownLayer = new Map(ARCHITECTURE_LAYERS.flatMap((layer, index) => layer.ids.map((id, order) => [id, { index, order }])));
+  const buckets = ARCHITECTURE_LAYERS.map(() => []);
+  const fallbackLayer = { client: 0, api: 1, service: 1, stream: 2, worker: 2, database: 3 };
+
+  for (const node of nodes) {
+    const known = knownLayer.get(node.id);
+    const layerIndex = known?.index ?? fallbackLayer[node.kind] ?? 3;
+    buckets[layerIndex].push({ node, order: known?.order ?? 1_000 });
+  }
+
+  return buckets.flatMap((bucket, layerIndex) => {
+    const sorted = bucket.sort((a, b) => a.order - b.order || a.node.id.localeCompare(b.node.id));
+    return sorted.map(({ node }, index) => ({
+      ...node,
+      layer: ARCHITECTURE_LAYERS[layerIndex].id,
+      layerLabel: ARCHITECTURE_LAYERS[layerIndex].label,
+      layerIndex,
+      layerPosition: index,
+      layerSize: sorted.length,
+      x: spreadCoordinate(index, sorted.length),
+      y: [17, 38, 60, 81][layerIndex]
+    }));
+  });
+}
+
 export const TWIN_EDGES = [
   { id: "frontend-checkout", from: "frontend", to: "checkout", label: "cart request", path: "M 155 239 C 185 239 205 239 225 239" },
   { id: "checkout-payment", from: "checkout", to: "payment", label: "payment call", path: "M 332 226 C 382 226 378 125 430 125" },
@@ -175,4 +224,10 @@ function stageEventTypes(index) {
 
 function clampStage(value) {
   return Math.max(0, Math.min(TWIN_STAGES.length - 1, Number(value) || 0));
+}
+
+function spreadCoordinate(index, count) {
+  if (count <= 1) return 50;
+  const span = Math.min(88, Math.max(36, (count - 1) * 12.4));
+  return 50 - span / 2 + (span * index) / (count - 1);
 }

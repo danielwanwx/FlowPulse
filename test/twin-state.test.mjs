@@ -2,12 +2,14 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
+  ARCHITECTURE_LAYERS,
   PULSE_SLOTS,
   TWIN_EDGES,
   TWIN_ICONS,
   TWIN_NODES,
   TWIN_STAGES,
   availableStage,
+  architecturePositions,
   compareFrames,
   eventsAtStage,
   frameFor
@@ -23,6 +25,32 @@ test("light and pure-black themes have a persisted accessible toggle", () => {
   assert.match(appJs, /flowpulse-theme=\$\{theme\}/);
   assert.match(stylesCss, /:root\[data-theme="dark"\]/);
   assert.match(stylesCss, /\.theme-toggle:focus-visible/);
+});
+
+test("the product opens on architecture and keeps advanced actions in an accessible menu", () => {
+  assert.match(indexHtml, /id="app-shell"[^>]+data-mode="architecture"/);
+  assert.match(indexHtml, /data-mode="architecture">Architecture</);
+  assert.match(indexHtml, /data-mode="replay">Diagnose</);
+  assert.match(indexHtml, /id="workspace-menu"[^>]*class="workspace-menu"/);
+  assert.match(indexHtml, /id="live-button"[^>]*>Run GPT-5\.6</);
+  assert.match(indexHtml, /id="details-button"[^>]*>Inspect run</);
+  assert.match(appJs, /let mode = "architecture"/);
+});
+
+test("architecture layout is deterministic, layered, and leaves room for complete cards", () => {
+  const nodes = ARCHITECTURE_LAYERS.flatMap((layer) => layer.ids.map((id, index) => ({ id, label: id, kind: index === 0 ? "client" : "service" })));
+  const first = architecturePositions(nodes);
+  const second = architecturePositions([...nodes].reverse());
+  const coordinates = (items) => Object.fromEntries(items.map(({ id, layer, x, y }) => [id, { layer, x, y }]));
+  assert.deepEqual(coordinates(first), coordinates(second));
+  assert.deepEqual([...new Set(first.map(({ layer }) => layer))], ARCHITECTURE_LAYERS.map(({ id }) => id));
+  assert.ok(first.every(({ x, y }) => x >= 6 && x <= 94 && y >= 17 && y <= 81));
+  for (const y of new Set(first.map((node) => node.y))) {
+    const xs = first.filter((node) => node.y === y).map((node) => node.x).sort((a, b) => a - b);
+    for (let index = 1; index < xs.length; index++) assert.ok((xs[index] - xs[index - 1]) * 11 >= 124);
+  }
+  assert.match(appJs, /arch-count-\$\{node\.layerSize\}/);
+  assert.doesNotMatch(appJs, /style="left:\$\{node\.x\}/);
 });
 
 test("every component has a vector icon and causal pulses remain sequential", () => {

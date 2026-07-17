@@ -12,25 +12,36 @@
   </head>
   <body>
     <a class="skip-link" href="#twin-canvas">Skip to system canvas</a>
-    <div id="app-shell" class="app-shell is-loading">
+    <div id="app-shell" class="app-shell is-loading" data-mode="architecture">
       <header class="topbar">
         <div class="brand" aria-label="FlowPulse">
           <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
           <span>FlowPulse</span>
-          <span class="product-name">Production workspace</span>
         </div>
-        <nav class="primary-nav" aria-label="Workspace views">
-          <button class="nav-button is-active" type="button" data-nav-tab="map">System map</button>
-          <button class="nav-button" type="button" data-nav-tab="incidents">Incidents</button>
-          <button class="nav-button" type="button" data-nav-tab="changes">Changes</button>
-          <button class="nav-button" type="button" data-nav-tab="evaluations">Evaluations</button>
-        </nav>
+        <span id="environment" class="environment-label">dev / astronomy-shop</span>
         <div class="topbar-status">
-          <span class="environment-label">dev / astronomy-shop</span>
           <span id="capture-label" class="capture-label">Checking source</span>
-          <button id="theme-toggle" class="theme-toggle" type="button" aria-pressed="false" aria-label="Switch to pure black theme"><span class="theme-swatch" aria-hidden="true"></span><span id="theme-toggle-label">Black</span></button>
-          <a id="langfuse-link" class="text-link is-disabled" href="#" target="_blank" rel="noreferrer">Tracing not configured</a>
-          <span id="ledger-state" class="ledger-state">Loading events</span>
+          <button id="theme-toggle" class="theme-toggle" type="button" aria-pressed="false" aria-label="Switch to pure black theme"><span class="theme-swatch" aria-hidden="true"></span><span id="theme-toggle-label" class="visually-hidden">Black</span></button>
+          <details id="workspace-menu" class="workspace-menu">
+            <summary aria-label="Open workspace menu"><i class="ph ph-dots-three" aria-hidden="true"></i></summary>
+            <div class="workspace-menu-panel">
+              <span class="menu-label">Workspace</span>
+              <nav class="menu-navigation" aria-label="Workspace views">
+                <button class="nav-button is-active" type="button" data-nav-tab="map">System map</button>
+                <button class="nav-button" type="button" data-nav-tab="incidents">Incidents</button>
+                <button class="nav-button" type="button" data-nav-tab="changes">Changes</button>
+                <button class="nav-button" type="button" data-nav-tab="evaluations">Evaluations</button>
+              </nav>
+              <div class="workspace-menu-actions">
+                <button id="live-button" class="button secondary" type="button">Run GPT-5.6</button>
+                <button id="details-button" class="button secondary" type="button">Inspect run</button>
+              </div>
+              <div class="menu-meta">
+                <a id="langfuse-link" class="text-link is-disabled" href="#" target="_blank" rel="noreferrer">Tracing not configured</a>
+                <span id="ledger-state" class="ledger-state">Loading events</span>
+              </div>
+            </div>
+          </details>
         </div>
       </header>
 
@@ -42,26 +53,22 @@
       <main>
         <section class="mission-bar" aria-labelledby="workspace-title">
           <div class="mission-summary">
-            <div class="mission-meta"><span>SYSTEM MAP</span><span id="environment">dev / astronomy-shop</span></div>
-            <h1 id="workspace-title">Production system map</h1>
-            <p>Observed services, dependencies, changes, and incident state from authoritative sources.</p>
+            <h1 id="workspace-title">System architecture</h1>
           </div>
 
           <div class="mode-switch" aria-label="Digital twin mode">
+            <button class="mode-button is-active" type="button" data-mode="architecture">Architecture</button>
             <button class="mode-button" type="button" data-mode="live">Live</button>
-            <button class="mode-button is-active" type="button" data-mode="replay">Replay</button>
+            <button class="mode-button" type="button" data-mode="replay">Diagnose</button>
             <button class="mode-button" type="button" data-mode="compare">Compare</button>
           </div>
 
           <div class="mission-actions">
             <div class="stage-readout">
-              <span>Current stage</span>
               <strong id="stage">Healthy</strong>
               <small id="status-text">Loading authoritative state</small>
             </div>
-            <button id="live-button" class="button secondary" type="button">Run GPT-5.6</button>
             <button id="development-button" class="button secondary" type="button" hidden>Connect local runtime</button>
-            <button id="details-button" class="button secondary" type="button">Inspect run</button>
           </div>
         </section>
 
@@ -69,7 +76,7 @@
           <div class="canvas-shell">
             <div class="canvas-toolbar">
               <div>
-                <h2>Observed topology</h2>
+                <h2 id="canvas-title">Observed architecture</h2>
                 <p id="canvas-caption">Immutable replay projection</p>
               </div>
               <div class="metric-cluster" aria-label="Incident metrics">
@@ -83,11 +90,14 @@
                   <span id="metric-kafka-label">Kafka lag</span><strong id="metric-kafka">182</strong><small id="metric-kafka-note">lag baseline</small>
                 </button>
               </div>
-              <div class="state-key" aria-label="Canvas entity legend">
-                <span><i class="key-runtime"></i>Observed runtime</span>
-                <span><i class="key-control"></i>Control plane</span>
-                <span><i class="key-outcome"></i>Derived outcome</span>
-              </div>
+              <details class="legend-menu">
+                <summary><i class="ph ph-info" aria-hidden="true"></i>Legend</summary>
+                <div class="state-key" aria-label="Canvas entity legend">
+                  <span><i class="key-runtime"></i>Observed runtime</span>
+                  <span><i class="key-control"></i>Control plane</span>
+                  <span><i class="key-outcome"></i>Derived outcome</span>
+                </div>
+              </details>
             </div>
 
             <div id="twin-scroll" class="twin-scroll">
@@ -127,7 +137,7 @@
           </aside>
         </section>
 
-        <section class="timeline-dock" aria-label="Incident timeline">
+        <section id="timeline-dock" class="timeline-dock" aria-label="Incident timeline" hidden>
           <div class="transport">
             <span class="transport-label">Replay controls</span>
             <button id="restart-button" class="transport-button" type="button">Restart</button>
