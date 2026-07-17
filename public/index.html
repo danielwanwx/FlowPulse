@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <meta name="description" content="FlowPulse evidence-grounded incident response cockpit">
+    <title>FlowPulse | Incident control loop</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <a class="skip-link" href="#investigation">Skip to investigation</a>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand" aria-label="FlowPulse">
+          <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+          <span>FlowPulse</span>
+        </div>
+        <div class="topbar-meta">
+          <span id="mode-badge" class="tag">Replay</span>
+          <a id="langfuse-link" class="quiet-link is-disabled" href="#" target="_blank" rel="noreferrer">Langfuse trace</a>
+          <span id="ledger-state" class="ledger-state">Ledger syncing</span>
+        </div>
+      </header>
+
+      <main>
+        <section class="incident-bar" aria-labelledby="incident-title">
+          <div>
+            <div class="incident-kicker"><span id="severity">SEV-1</span><span id="environment">astronomy-shop-demo</span></div>
+            <h1 id="incident-title">Loading incident</h1>
+            <p id="incident-summary">Reading the append-only incident ledger.</p>
+          </div>
+          <div class="incident-status">
+            <span class="label">Current stage</span>
+            <strong id="stage">Evidence collection</strong>
+            <span id="status-text" class="status-line">Investigating</span>
+          </div>
+          <div class="controls" aria-label="Replay controls">
+            <button id="run-button" class="button primary" type="button">Run guided replay</button>
+            <button id="next-button" class="button" type="button">Run next step</button>
+            <button id="reset-button" class="button quiet" type="button">New replay</button>
+            <button id="live-button" class="button quiet" type="button">Run fresh GPT-5.6</button>
+          </div>
+        </section>
+
+        <section class="metric-strip" aria-label="Incident health metrics">
+          <article>
+            <span class="metric-label">Checkout errors</span>
+            <div><strong id="metric-checkout">38.4%</strong><span id="metric-checkout-delta" class="metric-delta bad">+37.7 pp</span></div>
+          </article>
+          <article>
+            <span class="metric-label">Payment reachable</span>
+            <div><strong id="metric-payment">61.6%</strong><span id="metric-payment-delta" class="metric-delta bad">degraded</span></div>
+          </article>
+          <article>
+            <span class="metric-label">Kafka lag</span>
+            <div><strong id="metric-kafka">11,842</strong><span id="metric-kafka-delta" class="metric-delta bad">downstream</span></div>
+          </article>
+          <article class="causal-clock">
+            <span class="metric-label">Ordering</span>
+            <div><strong>171s</strong><span class="metric-delta neutral">failures lead lag</span></div>
+          </article>
+        </section>
+
+        <div class="cockpit-grid">
+          <aside class="rail" aria-label="System topology and evidence">
+            <section class="panel topology-panel">
+              <div class="panel-heading">
+                <div><span class="section-label">System view</span><h2>Propagation topology</h2></div>
+                <span id="topology-state" class="tag danger">Impact active</span>
+              </div>
+              <div id="topology" class="topology" role="img" aria-label="Service dependency topology"></div>
+              <p class="topology-note">The highlighted path is derived from cited evidence, not model confidence.</p>
+            </section>
+
+            <section class="panel evidence-panel">
+              <div class="panel-heading">
+                <div><span class="section-label">Ground truth</span><h2>Evidence ledger</h2></div>
+                <span id="evidence-count" class="count">0</span>
+              </div>
+              <div id="evidence-list" class="evidence-list" aria-live="polite">
+                <div class="empty-state">Evidence appears as tools query the captured incident.</div>
+              </div>
+            </section>
+          </aside>
+
+          <section id="investigation" class="panel investigation-panel" aria-labelledby="investigation-title">
+            <div class="panel-heading investigation-heading">
+              <div><span class="section-label">Inspectable agent loop</span><h2 id="investigation-title">Investigation record</h2></div>
+              <span id="event-count" class="count">0 events</span>
+            </div>
+            <div class="loop-contract" aria-label="Loop contract">
+              <span>Inspect</span><span>Challenge</span><span>Replan</span><span>Repair</span><span>Verify</span><span>Learn</span>
+            </div>
+            <div id="timeline" class="timeline" aria-live="polite">
+              <div class="empty-state large">
+                <strong>No agent claims yet</strong>
+                <span>Start the guided replay to inspect every decision and citation.</span>
+              </div>
+            </div>
+          </section>
+
+          <aside class="action-column" aria-label="Decision and learning controls">
+            <section id="decision-panel" class="panel decision-panel">
+              <div class="panel-heading">
+                <div><span class="section-label">Human gate</span><h2>Bounded remediation</h2></div>
+                <span id="approval-tag" class="tag">Not proposed</span>
+              </div>
+              <div id="repair-content" class="repair-content">
+                <div class="empty-state">A repair can appear only after an evidence-supported diagnosis passes evaluation.</div>
+              </div>
+              <button id="approve-button" class="button approve" type="button" hidden>Approve checkout rollback</button>
+            </section>
+
+            <section class="panel inspector-panel">
+              <div class="panel-heading">
+                <div><span class="section-label">Selected record</span><h2>Evidence inspector</h2></div>
+              </div>
+              <div id="inspector" class="inspector">
+                <div class="empty-state">Select an evidence item to inspect its source fact.</div>
+              </div>
+            </section>
+
+            <section class="panel verification-panel">
+              <div class="panel-heading">
+                <div><span class="section-label">Recovery</span><h2>Before and after</h2></div>
+                <span id="verification-tag" class="tag">Pending</span>
+              </div>
+              <div id="verification-content" class="verification-content">
+                <div class="empty-state">Verification waits for an approved repair.</div>
+              </div>
+            </section>
+
+            <section class="panel gates-panel">
+              <div class="panel-heading">
+                <div><span class="section-label">Eval / Evolve</span><h2>Promotion gates</h2></div>
+                <span id="gates-tag" class="tag">Locked</span>
+              </div>
+              <div id="gates-content" class="gates-content">
+                <div class="empty-state">A candidate policy is tested after recovery.</div>
+              </div>
+            </section>
+          </aside>
+        </div>
+      </main>
+    </div>
+
+    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

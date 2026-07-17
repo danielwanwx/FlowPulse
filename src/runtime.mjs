@@ -47,7 +47,6 @@ export class IncidentRuntime {
       repair_id: this.bundle.repair.id,
       scope: "checkout deployment only"
     }, [], 176_000);
-    this.append(runId, "loop.approval_complete", "runtime", { step: "approval" }, [], 176_001, event.id);
     return event;
   }
 
@@ -70,7 +69,8 @@ export class IncidentRuntime {
       thresholds: this.bundle.thresholds,
       repair: this.bundle.repair,
       live_available: Boolean(process.env.OPENAI_API_KEY),
-      langfuse_enabled: Boolean(process.env.LANGFUSE_PUBLIC_KEY && process.env.LANGFUSE_SECRET_KEY)
+      langfuse_enabled: Boolean(process.env.LANGFUSE_PUBLIC_KEY && process.env.LANGFUSE_SECRET_KEY),
+      langfuse_url: process.env.LANGFUSE_TRACE_URL || process.env.LANGFUSE_BASE_URL || "https://cloud.langfuse.com"
     };
   }
 

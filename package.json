@@ -6,7 +6,7 @@
   "description": "Evidence-grounded incident investigation, remediation, verification, and learning loop.",
   "scripts": {
     "demo": "node src/server.mjs",
-    "test": "node --test",
+    "test": "node --test test/*.test.mjs",
     "judge": "npm test && node src/server.mjs"
   },
   "engines": {

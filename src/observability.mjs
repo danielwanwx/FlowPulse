@@ -38,8 +38,6 @@ export async function withIncidentTrace({ runId, incidentId, input }, work) {
     } catch (error) {
       span.update({ output: { status: "failed", error: error.message } });
       throw error;
-    } finally {
-      span.end();
     }
   });
 }
