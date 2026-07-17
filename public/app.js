@@ -55,6 +55,7 @@ els["compare-range"].addEventListener("input", () => {
 els["compare-incident"].addEventListener("click", () => setComparePercent(70));
 els["compare-even"].addEventListener("click", () => setComparePercent(50));
 els["compare-verified"].addEventListener("click", () => setComparePercent(30));
+els["theme-toggle"].addEventListener("click", toggleTheme);
 els["timeline-current"].addEventListener("click", () => openDrawer({ type: "stage", id: TWIN_STAGES[cursor].id }, tabForStage(cursor)));
 els["canvas-layers"].addEventListener("click", handleCanvasSelection);
 els["canvas-layers"].addEventListener("keydown", handleCanvasKeydown);
@@ -106,6 +107,7 @@ function renderHeader() {
   els["capture-label"].className = `capture-label source-${sourceState().status}`;
   els["canvas-caption"].textContent = modeCaption(frame);
   els["live-button"].hidden = !state.live_available;
+  renderThemeToggle();
   for (const button of document.querySelectorAll("[data-mode]")) {
     const active = button.dataset.mode === mode;
     button.classList.toggle("is-active", active);
@@ -119,6 +121,21 @@ function renderHeader() {
     els["langfuse-link"].classList.add("is-disabled");
     els["langfuse-link"].textContent = "Tracing not configured";
   }
+}
+
+function toggleTheme() {
+  const theme = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+  document.documentElement.dataset.theme = theme;
+  try { localStorage.setItem("flowpulse-theme", theme); } catch { /* theme still applies for this session */ }
+  document.cookie = `flowpulse-theme=${theme}; max-age=31536000; path=/; samesite=lax`;
+  renderThemeToggle();
+}
+
+function renderThemeToggle() {
+  const dark = document.documentElement.dataset.theme === "dark";
+  els["theme-toggle"].setAttribute("aria-pressed", String(dark));
+  els["theme-toggle"].setAttribute("aria-label", dark ? "Switch to light theme" : "Switch to pure black theme");
+  els["theme-toggle-label"].textContent = dark ? "Light" : "Black";
 }
 
 function renderMetrics() {
@@ -165,7 +182,7 @@ function renderCanvas() {
     const { incident, recovered } = compareFrames();
     els["canvas-layers"].innerHTML = `${renderTwinLayer(recovered, "after", true)}${renderTwinLayer(incident, "before", false)}`;
     els["compare-handle"].hidden = false;
-    els["annotation-layer"].innerHTML = "";
+    setAnnotations([]);
     els["twin-canvas"].setAttribute("aria-label", "Compare incident impact on the left with verified recovery on the right");
     renderComparePosition();
     return;
@@ -173,14 +190,14 @@ function renderCanvas() {
   const frame = currentFrame();
   els["canvas-layers"].innerHTML = renderTwinLayer(frame, "current", true);
   els["compare-handle"].hidden = true;
-  els["annotation-layer"].innerHTML = frame.annotations.slice(-2).map(renderAnnotation).join("");
+  setAnnotations(frame.annotations.slice(-2));
   els["twin-canvas"].setAttribute("aria-label", `${mode === "live" ? "Last-known captured" : "Replay"} system state at ${frame.stage.label}`);
 }
 
 function renderLiveCanvas() {
   const source = sourceState();
   els["compare-handle"].hidden = true;
-  els["annotation-layer"].innerHTML = "";
+  setAnnotations([]);
   if (!source.topology?.nodes?.length) {
     els["canvas-layers"].innerHTML = `<div class="source-empty">
       <i class="ph ph-plugs" aria-hidden="true"></i>
@@ -196,15 +213,15 @@ function renderLiveCanvas() {
     const from = positions.get(edge.from);
     const to = positions.get(edge.to);
     const path = liveEdgePath(from, to);
-    return `<g class="edge-group"><path class="edge-line is-healthy" d="${path}"/><path class="pulse-flow pulse-slot-${index % 4} is-healthy" d="${path}" pathLength="1" aria-hidden="true"/><path class="edge-hit" d="${path}" role="button" tabindex="0" aria-label="${escapeHtml(edge.label)} from ${escapeHtml(from.label)} to ${escapeHtml(to.label)}" data-edge-id="${escapeHtml(edge.id)}"/></g>`;
+    return `<g class="edge-group path-runtime"><path class="edge-line is-healthy" d="${path}"/><path class="pulse-flow pulse-slot-${index % 4} is-healthy" d="${path}" pathLength="1" aria-hidden="true"/><path class="edge-hit" d="${path}" role="button" tabindex="0" aria-label="${escapeHtml(edge.label)} from ${escapeHtml(from.label)} to ${escapeHtml(to.label)}" data-edge-id="${escapeHtml(edge.id)}"/></g>`;
   }).join("");
-  const nodes = positioned.map((node) => `<button class="twin-node live-node grid-slot-${node.slot} kind-${escapeHtml(node.kind)} is-healthy" type="button" data-node-id="${escapeHtml(node.id)}" aria-label="Observed ${escapeHtml(kindLabel(node.kind))} ${escapeHtml(node.label)}">
+  const nodes = positioned.map((node) => `<button class="twin-node live-node plane-runtime grid-slot-${node.slot} kind-${escapeHtml(node.kind)} is-healthy" type="button" data-node-id="${escapeHtml(node.id)}" aria-label="Observed ${escapeHtml(kindLabel(node.kind))} ${escapeHtml(node.label)}">
     <span class="node-icon" aria-hidden="true"><i class="ph ph-${iconForLive(node)}"></i></span>
-    <span class="node-copy"><strong>${escapeHtml(node.label)}</strong><span class="node-detail">observed service.name</span><span class="node-status">${mode === "live" ? "LIVE OTLP" : "HASHED CAPTURE"}</span></span>
+    <span class="node-copy"><span class="node-origin">RUNTIME · ${mode === "live" ? "LIVE OTLP" : "HASHED OTLP"}</span><strong>${escapeHtml(node.label)}</strong><span class="node-detail">observed service.name</span><span class="node-status">Healthy</span></span>
     <span class="node-status-dot" aria-hidden="true"></span>
   </button>`).join("");
   els["canvas-layers"].innerHTML = `<div class="twin-layer layer-current"><svg class="edge-map" viewBox="0 0 1000 520" preserveAspectRatio="none">${edges}</svg>${nodes}</div>`;
-  els["annotation-layer"].innerHTML = mode === "replay" ? developmentAnnotations(cursor).map(renderAnnotation).join("") : "";
+  setAnnotations(mode === "replay" ? developmentAnnotations(cursor) : []);
   els["twin-canvas"].setAttribute("aria-label", `${mode === "live" ? "Live OTLP" : "Hashed local capture"} topology with ${positioned.length} observed services`);
 }
 
@@ -214,7 +231,8 @@ function renderTwinLayer(frame, layerName, interactive) {
     const status = frame.edgeStates[edge.id] || "quiet";
     const pulseSlot = PULSE_SLOTS[edge.id] ?? 0;
     const accessible = interactive ? `role="button" tabindex="0" aria-label="${escapeHtml(edge.label)} from ${escapeHtml(labelFor(edge.from))} to ${escapeHtml(labelFor(edge.to))}" data-edge-id="${edge.id}"` : "aria-hidden=\"true\"";
-    return `<g class="edge-group edge-${edge.id}">
+    const plane = edge.evidence ? "evidence" : edge.control ? "control" : "runtime";
+    return `<g class="edge-group edge-${edge.id} path-${plane}">
       <path class="edge-line is-${status}" d="${edge.path}" />
       <path class="pulse-flow pulse-slot-${pulseSlot} is-${status}" d="${edge.path}" pathLength="1" aria-hidden="true" />
       <path class="edge-hit" d="${edge.path}" ${accessible} />
@@ -224,10 +242,11 @@ function renderTwinLayer(frame, layerName, interactive) {
     const status = frame.nodeStates[node.id] || "quiet";
     const sequence = IMPACT_SEQUENCE[node.id] ?? 0;
     const entering = frame.index === 2 && status === "impact" ? " is-entering" : "";
-    const interaction = interactive ? `data-node-id="${node.id}" aria-label="${escapeHtml(kindLabel(node.kind))} ${escapeHtml(node.label)}, ${escapeHtml(statusLabel(status))}"` : "tabindex=\"-1\" aria-hidden=\"true\"";
-    return `<button class="twin-node node-${node.id} sequence-${sequence} kind-${node.kind} is-${status}${entering}" type="button" ${interaction}>
+    const interaction = interactive ? `data-node-id="${node.id}" aria-label="${escapeHtml(kindLabel(node.kind))} ${escapeHtml(node.label)}, ${escapeHtml(nodeOrigin(node))}, ${escapeHtml(statusLabel(status))}"` : "tabindex=\"-1\" aria-hidden=\"true\"";
+    return `<button class="twin-node plane-${node.plane} node-${node.id} sequence-${sequence} kind-${node.kind} is-${status}${entering}" type="button" ${interaction}>
       <span class="node-icon icon-${node.id}" aria-hidden="true"><i class="ph ph-${TWIN_ICONS[node.id]}"></i></span>
       <span class="node-copy">
+        <span class="node-origin">${escapeHtml(nodeOrigin(node))}</span>
         <strong>${escapeHtml(node.label)}</strong>
         <span class="node-detail">${escapeHtml(node.detail)}</span>
         <span class="node-status">${escapeHtml(statusLabel(status))}</span>
@@ -242,9 +261,16 @@ function renderTwinLayer(frame, layerName, interactive) {
 }
 
 function renderAnnotation(annotation) {
-  return `<button class="causal-note note-${annotation.id} tone-${annotation.tone}" type="button" data-annotation-id="${annotation.id}">
-    <strong>${escapeHtml(annotation.title)}</strong><span>${escapeHtml(annotation.copy)}</span>
+  const role = annotation.role === "outcome" ? "outcome" : "causal";
+  const icon = role === "outcome" ? `<span class="note-icon" aria-hidden="true"><i class="ph ph-${annotationIcon(annotation.id)}"></i></span>` : "";
+  return `<button class="causal-note note-${annotation.id} note-role-${role} tone-${annotation.tone}" type="button" data-annotation-id="${annotation.id}" aria-label="${role === "outcome" ? "Derived outcome" : "Causal event"}: ${escapeHtml(annotation.title)}">
+    ${icon}<span class="note-copy"><strong>${escapeHtml(annotation.title)}</strong><span>${escapeHtml(annotation.copy)}</span></span>
   </button>`;
+}
+
+function setAnnotations(annotations) {
+  els["annotation-layer"].classList.toggle("has-outcomes", annotations.some((annotation) => annotation.role === "outcome"));
+  els["annotation-layer"].innerHTML = annotations.map(renderAnnotation).join("");
 }
 
 function renderComparePosition() {
@@ -266,7 +292,7 @@ function renderTimeline() {
   const stages = timelineStages();
   els["stage-track"].innerHTML = stages.map((stage, index) => {
     const enabled = index <= available || (index === 1 && available >= 2);
-    return `<button class="stage-marker ${enabled ? "is-available" : ""} ${index === cursor && mode !== "compare" ? "is-current" : ""}" type="button" data-stage-index="${index}" ${enabled ? "" : "disabled"}>
+    return `<button class="stage-marker stage-${stage.id} stage-group-${stageGroup(index)} ${enabled ? "is-available" : ""} ${index === cursor && mode !== "compare" ? "is-current" : ""}" type="button" data-stage-index="${index}" ${enabled ? "" : "disabled"}>
       <span>${stage.time}</span><strong>${escapeHtml(stage.label)}</strong>
     </button>`;
   }).join("");
@@ -808,14 +834,24 @@ function developmentAnnotations(index) {
   if (index >= 2 && index < 6) notes.push({ id: "propagation", tone: "impact", title: "Real failure telemetry", copy: "Fresh checkout/payment OTLP spans failed" });
   if (index >= 3 && index < 6) notes.push({ id: "rejected", tone: "rejected", title: "Weak service blame rejected", copy: "Failure spans did not prove payment initiated it" });
   if (index >= 4 && index < 6) notes.push({ id: "root", tone: "root", title: "Root cause confirmed", copy: "Versioned checkout flag preceded the failures" });
-  if (index >= 6) notes.push({ id: "recovery", tone: "verified", title: "Recovery verified", copy: "Fresh healthy post-repair OTLP captured" });
-  if (index >= 7) notes.push({ id: "learning", tone: "learned", title: "Hashed regression recorded", copy: "Live evidence policy passed deterministic gates" });
+  if (index >= 6) notes.push({ id: "recovery", role: "outcome", tone: "verified", title: "Recovery verified", copy: "Fresh healthy post-repair OTLP captured" });
+  if (index >= 7) notes.push({ id: "learning", role: "outcome", tone: "learned", title: "Hashed regression recorded", copy: "Live evidence policy passed deterministic gates" });
   return notes.slice(-2);
 }
 
 function kindLabel(kind) {
   return ({ client: "Client", service: "Service", api: "API", stream: "Stream", worker: "Worker", change: "Deployment change", agent: "Investigation agent", evaluator: "Adversarial evaluator", database: "Evidence database" })[kind] || "Component";
 }
+
+function nodeOrigin(node) {
+  if (node.kind === "change") return "CHANGE RECORD";
+  if (node.kind === "database") return "AUTHORITATIVE LEDGER";
+  if (node.plane === "control") return "FLOWPULSE CONTROL";
+  return "RUNTIME · CAPTURED OTLP";
+}
+
+function annotationIcon(id) { return id === "learning" ? "database" : "shield-check"; }
+function stageGroup(index) { return index >= 6 ? "outcome" : index > 0 ? "incident" : "baseline"; }
 
 function renderDevelopmentControl() {
   if (!developmentStatus?.enabled) {

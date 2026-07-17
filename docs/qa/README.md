@@ -6,7 +6,7 @@ Build under test: standalone FlowPulse repository, latest working tree served at
 
 ## Automated checks
 
-- `npm test`: 18 tests passed, 0 failed.
+- `npm test`: 20 tests passed, 0 failed.
 - `npm audit --audit-level=high`: 0 vulnerabilities.
 - `node --check public/app.js`: passed.
 - `node --check public/twin-state.mjs`: passed.
@@ -72,6 +72,14 @@ The refinement keeps every module surface white and every structural line neutra
 - `vector-pulse-compare.png` - static incident/verified comparison without competing animation.
 
 The latest pass removes clipped irregular silhouettes, glowing status halos, and inline motion styles. A visible-browser geometry audit at every replay stage found zero clipped nodes, truncated component labels, node intersections, or annotation-to-node intersections. The in-app browser captured this refinement at its available 1280 x 720 viewport; this is a stricter vertical fit than the recorded 1280 x 800 target check. Browser console remained at 0 errors and 0 warnings.
+
+### Runtime/control hierarchy and theme refinement
+
+- `runtime-control-propagation-black-1440.png` - pure-black 1440 x 900 propagation with semantic red fault halos.
+- `runtime-control-propagation-black-1280.png` - pure-black 1280 x 800 responsive check with no page overflow.
+- `runtime-control-recovery-light-1440.png` - light recovery state with distinct verification and regression outcomes.
+
+This approved refinement separates observed runtime entities from the FlowPulse control plane through source labels, solid versus dashed relationships, and distinct node material. Red halos now apply only to impacted runtime nodes, while evaluator rejection remains a control-plane state. Recovery and regression render as selectable derived outcomes rather than component cards. The Light/Pure black toggle preserves all semantic colors and accessible names. Browser geometry checks reported zero node, annotation, or plane-label intersections at both target viewports; browser console remained at 0 errors and 0 warnings.
 
 ## Runtime truth boundary
 

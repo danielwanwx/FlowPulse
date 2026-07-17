@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
   PULSE_SLOTS,
   TWIN_EDGES,
@@ -12,6 +13,18 @@ import {
   frameFor
 } from "../public/twin-state.mjs";
 
+const indexHtml = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
+const appJs = readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
+const stylesCss = readFileSync(new URL("../public/styles.css", import.meta.url), "utf8");
+
+test("light and pure-black themes have a persisted accessible toggle", () => {
+  assert.match(indexHtml, /id="theme-toggle"[^>]+aria-label="Switch to pure black theme"/);
+  assert.match(appJs, /localStorage\.setItem\("flowpulse-theme", theme\)/);
+  assert.match(appJs, /flowpulse-theme=\$\{theme\}/);
+  assert.match(stylesCss, /:root\[data-theme="dark"\]/);
+  assert.match(stylesCss, /\.theme-toggle:focus-visible/);
+});
+
 test("every component has a vector icon and causal pulses remain sequential", () => {
   assert.deepEqual(Object.keys(TWIN_ICONS).sort(), TWIN_NODES.map(({ id }) => id).sort());
   assert.deepEqual(Object.keys(PULSE_SLOTS).sort(), TWIN_EDGES.map(({ id }) => id).sort());
@@ -20,6 +33,21 @@ test("every component has a vector icon and causal pulses remain sequential", ()
   assert.ok(PULSE_SLOTS["checkout-payment"] < PULSE_SLOTS["checkout-kafka"]);
   assert.ok(PULSE_SLOTS["checkout-kafka"] < PULSE_SLOTS["kafka-accounting"]);
   assert.ok(PULSE_SLOTS["kafka-accounting"] < PULSE_SLOTS["kafka-fraud"]);
+});
+
+test("runtime, control-plane, and derived-outcome semantics stay explicit", () => {
+  assert.deepEqual(
+    TWIN_NODES.filter(({ plane }) => plane === "runtime").map(({ id }) => id),
+    ["frontend", "checkout", "payment", "kafka", "accounting", "fraud"]
+  );
+  assert.deepEqual(
+    TWIN_NODES.filter(({ plane }) => plane === "control").map(({ id }) => id),
+    ["deployment", "agent", "evaluator", "ledger"]
+  );
+  assert.deepEqual(
+    frameFor(7).annotations.filter(({ role }) => role === "outcome").map(({ id }) => id),
+    ["recovery", "learning"]
+  );
 });
 
 test("digital twin keeps stable component identities and coordinates across every stage", () => {

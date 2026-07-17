@@ -3,9 +3,10 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="color-scheme" content="light">
+    <meta name="color-scheme" content="light dark">
     <meta name="description" content="FlowPulse production investigation workspace">
     <title>FlowPulse | Production Workspace</title>
+    <script>try{const c=document.cookie.split("; ").find(v=>v.startsWith("flowpulse-theme="));document.documentElement.dataset.theme=localStorage.getItem("flowpulse-theme")||(c&&c.split("=")[1])||"light"}catch{document.documentElement.dataset.theme="light"}</script>
     <link rel="stylesheet" href="/vendor/phosphor/flowpulse-icons.css">
     <link rel="stylesheet" href="/styles.css">
   </head>
@@ -27,6 +28,7 @@
         <div class="topbar-status">
           <span class="environment-label">dev / astronomy-shop</span>
           <span id="capture-label" class="capture-label">Checking source</span>
+          <button id="theme-toggle" class="theme-toggle" type="button" aria-pressed="false" aria-label="Switch to pure black theme"><span class="theme-swatch" aria-hidden="true"></span><span id="theme-toggle-label">Black</span></button>
           <a id="langfuse-link" class="text-link is-disabled" href="#" target="_blank" rel="noreferrer">Tracing not configured</a>
           <span id="ledger-state" class="ledger-state">Loading events</span>
         </div>
@@ -81,11 +83,10 @@
                   <span id="metric-kafka-label">Kafka lag</span><strong id="metric-kafka">182</strong><small id="metric-kafka-note">lag baseline</small>
                 </button>
               </div>
-              <div class="state-key" aria-label="State legend">
-                <span><i class="key-healthy"></i>Healthy</span>
-                <span><i class="key-change"></i>Change</span>
-                <span><i class="key-impact"></i>Impact</span>
-                <span><i class="key-verified"></i>Verified</span>
+              <div class="state-key" aria-label="Canvas entity legend">
+                <span><i class="key-runtime"></i>Observed runtime</span>
+                <span><i class="key-control"></i>Control plane</span>
+                <span><i class="key-outcome"></i>Derived outcome</span>
               </div>
             </div>
 
@@ -93,6 +94,10 @@
               <div id="twin-canvas" class="twin-canvas" role="region" aria-label="Astronomy Shop incident system canvas" tabindex="0">
                 <div id="canvas-loading" class="canvas-loading" role="status">
                   <span>Loading authoritative state</span>
+                </div>
+                <div class="plane-guides" aria-hidden="true">
+                  <span class="plane-guide runtime-guide"><strong>Runtime plane</strong><small>Observed and captured services</small></span>
+                  <span class="plane-guide control-guide"><strong>FlowPulse control plane</strong><small>Change, evaluation, and evidence</small></span>
                 </div>
                 <div id="canvas-layers" class="canvas-layers"></div>
                 <div id="compare-handle" class="compare-handle" aria-hidden="true" hidden><span></span></div>
@@ -124,6 +129,7 @@
 
         <section class="timeline-dock" aria-label="Incident timeline">
           <div class="transport">
+            <span class="transport-label">Replay controls</span>
             <button id="restart-button" class="transport-button" type="button">Restart</button>
             <button id="back-button" class="transport-button" type="button">Back</button>
             <button id="play-button" class="transport-button primary" type="button">Run guided replay</button>

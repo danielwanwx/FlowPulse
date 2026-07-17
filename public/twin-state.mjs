@@ -10,16 +10,16 @@ export const TWIN_STAGES = [
 ];
 
 export const TWIN_NODES = [
-  { id: "frontend", label: "Frontend", detail: "storefront", kind: "client", x: 10, y: 46 },
-  { id: "checkout", label: "Checkout", detail: "commerce service", kind: "service", x: 27, y: 46 },
-  { id: "payment", label: "Payment API", detail: "money movement", kind: "api", x: 48, y: 24 },
-  { id: "kafka", label: "orders.v1", detail: "Kafka stream", kind: "stream", x: 48, y: 59 },
-  { id: "accounting", label: "Accounting", detail: "consumer worker", kind: "worker", x: 69, y: 46 },
-  { id: "fraud", label: "Fraud", detail: "risk worker", kind: "worker", x: 69, y: 74 },
-  { id: "deployment", label: "checkout:2.18.0", detail: "deploy-checkout-442", kind: "change", x: 27, y: 14 },
-  { id: "agent", label: "Investigator", detail: "evidence agent", kind: "agent", x: 87, y: 27 },
-  { id: "evaluator", label: "Evaluator", detail: "adversarial check", kind: "evaluator", x: 87, y: 51 },
-  { id: "ledger", label: "Evidence ledger", detail: "append-only SQLite", kind: "database", x: 87, y: 76 }
+  { id: "frontend", label: "Frontend", detail: "storefront", kind: "client", plane: "runtime", x: 10, y: 46 },
+  { id: "checkout", label: "Checkout", detail: "commerce service", kind: "service", plane: "runtime", x: 27, y: 46 },
+  { id: "payment", label: "Payment API", detail: "money movement", kind: "api", plane: "runtime", x: 48, y: 24 },
+  { id: "kafka", label: "orders.v1", detail: "Kafka stream", kind: "stream", plane: "runtime", x: 48, y: 59 },
+  { id: "accounting", label: "Accounting", detail: "consumer worker", kind: "worker", plane: "runtime", x: 69, y: 46 },
+  { id: "fraud", label: "Fraud", detail: "risk worker", kind: "worker", plane: "runtime", x: 69, y: 74 },
+  { id: "deployment", label: "checkout:2.18.0", detail: "deploy-checkout-442", kind: "change", plane: "control", x: 27, y: 14 },
+  { id: "agent", label: "Investigator", detail: "evidence agent", kind: "agent", plane: "control", x: 87, y: 27 },
+  { id: "evaluator", label: "Evaluator", detail: "adversarial check", kind: "evaluator", plane: "control", x: 87, y: 51 },
+  { id: "ledger", label: "Evidence ledger", detail: "append-only SQLite", kind: "database", plane: "control", x: 87, y: 76 }
 ];
 
 export const TWIN_ICONS = {
@@ -111,14 +111,14 @@ export function frameFor(stageIndex) {
   if (index >= 6) {
     for (const id of ["checkout", "payment", "kafka", "accounting", "fraud", "deployment"]) nodeStates[id] = "verified";
     for (const id of ["checkout-payment", "checkout-kafka", "kafka-accounting", "kafka-fraud", "deployment-checkout"]) edgeStates[id] = "verified";
-    annotations.push({ id: "recovery", tone: "verified", title: "Recovery verified", copy: "Payment 99.98%. Errors 0.8%. Lag 620.", x: 43, y: 8 });
+    annotations.push({ id: "recovery", role: "outcome", tone: "verified", title: "Recovery verified", copy: "Payment 99.98%. Errors 0.8%. Lag 620.", x: 43, y: 8 });
   }
   if (index >= 7) {
     nodeStates.agent = "learned";
     nodeStates.evaluator = "learned";
     nodeStates.ledger = "learned";
     for (const id of ["agent-evaluator", "evaluator-ledger", "checkout-ledger", "kafka-ledger"]) edgeStates[id] = "learned";
-    annotations.push({ id: "learning", tone: "learned", title: "Regression recorded", copy: "evidence-policy-v2 passed six offline gates", x: 70, y: 7 });
+    annotations.push({ id: "learning", role: "outcome", tone: "learned", title: "Regression recorded", copy: "evidence-policy-v2 passed six offline gates", x: 70, y: 7 });
   }
 
   return {
