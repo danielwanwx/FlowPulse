@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
   ARCHITECTURE_LAYERS,
+  LIVE_LAYERS,
   PULSE_SLOTS,
   TWIN_EDGES,
   TWIN_ICONS,
@@ -15,7 +16,8 @@ import {
   frameFor,
   liveEdgePath,
   liveIncidentNodeStates,
-  livePulseSlots
+  livePulseSlots,
+  livePositions
 } from "../public/twin-state.mjs";
 
 const indexHtml = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
@@ -54,6 +56,29 @@ test("architecture layout is deterministic, layered, and leaves room for complet
   }
   assert.match(appJs, /arch-count-\$\{node\.layerSize\}/);
   assert.doesNotMatch(appJs, /style="left:\$\{node\.x\}/);
+});
+
+test("live layout keeps the same deterministic layers with more room for dependency pulses", () => {
+  const nodes = LIVE_LAYERS.flatMap((layer) => layer.ids.map((id, index) => ({ id, label: id, kind: index === 0 ? "client" : "service" })));
+  const first = livePositions(nodes);
+  const second = livePositions([...nodes].reverse());
+  const coordinates = (items) => Object.fromEntries(items.map(({ id, layer, x, y }) => [id, { layer, x, y }]));
+  assert.deepEqual(coordinates(first), coordinates(second));
+  assert.deepEqual([...new Set(first.map(({ layer }) => layer))], LIVE_LAYERS.map(({ id }) => id));
+  assert.deepEqual([...new Set(first.map(({ y }) => y))], [17, 39, 61, 83]);
+  assert.match(stylesCss, /\.architecture-guides span \{ border-top: 1px dashed/);
+  assert.match(stylesCss, /\.live-guides span \{[^}]+border-top: 1px dotted/s);
+  assert.match(appJs, /livePositions\(topology\.nodes\)/);
+});
+
+test("manager and agent operations stay separate from chat approval", () => {
+  assert.match(indexHtml, /data-mode="agents">Agents</);
+  assert.match(indexHtml, /id="manager-panel"[^>]+aria-labelledby="manager-title"/);
+  assert.match(indexHtml, /id="approve-button"[^>]+hidden>Approve bounded recovery/);
+  assert.match(indexHtml, /Chat can explain or delegate safe work\. It cannot approve remediation\./);
+  assert.match(appJs, /mode = "agents"/);
+  assert.match(appJs, /data-agent-node-id/);
+  assert.match(stylesCss, /\.agent-node-evaluator \{ left: 58%; top: 30%; \}/);
 });
 
 test("every component has a vector icon and causal pulses remain sequential", () => {
@@ -148,6 +173,20 @@ test("live connector paths terminate at card boundaries for target viewport widt
     assert.equal(startY, from.y * 5.2);
     assert.equal(endY, to.y * 5.2);
   }
+
+  const crossLayer = liveEdgePath({ x: 31, y: 17 }, { x: 68, y: 61 }, {
+    canvasWidth: 1440,
+    canvasHeight: 620,
+    nodeWidth: 144,
+    nodeHeight: 58,
+    lane: 1
+  });
+  const [startX, startY, , , , , endX, endY] = crossLayer.match(/-?\d+(?:\.\d+)?/g).map(Number);
+  const scaledHalfHeight = 58 * (520 / 620) / 2;
+  assert.equal(startX, 310);
+  assert.equal(endX, 680);
+  assert.ok(Math.abs(startY - (17 * 5.2 + scaledHalfHeight)) < 0.01);
+  assert.ok(Math.abs(endY - (61 * 5.2 - scaledHalfHeight)) < 0.01);
 });
 
 test("live pulses follow deterministic topology depth with one segment per edge", () => {

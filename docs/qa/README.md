@@ -6,7 +6,7 @@ Build under test: standalone FlowPulse repository, latest working tree served at
 
 ## Automated checks
 
-- `npm test`: 22 tests passed, 0 failed.
+- `npm test`: 35 tests passed, 0 failed.
 - `npm audit --audit-level=high`: 0 vulnerabilities.
 - `node --check public/app.js`: passed.
 - `node --check public/twin-state.mjs`: passed.
@@ -98,6 +98,20 @@ The app now opens on a four-layer Architecture view, then reuses stable service 
 - `agentic-live-single-pulse-1440.jpg` - the real OTLP service graph with complete 144 px plaques, boundary-connected paths, and one active causal pulse segment.
 
 The Compare range now updates the canvas handle, incident clip, dock range, and accessible value continuously at 1% precision. Live edges terminate at measured component boundaries and use unique topology-ordered 420 ms pulse slots; five visible-browser samples found at most one active segment. An unresolved local-development failure can color only services named by referenced failing trace evidence, and successful verification clears that impact state. The final real Live capture was healthy and therefore remained honestly observed rather than being forced red for a screenshot.
+
+### Manager and Agent Operations refinement
+
+- `agent-control-architecture-1440x900.png` - four-layer architecture with structural dashed guides distinct from runtime dependencies.
+- `agent-control-architecture-dark-1440x900.png` - the same source projection in the persisted pure-black theme.
+- `agent-control-live-1440x900.png` - current real OTLP topology, layer-spaced routing, sequential pulse segments, and the ledger-derived completed checkout change.
+- `agent-control-manager-owner-gate-1440x900.png` - Manager report with the rejected Kafka diagnosis, accepted checkout/payment cause, immutable evidence IDs, bounded rollback, and separate Owner control.
+- `agent-control-operations-1440x900.png` - ledger-synchronized specialist graph for Monitor, Evidence, Diagnosis, Evaluator, Planner, Owner, Executor, Verification, Evolve, and Test.
+- `agent-control-recovery-1440x900.png` - post-approval verification at 99.98% payment reachability, 0.8% checkout errors, and Kafka lag 620.
+- `agent-control-compare-1440x900.png` - continuously draggable 64% incident / 36% verified canvas split.
+
+The visible browser completed the full owner-gated flow and confirmed the evaluator's 22% Kafka diagnosis rejection, evidence replan, checkout/payment root cause, bounded checkout-only rollback, verification, regression creation, and policy backtest. The Manager chat is ledger-grounded and cannot manufacture an approval; the consequential action remains a separate control. The Agent Operations projection is delivered over ledger-derived server-sent events, and every active handoff is reconstructed from attributed immutable events. Geometry checks found zero node intersections for 13 Agent Operations components and 22 Live components at 1280 x 800. Live rendered 23 single-segment pulse paths with deterministic delays; browser console inspection returned 0 errors and 0 warnings.
+
+Langfuse was intentionally shown as `Not configured` during this local QA because no credentials were supplied. The integration path mirrors manager, agent, tool, and evaluator observations when credentials exist, while the append-only incident ledger remains runtime authority. No direct ClickHouse internal-schema dependency is used.
 
 ## Runtime truth boundary
 

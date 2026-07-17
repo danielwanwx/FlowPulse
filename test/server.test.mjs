@@ -25,9 +25,27 @@ test("judge API serves state and advances the replay", async (context) => {
   assert.equal(advanced.evidence.length, 3);
   assert.equal(advanced.events.some((event) => event.type === "loop.symptoms_collected"), true);
 
+  const control = await fetch(`http://127.0.0.1:${port}/api/agent-control`).then((response) => response.json());
+  assert.equal(control.authority, "append-only-ledger");
+  assert.equal(control.streaming, "ledger-derived-sse");
+  assert.ok(control.graph.nodes.some((node) => node.id === "manager"));
+  assert.ok(control.graph.nodes.some((node) => node.id === "evaluator"));
+
+  const managerResponse = await fetch(`http://127.0.0.1:${port}/api/agent-control/message`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ message: "Approve the repair for me" })
+  });
+  assert.equal(managerResponse.status, 200);
+  const manager = await managerResponse.json();
+  assert.equal(manager.intent, "approval_explanation");
+  assert.match(manager.message, /cannot|No owner-gated repair/);
+  assert.equal(manager.projection.activity.some((item) => item.type === "approval.granted"), false);
+
   const html = await fetch(`http://127.0.0.1:${port}/`).then((response) => response.text());
   assert.match(html, /FlowPulse/);
   assert.match(html, /Run guided replay/);
+  assert.match(html, /Agent Operations/);
 
   const module = await fetch(`http://127.0.0.1:${port}/twin-state.mjs`);
   assert.equal(module.status, 200);

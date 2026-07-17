@@ -20,11 +20,11 @@ npm run judge
 
 Open [http://127.0.0.1:4310](http://127.0.0.1:4310), then:
 
-1. Click **Run guided replay**.
+1. Open **Diagnose**, then click **Run guided replay**.
 2. Watch the shared system canvas replay propagation and the evaluator reject the Kafka diagnosis.
 3. Select nodes or causal annotations to inspect the deploy, trace, log, and commit evidence used in the replan.
-4. Click **Approve checkout rollback** at the human gate.
-5. Watch recovery verification and the offline policy gates complete, then open **Compare** to inspect incident versus verified state.
+4. Click **Recover** at the human gate. The Manager shows the rejected claim, accepted cause, evidence IDs, and bounded proposal; use the separate Owner approval control to authorize it.
+5. Watch **Agents** show execution, verification, Evolve, and Test from the same ledger events, then open **Compare** to inspect incident versus verified state.
 
 The interactive path takes about 20 seconds. It is deterministic and needs no cloud credentials.
 
@@ -42,13 +42,15 @@ npm test
 
 ## Incident Digital Twin
 
-The primary interface is one deterministic system canvas with three views of the same component identities:
+The primary interface is one deterministic system canvas with five views of the same component identities:
 
+- **Architecture** opens by default and arranges only observed components into stable semantic layers.
 - **Live** shows only services and dependencies observed in a connected OTLP source. With no source it displays an honest `Disconnected` state rather than fixture topology.
-- **Replay** reconstructs any incident milestone from immutable events. Play, pause, step, restart, seek, and speed controls all use the same projection function.
+- **Diagnose** reconstructs any incident milestone from immutable events. Play, pause, step, restart, seek, and speed controls all use the same projection function.
+- **Agents** reconstructs the isolated Monitor, Evidence, Diagnosis, Evaluator, Planner, Owner, Executor, Verification, Evolve, and Test roles from attributed ledger events.
 - **Compare** places the impact and verified recovery projections on the same geometry with an interactive split.
 
-The canvas keeps the architecture visible while moving dense telemetry and reasoning into a contextual drawer. Metrics, logs, traces, deploys, evidence citations, agent reasoning, adversarial evaluation, repair, verification, and evolve gates remain reachable by selecting a node, edge, or event.
+The canvas keeps the architecture visible while moving dense telemetry and reasoning into a contextual drawer. **Recover** opens a dedicated Manager report and activity feed; Manager chat can explain evidence or delegate a safe catalog action, but it cannot approve remediation. Metrics, logs, traces, deploys, evidence citations, agent reasoning, adversarial evaluation, repair, verification, and evolve gates remain reachable by selecting a node, edge, or event.
 
 ## Real local development loop
 
@@ -114,7 +116,7 @@ LANGFUSE_BASE_URL=https://cloud.langfuse.com
 LANGFUSE_TRACE_URL=https://cloud.langfuse.com/project/your-project
 ```
 
-When configured, the live loop mirrors a parent incident observation plus nested GPT-5.6 generations, evaluator calls, tool calls, latency, token usage, correlation metadata, and evaluator output to Langfuse using its current OpenTelemetry integration. Langfuse remains best-effort observability. It cannot transition the incident, approve a repair, or promote a policy. See the official [Langfuse tracing guide](https://langfuse.com/docs/observability/get-started) and [OpenTelemetry integration](https://langfuse.com/integrations/native/opentelemetry).
+When configured, the live loop and Agent Control Service mirror parent incident observations plus Manager turns, specialist actions, GPT-5.6 generations, evaluator calls, tool calls, latency, token usage, correlation metadata, and evaluator output to Langfuse using its current OpenTelemetry integration. Langfuse remains best-effort observability. It cannot transition the incident, approve a repair, or promote a policy, and FlowPulse does not couple runtime behavior to Langfuse's internal ClickHouse schema. See the official [Langfuse tracing guide](https://langfuse.com/docs/observability/get-started) and [OpenTelemetry integration](https://langfuse.com/integrations/native/opentelemetry).
 
 ## Architecture
 
@@ -146,6 +148,7 @@ The runtime is intentionally small:
 - Consequential remediation cannot execute before an `approval.granted` event.
 
 The original product contract is in [`docs/specs/2026-07-16-flowpulse-design.md`](docs/specs/2026-07-16-flowpulse-design.md). The current Incident Digital Twin contract is in [`docs/specs/2026-07-16-incident-digital-twin-redesign.md`](docs/specs/2026-07-16-incident-digital-twin-redesign.md). The real Production Workspace contract is in [`docs/specs/2026-07-17-live-development-workspace.md`](docs/specs/2026-07-17-live-development-workspace.md).
+The Manager and synchronized specialist-operations contract is in [`docs/specs/2026-07-17-agent-control-and-transparent-recovery.md`](docs/specs/2026-07-17-agent-control-and-transparent-recovery.md).
 
 ## Evidence bundle
 
@@ -207,6 +210,7 @@ src/runtime.mjs                 bounded replay state machine
 src/live-source.mjs             OTLP provenance and topology projection
 src/development-runtime.mjs     local agent/evaluator/owner loop
 src/development-adapter.mjs     allowlisted flag and Docker adapter
+src/agent-control-service.mjs   ledger-derived Manager and agent graph projection
 src/openai.mjs                  live GPT-5.6 tool and evaluator loop
 src/observability.mjs           Langfuse OpenTelemetry mirror
 src/policy.mjs                  deterministic promotion gates

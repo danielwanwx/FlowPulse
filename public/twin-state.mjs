@@ -71,6 +71,29 @@ export const ARCHITECTURE_LAYERS = [
   }
 ];
 
+export const LIVE_LAYERS = [
+  {
+    id: "entry",
+    label: "Entry & delivery",
+    ids: ["load-generator", "frontend-web", "frontend-proxy", "frontend"]
+  },
+  {
+    id: "commerce",
+    label: "Commerce request path",
+    ids: ["cart", "currency", "shipping", "checkout", "product-catalog", "recommendation", "ad"]
+  },
+  {
+    id: "processing",
+    label: "Payment & asynchronous processing",
+    ids: ["payment", "kafka", "accounting", "fraud-detection", "fraud", "email", "quote", "image-provider"]
+  },
+  {
+    id: "platform",
+    label: "Platform, telemetry & data",
+    ids: ["flagd-ui", "flagd", "telemetry-docs", "otelcol-contrib", "astronomy-db"]
+  }
+];
+
 export function architecturePositions(nodes = []) {
   const knownLayer = new Map(ARCHITECTURE_LAYERS.flatMap((layer, index) => layer.ids.map((id, order) => [id, { index, order }])));
   const buckets = ARCHITECTURE_LAYERS.map(() => []);
@@ -93,6 +116,30 @@ export function architecturePositions(nodes = []) {
       layerSize: sorted.length,
       x: spreadCoordinate(index, sorted.length),
       y: [17, 38, 60, 81][layerIndex]
+    }));
+  });
+}
+
+export function livePositions(nodes = []) {
+  const knownLayer = new Map(LIVE_LAYERS.flatMap((layer, index) => layer.ids.map((id, order) => [id, { index, order }])));
+  const buckets = LIVE_LAYERS.map(() => []);
+  const fallbackLayer = { client: 0, api: 1, service: 1, stream: 2, worker: 2, database: 3 };
+  for (const node of nodes) {
+    const known = knownLayer.get(node.id);
+    const layerIndex = known?.index ?? fallbackLayer[node.kind] ?? 3;
+    buckets[layerIndex].push({ node, order: known?.order ?? 1_000 });
+  }
+  return buckets.flatMap((bucket, layerIndex) => {
+    const sorted = bucket.sort((a, b) => a.order - b.order || a.node.id.localeCompare(b.node.id));
+    return sorted.map(({ node }, index) => ({
+      ...node,
+      layer: LIVE_LAYERS[layerIndex].id,
+      layerLabel: LIVE_LAYERS[layerIndex].label,
+      layerIndex,
+      layerPosition: index,
+      layerSize: sorted.length,
+      x: spreadCoordinate(index, sorted.length),
+      y: [17, 39, 61, 83][layerIndex]
     }));
   });
 }
@@ -260,16 +307,37 @@ export function liveEdgePath(from, to, {
   canvasWidth = 1100,
   canvasHeight = 520,
   nodeWidth = 144,
-  nodeHeight = 58
+  nodeHeight = 58,
+  lane = 0
 } = {}) {
   const startCenter = { x: from.x * 10, y: from.y * 5.2 };
   const endCenter = { x: to.x * 10, y: to.y * 5.2 };
   const halfWidth = nodeWidth * (1000 / canvasWidth) / 2;
   const halfHeight = nodeHeight * (520 / canvasHeight) / 2;
+  const verticalDistance = endCenter.y - startCenter.y;
+  const horizontalDistance = endCenter.x - startCenter.x;
+  if (Math.abs(verticalDistance) > halfHeight * 2) {
+    const direction = Math.sign(verticalDistance);
+    const start = { x: startCenter.x, y: startCenter.y + direction * halfHeight };
+    const end = { x: endCenter.x, y: endCenter.y - direction * halfHeight };
+    const railY = (start.y + end.y) / 2 + lane * 2.2;
+    return `M ${round(start.x)} ${round(start.y)} C ${round(start.x)} ${round(railY)} ${round(end.x)} ${round(railY)} ${round(end.x)} ${round(end.y)}`;
+  }
+  if (Math.abs(horizontalDistance) > 180) {
+    const direction = lane >= 0 ? 1 : -1;
+    const start = { x: startCenter.x, y: startCenter.y + direction * halfHeight };
+    const end = { x: endCenter.x, y: endCenter.y + direction * halfHeight };
+    const railY = startCenter.y + direction * (halfHeight + 10 + Math.abs(lane) * 2.2);
+    return `M ${round(start.x)} ${round(start.y)} C ${round(start.x)} ${round(railY)} ${round(end.x)} ${round(railY)} ${round(end.x)} ${round(end.y)}`;
+  }
   const start = rectangleBoundary(startCenter, endCenter, halfWidth, halfHeight);
   const end = rectangleBoundary(endCenter, startCenter, halfWidth, halfHeight);
   if (Math.abs(end.x - start.x) < 1) {
-    const midY = (start.y + end.y) / 2;
+    const midY = (start.y + end.y) / 2 + lane * 2.2;
+    return `M ${round(start.x)} ${round(start.y)} C ${round(start.x)} ${round(midY)} ${round(end.x)} ${round(midY)} ${round(end.x)} ${round(end.y)}`;
+  }
+  if (Math.abs(end.y - start.y) > Math.abs(end.x - start.x) * .55) {
+    const midY = (start.y + end.y) / 2 + lane * 2.2;
     return `M ${round(start.x)} ${round(start.y)} C ${round(start.x)} ${round(midY)} ${round(end.x)} ${round(midY)} ${round(end.x)} ${round(end.y)}`;
   }
   const midX = (start.x + end.x) / 2;

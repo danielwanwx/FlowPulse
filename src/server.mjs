@@ -7,10 +7,11 @@ import { Ledger } from "./ledger.mjs";
 import { loadBundle } from "./bundle.mjs";
 import { IncidentRuntime } from "./runtime.mjs";
 import { runLiveInvestigation } from "./openai.mjs";
-import { initializeObservability, shutdownObservability } from "./observability.mjs";
+import { initializeObservability, shutdownObservability, withAgentControlTrace } from "./observability.mjs";
 import { LiveSource } from "./live-source.mjs";
 import { DevelopmentRuntime } from "./development-runtime.mjs";
 import * as developmentAdapter from "./development-adapter.mjs";
+import { AgentControlService } from "./agent-control-service.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const publicDir = join(root, "public");
@@ -26,6 +27,7 @@ const langfuseEnabled = await initializeObservability().catch((error) => {
   console.warn(`Langfuse disabled: ${error.message}`);
   return false;
 });
+const agentControl = new AgentControlService({ runtime, langfuseEnabled });
 
 const server = createServer(async (request, response) => {
   setHeaders(response);
@@ -37,6 +39,50 @@ const server = createServer(async (request, response) => {
     }
     if (url.pathname === "/api/source" && request.method === "GET") {
       return json(response, 200, await liveSource.project());
+    }
+    if (url.pathname === "/api/agent-control" && request.method === "GET") {
+      return json(response, 200, agentControl.project(runtime.ensureRun()));
+    }
+    if (url.pathname === "/api/agent-control/events" && request.method === "GET") {
+      return streamAgentEvents(request, response, url);
+    }
+    if (url.pathname === "/api/agent-control/message" && request.method === "POST") {
+      requireJson(request);
+      const body = await readJson(request);
+      const runId = runtime.ensureRun();
+      return json(response, 200, await withAgentControlTrace({
+        runId,
+        incidentId: runtime.bundle.incident.id,
+        action: "manager-message",
+        input: { message: body.message }
+      }, async (trace) => {
+        const generation = trace.generation("flowpulse.manager-response", {
+          input: { message: body.message },
+          model: process.env.OPENAI_MODEL || "deterministic-ledger-projection",
+          metadata: { run_id: runId, authority: "flowpulse-ledger" }
+        });
+        const result = agentControl.message(runId, body.message);
+        generation.update({ output: { intent: result.intent, message: result.message, citations: result.projection.report.citations } });
+        generation.end();
+        return result;
+      }));
+    }
+    if (url.pathname === "/api/agent-control/action" && request.method === "POST") {
+      requireJson(request);
+      const body = await readJson(request);
+      const runId = runtime.ensureRun();
+      return json(response, 200, await withAgentControlTrace({
+        runId,
+        incidentId: runtime.bundle.incident.id,
+        action: String(body.action || ""),
+        input: { action: body.action }
+      }, async (trace) => {
+        const tool = trace.tool("flowpulse.agent-action", { input: { action: body.action }, metadata: { run_id: runId } });
+        const projection = agentControl.act(runId, body.action);
+        tool.update({ output: { current_agent_id: projection.current_agent_id, last_event_id: projection.last_event_id } });
+        tool.end();
+        return projection;
+      }));
     }
     if (url.pathname === "/api/development/status" && request.method === "GET") {
       return json(response, 200, await developmentAdapter.developmentStatus());
@@ -103,7 +149,7 @@ const server = createServer(async (request, response) => {
     }
     if (url.pathname === "/api/health" && request.method === "GET") {
       const source = await liveSource.project();
-      return json(response, 200, { ok: true, ledger: "sqlite-append-only", langfuse: langfuseEnabled, source: source.status });
+      return json(response, 200, { ok: true, ledger: "sqlite-append-only", agent_control: "ledger-governed", langfuse: langfuseEnabled, source: source.status });
     }
     if (request.method !== "GET") return json(response, 404, { error: "Not found" });
     return serveStatic(url.pathname, response);
@@ -179,5 +225,28 @@ async function stateWithSource(runId = runtime.ensureRun()) {
   const projected = runtime.state(runId);
   const referenced = new Set(projected.events.flatMap((event) => event.evidence_refs));
   const liveEvidence = source.evidence.filter((item) => referenced.has(item.id));
-  return { ...projected, evidence: [...projected.evidence, ...liveEvidence], source };
+  return { ...projected, evidence: [...projected.evidence, ...liveEvidence], source, agent_control: agentControl.project(runId) };
+}
+
+function streamAgentEvents(request, response, url) {
+  const runId = url.searchParams.get("run_id") || runtime.ensureRun();
+  let lastSequence = Number(request.headers["last-event-id"] || url.searchParams.get("after") || 0);
+  response.writeHead(200, {
+    "content-type": "text/event-stream; charset=utf-8",
+    "cache-control": "no-cache, no-transform",
+    connection: "keep-alive"
+  });
+  const sendProjection = () => {
+    const projection = agentControl.project(runId);
+    if (projection.last_sequence <= lastSequence) return;
+    lastSequence = projection.last_sequence;
+    response.write(`id: ${lastSequence}\nevent: agent-control\ndata: ${JSON.stringify(projection)}\n\n`);
+  };
+  sendProjection();
+  const interval = setInterval(() => {
+    if (response.destroyed) return;
+    sendProjection();
+    response.write(": heartbeat\n\n");
+  }, 1_000);
+  request.on("close", () => clearInterval(interval));
 }

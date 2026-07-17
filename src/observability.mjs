@@ -42,6 +42,37 @@ export async function withIncidentTrace({ runId, incidentId, input }, work) {
   });
 }
 
+export async function withAgentControlTrace({ runId, incidentId, action, input }, work) {
+  if (!tracing) return work(noopContext());
+  return tracing.propagateAttributes({
+    sessionId: incidentId,
+    metadata: {
+      run_id: runId,
+      incident_id: incidentId,
+      authority: "flowpulse-ledger",
+      control_action: action
+    },
+    tags: ["flowpulse", "agent-control", action]
+  }, () => tracing.startActiveObservation("flowpulse.agent-control", async (span) => {
+    span.update({ input, metadata: { run_id: runId, incident_id: incidentId, action } });
+    const context = {
+      traceId: tracing.getActiveTraceId(),
+      agent: (name, details) => startObservation(name, details, "agent"),
+      generation: (name, details) => startObservation(name, details, "generation"),
+      tool: (name, details) => startObservation(name, details, "tool"),
+      evaluator: (name, details) => startObservation(name, details, "evaluator")
+    };
+    try {
+      const output = await work(context);
+      span.update({ output: { status: "completed", last_event_id: output?.projection?.last_event_id || output?.last_event_id || null } });
+      return output;
+    } catch (error) {
+      span.update({ output: { status: "failed", error: error.message } });
+      throw error;
+    }
+  }, { asType: "agent" }));
+}
+
 function startObservation(name, details, asType) {
   if (!tracing) return noopObservation();
   return tracing.startObservation(name, details, { asType });
@@ -50,6 +81,7 @@ function startObservation(name, details, asType) {
 function noopContext() {
   return {
     traceId: null,
+    agent: () => noopObservation(),
     generation: () => noopObservation(),
     tool: () => noopObservation(),
     evaluator: () => noopObservation()

@@ -6,7 +6,7 @@ Target time: 2 minutes 20 seconds.
 
 "FlowPulse turns fragmented telemetry into an incident loop that can be challenged, safely repaired, verified, and learned from. The append-only ledger is the runtime authority; every model claim must cite evidence."
 
-Start `npm run judge`, open the cockpit, and point out the deterministic replay badge and immutable event count.
+Start `npm run judge`. The product opens on the current four-layer Architecture projection; point out that the components come from the selected OTLP source, then open **Diagnose**.
 
 ## False diagnosis (0:20-0:50)
 
@@ -29,9 +29,9 @@ The evaluator now accepts a complete change, mechanism, timing, and propagation 
 
 ## Human gate and recovery (1:20-1:50)
 
-The state machine proposes only a checkout rollback. Click **Approve checkout rollback**.
+The state machine proposes only a checkout rollback. Click **Recover** to open the Manager. Point out the rejected diagnosis, accepted root cause, evidence IDs, and bounded checkout-only action, then use the separate **Approve bounded checkout recovery** control.
 
-Point out that approval is an immutable ledger event and precedes repair execution. The verification panel then shows payment reachability at 99.98%, checkout errors at 0.8%, and Kafka lag draining to 620 without a Kafka repair.
+Point out that approval is an immutable ledger event and precedes repair execution. FlowPulse switches to **Agents**, where the Owner, Executor, Verification, Evolve, and Test roles update from the same event stream. The verification projection then shows payment reachability at 99.98%, checkout errors at 0.8%, and Kafka lag draining to 620 without a Kafka repair.
 
 ## Learning and live mode (1:50-2:20)
 
