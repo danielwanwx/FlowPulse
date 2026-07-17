@@ -15,6 +15,6 @@
   "dependencies": {
     "@langfuse/otel": "^5.4.0",
     "@langfuse/tracing": "^5.4.0",
-    "@opentelemetry/sdk-node": "^0.205.0"
+    "@opentelemetry/sdk-node": "^0.220.0"
   }
 }
