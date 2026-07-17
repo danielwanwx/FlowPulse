@@ -1,0 +1,11 @@
+{
+  "schema_version": "pdf_report_status.v1",
+  "status": "generated",
+  "path": "research_report.pdf",
+  "generated_at": "2026-07-17T19:51:47.939548+00:00",
+  "page_count": 2,
+  "byte_count": 35085,
+  "font_mode": "embedded_arial_unicode",
+  "error_type": "",
+  "error_message": ""
+}

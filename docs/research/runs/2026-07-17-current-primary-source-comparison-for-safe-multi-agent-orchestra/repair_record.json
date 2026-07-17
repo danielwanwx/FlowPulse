@@ -1,0 +1,82 @@
+{
+  "schema_version": "repair_record.v1",
+  "attempted": true,
+  "pass_id": "pass-2",
+  "trigger_count": 3,
+  "failures": [
+    {
+      "facet_id": "overview",
+      "reason": "no_executable_sources"
+    },
+    {
+      "facet_id": "primary_sources",
+      "reason": "no_executable_sources"
+    },
+    {
+      "facet_id": "current_evidence",
+      "reason": "no_executable_sources"
+    }
+  ],
+  "facets": [
+    {
+      "facet_id": "overview",
+      "query_id": "q-0001",
+      "query": "Current primary-source comparison for safe multi-agent orchestration of a production incident response system: OpenAI Agents SDK, CrewAI, LangGraph, Microsoft Agent Framework or AutoGen, Google ADK, Temporal durable workflows. Focus on supervisor/router, handoffs, event-driven ledger/blackboard, graph state machines, durable execution, human approval, evaluator isolation, testing/backtesting, retries and stop conditions. Return official documentation URLs and distinguish facts from recommendations. overview",
+      "source_types": [
+        "web_search"
+      ],
+      "required": true,
+      "freshness_window_days": null,
+      "max_results": 5,
+      "repair_constraints": [],
+      "status": "planned",
+      "repair_reason": "no_executable_sources",
+      "repair_reasons": [
+        "no_executable_sources"
+      ],
+      "original_query": "Current primary-source comparison for safe multi-agent orchestration of a production incident response system: OpenAI Agents SDK, CrewAI, LangGraph, Microsoft Agent Framework or AutoGen, Google ADK, Temporal durable workflows. Focus on supervisor/router, handoffs, event-driven ledger/blackboard, graph state machines, durable execution, human approval, evaluator isolation, testing/backtesting, retries and stop conditions. Return official documentation URLs and distinguish facts from recommendations. overview",
+      "inherited_constraints": []
+    },
+    {
+      "facet_id": "primary_sources",
+      "query_id": "q-0002",
+      "query": "Current primary-source comparison for safe multi-agent orchestration of a production incident response system: OpenAI Agents SDK, CrewAI, LangGraph, Microsoft Agent Framework or AutoGen, Google ADK, Temporal durable workflows. Focus on supervisor/router, handoffs, event-driven ledger/blackboard, graph state machines, durable execution, human approval, evaluator isolation, testing/backtesting, retries and stop conditions. Return official documentation URLs and distinguish facts from recommendations. official primary sources",
+      "source_types": [
+        "web_search"
+      ],
+      "required": true,
+      "freshness_window_days": null,
+      "max_results": 5,
+      "repair_constraints": [],
+      "status": "planned",
+      "repair_reason": "no_executable_sources",
+      "repair_reasons": [
+        "no_executable_sources"
+      ],
+      "original_query": "Current primary-source comparison for safe multi-agent orchestration of a production incident response system: OpenAI Agents SDK, CrewAI, LangGraph, Microsoft Agent Framework or AutoGen, Google ADK, Temporal durable workflows. Focus on supervisor/router, handoffs, event-driven ledger/blackboard, graph state machines, durable execution, human approval, evaluator isolation, testing/backtesting, retries and stop conditions. Return official documentation URLs and distinguish facts from recommendations. official primary sources",
+      "inherited_constraints": []
+    },
+    {
+      "facet_id": "current_evidence",
+      "query_id": "q-0003",
+      "query": "Current primary-source comparison for safe multi-agent orchestration of a production incident response system: OpenAI Agents SDK, CrewAI, LangGraph, Microsoft Agent Framework or AutoGen, Google ADK, Temporal durable workflows. Focus on supervisor/router, handoffs, event-driven ledger/blackboard, graph state machines, durable execution, human approval, evaluator isolation, testing/backtesting, retries and stop conditions. Return official documentation URLs and distinguish facts from recommendations. current evidence",
+      "source_types": [
+        "web_search"
+      ],
+      "required": true,
+      "freshness_window_days": 365,
+      "max_results": 5,
+      "repair_constraints": [],
+      "status": "planned",
+      "repair_reason": "no_executable_sources",
+      "repair_reasons": [
+        "no_executable_sources"
+      ],
+      "original_query": "Current primary-source comparison for safe multi-agent orchestration of a production incident response system: OpenAI Agents SDK, CrewAI, LangGraph, Microsoft Agent Framework or AutoGen, Google ADK, Temporal durable workflows. Focus on supervisor/router, handoffs, event-driven ledger/blackboard, graph state machines, durable execution, human approval, evaluator isolation, testing/backtesting, retries and stop conditions. Return official documentation URLs and distinguish facts from recommendations. current evidence",
+      "inherited_constraints": []
+    }
+  ],
+  "before_progress_fingerprint": "6049ac540282667cb85ee7f16a6b10f723f837960b719c856ce33239d7b24288",
+  "after_progress_fingerprint": "6049ac540282667cb85ee7f16a6b10f723f837960b719c856ce33239d7b24288",
+  "stop_reason": "repair_no_progress"
+}

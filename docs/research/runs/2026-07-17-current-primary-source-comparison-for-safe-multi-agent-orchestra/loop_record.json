@@ -1,0 +1,145 @@
+{
+  "generated_at": "2026-07-17T19:51:47.739786+00:00",
+  "loop_id": "research_loop_v1",
+  "topic": "Current primary-source comparison for safe multi-agent orchestration of a production incident response system: OpenAI Agents SDK, CrewAI, LangGraph, Microsoft Agent Framework or AutoGen, Google ADK, Temporal durable workflows. Focus on supervisor/router, handoffs, event-driven ledger/blackboard, graph state machines, durable execution, human approval, evaluator isolation, testing/backtesting, retries and stop conditions. Return official documentation URLs and distinguish facts from recommendations.",
+  "run_status": "failed_no_rows",
+  "loop_status": "blocked",
+  "stop_reason": "sources_returned_no_evidence",
+  "check_results": [
+    {
+      "check_id": "context_hygiene",
+      "status": "pass",
+      "observed": "Evidence is represented as artifact rows, not inline run context."
+    },
+    {
+      "check_id": "stop_brakes",
+      "status": "warn",
+      "observed": "No source timeout configured.",
+      "feedback_action": "Set --source-timeout-seconds so long-running connectors have a hard stop."
+    },
+    {
+      "check_id": "critic_separation",
+      "status": "pass",
+      "observed": "Quality, claim, and decision critic artifacts are present."
+    },
+    {
+      "check_id": "tool_focus",
+      "status": "pass",
+      "observed": "3 source(s) across 1 connector type(s): web_search."
+    },
+    {
+      "check_id": "bounded_execution",
+      "status": "warn",
+      "observed": "No source timeout configured.",
+      "feedback_action": "Set --source-timeout-seconds for fragile or long-running connectors."
+    },
+    {
+      "check_id": "executable_sources",
+      "status": "pass",
+      "observed": "3 executable source(s) planned."
+    },
+    {
+      "check_id": "evidence_collected",
+      "status": "fail",
+      "observed": "No evidence rows collected.",
+      "feedback_action": "Broaden collection or repair connectors."
+    },
+    {
+      "check_id": "source_quality",
+      "status": "fail",
+      "observed": "No evidence rows to score.",
+      "feedback_action": "Collect evidence before synthesis."
+    },
+    {
+      "check_id": "duplicate_pressure",
+      "status": "pass",
+      "observed": "No duplicate clusters detected."
+    },
+    {
+      "check_id": "conflict_review",
+      "status": "pass",
+      "observed": "No directional conflict flags detected."
+    },
+    {
+      "check_id": "claim_grounding",
+      "status": "fail",
+      "observed": "Claim review has no collected evidence.",
+      "feedback_action": "Do not pass this run to final LLM analysis."
+    },
+    {
+      "check_id": "target_claim_threshold",
+      "status": "skip",
+      "observed": "Run does not use the structured target contract."
+    },
+    {
+      "check_id": "connector_health",
+      "status": "warn",
+      "observed": "6 warning(s) recorded.",
+      "feedback_action": "Run research-engine doctor and repair optional connector setup if coverage matters."
+    },
+    {
+      "check_id": "facet_coverage",
+      "status": "warn",
+      "observed": "Missing relevant yield for required facet(s): overview, primary_sources, current_evidence, alternatives, risks.",
+      "feedback_action": "Review the recorded repair pass and collect targeted primary evidence if needed."
+    },
+    {
+      "check_id": "repair_bounds",
+      "status": "pass",
+      "observed": "Exactly one bounded pass-2 repair was recorded."
+    }
+  ],
+  "feedback_actions": [
+    {
+      "reason": "failed_no_rows",
+      "action": "Broaden --platform-scope, simplify the query, or repair missing/auth-expired connectors."
+    },
+    {
+      "reason": "stop_brakes",
+      "action": "Set --source-timeout-seconds so long-running connectors have a hard stop."
+    },
+    {
+      "reason": "bounded_execution",
+      "action": "Set --source-timeout-seconds for fragile or long-running connectors."
+    },
+    {
+      "reason": "evidence_collected",
+      "action": "Broaden collection or repair connectors."
+    },
+    {
+      "reason": "source_quality",
+      "action": "Collect evidence before synthesis."
+    },
+    {
+      "reason": "claim_grounding",
+      "action": "Do not pass this run to final LLM analysis."
+    },
+    {
+      "reason": "connector_health",
+      "action": "Run research-engine doctor and repair optional connector setup if coverage matters."
+    },
+    {
+      "reason": "facet_coverage",
+      "action": "Review the recorded repair pass and collect targeted primary evidence if needed."
+    }
+  ],
+  "records_written": {
+    "query_plan": "query_plan.json",
+    "execution": "collection_execution.json",
+    "evidence": "evidence.jsonl",
+    "chunks": "chunks.jsonl",
+    "quality": "evidence_quality.json",
+    "facet_coverage": "facet_coverage.json",
+    "repair": "repair_record.json",
+    "claims": "claim_review.json",
+    "decision": "decision_brief.json"
+  },
+  "critic_summary": {
+    "stance": "no_evidence_collected",
+    "confidence": "low",
+    "support_level": null,
+    "action_bias": "analyze_before_action",
+    "average_quality_score": 0.0,
+    "conflict_flag_count": 0
+  }
+}

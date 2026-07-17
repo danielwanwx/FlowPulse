@@ -1,0 +1,51 @@
+{
+  "generated_at": "2026-07-17T19:51:47.739664+00:00",
+  "topic": "Current primary-source comparison for safe multi-agent orchestration of a production incident response system: OpenAI Agents SDK, CrewAI, LangGraph, Microsoft Agent Framework or AutoGen, Google ADK, Temporal durable workflows. Focus on supervisor/router, handoffs, event-driven ledger/blackboard, graph state machines, durable execution, human approval, evaluator isolation, testing/backtesting, retries and stop conditions. Return official documentation URLs and distinguish facts from recommendations.",
+  "profile": "generic",
+  "overall": {
+    "stance": "no_evidence_collected",
+    "confidence": "low",
+    "summary": "Collected 0 eligible row(s) from 0 total across 0 connector(s).",
+    "risk_flags": [
+      "web_search anysearch HTTP 402",
+      "web_search anysearch HTTP 402",
+      "web_search anysearch HTTP 402",
+      "web_search anysearch HTTP 402",
+      "web_search anysearch HTTP 402",
+      "web_search anysearch HTTP 402"
+    ]
+  },
+  "claims": [
+    {
+      "claim_id": "topic-main",
+      "question": "Current primary-source comparison for safe multi-agent orchestration of a production incident response system: OpenAI Agents SDK, CrewAI, LangGraph, Microsoft Agent Framework or AutoGen, Google ADK, Temporal durable workflows. Focus on supervisor/router, handoffs, event-driven ledger/blackboard, graph state machines, durable execution, human approval, evaluator isolation, testing/backtesting, retries and stop conditions. Return official documentation URLs and distinguish facts from recommendations.",
+      "verdict": "no_evidence_collected",
+      "evidence_ids": [],
+      "source_mix": {},
+      "evidence_chains": {
+        "claim_id": "topic-main",
+        "stance": "needs_more_evidence",
+        "confidence_ceiling": "low",
+        "minimum_independent_support": 2,
+        "support_chain": {
+          "evidence_ids": [],
+          "independence_keys": [],
+          "independent_source_count": 0
+        },
+        "opposition_chain": {
+          "evidence_ids": [],
+          "independence_keys": [],
+          "independent_source_count": 0
+        }
+      }
+    }
+  ],
+  "connector_warnings": [
+    "web_search anysearch HTTP 402",
+    "web_search anysearch HTTP 402",
+    "web_search anysearch HTTP 402",
+    "web_search anysearch HTTP 402",
+    "web_search anysearch HTTP 402",
+    "web_search anysearch HTTP 402"
+  ]
+}

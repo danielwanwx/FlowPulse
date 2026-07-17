@@ -1,0 +1,154 @@
+{
+  "generated_at": "2026-07-17T19:51:47.739172+00:00",
+  "max_workers": 4,
+  "retries": 1,
+  "cache_enabled": false,
+  "source_timeout_seconds": null,
+  "overall_deadline_seconds": null,
+  "host_max_concurrency": 2,
+  "host_delay_seconds": 0.1,
+  "request_count": 6,
+  "status_counts": {
+    "failed": 6
+  },
+  "requests": [
+    {
+      "source_id": "plan-q-0001-web_search",
+      "connector": "web_search",
+      "status": "failed",
+      "attempts": 1,
+      "cache_hit": false,
+      "row_count": 0,
+      "warnings": [
+        "web_search anysearch HTTP 402"
+      ],
+      "pass_id": "pass-1",
+      "facet_id": "overview",
+      "query_id": "q-0001",
+      "target_company": "",
+      "retry_delays_seconds": [],
+      "deadline_exhausted": false,
+      "host": "api.anysearch.com",
+      "host_wait_seconds": 0.0,
+      "elapsed_ms": 208,
+      "provider_metadata": {
+        "status": "failed"
+      }
+    },
+    {
+      "source_id": "plan-q-0002-web_search",
+      "connector": "web_search",
+      "status": "failed",
+      "attempts": 1,
+      "cache_hit": false,
+      "row_count": 0,
+      "warnings": [
+        "web_search anysearch HTTP 402"
+      ],
+      "pass_id": "pass-1",
+      "facet_id": "primary_sources",
+      "query_id": "q-0002",
+      "target_company": "",
+      "retry_delays_seconds": [],
+      "deadline_exhausted": false,
+      "host": "api.anysearch.com",
+      "host_wait_seconds": 0.1,
+      "elapsed_ms": 210,
+      "provider_metadata": {
+        "status": "failed"
+      }
+    },
+    {
+      "source_id": "plan-q-0003-web_search",
+      "connector": "web_search",
+      "status": "failed",
+      "attempts": 1,
+      "cache_hit": false,
+      "row_count": 0,
+      "warnings": [
+        "web_search anysearch HTTP 402"
+      ],
+      "pass_id": "pass-1",
+      "facet_id": "current_evidence",
+      "query_id": "q-0003",
+      "target_company": "",
+      "retry_delays_seconds": [],
+      "deadline_exhausted": false,
+      "host": "api.anysearch.com",
+      "host_wait_seconds": 0.0,
+      "elapsed_ms": 330,
+      "provider_metadata": {
+        "status": "failed"
+      }
+    },
+    {
+      "source_id": "repair-plan-q-0001-web_search",
+      "connector": "web_search",
+      "status": "failed",
+      "attempts": 1,
+      "cache_hit": false,
+      "row_count": 0,
+      "warnings": [
+        "web_search anysearch HTTP 402"
+      ],
+      "pass_id": "pass-2",
+      "facet_id": "overview",
+      "query_id": "q-0001",
+      "target_company": "",
+      "retry_delays_seconds": [],
+      "deadline_exhausted": false,
+      "host": "api.anysearch.com",
+      "host_wait_seconds": 0.0,
+      "elapsed_ms": 106,
+      "provider_metadata": {
+        "status": "failed"
+      }
+    },
+    {
+      "source_id": "repair-plan-q-0002-web_search",
+      "connector": "web_search",
+      "status": "failed",
+      "attempts": 1,
+      "cache_hit": false,
+      "row_count": 0,
+      "warnings": [
+        "web_search anysearch HTTP 402"
+      ],
+      "pass_id": "pass-2",
+      "facet_id": "primary_sources",
+      "query_id": "q-0002",
+      "target_company": "",
+      "retry_delays_seconds": [],
+      "deadline_exhausted": false,
+      "host": "api.anysearch.com",
+      "host_wait_seconds": 0.1,
+      "elapsed_ms": 201,
+      "provider_metadata": {
+        "status": "failed"
+      }
+    },
+    {
+      "source_id": "repair-plan-q-0003-web_search",
+      "connector": "web_search",
+      "status": "failed",
+      "attempts": 1,
+      "cache_hit": false,
+      "row_count": 0,
+      "warnings": [
+        "web_search anysearch HTTP 402"
+      ],
+      "pass_id": "pass-2",
+      "facet_id": "current_evidence",
+      "query_id": "q-0003",
+      "target_company": "",
+      "retry_delays_seconds": [],
+      "deadline_exhausted": false,
+      "host": "api.anysearch.com",
+      "host_wait_seconds": 0.094,
+      "elapsed_ms": 346,
+      "provider_metadata": {
+        "status": "failed"
+      }
+    }
+  ]
+}

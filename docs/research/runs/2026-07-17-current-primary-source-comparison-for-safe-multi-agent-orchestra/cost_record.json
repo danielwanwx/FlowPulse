@@ -1,0 +1,9 @@
+{
+  "paid_calls_allowed": 0,
+  "paid_calls_attempted": 0,
+  "paid_calls_completed": 0,
+  "provider_usage": [],
+  "estimated_cost_usd": null,
+  "budget_status": "not_enabled",
+  "stop_reason": "paid_discovery_disabled"
+}

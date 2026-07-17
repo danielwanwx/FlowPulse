@@ -1,0 +1,56 @@
+{
+  "run_id": "2026-07-17-current-primary-source-comparison-for-safe-multi-agent-orchestra",
+  "topic": "Current primary-source comparison for safe multi-agent orchestration of a production incident response system: OpenAI Agents SDK, CrewAI, LangGraph, Microsoft Agent Framework or AutoGen, Google ADK, Temporal durable workflows. Focus on supervisor/router, handoffs, event-driven ledger/blackboard, graph state machines, durable execution, human approval, evaluator isolation, testing/backtesting, retries and stop conditions. Return official documentation URLs and distinguish facts from recommendations.",
+  "created_at": "2026-07-17T19:51:47.739805+00:00",
+  "implementation_path": "/Users/danielwan/Project/research-engine",
+  "status": "failed_no_rows",
+  "artifact_contract": "research_engine.v2",
+  "profile": "generic",
+  "as_of": "2026-07-17",
+  "search_provider": "anysearch",
+  "target": null,
+  "target_outcome": null,
+  "pack": {
+    "id": "generic",
+    "label": "Generic research",
+    "intent": "general_research",
+    "profile": "generic"
+  },
+  "warnings": [
+    "web_search anysearch HTTP 402",
+    "web_search anysearch HTTP 402",
+    "web_search anysearch HTTP 402",
+    "web_search anysearch HTTP 402",
+    "web_search anysearch HTTP 402",
+    "web_search anysearch HTTP 402"
+  ],
+  "execution_summary": {
+    "request_count": 6,
+    "status_counts": {
+      "failed": 6
+    },
+    "cache_enabled": false,
+    "paid_calls_attempted": 0
+  },
+  "quality_summary": {
+    "average_quality_score": 0.0,
+    "duplicate_cluster_count": 0,
+    "conflict_flag_count": 0
+  },
+  "loop_summary": {
+    "loop_status": "blocked",
+    "stop_reason": "sources_returned_no_evidence",
+    "feedback_action_count": 8
+  },
+  "pdf_report": {
+    "schema_version": "pdf_report_status.v1",
+    "status": "generated",
+    "path": "research_report.pdf",
+    "generated_at": "2026-07-17T19:51:47.939548+00:00",
+    "page_count": 2,
+    "byte_count": 35085,
+    "font_mode": "embedded_arial_unicode",
+    "error_type": "",
+    "error_message": ""
+  }
+}

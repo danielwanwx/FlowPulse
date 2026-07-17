@@ -1,0 +1,11 @@
+{
+  "generated_at": "2026-07-17T19:51:47.739688+00:00",
+  "topic": "Current primary-source comparison for safe multi-agent orchestration of a production incident response system: OpenAI Agents SDK, CrewAI, LangGraph, Microsoft Agent Framework or AutoGen, Google ADK, Temporal durable workflows. Focus on supervisor/router, handoffs, event-driven ledger/blackboard, graph state machines, durable execution, human approval, evaluator isolation, testing/backtesting, retries and stop conditions. Return official documentation URLs and distinguish facts from recommendations.",
+  "profile": "generic",
+  "summary": {
+    "gap_assessment": "not_applicable",
+    "evidence_rows": 0
+  },
+  "rows": [],
+  "entities": {}
+}

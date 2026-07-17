@@ -1,0 +1,216 @@
+{
+  "schema_version": "flowpulse.agent_team.v1",
+  "status": "poc_recommendation",
+  "runtime_authority": "flowpulse_append_only_ledger_and_code_state_machine",
+  "observability_authority": "none",
+  "observability_sink": "langfuse_optional",
+  "message_envelope": {
+    "required": [
+      "schema_version",
+      "message_id",
+      "idempotency_key",
+      "content_sha256",
+      "incident_id",
+      "run_id",
+      "agent_id",
+      "agent_version",
+      "prompt_hash",
+      "model",
+      "created_at",
+      "parent_event_ids",
+      "evidence_refs",
+      "budget",
+      "payload_type",
+      "payload"
+    ],
+    "budget_fields": ["tool_calls_remaining", "turns_remaining", "tokens_remaining", "deadline_at"],
+    "rule": "Agents propose typed artifacts; only the orchestrator validates and appends authoritative events."
+  },
+  "payload_types": [
+    "IncidentSignal",
+    "TriageAnnotation",
+    "EvidencePlan",
+    "EvidenceManifest",
+    "DiagnosisCandidate",
+    "EvidenceGap",
+    "EvaluationVerdict",
+    "RemediationProposal",
+    "ApprovalDecision",
+    "ExecutionReceipt",
+    "VerificationReport",
+    "OutcomeClassification",
+    "RegressionCandidate",
+    "PolicyCandidate",
+    "BacktestReport",
+    "PromotionDecision"
+  ],
+  "agents": [
+    {
+      "id": "monitor",
+      "plane": "online",
+      "mode": "read_only_semantic_triage",
+      "reads": ["incident.detected", "runtime.signal", "topology.snapshot"],
+      "emits": ["triage.annotation.proposed"],
+      "tools": ["read_topology", "read_metric_summary"],
+      "forbidden": ["incident.open", "incident.close", "repair.propose", "repair.execute"]
+    },
+    {
+      "id": "evidence",
+      "plane": "online",
+      "mode": "read_only_parallel_collection",
+      "reads": ["incident.scope", "evidence.plan.approved", "source.catalog"],
+      "emits": ["evidence.requested", "evidence.manifest.proposed"],
+      "tools": ["query_metrics", "query_traces", "query_logs", "query_deploys", "query_commits"],
+      "forbidden": ["diagnosis.accept", "repair.propose", "repair.execute"]
+    },
+    {
+      "id": "diagnosis",
+      "plane": "online",
+      "mode": "maker",
+      "reads": ["evidence.manifest.accepted", "incident.scope"],
+      "emits": ["diagnosis.proposed", "evidence.gap.proposed"],
+      "tools": [],
+      "forbidden": ["evaluation.write", "repair.execute", "approval.write"]
+    },
+    {
+      "id": "adversarial_evaluator",
+      "plane": "online",
+      "mode": "checker",
+      "reads": ["diagnosis.proposed", "cited.evidence", "counter_evidence.catalog", "evaluation.rubric"],
+      "emits": ["evaluation.accepted", "evaluation.rejected"],
+      "tools": ["verify_evidence_ref"],
+      "forbidden": ["diagnosis.edit", "repair.propose", "repair.execute", "policy.promote"],
+      "context_rule": "Receives the candidate artifact and evidence facts, never maker scratch reasoning or chat history."
+    },
+    {
+      "id": "remediation_planner",
+      "plane": "online",
+      "mode": "maker",
+      "reads": ["evaluation.accepted", "runbook.catalog", "repair.allowlist"],
+      "emits": ["repair.proposed"],
+      "tools": ["read_runbook"],
+      "forbidden": ["repair.execute", "approval.write", "verification.write"]
+    },
+    {
+      "id": "verification",
+      "plane": "online",
+      "mode": "post_action_checker",
+      "reads": ["execution.receipt", "verification.plan", "post_action.evidence"],
+      "emits": ["verification.proposed"],
+      "tools": ["query_post_action_metrics", "query_post_action_traces", "query_post_action_logs"],
+      "forbidden": ["repair.execute", "threshold.edit", "policy.promote"]
+    },
+    {
+      "id": "evolve",
+      "plane": "offline",
+      "mode": "maker",
+      "reads": ["closed.incident", "false_diagnosis.record", "regression.schema"],
+      "emits": ["regression.candidate.proposed", "policy.candidate.proposed"],
+      "tools": ["write_quarantine_candidate"],
+      "forbidden": ["production.query", "backtest.result.write", "policy.promote"]
+    },
+    {
+      "id": "test",
+      "plane": "offline",
+      "mode": "checker",
+      "reads": ["frozen.policy.candidate", "versioned.replay.suite"],
+      "emits": ["backtest.completed"],
+      "tools": ["run_deterministic_replay"],
+      "forbidden": ["candidate.edit", "production.query", "policy.promote"]
+    }
+  ],
+  "deterministic_components": [
+    {
+      "id": "detector",
+      "owns": ["threshold_evaluation", "deduplication", "incident_open_event"]
+    },
+    {
+      "id": "orchestrator",
+      "owns": ["legal_transitions", "schema_validation", "budget_enforcement", "retry_policy", "stop_conditions", "ledger_append"]
+    },
+    {
+      "id": "repair_executor",
+      "owns": ["allowlisted_idempotent_command_execution"],
+      "requires": ["unexpired_owner_approval_matching_proposal_hash"]
+    },
+    {
+      "id": "promotion_gate",
+      "owns": ["deterministic_gate_aggregation"],
+      "requires": ["passing_backtest_report", "owner_promotion_approval"]
+    }
+  ],
+  "states": [
+    "DETECTED",
+    "COLLECTING",
+    "DIAGNOSING",
+    "EVALUATING",
+    "PLANNING_REPAIR",
+    "WAITING_OWNER",
+    "EXECUTING",
+    "VERIFYING",
+    "LEARNING",
+    "CLOSED",
+    "STOPPED"
+  ],
+  "legal_transitions": [
+    ["DETECTED", "COLLECTING"],
+    ["COLLECTING", "DIAGNOSING"],
+    ["DIAGNOSING", "EVALUATING"],
+    ["EVALUATING", "COLLECTING", "evaluation_rejected_and_replan_budget_remaining"],
+    ["EVALUATING", "PLANNING_REPAIR", "evaluation_accepted"],
+    ["PLANNING_REPAIR", "WAITING_OWNER", "deterministic_repair_policy_passed"],
+    ["WAITING_OWNER", "EXECUTING", "matching_owner_approval"],
+    ["EXECUTING", "VERIFYING", "execution_receipt_recorded"],
+    ["VERIFYING", "LEARNING", "verification_classified"],
+    ["LEARNING", "CLOSED", "offline_records_written"],
+    ["*", "STOPPED", "terminal_stop_condition"]
+  ],
+  "budgets": {
+    "monitor_triage_per_fingerprint": 1,
+    "evidence_calls_total": 8,
+    "evidence_attempts_per_query": 2,
+    "diagnosis_candidates": 2,
+    "replan_cycles": 2,
+    "evaluator_infrastructure_retries": 1,
+    "repair_schema_repairs": 1,
+    "repair_executions": 1,
+    "verification_windows": 3,
+    "evolve_candidates_per_incident": 1
+  },
+  "terminal_stop_conditions": [
+    "unknown_evidence_reference",
+    "unresolved_source_conflict",
+    "budget_exhausted",
+    "evaluation_rejection_limit",
+    "owner_rejected_or_approval_expired",
+    "repair_scope_mismatch",
+    "executor_outcome_unknown",
+    "verification_failed",
+    "backtest_failed",
+    "capability_outside_allowlist"
+  ],
+  "outcome_classes": [
+    "confirmed_system_bug",
+    "agent_false_positive",
+    "insufficient_evidence",
+    "tool_data_failure",
+    "repair_failure",
+    "regression"
+  ],
+  "human_gates": [
+    {
+      "id": "owner_repair_approval",
+      "binds": ["proposal_hash", "scope", "command_id", "timeout", "verification_plan", "expires_at"]
+    },
+    {
+      "id": "owner_policy_promotion",
+      "requires": ["all_deterministic_gates_pass", "backtest_report_immutable", "candidate_hash_matches"]
+    }
+  ],
+  "framework_policy": {
+    "poc": "current_node_runtime_with_typed_contracts",
+    "optional_near_term": "openai_agents_sdk_typescript_for_specialist_model_loops_only",
+    "optional_later": "temporal_typescript_for_multi_worker_long_lived_durability",
+    "non_authoritative": ["langfuse", "agent_framework_session", "framework_checkpoint", "model_memory"]
+  }
+}
