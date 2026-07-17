@@ -1,0 +1,100 @@
+import { execFileSync } from "node:child_process";
+import { mkdirSync } from "node:fs";
+import { dirname } from "node:path";
+import { randomUUID } from "node:crypto";
+
+const sqlValue = (value) => value == null ? "NULL" : `'${String(value).replaceAll("'", "''")}'`;
+
+export class Ledger {
+  constructor(path) {
+    this.path = path;
+    mkdirSync(dirname(path), { recursive: true });
+    this.exec(`
+      PRAGMA journal_mode=WAL;
+      PRAGMA busy_timeout=3000;
+      CREATE TABLE IF NOT EXISTS events (
+        sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+        id TEXT UNIQUE NOT NULL,
+        run_id TEXT NOT NULL,
+        incident_id TEXT NOT NULL,
+        recorded_at TEXT NOT NULL,
+        offset_ms INTEGER NOT NULL DEFAULT 0,
+        type TEXT NOT NULL,
+        actor TEXT NOT NULL,
+        payload_json TEXT NOT NULL CHECK(json_valid(payload_json)),
+        evidence_refs_json TEXT NOT NULL CHECK(json_valid(evidence_refs_json)),
+        parent_id TEXT,
+        correlation_id TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS events_run_sequence ON events(run_id, sequence);
+      CREATE TRIGGER IF NOT EXISTS events_no_update
+      BEFORE UPDATE ON events BEGIN SELECT RAISE(ABORT, 'FlowPulse ledger is append-only'); END;
+      CREATE TRIGGER IF NOT EXISTS events_no_delete
+      BEFORE DELETE ON events BEGIN SELECT RAISE(ABORT, 'FlowPulse ledger is append-only'); END;
+    `);
+  }
+
+  exec(sql) {
+    return execFileSync("sqlite3", ["-batch", this.path], { input: sql, encoding: "utf8" });
+  }
+
+  query(sql) {
+    const output = execFileSync("sqlite3", ["-batch", "-json", this.path, sql], { encoding: "utf8" }).trim();
+    return output ? JSON.parse(output) : [];
+  }
+
+  append({
+    id = `evt-${randomUUID()}`,
+    runId,
+    incidentId,
+    offsetMs = 0,
+    type,
+    actor,
+    payload = {},
+    evidenceRefs = [],
+    parentId = null,
+    correlationId = `corr-${randomUUID()}`,
+    recordedAt = new Date().toISOString()
+  }) {
+    if (!runId || !incidentId || !type || !actor) throw new Error("Incomplete ledger event");
+    const values = [
+      id, runId, incidentId, recordedAt, Number(offsetMs), type, actor,
+      JSON.stringify(payload), JSON.stringify(evidenceRefs), parentId, correlationId
+    ].map(sqlValue).join(",");
+    this.exec(`INSERT INTO events
+      (id, run_id, incident_id, recorded_at, offset_ms, type, actor, payload_json, evidence_refs_json, parent_id, correlation_id)
+      VALUES (${values});`);
+    return this.get(id);
+  }
+
+  get(id) {
+    return decode(this.query(`SELECT * FROM events WHERE id=${sqlValue(id)} LIMIT 1;`)[0]);
+  }
+
+  list(runId) {
+    return this.query(`SELECT * FROM events WHERE run_id=${sqlValue(runId)} ORDER BY sequence;`).map(decode);
+  }
+
+  latestRun(incidentId) {
+    const row = this.query(`SELECT run_id FROM events WHERE incident_id=${sqlValue(incidentId)} AND type='run.started' ORDER BY sequence DESC LIMIT 1;`)[0];
+    return row?.run_id ?? null;
+  }
+}
+
+function decode(row) {
+  if (!row) return null;
+  return {
+    sequence: row.sequence,
+    id: row.id,
+    run_id: row.run_id,
+    incident_id: row.incident_id,
+    recorded_at: row.recorded_at,
+    offset_ms: row.offset_ms,
+    type: row.type,
+    actor: row.actor,
+    payload: JSON.parse(row.payload_json),
+    evidence_refs: JSON.parse(row.evidence_refs_json),
+    parent_id: row.parent_id,
+    correlation_id: row.correlation_id
+  };
+}

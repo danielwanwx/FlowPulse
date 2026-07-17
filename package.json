@@ -1,0 +1,20 @@
+{
+  "name": "flowpulse",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Evidence-grounded incident investigation, remediation, verification, and learning loop.",
+  "scripts": {
+    "demo": "node src/server.mjs",
+    "test": "node --test",
+    "judge": "npm test && node src/server.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@langfuse/otel": "^5.4.0",
+    "@langfuse/tracing": "^5.4.0",
+    "@opentelemetry/sdk-node": "^0.205.0"
+  }
+}

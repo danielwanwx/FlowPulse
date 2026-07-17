@@ -1,0 +1,7 @@
+node_modules/
+.env
+.flowpulse/
+*.log
+.DS_Store
+outputs/*
+!outputs/.gitkeep

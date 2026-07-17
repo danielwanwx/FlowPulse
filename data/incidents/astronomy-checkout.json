@@ -1,0 +1,163 @@
+{
+  "schema_version": 1,
+  "incident": {
+    "id": "inc-astro-checkout-001",
+    "title": "Checkout failures delay payment processing",
+    "environment": "astronomy-shop-demo",
+    "severity": "SEV-1",
+    "started_at": "2026-07-16T15:42:00.000Z",
+    "summary": "Checkout errors rose after a deployment. Payment calls fail, retries grow, and accounting and fraud consumers fall behind."
+  },
+  "topology": {
+    "services": [
+      { "id": "frontend", "label": "Frontend", "team": "storefront" },
+      { "id": "checkout", "label": "Checkout", "team": "commerce" },
+      { "id": "payment", "label": "Payment", "team": "money-movement" },
+      { "id": "kafka", "label": "Kafka", "team": "platform" },
+      { "id": "accounting", "label": "Accounting", "team": "finance-systems" },
+      { "id": "fraud", "label": "Fraud", "team": "risk" }
+    ],
+    "edges": [
+      ["frontend", "checkout"],
+      ["checkout", "payment"],
+      ["checkout", "kafka"],
+      ["kafka", "accounting"],
+      ["kafka", "fraud"]
+    ]
+  },
+  "evidence": [
+    {
+      "id": "ev-metric-checkout-errors",
+      "kind": "metric",
+      "entity": "checkout",
+      "at": "2026-07-16T15:43:00.000Z",
+      "title": "Checkout error rate",
+      "fact": "Error rate rose from 0.7% to 38.4% within one minute of checkout deployment deploy-checkout-442.",
+      "value": { "before": 0.7, "after": 38.4, "unit": "percent" }
+    },
+    {
+      "id": "ev-metric-kafka-lag",
+      "kind": "metric",
+      "entity": "kafka",
+      "at": "2026-07-16T15:46:00.000Z",
+      "title": "Consumer lag",
+      "fact": "orders.v1 consumer lag climbed from 182 to 11842 after checkout retries accelerated.",
+      "value": { "before": 182, "after": 11842, "unit": "messages" }
+    },
+    {
+      "id": "ev-log-consumer-delay",
+      "kind": "log",
+      "entity": "accounting",
+      "at": "2026-07-16T15:47:18.000Z",
+      "title": "Accounting consumer delay",
+      "fact": "Accounting logged processing_delay_ms=183000 for orders.v1 partition 3."
+    },
+    {
+      "id": "ev-metric-kafka-healthy",
+      "kind": "metric",
+      "entity": "kafka",
+      "at": "2026-07-16T15:46:30.000Z",
+      "title": "Kafka broker health",
+      "fact": "All brokers remained available with zero under-replicated partitions and normal produce latency.",
+      "value": { "under_replicated_partitions": 0, "produce_p95_ms": 8.3 }
+    },
+    {
+      "id": "ev-timing-error-before-lag",
+      "kind": "metric",
+      "entity": "checkout",
+      "at": "2026-07-16T15:43:00.000Z",
+      "title": "Failure ordering",
+      "fact": "Payment connection failures began 171 seconds before Kafka lag crossed the alert threshold."
+    },
+    {
+      "id": "ev-deploy-checkout",
+      "kind": "deploy",
+      "entity": "checkout",
+      "at": "2026-07-16T15:42:00.000Z",
+      "title": "Checkout deployment",
+      "fact": "deploy-checkout-442 promoted checkout:2.18.0 from commit c7e1b9a. The previous image was checkout:2.17.3.",
+      "value": { "deployment": "deploy-checkout-442", "from": "checkout:2.17.3", "to": "checkout:2.18.0", "commit": "c7e1b9a" }
+    },
+    {
+      "id": "ev-trace-payment-refused",
+      "kind": "trace",
+      "entity": "checkout",
+      "at": "2026-07-16T15:43:06.000Z",
+      "title": "Payment span failure",
+      "fact": "Trace 4f91 shows checkout calling payment:9090. The span ends with ECONNREFUSED before any Kafka publish span begins.",
+      "value": { "trace_id": "4f91d2b7", "target": "payment:9090", "error": "ECONNREFUSED" }
+    },
+    {
+      "id": "ev-log-endpoint-fallback",
+      "kind": "log",
+      "entity": "checkout",
+      "at": "2026-07-16T15:42:11.000Z",
+      "title": "Checkout endpoint selection",
+      "fact": "checkout:2.18.0 logged PAYMENT_ADDR missing; using fallback payment:9090. The deployment supplies PAYMENT_SERVICE_ADDR=payment:8080."
+    },
+    {
+      "id": "ev-commit-checkout",
+      "kind": "commit",
+      "entity": "checkout",
+      "at": "2026-07-16T14:18:00.000Z",
+      "title": "AI-assisted timeout hardening",
+      "fact": "Commit c7e1b9a changed endpoint lookup from PAYMENT_SERVICE_ADDR to PAYMENT_ADDR with fallback payment:9090. Deployment configuration was not updated.",
+      "value": {
+        "sha": "c7e1b9a",
+        "files": ["src/payment-client.ts"],
+        "diff": "- env.PAYMENT_SERVICE_ADDR\n+ env.PAYMENT_ADDR ?? 'payment:9090'",
+        "provenance": "AI-generated change accepted during checkout timeout hardening"
+      }
+    },
+    {
+      "id": "ev-verify-payment",
+      "kind": "metric",
+      "entity": "payment",
+      "at": "2026-07-16T16:02:00.000Z",
+      "title": "Payment reachability restored",
+      "fact": "After rollback to checkout:2.17.3, payment reachability returned to 99.98% and ECONNREFUSED stopped.",
+      "value": { "before": 61.6, "after": 99.98, "unit": "percent" }
+    },
+    {
+      "id": "ev-verify-checkout",
+      "kind": "metric",
+      "entity": "checkout",
+      "at": "2026-07-16T16:03:00.000Z",
+      "title": "Checkout recovered",
+      "fact": "Checkout error rate fell from 38.4% to 0.8% within two minutes of rollback.",
+      "value": { "before": 38.4, "after": 0.8, "unit": "percent" }
+    },
+    {
+      "id": "ev-verify-kafka",
+      "kind": "metric",
+      "entity": "kafka",
+      "at": "2026-07-16T16:07:00.000Z",
+      "title": "Kafka backlog draining",
+      "fact": "Consumer lag fell from 11842 to 620 and continued decreasing without any Kafka repair.",
+      "value": { "before": 11842, "after": 620, "unit": "messages" }
+    }
+  ],
+  "repair": {
+    "id": "repair-checkout-rollback",
+    "action": "rollback_deployment",
+    "target": "checkout",
+    "from": "checkout:2.18.0",
+    "to": "checkout:2.17.3",
+    "timeout_seconds": 180,
+    "abort_if": "checkout ready replicas below 2 for more than 30 seconds",
+    "verification_evidence": ["ev-verify-payment", "ev-verify-checkout", "ev-verify-kafka"]
+  },
+  "thresholds": {
+    "payment_reachability_percent_min": 99.9,
+    "checkout_error_percent_max": 1.0,
+    "kafka_lag_max": 1000
+  },
+  "regression": {
+    "id": "reg-checkout-payment-address-001",
+    "name": "Reject downstream Kafka blame when payment failures lead lag",
+    "must_reject_hypothesis": "Kafka broker degradation initiated the incident.",
+    "must_find_evidence": ["ev-deploy-checkout", "ev-trace-payment-refused", "ev-log-endpoint-fallback", "ev-commit-checkout"],
+    "must_require_approval": true,
+    "allowed_repair_target": "checkout"
+  }
+}
