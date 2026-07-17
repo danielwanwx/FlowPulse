@@ -9,7 +9,10 @@ import {
   architecturePositions,
   compareFrames,
   eventsAtStage,
-  frameFor
+  frameFor,
+  liveEdgePath,
+  liveIncidentNodeStates,
+  livePulseSlots
 } from "./twin-state.mjs";
 
 const els = Object.fromEntries([...document.querySelectorAll("[id]")].map((element) => [element.id, element]));
@@ -53,6 +56,10 @@ els["speed-select"].addEventListener("change", updateControls);
 els["timeline-range"].addEventListener("input", () => seek(Number(els["timeline-range"].value)));
 els["compare-range"].addEventListener("input", () => {
   comparePercent = Number(els["compare-range"].value);
+  renderComparePosition();
+});
+els["compare-canvas-range"].addEventListener("input", () => {
+  comparePercent = Number(els["compare-canvas-range"].value);
   renderComparePosition();
 });
 els["compare-incident"].addEventListener("click", () => setComparePercent(70));
@@ -183,9 +190,9 @@ function setMetric(name, value, note) {
 
 function renderCanvas() {
   els["twin-canvas"].classList.toggle("is-compare-mode", mode === "compare");
-  els["twin-canvas"].classList.toggle("is-source-topology", mode === "architecture" || mode === "live" || (state.mode === "development" && mode === "replay"));
+  els["twin-canvas"].classList.toggle("is-source-topology", mode === "architecture" || mode === "live");
   els["twin-canvas"].classList.toggle("is-architecture-source", mode === "architecture");
-  els["twin-canvas"].classList.toggle("is-live-source", mode === "live" || (state.mode === "development" && mode === "replay"));
+  els["twin-canvas"].classList.toggle("is-live-source", mode === "live");
   if (mode === "architecture") {
     renderSourceCanvas("architecture");
     return;
@@ -194,14 +201,11 @@ function renderCanvas() {
     renderSourceCanvas("live");
     return;
   }
-  if (state.mode === "development" && mode === "replay") {
-    renderSourceCanvas("live");
-    return;
-  }
   if (mode === "compare") {
     const { incident, recovered } = compareFrames();
     els["canvas-layers"].innerHTML = `${renderTwinLayer(recovered, "after", true)}${renderTwinLayer(incident, "before", false)}`;
     els["compare-handle"].hidden = false;
+    els["compare-canvas-range"].hidden = false;
     setAnnotations([]);
     els["twin-canvas"].setAttribute("aria-label", "Compare incident impact on the left with verified recovery on the right");
     renderComparePosition();
@@ -210,7 +214,8 @@ function renderCanvas() {
   const frame = currentFrame();
   els["canvas-layers"].innerHTML = renderTwinLayer(frame, "current", true);
   els["compare-handle"].hidden = true;
-  setAnnotations(frame.annotations.slice(-2));
+  els["compare-canvas-range"].hidden = true;
+  setAnnotations(state.mode === "development" ? developmentAnnotations(cursor) : frame.annotations.slice(-2));
   els["twin-canvas"].setAttribute("aria-label", `Incident diagnosis at ${frame.stage.label}`);
 }
 
@@ -218,6 +223,7 @@ function renderSourceCanvas(layout) {
   const source = sourceState();
   const topology = layout === "architecture" ? architectureTopology() : source.topology;
   els["compare-handle"].hidden = true;
+  els["compare-canvas-range"].hidden = true;
   setAnnotations([]);
   if (!topology?.nodes?.length) {
     els["canvas-layers"].innerHTML = `<div class="source-empty">
@@ -230,22 +236,39 @@ function renderSourceCanvas(layout) {
   }
   const positioned = layout === "architecture" ? architecturePositions(topology.nodes) : positionLiveNodes(topology.nodes);
   const positions = new Map(positioned.map((node) => [node.id, node]));
+  const nodeStates = layout === "live" ? liveIncidentNodeStates({ mode: state.mode, events: state.events, source }) : {};
+  const pulseSlots = livePulseSlots(topology);
+  const edgeLayout = {
+    canvasWidth: els["twin-canvas"].clientWidth || 1100,
+    canvasHeight: els["twin-canvas"].clientHeight || 520,
+    nodeWidth: 144,
+    nodeHeight: 58
+  };
+  const pulseCycle = Math.max(6.4, topology.edges.length * .42 + 1.4);
   const edges = topology.edges.filter((edge) => positions.has(edge.from) && positions.has(edge.to)).map((edge, index) => {
     const from = positions.get(edge.from);
     const to = positions.get(edge.to);
-    const path = liveEdgePath(from, to);
-    return `<g class="edge-group path-runtime"><path class="edge-line is-healthy" d="${path}"/><path class="pulse-flow pulse-slot-${index % 4} is-healthy" d="${path}" pathLength="1" aria-hidden="true"/><path class="edge-hit" d="${path}" role="button" tabindex="0" aria-label="${escapeHtml(edge.label)} from ${escapeHtml(from.label)} to ${escapeHtml(to.label)}" data-edge-id="${escapeHtml(edge.id)}"/></g>`;
+    const path = liveEdgePath(from, to, edgeLayout);
+    const edgeState = nodeStates[from.id] === "impact" && nodeStates[to.id] === "impact" ? "impact" : "observed";
+    const pulseDelay = (pulseSlots[edge.id] || 0) * .42;
+    return `<g class="edge-group path-runtime"><path class="edge-line is-${edgeState}" d="${path}"/><path class="pulse-flow is-${edgeState}" data-pulse-delay="${pulseDelay}" data-pulse-cycle="${pulseCycle}" d="${path}" pathLength="1" aria-hidden="true"/><path class="edge-hit" d="${path}" role="button" tabindex="0" aria-label="${escapeHtml(edge.label)} from ${escapeHtml(from.label)} to ${escapeHtml(to.label)}" data-edge-id="${escapeHtml(edge.id)}"/></g>`;
   }).join("");
   const nodes = positioned.map((node) => {
     const positionClass = layout === "architecture" ? `arch-layer-${node.layerIndex} arch-count-${node.layerSize} arch-index-${node.layerPosition}` : `grid-slot-${node.slot}`;
-    return `<button class="twin-node source-node plane-runtime kind-${escapeHtml(node.kind)} is-healthy ${positionClass}" type="button" data-node-id="${escapeHtml(node.id)}" data-transition-key="${escapeHtml(transitionKey(node.id))}" aria-label="Observed ${escapeHtml(kindLabel(node.kind))} ${escapeHtml(node.label)}">
+    const nodeState = nodeStates[node.id] || "observed";
+    const nodeStatus = nodeState === "impact" ? "Failure observed" : source.status === "live" ? "Observed" : "Last known";
+    return `<button class="twin-node source-node plane-runtime kind-${escapeHtml(node.kind)} is-${nodeState} ${positionClass}" type="button" data-node-id="${escapeHtml(node.id)}" data-transition-key="${escapeHtml(transitionKey(node.id))}" aria-label="${escapeHtml(kindLabel(node.kind))} ${escapeHtml(node.label)}, ${escapeHtml(nodeStatus)}">
     <span class="node-icon" aria-hidden="true"><i class="ph ph-${iconForLive(node)}"></i></span>
-    <span class="node-copy"><span class="node-origin">RUNTIME · ${escapeHtml(sourceOrigin(layout))}</span><strong>${escapeHtml(node.label)}</strong><span class="node-detail">${escapeHtml(node.detail || "observed service.name")}</span><span class="node-status">Healthy</span></span>
+    <span class="node-copy"><span class="node-origin">RUNTIME · ${escapeHtml(sourceOrigin(layout))}</span><strong>${escapeHtml(node.label)}</strong><span class="node-detail">${escapeHtml(node.detail || "observed service.name")}</span><span class="node-status">${escapeHtml(nodeStatus)}</span></span>
     <span class="node-status-dot" aria-hidden="true"></span>
   </button>`;
   }).join("");
   const guides = layout === "architecture" ? `<div class="architecture-guides" aria-hidden="true">${ARCHITECTURE_LAYERS.map((layer, index) => `<span class="architecture-guide-${index}">${escapeHtml(layer.label)}</span>`).join("")}</div>` : "";
   els["canvas-layers"].innerHTML = `${guides}<div class="twin-layer layer-current"><svg class="edge-map" viewBox="0 0 1000 520" preserveAspectRatio="none">${edges}</svg>${nodes}</div>`;
+  for (const pulse of els["canvas-layers"].querySelectorAll("[data-pulse-delay]")) {
+    pulse.style.setProperty("--pulse-delay", `${pulse.dataset.pulseDelay}s`);
+    pulse.style.setProperty("--pulse-cycle", `${pulse.dataset.pulseCycle}s`);
+  }
   setAnnotations(mode === "replay" ? developmentAnnotations(cursor) : []);
   els["twin-canvas"].setAttribute("aria-label", `${layout === "architecture" ? "Architecture" : "Runtime"} topology with ${positioned.length} observed services from ${sourceOrigin(layout)}`);
 }
@@ -300,11 +323,13 @@ function setAnnotations(annotations) {
 
 function renderComparePosition() {
   if (mode !== "compare") return;
-  comparePercent = Math.round(comparePercent / 10) * 10;
-  for (const name of [...els["twin-canvas"].classList]) if (name.startsWith("compare-value-")) els["twin-canvas"].classList.remove(name);
-  els["twin-canvas"].classList.add(`compare-value-${comparePercent}`);
-  els["compare-value"].textContent = `${comparePercent}% incident`;
+  comparePercent = Math.max(0, Math.min(100, Number(comparePercent) || 0));
+  els["twin-canvas"].style.setProperty("--compare-percent", `${comparePercent}%`);
+  els["compare-value"].textContent = `${Math.round(comparePercent)}% incident`;
   els["compare-range"].value = String(comparePercent);
+  els["compare-range"].setAttribute("aria-valuetext", `${Math.round(comparePercent)} percent incident, ${Math.round(100 - comparePercent)} percent verified`);
+  els["compare-canvas-range"].value = String(comparePercent);
+  els["compare-canvas-range"].setAttribute("aria-valuetext", `${Math.round(comparePercent)} percent incident, ${Math.round(100 - comparePercent)} percent verified`);
 }
 
 function setComparePercent(value) {
@@ -513,6 +538,7 @@ function closeDrawer() {
 
 function setMode(nextMode) {
   stopPlayback();
+  if (!state) return;
   if (nextMode === "compare" && state.mode === "development") {
     showToast("Compare is available for the verified complex replay. Restart Diagnose to open it.", true);
     return;
@@ -1014,23 +1040,13 @@ function positionLiveNodes(nodes) {
   }));
 }
 
-function liveEdgePath(from, to) {
-  const forward = to.x >= from.x;
-  const x1 = from.x * 10 + (forward ? 72 : -72);
-  const x2 = to.x * 10 + (forward ? -72 : 72);
-  const y1 = from.y * 5.2;
-  const y2 = to.y * 5.2;
-  const mid = (x1 + x2) / 2;
-  return `M ${x1} ${y1} C ${mid} ${y1} ${mid} ${y2} ${x2} ${y2}`;
-}
-
 function iconForLive(node) {
   const known = { frontend: "browser", "frontend-proxy": "arrows-left-right", checkout: "shopping-cart-simple", payment: "credit-card", kafka: "queue", accounting: "calculator", "fraud-detection": "shield-check", cart: "shopping-bag", shipping: "truck", currency: "currency-circle-dollar" };
   return known[node.id] || ({ client: "browser", api: "plugs-connected", stream: "queue", worker: "gear", database: "database" })[node.kind] || "cube";
 }
 
 function statusLabel(status) {
-  return ({ healthy: "Healthy", quiet: "Standby", dormant: "Not active", recording: "Recording", warning: "Change pending", change: "Deployment change", impact: "Impact", root: "Root cause", rejected: "Rejected", active: "Investigating", approval: "Approval required", verified: "Verified", learned: "Learning recorded" })[status] || status;
+  return ({ healthy: "Healthy", observed: "Observed", quiet: "Standby", dormant: "Not active", recording: "Recording", warning: "Change pending", change: "Deployment change", impact: "Impact", root: "Root cause", rejected: "Rejected", active: "Investigating", approval: "Approval required", verified: "Verified", learned: "Learning recorded" })[status] || status;
 }
 
 function labelFor(id) { return NODE_BY_ID.get(id)?.label || id || "unknown"; }

@@ -208,6 +208,74 @@ export function eventsAtStage(events = [], stageIndex) {
   return events.filter((event) => allowed.has(event.type));
 }
 
+export function liveIncidentNodeStates({ mode, events = [], source = {} } = {}) {
+  const nodes = source.topology?.nodes || [];
+  const states = Object.fromEntries(nodes.map(({ id }) => [id, "observed"]));
+  const verified = events.some((event) => event.type === "verification.completed" && event.payload?.passed === true);
+  if (mode !== "development" || source.status !== "live" || source.authoritative !== true || verified) return states;
+
+  const referenced = new Set(events.flatMap((event) => event.evidence_refs || []));
+  const knownNodes = new Set(nodes.map(({ id }) => id));
+  for (const item of source.evidence || []) {
+    if (!referenced.has(item.id) || item.signal !== "traces" || !hasExplicitFailure(item.payload)) continue;
+    const scoped = failedResourceServices(item.payload);
+    const declared = Array.isArray(item.value?.services) ? item.value.services : [];
+    const services = new Set(scoped);
+    if (declared.length <= 2) for (const service of declared) services.add(service);
+    for (const service of services) if (knownNodes.has(service)) states[service] = "impact";
+  }
+  return states;
+}
+
+export function livePulseSlots(topology = {}) {
+  const nodes = topology.nodes || [];
+  const edges = topology.edges || [];
+  const incoming = new Map(nodes.map(({ id }) => [id, 0]));
+  const outgoing = new Map(nodes.map(({ id }) => [id, []]));
+  for (const edge of edges) {
+    incoming.set(edge.to, (incoming.get(edge.to) || 0) + 1);
+    if (!outgoing.has(edge.from)) outgoing.set(edge.from, []);
+    outgoing.get(edge.from).push(edge);
+  }
+
+  const depth = new Map();
+  const queue = [...incoming.entries()].filter(([, count]) => count === 0).map(([id]) => id).sort();
+  for (const id of queue) depth.set(id, 0);
+  while (queue.length) {
+    const id = queue.shift();
+    for (const edge of [...(outgoing.get(id) || [])].sort((a, b) => a.id.localeCompare(b.id))) {
+      const next = (depth.get(id) || 0) + 1;
+      if (!depth.has(edge.to) || next < depth.get(edge.to)) depth.set(edge.to, next);
+      const remaining = (incoming.get(edge.to) || 0) - 1;
+      incoming.set(edge.to, remaining);
+      if (remaining === 0) queue.push(edge.to);
+    }
+  }
+  return Object.fromEntries([...edges]
+    .sort((a, b) => (depth.get(a.from) || 0) - (depth.get(b.from) || 0) || a.id.localeCompare(b.id))
+    .map((edge, slot) => [edge.id, slot]));
+}
+
+export function liveEdgePath(from, to, {
+  canvasWidth = 1100,
+  canvasHeight = 520,
+  nodeWidth = 144,
+  nodeHeight = 58
+} = {}) {
+  const startCenter = { x: from.x * 10, y: from.y * 5.2 };
+  const endCenter = { x: to.x * 10, y: to.y * 5.2 };
+  const halfWidth = nodeWidth * (1000 / canvasWidth) / 2;
+  const halfHeight = nodeHeight * (520 / canvasHeight) / 2;
+  const start = rectangleBoundary(startCenter, endCenter, halfWidth, halfHeight);
+  const end = rectangleBoundary(endCenter, startCenter, halfWidth, halfHeight);
+  if (Math.abs(end.x - start.x) < 1) {
+    const midY = (start.y + end.y) / 2;
+    return `M ${round(start.x)} ${round(start.y)} C ${round(start.x)} ${round(midY)} ${round(end.x)} ${round(midY)} ${round(end.x)} ${round(end.y)}`;
+  }
+  const midX = (start.x + end.x) / 2;
+  return `M ${round(start.x)} ${round(start.y)} C ${round(midX)} ${round(start.y)} ${round(midX)} ${round(end.y)} ${round(end.x)} ${round(end.y)}`;
+}
+
 function stageEventTypes(index) {
   const groups = [
     ["run.started", "incident.opened"],
@@ -224,6 +292,39 @@ function stageEventTypes(index) {
 
 function clampStage(value) {
   return Math.max(0, Math.min(TWIN_STAGES.length - 1, Number(value) || 0));
+}
+
+function failedResourceServices(payload = {}) {
+  const services = new Set();
+  for (const resource of payload.resourceSpans || []) {
+    if (!hasExplicitFailure(resource)) continue;
+    const service = resource.service || attributeValue(resource.resource?.attributes, "service.name");
+    if (service) services.add(service);
+  }
+  return services;
+}
+
+function hasExplicitFailure(value) {
+  if (!value) return false;
+  const text = JSON.stringify(value).toLowerCase();
+  return /(?:error|exception|unavailable|refused|"code"\s*:\s*2|status_code_error)/.test(text);
+}
+
+function attributeValue(attributes = [], key) {
+  const attribute = attributes.find((item) => item.key === key);
+  return attribute?.value?.stringValue || attribute?.value?.string_value || null;
+}
+
+function rectangleBoundary(from, to, halfWidth, halfHeight) {
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  if (!dx && !dy) return from;
+  const scale = 1 / Math.max(Math.abs(dx) / halfWidth, Math.abs(dy) / halfHeight);
+  return { x: from.x + dx * scale, y: from.y + dy * scale };
+}
+
+function round(value) {
+  return Math.round(value * 1000) / 1000;
 }
 
 function spreadCoordinate(index, count) {

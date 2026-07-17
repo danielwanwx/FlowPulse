@@ -12,7 +12,10 @@ import {
   architecturePositions,
   compareFrames,
   eventsAtStage,
-  frameFor
+  frameFor,
+  liveEdgePath,
+  liveIncidentNodeStates,
+  livePulseSlots
 } from "../public/twin-state.mjs";
 
 const indexHtml = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
@@ -125,6 +128,82 @@ test("compare uses incident and verified frames without changing layout", () => 
   assert.equal(incident.metrics.checkout.value, "38.4%");
   assert.equal(recovered.metrics.checkout.value, "0.8%");
   assert.equal(TWIN_NODES.length, 10);
+  assert.match(indexHtml, /id="compare-range"[^>]+step="1"/);
+  assert.match(indexHtml, /id="compare-canvas-range"[^>]+type="range"[^>]+step="1"/);
+  assert.match(appJs, /--compare-percent/);
+  assert.doesNotMatch(appJs, /Math\.round\(comparePercent \/ 10\)/);
+  assert.doesNotMatch(stylesCss, /\.compare-value-\d+/);
+});
+
+test("live connector paths terminate at card boundaries for target viewport widths", () => {
+  const from = { x: 6, y: 25 };
+  const to = { x: 18.5, y: 25 };
+  for (const canvasWidth of [1100, 1280, 1440]) {
+    const path = liveEdgePath(from, to, { canvasWidth, canvasHeight: 520, nodeWidth: 144, nodeHeight: 58 });
+    const numbers = path.match(/-?\d+(?:\.\d+)?/g).map(Number);
+    const [startX, startY, , , , , endX, endY] = numbers;
+    const halfCard = (144 / canvasWidth) * 500;
+    assert.ok(Math.abs(startX - (from.x * 10 + halfCard)) < 0.01);
+    assert.ok(Math.abs(endX - (to.x * 10 - halfCard)) < 0.01);
+    assert.equal(startY, from.y * 5.2);
+    assert.equal(endY, to.y * 5.2);
+  }
+});
+
+test("live pulses follow deterministic topology depth with one segment per edge", () => {
+  const topology = {
+    nodes: ["frontend", "checkout", "payment", "kafka", "accounting"].map((id) => ({ id })),
+    edges: [
+      { id: "frontend->checkout", from: "frontend", to: "checkout" },
+      { id: "checkout->payment", from: "checkout", to: "payment" },
+      { id: "checkout->kafka", from: "checkout", to: "kafka" },
+      { id: "kafka->accounting", from: "kafka", to: "accounting" }
+    ]
+  };
+  assert.deepEqual(livePulseSlots(topology), {
+    "frontend->checkout": 0,
+    "checkout->kafka": 1,
+    "checkout->payment": 2,
+    "kafka->accounting": 3
+  });
+  assert.match(stylesCss, /\.is-live-source \.pulse-flow[^}]+animation:[^;]+infinite/s);
+  assert.doesNotMatch(stylesCss, /\.is-live-source \.pulse-flow[^}]+stroke-dasharray:[^;]+,[^;]+,/s);
+});
+
+test("live incident state requires referenced explicit development failure evidence", () => {
+  const source = {
+    status: "live",
+    authoritative: true,
+    topology: { nodes: [{ id: "checkout" }, { id: "payment" }, { id: "kafka" }], edges: [] },
+    evidence: [{
+      id: "live-failure",
+      signal: "traces",
+      value: { services: ["checkout", "payment"] },
+      payload: {
+        resourceSpans: [{
+          resource: { attributes: [{ key: "service.name", value: { stringValue: "checkout" } }] },
+          scopeSpans: [{ spans: [{ name: "payment", status: { code: 2, message: "unavailable" } }] }]
+        }]
+      }
+    }]
+  };
+  const active = liveIncidentNodeStates({
+    mode: "development",
+    source,
+    events: [{ type: "evidence.queried", evidence_refs: ["live-failure"] }]
+  });
+  assert.deepEqual(active, { checkout: "impact", payment: "impact", kafka: "observed" });
+  assert.deepEqual(liveIncidentNodeStates({ mode: "captured", source, events: [{ evidence_refs: ["live-failure"] }] }), {
+    checkout: "observed", payment: "observed", kafka: "observed"
+  });
+  assert.deepEqual(liveIncidentNodeStates({
+    mode: "development",
+    source,
+    events: [
+      { type: "evidence.queried", evidence_refs: ["live-failure"] },
+      { type: "verification.completed", payload: { passed: true }, evidence_refs: [] }
+    ]
+  }), { checkout: "observed", payment: "observed", kafka: "observed" });
 });
 
 test("stage projection preserves evaluator, owner, recovery, and evolve ordering", () => {

@@ -91,6 +91,14 @@ This approved refinement separates observed runtime entities from the FlowPulse 
 
 The app now opens on a four-layer Architecture view, then reuses stable service identities when switching to Live or Diagnose. Global navigation, tracing state, immutable event count, Run GPT-5.6, and Inspect run remain accessible from the native workspace menu. Geometry audits at 1440 x 900 and 1280 x 800 found zero source-node intersections, clipped cards, document overflow, mission-bar overflow, or topbar overflow. Light and pure-black themes passed, the full evaluator/owner/recovery/evolve story completed, and the browser console reported 0 errors and 0 warnings.
 
+### Interactive Compare and agentic Live refinement
+
+- `agentic-compare-interactive-70-1440.jpg` - the canvas-native Compare control at 70% incident on the 1440 × 900 target.
+- `agentic-compare-interactive-30-1280.jpg` - the same continuous wipe at 30% incident on the 1280 × 800 target.
+- `agentic-live-single-pulse-1440.jpg` - the real OTLP service graph with complete 144 px plaques, boundary-connected paths, and one active causal pulse segment.
+
+The Compare range now updates the canvas handle, incident clip, dock range, and accessible value continuously at 1% precision. Live edges terminate at measured component boundaries and use unique topology-ordered 420 ms pulse slots; five visible-browser samples found at most one active segment. An unresolved local-development failure can color only services named by referenced failing trace evidence, and successful verification clears that impact state. The final real Live capture was healthy and therefore remained honestly observed rather than being forced red for a screenshot.
+
 ## Runtime truth boundary
 
 Real in this build: official local Astronomy Shop containers, current Collector OTLP traces/metrics/logs, observed topology, flagd change, checkout-only Docker recreation, append-only SQLite authority, evaluator loop, owner approval ordering, post-repair verification, hashed capture manifest, deterministic policy gates, optional GPT-5.6 loop, optional Langfuse observations, and the UI projection from runtime state.

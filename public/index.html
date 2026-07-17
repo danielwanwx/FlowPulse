@@ -110,7 +110,8 @@
                   <span class="plane-guide control-guide"><strong>FlowPulse control plane</strong><small>Change, evaluation, and evidence</small></span>
                 </div>
                 <div id="canvas-layers" class="canvas-layers"></div>
-                <div id="compare-handle" class="compare-handle" aria-hidden="true" hidden><span></span></div>
+                <div id="compare-handle" class="compare-handle" aria-hidden="true" hidden><i></i><span></span></div>
+                <input id="compare-canvas-range" class="compare-canvas-range" type="range" min="0" max="100" value="50" step="1" aria-label="Drag to compare incident and verified recovery" hidden>
                 <div id="annotation-layer" class="annotation-layer" aria-live="polite"></div>
                 <div id="approval-banner" class="approval-banner" hidden>
                   <div><strong>Owner approval required</strong><span id="approval-copy">Rollback is bounded to checkout:2.18.0.</span></div>
@@ -162,7 +163,7 @@
           <div id="compare-control" class="compare-control" hidden>
             <div><strong>Incident</strong><span id="compare-value">50% split</span><strong>Verified</strong></div>
             <label class="visually-hidden" for="compare-range">Compare incident and verified recovery</label>
-            <input id="compare-range" type="range" min="0" max="100" value="50" step="10">
+            <input id="compare-range" type="range" min="0" max="100" value="50" step="1">
             <div class="compare-presets" aria-label="Compare split presets">
               <button id="compare-incident" type="button">70% incident</button>
               <button id="compare-even" type="button">Even split</button>

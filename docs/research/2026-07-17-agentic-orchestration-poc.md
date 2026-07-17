@@ -285,6 +285,8 @@ Add only schemas, role manifests, legal transition rules, and a replay test harn
 
 **Exit:** the existing judge incident produces the same causal events and owner gate; invalid actor/event combinations are rejected.
 
+**Implemented 2026-07-17:** `src/agent-team-harness.mjs` now provides the additive `AgentTeamHarness.propose(envelope)` boundary, frozen manifests for all eight roles, sealed proposal hashes, typed payload/event pairing, scoped evidence and parent validation, prerequisite transitions, budgets, and ledger-backed idempotency. `test/agent-team-harness.test.mjs` replays the recorded Kafka rejection → checkout root cause → bounded repair proposal path and asserts the Owner gate without adding workers, queues, live model calls, executors, or a second state authority.
+
 ### P1 — Separate online maker/checker
 
 Run Evidence, Diagnosis, Evaluator, Planner, and Verifier as separate in-process agents/calls. Give each a clean context and explicit tool registry. Keep the deterministic executor.
@@ -386,4 +388,4 @@ Decisions intentionally deferred: whether to add the OpenAI Agents SDK, when to 
 - Evaluator and Evolve/Test maker-checker isolation are explicit capability boundaries.
 - Current-stack implementation is distinguished from optional framework adoption.
 - POC phases, budgets, checks, feedback, records, stop rules, and human gates are bounded.
-- No backend implementation, dependency, credential, deployment, or UI change was made.
+- P0 is implemented as an additive, dependency-free harness; P1–P3, credentials, deployment, and framework adoption remain intentionally out of scope.
