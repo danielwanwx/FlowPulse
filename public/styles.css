@@ -146,13 +146,19 @@ h1 { margin-bottom: 6px; font-size: clamp(22px, 2.1vw, 32px); line-height: 1.08;
 .count { font-size: 10px; text-transform: none; }
 
 .topology { position: relative; min-height: 290px; margin: 12px; overflow: hidden; border: 1px solid #202b30; border-radius: 7px; background-color: #0c1113; background-image: radial-gradient(#28353a 1px, transparent 1px); background-size: 18px 18px; }
-.topology svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+.topology svg { position: absolute; z-index: 0; inset: 0; width: 100%; height: 100%; overflow: visible; }
 .topology line { stroke: #334249; stroke-width: 1.25; }
 .topology line.impacted { stroke: var(--danger); stroke-width: 2; stroke-dasharray: 5 4; }
 .topology line.recovered { stroke: var(--success); }
-.service-node { position: absolute; width: 94px; min-height: 48px; display: flex; flex-direction: column; justify-content: center; padding: 7px 9px; transform: translate(-50%, -50%); border: 1px solid var(--line-strong); border-radius: 6px; background: #121a1e; box-shadow: 0 8px 20px rgba(0,0,0,.24); }
+.service-node { position: absolute; z-index: 1; width: 94px; min-height: 48px; display: flex; flex-direction: column; justify-content: center; padding: 7px 9px; transform: translate(-50%, -50%); border: 1px solid var(--line-strong); border-radius: 6px; background: #121a1e; box-shadow: 0 8px 20px rgba(0,0,0,.24); }
 .service-node strong { font-size: 11px; }
 .service-node span { margin-top: 2px; color: var(--faint); font-family: var(--mono); font-size: 8px; }
+.service-node.node-frontend { left: 21%; top: 18%; }
+.service-node.node-checkout { left: 50%; top: 18%; }
+.service-node.node-payment { left: 79%; top: 18%; }
+.service-node.node-kafka { left: 50%; top: 54%; }
+.service-node.node-accounting { left: 24%; top: 82%; }
+.service-node.node-fraud { left: 73%; top: 82%; }
 .service-node.impacted { border-color: #85413e; background: #241717; }
 .service-node.impacted strong { color: #ffc4be; }
 .service-node.recovered { border-color: #34724d; background: #12261a; }
@@ -171,7 +177,7 @@ h1 { margin-bottom: 6px; font-size: clamp(22px, 2.1vw, 32px); line-height: 1.08;
 .loop-contract { display: grid; grid-template-columns: repeat(6, 1fr); border-bottom: 1px solid var(--line); color: var(--faint); font-family: var(--mono); font-size: 8px; text-align: center; text-transform: uppercase; }
 .loop-contract span { padding: 8px 2px; border-right: 1px solid #202b30; }
 .loop-contract span:last-child { border-right: 0; }
-.timeline { position: relative; padding: 17px 18px 25px 42px; }
+.timeline { position: relative; max-height: 642px; padding: 17px 18px 25px 42px; overflow-y: auto; }
 .timeline::before { content: ""; position: absolute; left: 23px; top: 20px; bottom: 22px; width: 1px; background: var(--line-strong); }
 .timeline-entry { position: relative; margin-bottom: 12px; padding: 13px 14px; border: 1px solid var(--line); border-radius: 7px; background: #11181b; animation: enter .2s ease-out both; }
 .timeline-entry::before { content: ""; position: absolute; left: -25px; top: 18px; width: 8px; height: 8px; border: 2px solid var(--surface); border-radius: 50%; background: var(--faint); box-shadow: 0 0 0 1px var(--line-strong); }

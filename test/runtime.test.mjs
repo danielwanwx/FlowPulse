@@ -56,3 +56,15 @@ test("owner approval cannot be granted before a bounded repair is proposed", () 
   const runId = app.startRun();
   assert.throws(() => app.approve(runId), /No repair is awaiting approval/);
 });
+
+test("approved live finding uses the same bounded captured repair and verification path", () => {
+  const app = runtime();
+  const runId = app.startRun("live");
+  app.append(runId, "repair.proposed", "live-investigator", { ...app.bundle.repair, bounded: true });
+  app.append(runId, "approval.requested", "runtime", { repair_id: app.bundle.repair.id });
+  app.approve(runId, "Live incident owner");
+  const state = app.state(runId);
+  assert.equal(state.complete, true);
+  assert.equal(state.events.find((event) => event.type === "repair.executed").payload.target, "checkout");
+  assert.equal(state.events.find((event) => event.type === "verification.completed").payload.passed, true);
+});

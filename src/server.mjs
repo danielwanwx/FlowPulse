@@ -46,9 +46,17 @@ const server = createServer(async (request, response) => {
       return json(response, 200, runtime.state(runId));
     }
     if (url.pathname === "/api/live" && request.method === "POST") {
-      const runId = runtime.startRun();
-      const result = await runLiveInvestigation({ runtime, runId });
-      return json(response, 200, { result, state: runtime.state(runId) });
+      const runId = runtime.startRun("live");
+      try {
+        const result = await runLiveInvestigation({ runtime, runId });
+        return json(response, 200, { result, state: runtime.state(runId) });
+      } catch (error) {
+        runtime.append(runId, "live.run.failed", "runtime", {
+          classification: error.message.includes("approved boundary") ? "agent_false_positive" : "tool_data_failure",
+          reason: error.message
+        });
+        return json(response, 422, { error: error.message, state: runtime.state(runId) });
+      }
     }
     if (url.pathname === "/api/health" && request.method === "GET") {
       return json(response, 200, { ok: true, ledger: "sqlite-append-only", langfuse: langfuseEnabled });

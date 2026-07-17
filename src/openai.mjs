@@ -46,6 +46,24 @@ export async function runLiveInvestigation({ runtime, runId }) {
     }
 
     runtime.append(runId, "live.run.completed", "runtime", finalResult, finalResult.diagnosis.evidence_refs);
+    if (finalResult.evaluation.accepted) {
+      runtime.append(runId, "repair.proposed", "live-investigator", {
+        ...bundle.repair,
+        diagnosis_id: finalResult.diagnosis.id,
+        bounded: true,
+        expected_effect: finalResult.diagnosis.proposed_repair.reason
+      }, finalResult.diagnosis.evidence_refs);
+      runtime.append(runId, "approval.requested", "runtime", {
+        repair_id: bundle.repair.id,
+        owner_team: "commerce",
+        reason: "The live GPT-5.6 finding passed adversarial evaluation. The checkout rollback still requires owner approval."
+      });
+    } else {
+      runtime.append(runId, "outcome.classified", "live-evaluator", {
+        classification: "insufficient_evidence",
+        explanation: "The live diagnosis did not pass the adversarial evaluator within the replan budget."
+      }, finalResult.evaluation.counter_evidence_refs);
+    }
     return finalResult;
   });
 }
@@ -59,6 +77,7 @@ async function investigate({ runtime, runId, observability, feedback }) {
       `Investigate this production incident: ${bundle.incident.summary}`,
       "Use the evidence tools. Distinguish initiating cause from downstream symptoms.",
       "Cite only evidence IDs returned by tools. Propose only a checkout rollback if supported.",
+      "Query only the services needed to prove or disprove the current causal chain, then stop.",
       feedback ? `The evaluator rejected the prior attempt: ${JSON.stringify(feedback)}` : ""
     ].filter(Boolean).join("\n")
   }];
@@ -163,8 +182,8 @@ function executeTool(bundle, name, args) {
   };
   const kind = kindByTool[name];
   if (!kind) throw new Error(`Tool is not allowlisted: ${name}`);
-  return queryEvidence(bundle, { kind, entity: args.entity }).map(({ id, kind: itemKind, entity, at, title, fact, value }) => ({
-    id, kind: itemKind, entity, at, title, fact, value
+  return queryEvidence(bundle, { kind, entity: args.entity }).filter((item) => !item.id.startsWith("ev-verify-")).map(({ id, kind: itemKind, source, entity, at, title, fact, value }) => ({
+    id, kind: itemKind, source, entity, at, title, fact, value
   }));
 }
 
@@ -202,7 +221,7 @@ function diagnosisFormat() {
         evidence_refs: { type: "array", items: { type: "string" } },
         proposed_repair: {
           type: "object",
-          properties: { action: { type: "string" }, target: { type: "string" }, reason: { type: "string" } },
+          properties: { action: { type: "string", enum: ["rollback_deployment"] }, target: { type: "string", enum: ["checkout"] }, reason: { type: "string" } },
           required: ["action", "target", "reason"],
           additionalProperties: false
         }

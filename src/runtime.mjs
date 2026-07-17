@@ -15,9 +15,9 @@ export class IncidentRuntime {
     return this.ledger.latestRun(this.bundle.incident.id) ?? this.startRun();
   }
 
-  startRun() {
+  startRun(mode = this.mode) {
     const runId = `run-${randomUUID()}`;
-    this.append(runId, "run.started", "runtime", { mode: this.mode, schema_version: 1 });
+    this.append(runId, "run.started", "runtime", { mode, schema_version: 1 });
     this.append(runId, "incident.opened", "runtime", {
       title: this.bundle.incident.title,
       severity: this.bundle.incident.severity,
@@ -47,6 +47,11 @@ export class IncidentRuntime {
       repair_id: this.bundle.repair.id,
       scope: "checkout deployment only"
     }, [], 176_000);
+    const mode = events.find((item) => item.type === "run.started")?.payload.mode;
+    if (mode === "live") {
+      replayActions[7](this, runId, 180_000);
+      replayActions[8](this, runId, 190_000);
+    }
     return event;
   }
 
@@ -173,6 +178,7 @@ const replayActions = [
   },
   (runtime, runId, offset) => {
     const refs = runtime.bundle.repair.verification_evidence;
+    const rejectedDiagnosis = runtime.ledger.list(runId).some((event) => event.type === "evaluation.rejected");
     runtime.append(runId, "verification.completed", "verifier", {
       passed: true,
       checks: [
@@ -183,8 +189,10 @@ const replayActions = [
     }, refs, offset);
     runtime.append(runId, "outcome.classified", "evaluator", {
       classification: "confirmed_system_bug",
-      secondary_learning: "agent_false_positive",
-      explanation: "A checkout configuration regression caused the incident; the initial Kafka diagnosis was unsupported."
+      secondary_learning: rejectedDiagnosis ? "agent_false_positive" : "none",
+      explanation: rejectedDiagnosis
+        ? "A checkout configuration regression caused the incident; the initial diagnosis was unsupported."
+        : "A checkout configuration regression caused the incident and the accepted diagnosis was evidence-grounded."
     }, refs, offset + 1);
     runtime.append(runId, "regression.created", "evolve", runtime.bundle.regression, ["ev-metric-kafka-healthy", "ev-trace-payment-refused", "ev-commit-checkout"], offset + 2);
     const evaluation = evaluateCandidate({ events: runtime.ledger.list(runId), bundle: runtime.bundle });

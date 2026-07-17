@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -35,7 +35,9 @@ export class Ledger {
   }
 
   exec(sql) {
-    return execFileSync("sqlite3", ["-batch", this.path], { input: sql, encoding: "utf8" });
+    const result = spawnSync("sqlite3", ["-batch", this.path], { input: sql, encoding: "utf8" });
+    if (result.status !== 0) throw new Error(result.stderr.trim() || `sqlite3 exited with ${result.status}`);
+    return result.stdout;
   }
 
   query(sql) {

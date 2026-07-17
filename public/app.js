@@ -1,6 +1,6 @@
 const els = Object.fromEntries([...document.querySelectorAll("[id]")].map((element) => [element.id, element]));
 const topologyPositions = {
-  frontend: [16, 18], checkout: [48, 18], payment: [82, 18],
+  frontend: [21, 18], checkout: [50, 18], payment: [79, 18],
   kafka: [48, 54], accounting: [24, 82], fraud: [73, 82]
 };
 let state;
@@ -145,8 +145,8 @@ function renderTopology() {
     return `<line x1="${a[0]}" y1="${a[1]}" x2="${b[0]}" y2="${b[1]}" class="${recovered && active ? "recovered" : active ? "impacted" : ""}" vector-effect="non-scaling-stroke" />`;
   }).join("")}</svg>` + services.map((service) => {
     const [x, y] = topologyPositions[service.id];
-    const classes = ["service-node", recovered && impacted.has(service.id) ? "recovered" : impacted.has(service.id) ? "impacted" : "", causeKnown && service.id === "checkout" ? "cause" : ""].filter(Boolean).join(" ");
-    return `<div class="${classes}" style="left:${x}%;top:${y}%"><strong>${escapeHtml(service.label)}</strong><span>${escapeHtml(service.team)}</span></div>`;
+    const classes = ["service-node", `node-${service.id}`, recovered && impacted.has(service.id) ? "recovered" : impacted.has(service.id) ? "impacted" : "", causeKnown && service.id === "checkout" ? "cause" : ""].filter(Boolean).join(" ");
+    return `<div class="${classes}"><strong>${escapeHtml(service.label)}</strong><span>${escapeHtml(service.team)}</span></div>`;
   }).join("");
   els["topology-state"].textContent = recovered ? "Recovered" : impacted.size ? "Impact active" : "Awaiting evidence";
   els["topology-state"].className = `tag ${recovered ? "success" : impacted.size ? "danger" : ""}`;
@@ -178,7 +178,7 @@ function renderTimeline() {
     "hypothesis.proposed", "evaluation.rejected", "plan.revised", "evaluation.accepted",
     "repair.proposed", "approval.requested", "approval.granted", "repair.executed",
     "verification.completed", "outcome.classified", "regression.created", "policy.evaluated",
-    "live.run.started", "live.run.completed"
+    "live.run.started", "live.run.completed", "live.run.failed"
   ].includes(event.type));
   els["event-count"].textContent = `${state.events.length} events`;
   if (!visible.length) {
@@ -194,7 +194,7 @@ function renderTimeline() {
       ${event.evidence_refs.length ? `<div class="citation-row">${event.evidence_refs.map((id) => `<span class="citation">${escapeHtml(id)}</span>`).join("")}</div>` : ""}
     </article>`;
   }).join("");
-  els.timeline.lastElementChild?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  els.timeline.scrollTop = els.timeline.scrollHeight;
 }
 
 function renderRepair() {
@@ -228,7 +228,7 @@ function renderInspector() {
     return;
   }
   els.inspector.innerHTML = `<h3 class="inspector-title">${escapeHtml(evidence.title)}</h3>
-    <div class="inspector-meta">${escapeHtml(evidence.id)} | ${escapeHtml(evidence.kind)} | ${escapeHtml(evidence.entity)}</div>
+    <div class="inspector-meta">${escapeHtml(evidence.id)} | ${escapeHtml(evidence.source || evidence.kind)} | ${escapeHtml(evidence.entity)}</div>
     <p class="inspector-fact">${escapeHtml(evidence.fact)}</p>
     ${evidence.value ? `<pre class="code-value">${escapeHtml(JSON.stringify(evidence.value, null, 2))}</pre>` : ""}`;
 }
@@ -270,28 +270,31 @@ function updateControls() {
   els["run-button"].disabled = running || state.complete || state.waiting_for_approval;
   els["live-button"].disabled = running;
   els["live-button"].title = state.live_available ? "Run a fresh Responses API investigation" : "Set OPENAI_API_KEY to enable live mode";
-  if (state.complete) els["run-button"].textContent = "Replay complete";
+  els["run-button"].textContent = running ? "Replay running" : state.complete ? "Replay complete" : state.waiting_for_approval ? "Awaiting owner approval" : "Run guided replay";
 }
 
 function eventPresentation(event) {
   const p = event.payload;
-  const map = {
-    "hypothesis.proposed": [p.title || "Hypothesis proposed", p.claim || "Agent proposed a causal claim.", "", p.confidence != null ? `${Math.round(p.confidence * 100)}%` : ""],
-    "evaluation.rejected": ["Evaluator rejected the diagnosis", p.reason, "rejected", p.score != null ? `${Math.round(p.score * 100)}%` : ""],
-    "plan.revised": ["Investigator replanned", p.reason, "", ""],
-    "evaluation.accepted": ["Causal finding accepted", p.reason, "accepted", p.score != null ? `${Math.round(p.score * 100)}%` : ""],
-    "repair.proposed": ["Bounded checkout rollback proposed", p.expected_effect, "approval", ""],
-    "approval.requested": ["Owner approval requested", p.reason, "approval", ""],
-    "approval.granted": ["Owner approved the rollback", `${p.owner} approved ${p.scope}.`, "accepted", ""],
-    "repair.executed": ["Checkout rollback executed", `${p.from} restored to ${p.to}.`, "accepted", ""],
-    "verification.completed": ["Recovery thresholds passed", "Payment reachability recovered, checkout errors fell, and Kafka lag drained without a Kafka repair.", "verified", ""],
-    "outcome.classified": ["Outcome classified", `${p.classification}; learning: ${p.secondary_learning}. ${p.explanation}`, "verified", ""],
-    "regression.created": ["Regression case created", p.name, "verified", ""],
-    "policy.evaluated": ["Candidate policy passed offline gates", `${p.candidate} is ${p.promotion.replaceAll("_", " ")}. Promotion still requires an owner.`, "verified", ""],
-    "live.run.started": ["Live GPT-5.6 loop started", `Model ${p.model} is querying captured evidence through allowlisted tools.`, "", ""],
-    "live.run.completed": ["Live GPT-5.6 loop completed", p.evaluation?.reason || "Investigation and adversarial evaluation completed.", p.evaluation?.accepted ? "accepted" : "rejected", p.evaluation?.score != null ? `${Math.round(p.evaluation.score * 100)}%` : ""]
-  };
-  const [title, copy, tone, score] = map[event.type] || [event.type, JSON.stringify(p), "", ""];
+  let presentation;
+  switch (event.type) {
+    case "hypothesis.proposed": presentation = [p.title || "Hypothesis proposed", p.claim || "Agent proposed a causal claim.", "", percent(p.confidence)]; break;
+    case "evaluation.rejected": presentation = ["Evaluator rejected the diagnosis", p.reason, "rejected", percent(p.score)]; break;
+    case "plan.revised": presentation = ["Investigator replanned", p.reason, "", ""]; break;
+    case "evaluation.accepted": presentation = ["Causal finding accepted", p.reason, "accepted", percent(p.score)]; break;
+    case "repair.proposed": presentation = ["Bounded checkout rollback proposed", p.expected_effect, "approval", ""]; break;
+    case "approval.requested": presentation = ["Owner approval requested", p.reason, "approval", ""]; break;
+    case "approval.granted": presentation = ["Owner approved the rollback", `${p.owner} approved ${p.scope}.`, "accepted", ""]; break;
+    case "repair.executed": presentation = ["Checkout rollback executed", `${p.from} restored to ${p.to}.`, "accepted", ""]; break;
+    case "verification.completed": presentation = ["Recovery thresholds passed", "Payment reachability recovered, checkout errors fell, and Kafka lag drained without a Kafka repair.", "verified", ""]; break;
+    case "outcome.classified": presentation = ["Outcome classified", `${p.classification}; learning: ${p.secondary_learning}. ${p.explanation}`, "verified", ""]; break;
+    case "regression.created": presentation = ["Regression case created", p.name, "verified", ""]; break;
+    case "policy.evaluated": presentation = ["Candidate policy passed offline gates", `${p.candidate} is ${(p.promotion || "blocked").replaceAll("_", " ")}. Promotion still requires an owner.`, "verified", ""]; break;
+    case "live.run.started": presentation = ["Live GPT-5.6 loop started", `Model ${p.model} is querying captured evidence through allowlisted tools.`, "", ""]; break;
+    case "live.run.completed": presentation = ["Live GPT-5.6 loop completed", p.evaluation?.reason || "Investigation and adversarial evaluation completed.", p.evaluation?.accepted ? "accepted" : "rejected", percent(p.evaluation?.score)]; break;
+    case "live.run.failed": presentation = ["Live investigation stopped", p.reason, "rejected", ""]; break;
+    default: presentation = [event.type, JSON.stringify(p), "", ""];
+  }
+  const [title, copy, tone, score] = presentation;
   return { title, copy: copy || "Recorded in the append-only ledger.", tone, score };
 }
 
@@ -301,6 +304,7 @@ function statusLabel(status) { return ({ investigating: "Investigation active", 
 function offset(ms) { return `T+${Math.floor(ms / 60000)}:${String(Math.floor((ms % 60000) / 1000)).padStart(2, "0")}`; }
 function timeOnly(value) { return new Date(value).toISOString().slice(11, 19); }
 function formatMetric(metric, value) { return metric.includes("percent") ? `${value}%` : Number(value).toLocaleString(); }
+function percent(value) { return value == null ? "" : `${Math.round(value * 100)}%`; }
 function wait(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 
 async function request(path, options) {

@@ -1,5 +1,13 @@
 {
   "schema_version": 1,
+  "capture": {
+    "source_system": "OpenTelemetry Astronomy Shop",
+    "format": "normalized OTLP incident bundle",
+    "signals": ["metrics", "logs", "traces"],
+    "window_start": "2026-07-16T15:42:00.000Z",
+    "window_end": "2026-07-16T16:07:00.000Z",
+    "note": "Telemetry signals are compacted for deterministic replay and enriched with deploy and commit records."
+  },
   "incident": {
     "id": "inc-astro-checkout-001",
     "title": "Checkout failures delay payment processing",
@@ -29,6 +37,7 @@
     {
       "id": "ev-metric-checkout-errors",
       "kind": "metric",
+      "source": "otel.metric",
       "entity": "checkout",
       "at": "2026-07-16T15:43:00.000Z",
       "title": "Checkout error rate",
@@ -38,6 +47,7 @@
     {
       "id": "ev-metric-kafka-lag",
       "kind": "metric",
+      "source": "otel.metric",
       "entity": "kafka",
       "at": "2026-07-16T15:46:00.000Z",
       "title": "Consumer lag",
@@ -47,6 +57,7 @@
     {
       "id": "ev-log-consumer-delay",
       "kind": "log",
+      "source": "otel.log",
       "entity": "accounting",
       "at": "2026-07-16T15:47:18.000Z",
       "title": "Accounting consumer delay",
@@ -55,6 +66,7 @@
     {
       "id": "ev-metric-kafka-healthy",
       "kind": "metric",
+      "source": "otel.metric",
       "entity": "kafka",
       "at": "2026-07-16T15:46:30.000Z",
       "title": "Kafka broker health",
@@ -64,6 +76,7 @@
     {
       "id": "ev-timing-error-before-lag",
       "kind": "metric",
+      "source": "otel.metric",
       "entity": "checkout",
       "at": "2026-07-16T15:43:00.000Z",
       "title": "Failure ordering",
@@ -72,6 +85,7 @@
     {
       "id": "ev-deploy-checkout",
       "kind": "deploy",
+      "source": "deployment.change",
       "entity": "checkout",
       "at": "2026-07-16T15:42:00.000Z",
       "title": "Checkout deployment",
@@ -81,6 +95,7 @@
     {
       "id": "ev-trace-payment-refused",
       "kind": "trace",
+      "source": "otel.trace",
       "entity": "checkout",
       "at": "2026-07-16T15:43:06.000Z",
       "title": "Payment span failure",
@@ -90,6 +105,7 @@
     {
       "id": "ev-log-endpoint-fallback",
       "kind": "log",
+      "source": "otel.log",
       "entity": "checkout",
       "at": "2026-07-16T15:42:11.000Z",
       "title": "Checkout endpoint selection",
@@ -98,6 +114,7 @@
     {
       "id": "ev-commit-checkout",
       "kind": "commit",
+      "source": "git.change",
       "entity": "checkout",
       "at": "2026-07-16T14:18:00.000Z",
       "title": "AI-assisted timeout hardening",
@@ -112,6 +129,7 @@
     {
       "id": "ev-verify-payment",
       "kind": "metric",
+      "source": "otel.metric",
       "entity": "payment",
       "at": "2026-07-16T16:02:00.000Z",
       "title": "Payment reachability restored",
@@ -121,6 +139,7 @@
     {
       "id": "ev-verify-checkout",
       "kind": "metric",
+      "source": "otel.metric",
       "entity": "checkout",
       "at": "2026-07-16T16:03:00.000Z",
       "title": "Checkout recovered",
@@ -130,6 +149,7 @@
     {
       "id": "ev-verify-kafka",
       "kind": "metric",
+      "source": "otel.metric",
       "entity": "kafka",
       "at": "2026-07-16T16:07:00.000Z",
       "title": "Kafka backlog draining",
