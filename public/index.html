@@ -3,145 +3,147 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="color-scheme" content="dark">
-    <meta name="description" content="FlowPulse evidence-grounded incident response cockpit">
-    <title>FlowPulse | Incident control loop</title>
+    <meta name="color-scheme" content="light">
+    <meta name="description" content="FlowPulse Incident Digital Twin">
+    <title>FlowPulse | Incident Digital Twin</title>
     <link rel="stylesheet" href="/styles.css">
   </head>
   <body>
-    <a class="skip-link" href="#investigation">Skip to investigation</a>
-    <div class="app-shell">
+    <a class="skip-link" href="#twin-canvas">Skip to system canvas</a>
+    <div id="app-shell" class="app-shell is-loading">
       <header class="topbar">
         <div class="brand" aria-label="FlowPulse">
           <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
           <span>FlowPulse</span>
+          <span class="product-name">Incident Digital Twin</span>
         </div>
-        <div class="topbar-meta">
-          <span id="mode-badge" class="tag">Replay</span>
-          <a id="langfuse-link" class="quiet-link is-disabled" href="#" target="_blank" rel="noreferrer">Langfuse trace</a>
-          <span id="ledger-state" class="ledger-state">Ledger syncing</span>
+        <div class="topbar-status">
+          <span id="capture-label" class="capture-label">Authoritative ledger</span>
+          <a id="langfuse-link" class="text-link is-disabled" href="#" target="_blank" rel="noreferrer">Tracing not configured</a>
+          <span id="ledger-state" class="ledger-state">Loading events</span>
         </div>
       </header>
 
+      <div id="error-banner" class="error-banner" role="alert" hidden>
+        <span id="error-message">FlowPulse could not load the incident state.</span>
+        <button id="retry-button" class="text-button" type="button">Retry</button>
+      </div>
+
       <main>
-        <section class="incident-bar" aria-labelledby="incident-title">
-          <div>
-            <div class="incident-kicker"><span id="severity">SEV-1</span><span id="environment">astronomy-shop-demo</span></div>
+        <section class="mission-bar" aria-labelledby="incident-title">
+          <div class="mission-summary">
+            <div class="mission-meta"><span id="severity">SEV-1</span><span id="environment">astronomy-shop-demo</span></div>
             <h1 id="incident-title">Loading incident</h1>
-            <p id="incident-summary">Reading the append-only incident ledger.</p>
+            <p id="incident-summary">Reading immutable incident state.</p>
           </div>
-          <div class="incident-status">
-            <span class="label">Current stage</span>
-            <strong id="stage">Evidence collection</strong>
-            <span id="status-text" class="status-line">Investigating</span>
+
+          <div class="mode-switch" aria-label="Digital twin mode">
+            <button class="mode-button" type="button" data-mode="live">Live</button>
+            <button class="mode-button is-active" type="button" data-mode="replay">Replay</button>
+            <button class="mode-button" type="button" data-mode="compare">Compare</button>
           </div>
-          <div class="controls" aria-label="Replay controls">
-            <button id="run-button" class="button primary" type="button">Run guided replay</button>
-            <button id="next-button" class="button" type="button">Run next step</button>
-            <button id="reset-button" class="button quiet" type="button">New replay</button>
-            <button id="live-button" class="button quiet" type="button">Run fresh GPT-5.6</button>
+
+          <div class="mission-actions">
+            <div class="stage-readout">
+              <span>Current stage</span>
+              <strong id="stage">Healthy</strong>
+              <small id="status-text">Loading authoritative state</small>
+            </div>
+            <button id="live-button" class="button secondary" type="button">Run GPT-5.6</button>
+            <button id="details-button" class="button secondary" type="button">Inspect run</button>
           </div>
         </section>
 
-        <section class="metric-strip" aria-label="Incident health metrics">
-          <article>
-            <span class="metric-label">Checkout errors</span>
-            <div><strong id="metric-checkout">38.4%</strong><span id="metric-checkout-delta" class="metric-delta bad">+37.7 pp</span></div>
-          </article>
-          <article>
-            <span class="metric-label">Payment reachable</span>
-            <div><strong id="metric-payment">61.6%</strong><span id="metric-payment-delta" class="metric-delta bad">degraded</span></div>
-          </article>
-          <article>
-            <span class="metric-label">Kafka lag</span>
-            <div><strong id="metric-kafka">11,842</strong><span id="metric-kafka-delta" class="metric-delta bad">downstream</span></div>
-          </article>
-          <article class="causal-clock">
-            <span class="metric-label">Ordering</span>
-            <div><strong>171s</strong><span class="metric-delta neutral">failures lead lag</span></div>
-          </article>
+        <section class="twin-workspace" aria-label="Incident system workspace">
+          <div class="canvas-shell">
+            <div class="canvas-toolbar">
+              <div>
+                <h2>System state</h2>
+                <p id="canvas-caption">Immutable replay projection</p>
+              </div>
+              <div class="metric-cluster" aria-label="Incident metrics">
+                <button class="metric" type="button" data-focus-entity="checkout">
+                  <span>Checkout errors</span><strong id="metric-checkout">0.7%</strong><small id="metric-checkout-note">captured baseline</small>
+                </button>
+                <button class="metric" type="button" data-focus-entity="payment">
+                  <span>Payment</span><strong id="metric-payment">Nominal</strong><small id="metric-payment-note">pre-incident</small>
+                </button>
+                <button class="metric" type="button" data-focus-entity="kafka">
+                  <span>Kafka lag</span><strong id="metric-kafka">182</strong><small id="metric-kafka-note">lag baseline</small>
+                </button>
+              </div>
+              <div class="state-key" aria-label="State legend">
+                <span><i class="key-healthy"></i>Healthy</span>
+                <span><i class="key-change"></i>Change</span>
+                <span><i class="key-impact"></i>Impact</span>
+                <span><i class="key-verified"></i>Verified</span>
+              </div>
+            </div>
+
+            <div id="twin-scroll" class="twin-scroll">
+              <div id="twin-canvas" class="twin-canvas" role="region" aria-label="Astronomy Shop incident system canvas" tabindex="0">
+                <div id="canvas-loading" class="canvas-loading" role="status">
+                  <span>Loading authoritative state</span>
+                </div>
+                <div id="canvas-layers" class="canvas-layers"></div>
+                <div id="compare-handle" class="compare-handle" aria-hidden="true" hidden><span></span></div>
+                <div id="annotation-layer" class="annotation-layer" aria-live="polite"></div>
+                <div id="approval-banner" class="approval-banner" hidden>
+                  <div><strong>Owner approval required</strong><span>Rollback is bounded to checkout:2.18.0.</span></div>
+                  <button id="approve-button" class="button approve" type="button">Approve checkout rollback</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <aside id="context-drawer" class="context-drawer" aria-labelledby="drawer-title" hidden>
+            <div class="drawer-header">
+              <div><span id="drawer-kind">Run detail</span><h2 id="drawer-title">Incident evidence</h2><p id="drawer-subtitle">Select a component, path, or stage.</p></div>
+              <button id="drawer-close" class="icon-button" type="button" aria-label="Close contextual drawer">Close</button>
+            </div>
+            <div id="drawer-tabs" class="drawer-tabs" role="tablist" aria-label="Incident detail categories"></div>
+            <div id="drawer-content" class="drawer-content" role="tabpanel"></div>
+          </aside>
         </section>
 
-        <div class="cockpit-grid">
-          <aside class="rail" aria-label="System topology and evidence">
-            <section class="panel topology-panel">
-              <div class="panel-heading">
-                <div><span class="section-label">System view</span><h2>Propagation topology</h2></div>
-                <span id="topology-state" class="tag danger">Impact active</span>
-              </div>
-              <div id="topology" class="topology" role="img" aria-label="Service dependency topology"></div>
-              <p class="topology-note">The highlighted path is derived from cited evidence, not model confidence.</p>
-            </section>
+        <section class="timeline-dock" aria-label="Incident timeline">
+          <div class="transport">
+            <button id="restart-button" class="transport-button" type="button">Restart</button>
+            <button id="back-button" class="transport-button" type="button">Back</button>
+            <button id="play-button" class="transport-button primary" type="button">Run guided replay</button>
+            <button id="forward-button" class="transport-button" type="button">Step</button>
+            <label class="speed-control">Speed
+              <select id="speed-select" aria-label="Replay speed">
+                <option value="1">1x</option>
+                <option value="1.5" selected>1.5x</option>
+                <option value="2">2x</option>
+              </select>
+            </label>
+          </div>
 
-            <section class="panel evidence-panel">
-              <div class="panel-heading">
-                <div><span class="section-label">Ground truth</span><h2>Evidence ledger</h2></div>
-                <span id="evidence-count" class="count">0</span>
-              </div>
-              <div id="evidence-list" class="evidence-list" aria-live="polite">
-                <div class="empty-state">Evidence appears as tools query the captured incident.</div>
-              </div>
-            </section>
-          </aside>
+          <div class="timeline-main">
+            <div id="stage-track" class="stage-track" aria-label="Incident stages"></div>
+            <label class="visually-hidden" for="timeline-range">Replay timeline position</label>
+            <input id="timeline-range" class="timeline-range" type="range" min="0" max="0" value="0" step="1">
+          </div>
 
-          <section id="investigation" class="panel investigation-panel" aria-labelledby="investigation-title">
-            <div class="panel-heading investigation-heading">
-              <div><span class="section-label">Inspectable agent loop</span><h2 id="investigation-title">Investigation record</h2></div>
-              <span id="event-count" class="count">0 events</span>
+          <div id="compare-control" class="compare-control" hidden>
+            <div><strong>Incident</strong><span id="compare-value">50% split</span><strong>Verified</strong></div>
+            <label class="visually-hidden" for="compare-range">Compare incident and verified recovery</label>
+            <input id="compare-range" type="range" min="0" max="100" value="50" step="10">
+            <div class="compare-presets" aria-label="Compare split presets">
+              <button id="compare-incident" type="button">70% incident</button>
+              <button id="compare-even" type="button">Even split</button>
+              <button id="compare-verified" type="button">70% verified</button>
             </div>
-            <div class="loop-contract" aria-label="Loop contract">
-              <span>Inspect</span><span>Challenge</span><span>Replan</span><span>Repair</span><span>Verify</span><span>Learn</span>
-            </div>
-            <div id="timeline" class="timeline" aria-live="polite">
-              <div class="empty-state large">
-                <strong>No agent claims yet</strong>
-                <span>Start the guided replay to inspect every decision and citation.</span>
-              </div>
-            </div>
-          </section>
+          </div>
 
-          <aside class="action-column" aria-label="Decision and learning controls">
-            <section id="decision-panel" class="panel decision-panel">
-              <div class="panel-heading">
-                <div><span class="section-label">Human gate</span><h2>Bounded remediation</h2></div>
-                <span id="approval-tag" class="tag">Not proposed</span>
-              </div>
-              <div id="repair-content" class="repair-content">
-                <div class="empty-state">A repair can appear only after an evidence-supported diagnosis passes evaluation.</div>
-              </div>
-              <button id="approve-button" class="button approve" type="button" hidden>Approve checkout rollback</button>
-            </section>
-
-            <section class="panel inspector-panel">
-              <div class="panel-heading">
-                <div><span class="section-label">Selected record</span><h2>Evidence inspector</h2></div>
-              </div>
-              <div id="inspector" class="inspector">
-                <div class="empty-state">Select an evidence item to inspect its source fact.</div>
-              </div>
-            </section>
-
-            <section class="panel verification-panel">
-              <div class="panel-heading">
-                <div><span class="section-label">Recovery</span><h2>Before and after</h2></div>
-                <span id="verification-tag" class="tag">Pending</span>
-              </div>
-              <div id="verification-content" class="verification-content">
-                <div class="empty-state">Verification waits for an approved repair.</div>
-              </div>
-            </section>
-
-            <section class="panel gates-panel">
-              <div class="panel-heading">
-                <div><span class="section-label">Eval / Evolve</span><h2>Promotion gates</h2></div>
-                <span id="gates-tag" class="tag">Locked</span>
-              </div>
-              <div id="gates-content" class="gates-content">
-                <div class="empty-state">A candidate policy is tested after recovery.</div>
-              </div>
-            </section>
-          </aside>
-        </div>
+          <button id="timeline-current" class="timeline-current" type="button">
+            <span id="timeline-time">15:41</span>
+            <strong id="timeline-title">Healthy</strong>
+            <small id="timeline-copy">Captured system baseline</small>
+          </button>
+        </section>
       </main>
     </div>
 

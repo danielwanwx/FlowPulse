@@ -21,10 +21,10 @@ npm run judge
 Open [http://127.0.0.1:4310](http://127.0.0.1:4310), then:
 
 1. Click **Run guided replay**.
-2. Watch the evaluator reject the Kafka diagnosis.
-3. Inspect the deploy, trace, log, and commit evidence used in the replan.
+2. Watch the shared system canvas replay propagation and the evaluator reject the Kafka diagnosis.
+3. Select nodes or causal annotations to inspect the deploy, trace, log, and commit evidence used in the replan.
 4. Click **Approve checkout rollback** at the human gate.
-5. Watch recovery verification and the offline policy gates complete.
+5. Watch recovery verification and the offline policy gates complete, then open **Compare** to inspect incident versus verified state.
 
 The interactive path takes about 20 seconds. It is deterministic and needs no cloud credentials.
 
@@ -39,6 +39,16 @@ To run all automated checks:
 ```bash
 npm test
 ```
+
+## Incident Digital Twin
+
+The primary interface is one deterministic system canvas with three views of the same component identities:
+
+- **Live** shows the ledger's current or last-known captured state. It is explicitly labeled captured-live because this build does not claim a streaming collector.
+- **Replay** reconstructs any incident milestone from immutable events. Play, pause, step, restart, seek, and speed controls all use the same projection function.
+- **Compare** places the impact and verified recovery projections on the same geometry with an interactive split.
+
+The canvas keeps the architecture visible while moving dense telemetry and reasoning into a contextual drawer. Metrics, logs, traces, deploys, evidence citations, agent reasoning, adversarial evaluation, repair, verification, and evolve gates remain reachable by selecting a node, edge, or event.
 
 ## Live GPT-5.6 mode
 
@@ -93,20 +103,20 @@ code-owned incident state machine and human gate
         |
         +--> append-only SQLite ledger (runtime authority)
         +--> Langfuse observations (best-effort mirror)
-        +--> cockpit projections
+        +--> deterministic digital-twin projections
         +--> deterministic regression gates
 ```
 
 The runtime is intentionally small:
 
-- One Node.js process serves the API and browser cockpit.
+- One Node.js process serves the API and browser digital twin.
 - SQLite triggers reject every update and delete to the event table.
 - Starting a new replay appends a new run; it never clears history.
 - UI state is projected from immutable events.
 - Replay and live mode share the same ledger and safety boundaries.
 - Consequential remediation cannot execute before an `approval.granted` event.
 
-The approved design contract is in [`docs/specs/2026-07-16-flowpulse-design.md`](docs/specs/2026-07-16-flowpulse-design.md).
+The original product contract is in [`docs/specs/2026-07-16-flowpulse-design.md`](docs/specs/2026-07-16-flowpulse-design.md). The current Incident Digital Twin contract is in [`docs/specs/2026-07-16-incident-digital-twin-redesign.md`](docs/specs/2026-07-16-incident-digital-twin-redesign.md).
 
 ## Evidence bundle
 
@@ -161,7 +171,7 @@ GPT-5.6 is part of the product, not only a development aid. In live mode it perf
 data/incidents/                 captured incident and regression evidence
 docs/specs/                     approved design contract
 docs/judge-script.md            under-three-minute presentation path
-public/                         dependency-free incident cockpit
+public/                         dependency-free Incident Digital Twin
 src/ledger.mjs                  append-only SQLite authority
 src/runtime.mjs                 bounded replay state machine
 src/openai.mjs                  live GPT-5.6 tool and evaluator loop
@@ -173,7 +183,7 @@ test/                           ledger, runtime, determinism, and API checks
 
 ## Limitations
 
-The competition build intentionally ships one incident, one repair type, and captured production evidence. A live OpenTelemetry collector and Kubernetes rollback adapter are clear extension points, but they are not judge-path dependencies and are not granted production authority in this repository.
+The competition build intentionally ships one incident, one repair type, and captured production evidence. Live mode is therefore an honest last-known ledger projection, not a claim of continuous external telemetry. A live OpenTelemetry collector and Kubernetes rollback adapter are clear extension points, but they are not judge-path dependencies and are not granted production authority in this repository.
 
 ## License
 
