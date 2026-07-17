@@ -35,6 +35,14 @@ Research Engine was run first, as required. Its run is recorded at:
 
 That run stopped with `failed_no_rows`: all six AnySearch requests returned HTTP 402, so its `evidence.jsonl` is empty. The limitation is preserved rather than hidden. The framework facts below were then collected from current official documentation pages directly. Recommendations are explicitly separated from those facts.
 
+### Independent verification pass
+
+The primary agent re-opened the official sources on 2026-07-17 and checked the claims against the current pages. This pass confirmed the core recommendation and added three implementation cautions:
+
+1. OpenAI Agents SDK tool guardrails cover custom function-tool invocations, but the current SDK documentation says they do not wrap handoff calls, hosted/built-in execution tools, or `agent.asTool()` directly. FlowPulse therefore still needs its own capability broker and transition validator around every authoritative action.
+2. Google ADK 2.0 now positions graph and dynamic workflows as the more flexible successors to template workflows for Python and Go; its collaborative `task` mode is temporarily disabled inside graph workflows. This reinforces the decision not to add ADK to the current Node.js POC.
+3. Microsoft Agent Framework's current overview explicitly recommends workflows for well-defined multi-step coordination and functions when an agent is unnecessary. That supports keeping detection, transitions, execution, and promotion deterministic rather than turning every component into an LLM agent.
+
 ## Current FlowPulse responsibility map
 
 ### What exists today
@@ -68,11 +76,11 @@ That run stopped with `failed_no_rows`: all six AnySearch requests returned HTTP
 
 The following are framework facts, not FlowPulse recommendations.
 
-- **OpenAI Agents SDK:** its official orchestration guide documents manager-style agents-as-tools and handoffs, and allows mixing these patterns. Tool guardrails can validate every custom function-tool call. Human-in-the-loop tools pause and resume from serialized `RunState`, including nested agents; the runner also exposes a `maxTurns` safety limit. [OAI-1] [OAI-2] [OAI-3] [OAI-4]
+- **OpenAI Agents SDK:** its official orchestration guide documents manager-style agents-as-tools and handoffs, allows mixing these patterns, and distinguishes LLM orchestration from more deterministic code orchestration. Tool guardrails validate custom function-tool calls, but the documented guardrail pipeline excludes handoff calls, hosted/built-in execution tools, and direct `agent.asTool()` wrapping. Human-in-the-loop tools pause and resume from serialized `RunState`, including nested agents; the runner also exposes a `maxTurns` safety limit. [OAI-1] [OAI-2] [OAI-3] [OAI-4]
 - **CrewAI:** official guidance distinguishes autonomous Crews from deterministic, event-driven Flows and recommends Flows for predictable, auditable decision paths. Crews support sequential and hierarchical processes. Checkpointing can resume crews, flows, and agents, but the current checkpointing page explicitly labels it early release. [CREW-1] [CREW-2] [CREW-3]
 - **LangGraph:** it is a low-level graph runtime for durable execution, streaming, and human-in-the-loop. Checkpointers save graph state at each step; interrupts pause indefinitely and resume by thread ID. LangChain's multi-agent docs distinguish routers, handoffs, and supervisor/subagent patterns and explicitly identify context isolation as a main reason for subagents. [LG-1] [LG-2] [LG-3] [LG-4]
 - **Microsoft Agent Framework:** official documentation describes typed, graph-based workflows, checkpoints, and human-in-the-loop request/response. The official AutoGen migration guide says Agent Framework is the new foundation developed by the core AutoGen and Semantic Kernel teams and contrasts its typed data-flow workflow with AutoGen's event-driven/team model. [MAF-1] [MAF-2] [MAF-3] [MAF-4]
-- **Google ADK:** current ADK documentation offers graph, dynamic, collaborative, and template workflows. Template workflows include deterministic sequential, loop, and parallel agents; collaborative workflows use a coordinator and scoped subagent modes. ADK's A2A integration targets remote agent interoperability. Resume is at-least-once for tools, so side-effecting tools must be idempotent. [ADK-1] [ADK-2] [ADK-3] [ADK-4]
+- **Google ADK:** current ADK documentation offers graph, dynamic, collaborative, and template workflows. Template workflows include deterministic sequential, loop, and parallel agents, although ADK 2.0 says graph and dynamic workflows supersede templates for Python and Go. Collaborative workflows use a coordinator and scoped subagent modes, with the documented `task` mode currently disabled inside graph workflows. ADK's A2A integration targets remote agent interoperability. Resume is at-least-once for tools, so side-effecting tools must be idempotent. [ADK-1] [ADK-2] [ADK-3] [ADK-4]
 - **AutoGen:** AutoGen Core provides an event-driven actor model and asynchronous messaging, while AgentChat provides teams, handoffs, and explicit termination conditions. Its own HITL page warns that blocking user input during a run can leave a team in a state that cannot be saved or resumed. Microsoft now provides an official migration path to Agent Framework. [AG-1] [AG-2] [AG-3]
 - **Temporal:** Temporal is a durable workflow engine rather than an agent framework. TypeScript Signals can change a workflow's state, `workflow.condition` can wait for approval, and retry policies expose maximum attempts, backoff, and non-retryable errors. [TEMP-1] [TEMP-2] [TEMP-3]
 
@@ -255,7 +263,7 @@ After the contracts pass, the Agents SDK can reduce custom model-loop code:
 - set `maxTurns`, tool concurrency, token ceilings, and approval requirements;
 - serialize approval `RunState` only as execution convenience while the FlowPulse ledger remains the source of truth.
 
-Do not use handoffs to transfer authority between evaluator, planner, executor, or Evolve/Test. Their transitions remain code-owned.
+Do not rely on SDK guardrails alone for authority isolation: handoffs and several hosted/built-in execution paths bypass the custom function-tool guardrail pipeline. Do not use handoffs to transfer authority between evaluator, planner, executor, or Evolve/Test. Their transitions remain code-owned and validated by the FlowPulse dispatcher.
 
 ### When to adopt Temporal
 
