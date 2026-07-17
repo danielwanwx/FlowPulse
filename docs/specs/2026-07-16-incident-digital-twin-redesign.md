@@ -236,6 +236,17 @@ At 1440x900 and 1280x800, the canvas remains above the timeline with all nodes i
 - Use client-side Compare layers because the backend already exposes the required verified facts.
 - Interpret the SpaceX reference as mission-control hierarchy, decisive scale, high contrast, and restrained motion. Rebuild that language from original CSS/SVG inside FlowPulse without importing external visual assets.
 
+### Monochrome beacon refinement
+
+- Lock the application, canvas, cards, nodes, annotations, approval gate, and drawers to pure-white surfaces with near-black typography and neutral gray borders.
+- Preserve the existing component geometry so service, API, stream, worker, deployment, agent, evaluator, and ledger remain distinguishable without color.
+- Remove semantic color from node fills and outlines. Each node instead receives one compact status beacon in its upper-right corner.
+- Beacon colors remain semantic: neutral for healthy/dormant, amber for change/approval, red for impact/root/rejected, blue for active investigation, and green for verified/learned.
+- Keep the visible status text and accessible name, so the beacon is never the sole state signal.
+- Keep connectors neutral. Only the moving signal dashes carry semantic state color, preserving event meaning without turning the canvas into a multicolor diagram.
+- Limit glow to the small beacon itself. Cards, connectors, annotations, and canvas surfaces never glow.
+- Keep the existing topology, replay timing, evidence access, reduced-motion behavior, and backend contract unchanged.
+
 ## Self-review
 
 - Placeholder scan: no unfinished marker or unresolved choice.
