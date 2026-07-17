@@ -158,6 +158,7 @@ function renderTwinLayer(frame, layerName, interactive) {
     const entering = frame.index === 2 && status === "impact" ? " is-entering" : "";
     const interaction = interactive ? `data-node-id="${node.id}" aria-label="${escapeHtml(kindLabel(node.kind))} ${escapeHtml(node.label)}, ${escapeHtml(statusLabel(status))}"` : "tabindex=\"-1\" aria-hidden=\"true\"";
     return `<button class="twin-node node-${node.id} sequence-${sequence} kind-${node.kind} is-${status}${entering}" type="button" ${interaction}>
+      <span class="node-beacon" aria-hidden="true"></span>
       <strong>${escapeHtml(node.label)}</strong>
       <span class="node-detail">${escapeHtml(node.detail)}</span>
       <span class="node-status">${escapeHtml(statusLabel(status))}</span>

@@ -38,6 +38,18 @@ The focused state tests prove stable component identities and coordinates, deter
 - `compare-incident-vs-verified.png` - interactive incident/recovery split on shared geometry.
 - `viewport-1280x800-owner-gate.png` - compact target viewport check.
 
+### Monochrome beacon refinement
+
+- `monochrome-beacon-captured-live.png` - pure-white captured-live projection with verified beacons.
+- `monochrome-beacon-propagation.png` - neutral node surfaces with localized impact and change beacons.
+- `monochrome-beacon-owner-gate.png` - localized root-cause, evaluator rejection, and owner-gate states.
+- `monochrome-beacon-compare.png` - interactive incident/verified split at 1440 x 900.
+- `monochrome-beacon-compare-1280.png` - compact compare check at 1280 x 800.
+- `monochrome-reference-comparison.png` - full-view reference-to-implementation comparison.
+- `monochrome-node-detail-comparison.png` - focused node-material and status-beacon comparison.
+
+The refinement keeps every module surface white and every structural line neutral. State color is restricted to small, labeled semantic beacons and timestamp-driven edge pulses. A per-layer geometry check found zero node intersections in Compare at 1280 x 800; the paired incident/verified layers intentionally share the same coordinates. Browser console remained at 0 errors and 0 warnings.
+
 ## Runtime truth boundary
 
 Real in this build: append-only SQLite authority, runtime state machine, API/tool/evaluator orchestration, owner approval ordering, deterministic policy gates, optional GPT-5.6 loop, optional Langfuse observations, and the UI projection from ledger events.
