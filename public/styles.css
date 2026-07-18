@@ -28,6 +28,9 @@
   --strong-copy: #34363a;
   --signal-lift: rgba(11, 11, 12, .18);
   --signal-ring: rgba(11, 11, 12, .12);
+  --live-pulse: #159fe8;
+  --live-pulse-core: #eafaff;
+  --live-pulse-glow: rgba(21, 159, 232, .55);
   --radius: 6px;
   --font: "Avenir Next", Avenir, "Helvetica Neue", Arial, sans-serif;
   --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
@@ -59,6 +62,9 @@
   --strong-copy: #d2d2d2;
   --signal-lift: rgba(255, 255, 255, .2);
   --signal-ring: rgba(255, 255, 255, .7);
+  --live-pulse: #f4fbff;
+  --live-pulse-core: #ffffff;
+  --live-pulse-glow: rgba(210, 242, 255, .76);
 }
 
 * { box-sizing: border-box; }
@@ -396,24 +402,24 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .is-source-topology .source-node.kind-stream { --icon: #d97706; --icon-soft: #fffbeb; }
 .is-source-topology .source-node.kind-worker { --icon: #7c3aed; --icon-soft: #f5f3ff; }
 .is-source-topology .source-node.kind-database { --icon: #059669; --icon-soft: #ecfdf5; }
-.is-architecture-source .source-node { width: var(--architecture-card-width); min-height: 78px; grid-template-columns: 29px minmax(0, 1fr); grid-template-rows: 29px auto; align-content: center; gap: 3px 7px; padding: 7px 8px; border-radius: 4px; box-shadow: 0 5px 13px rgba(11, 11, 12, .05); }
+.is-architecture-source .source-node { width: var(--architecture-card-width); min-height: 88px; grid-template-columns: 29px minmax(0, 1fr); grid-template-rows: 29px auto auto; align-content: center; gap: 3px 7px; padding: 7px 8px; border-radius: 4px; box-shadow: 0 5px 13px rgba(11, 11, 12, .05); }
 .is-architecture-source .source-node .node-icon { width: 29px; height: 29px; font-size: 17px; }
 .is-architecture-source .source-node .node-copy { display: contents; }
 .is-architecture-source .source-node .node-origin { grid-column: 2; grid-row: 1; align-self: center; margin: 0; font-size: 8px; }
-.is-architecture-source .source-node .node-detail { display: none; }
+.is-architecture-source .source-node .node-detail { grid-column: 1 / -1; grid-row: 3; display: block; overflow: hidden; margin: 0; color: var(--muted); font-family: var(--mono); font-size: 7.5px; line-height: 1.2; text-overflow: ellipsis; white-space: nowrap; }
 .is-architecture-source .source-node .node-status { margin-top: 2px; font-size: 8px; }
 .is-architecture-source .architecture-stack { --architecture-card-width: clamp(106px, 8.6vw, 124px); width: max-content; max-width: calc(100% - 40px); display: flex; flex-direction: column; align-items: flex-start; justify-content: center; margin: 0 auto; padding: 24px 20px; }
-.architecture-tier { position: relative; flex: 0 0 78px; display: flex; align-items: stretch; margin-top: -1px; }
+.architecture-tier { position: relative; flex: 0 0 88px; display: flex; align-items: stretch; margin-top: -1px; }
 .architecture-tier:first-child { margin-top: 0; }
-.architecture-tier-row { height: 78px; display: flex; align-items: stretch; justify-content: flex-start; gap: 0; }
-.architecture-tier-label { position: static; width: 104px; min-height: 78px; display: flex; align-items: center; margin-right: -1px; padding: 9px 10px; color: var(--muted); border: 1px solid var(--line-strong); background: var(--control-surface); font-family: var(--mono); font-size: 9px; font-weight: 750; letter-spacing: .04em; line-height: 1.25; text-align: left; text-transform: uppercase; }
+.architecture-tier-row { height: 88px; display: flex; align-items: stretch; justify-content: flex-start; gap: 0; }
+.architecture-tier-label { position: static; width: 104px; min-height: 88px; display: flex; align-items: center; margin-right: -1px; padding: 9px 10px; color: var(--muted); border: 1px solid var(--line-strong); background: var(--control-surface); font-family: var(--mono); font-size: 9px; font-weight: 750; letter-spacing: .04em; line-height: 1.25; text-align: left; text-transform: uppercase; }
 .is-architecture-source .architecture-tier .source-node {
   position: relative;
   left: auto !important;
   top: auto !important;
   width: var(--architecture-card-width);
-  height: 78px;
-  min-height: 78px;
+  height: 88px;
+  min-height: 88px;
   flex: 0 0 var(--architecture-card-width);
   margin: 0 0 0 -1px;
   transform: none;
@@ -486,14 +492,16 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 
 .live-change-node { left: 82%; top: 8%; }
 
-.is-live-source .edge-group { --edge-signal: var(--ink); }
+.is-live-source .edge-group { --edge-signal: var(--live-pulse); }
 .is-live-source .edge-group .edge-line { opacity: .35; }
 .is-live-source .signal-droplet { display: none; pointer-events: none; }
 .is-live-source .edge-group.is-signal-active .signal-droplet { display: block; }
+.is-live-source .signal-droplet { filter: drop-shadow(0 0 2px var(--live-pulse-glow)) drop-shadow(0 0 5px var(--live-pulse-glow)); }
 .is-live-source .signal-droplet-body, .is-live-source .signal-droplet-tail { fill: var(--edge-signal); }
+.is-live-source .signal-droplet-halo { fill: var(--edge-signal); opacity: .15; }
 .is-live-source .signal-droplet-tail-near { opacity: .34; }
 .is-live-source .signal-droplet-tail-far { opacity: .13; }
-.is-live-source .signal-droplet-specular { fill: var(--surface); opacity: .78; }
+.is-live-source .signal-droplet-specular { fill: var(--live-pulse-core); opacity: .92; }
 .is-live-source .source-node { --active-signal: var(--ink); }
 .is-live-source .source-node.is-signal-launch { animation: signal-node-launch .16s ease-out both; }
 .is-live-source .source-node.is-signal-arrival { animation: signal-node-arrival .16s ease-out both; }
@@ -699,6 +707,26 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .detail-intro { margin-bottom: 14px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
 .detail-intro strong { display: block; font-size: 14px; }
 .detail-intro span { display: block; margin-top: 3px; color: var(--muted); font-size: 11px; }
+.component-context { margin-bottom: 14px; padding: 12px; border: 1px solid var(--line-strong); border-left: 3px solid var(--ink); background: var(--control-surface); }
+.component-context.is-impact { border-left-color: var(--red); background: var(--fault-surface); }
+.component-context > header { display: flex; align-items: start; justify-content: space-between; gap: 12px; }
+.component-context > header div > span, .component-dependencies > span { display: block; color: var(--faint); font-family: var(--mono); font-size: 8px; font-weight: 750; letter-spacing: .06em; text-transform: uppercase; }
+.component-context > header strong { display: block; margin-top: 2px; font-size: 14px; }
+.component-health { flex: 0 0 auto; padding: 3px 6px; border: 1px solid var(--line-strong); border-radius: 999px; font-size: 8px; font-weight: 750; }
+.component-context.is-impact .component-health { color: var(--red); border-color: var(--red); }
+.component-runtime { display: flex; flex-wrap: wrap; gap: 5px; margin: 10px 0; }
+.component-runtime code, .component-runtime span { padding: 3px 6px; border: 1px solid var(--line); background: var(--surface); font-family: var(--mono); font-size: 8px; }
+.component-context dl { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 0 0 11px; border-block: 1px solid var(--line); }
+.component-context dl div { min-width: 0; padding: 7px 6px; border-right: 1px solid var(--line); }
+.component-context dl div:last-child { border-right: 0; }
+.component-context dt { color: var(--faint); font-size: 8px; }
+.component-context dd { overflow: hidden; margin: 1px 0 0; font-size: 9px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.component-dependencies { display: grid; grid-template-columns: 70px minmax(0, 1fr); align-items: start; gap: 8px; margin-top: 7px; }
+.component-dependencies div { display: flex; flex-wrap: wrap; gap: 4px; }
+.component-dependencies button { padding: 2px 5px; border: 1px solid var(--line); border-radius: 2px; color: var(--ink); background: var(--surface); font-size: 9px; cursor: pointer; }
+.component-dependencies button:hover { border-color: var(--ink); }
+.component-dependencies small { color: var(--muted); font-size: 9px; }
+.component-context > p { margin: 11px 0 0; padding-top: 9px; color: var(--muted); border-top: 1px solid var(--line); font-size: 9px; line-height: 1.45; }
 .detail-record { margin-bottom: 10px; padding: 11px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
 .detail-record.is-rejected { border-left: 4px solid var(--red); }
 .detail-record.is-accepted, .detail-record.is-verified { border-left: 4px solid var(--green); }
@@ -706,6 +734,9 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .detail-record header { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 5px; color: var(--muted); font-family: var(--mono); font-size: 10px; }
 .detail-record h3 { margin: 0 0 5px; font-size: 13px; }
 .detail-record p { margin-bottom: 8px; color: var(--muted); font-size: 12px; line-height: 1.55; }
+.telemetry-preview { display: grid; gap: 4px; margin: 9px 0; padding: 8px 8px 8px 24px; color: var(--strong-copy); border-left: 2px solid var(--line-strong); background: var(--control-surface); font-family: var(--mono); font-size: 9px; line-height: 1.45; }
+.telemetry-provenance { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+.telemetry-provenance span { padding: 2px 5px; color: var(--muted); border: 1px solid var(--line); font-family: var(--mono); font-size: 8px; }
 .payload { max-height: 190px; margin: 8px 0 0; padding: 9px; overflow: auto; color: var(--strong-copy); background: var(--surface); border: 1px solid var(--line); font-family: var(--mono); font-size: 10px; white-space: pre-wrap; }
 .citation-list { display: flex; flex-wrap: wrap; gap: 5px; }
 .citation { padding: 2px 5px; border: 1px solid var(--line-strong); border-radius: 2px; color: var(--strong-copy); background: var(--surface); font-family: var(--mono); font-size: 9px; }

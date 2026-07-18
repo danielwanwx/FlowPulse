@@ -7,6 +7,7 @@ import {
   TWIN_ICONS,
   TWIN_NODES,
   TWIN_EDGES,
+  activeIncidentState,
   availableStage,
   architecturePositions,
   compareFrames,
@@ -14,6 +15,8 @@ import {
   frameFor,
   liveEdgePath,
   liveIncidentNodeStates,
+  liveSignalDuration,
+  liveSignalProgress,
   livePulseSlots,
   livePositions,
   orderedSignalEdges,
@@ -30,6 +33,30 @@ const IMPACT_SEQUENCE = { checkout: 0, payment: 1, kafka: 2, accounting: 3, frau
 const NODE_BY_ID = new Map(TWIN_NODES.map((node) => [node.id, node]));
 const EDGE_BY_ID = new Map(TWIN_EDGES.map((edge) => [edge.id, edge]));
 const LIVE_WORLD = Object.freeze({ width: 1480, height: 680, minScale: .6, maxScale: 1.6, step: .1 });
+const COMPONENT_CAPABILITIES = Object.freeze({
+  "load-generator": "Traffic simulation",
+  "frontend-web": "Customer web experience",
+  "frontend-proxy": "Edge request routing",
+  frontend: "Storefront application",
+  cart: "Shopping basket",
+  currency: "Price conversion",
+  shipping: "Fulfillment quoting",
+  checkout: "Order orchestration",
+  "product-catalog": "Catalog discovery",
+  recommendation: "Personalization",
+  ad: "Promotion selection",
+  payment: "Payment authorization",
+  kafka: "Order event backbone",
+  accounting: "Financial posting",
+  "fraud-detection": "Risk screening",
+  email: "Customer confirmation",
+  quote: "Shipping quotes",
+  "image-provider": "Product media",
+  flagd: "Runtime configuration",
+  "telemetry-docs": "Telemetry diagnostics",
+  "otelcol-contrib": "Observability pipeline",
+  "astronomy-db": "Operational data"
+});
 
 let state;
 let developmentStatus;
@@ -54,6 +81,8 @@ let liveSignalTimers = [];
 let liveSignalIndex = 0;
 let liveSignalFrame = null;
 let liveSignalGeneration = 0;
+let componentCatalogSource = null;
+let componentCatalogCache = new Map();
 
 for (const button of document.querySelectorAll("[data-mode]")) button.addEventListener("click", () => setMode(button.dataset.mode));
 for (const button of document.querySelectorAll("[data-nav-tab]")) button.addEventListener("click", () => handleNavigation(button.dataset.navTab));
@@ -107,6 +136,7 @@ els["canvas-layers"].addEventListener("keydown", handleCanvasKeydown);
 els["canvas-layers"].addEventListener("click", handleRecoveryConsoleAction);
 els["annotation-layer"].addEventListener("click", handleAnnotationSelection);
 els["drawer-tabs"].addEventListener("click", handleDrawerTab);
+els["drawer-content"].addEventListener("click", handleDrawerEntityFocus);
 
 await refresh();
 
@@ -293,7 +323,8 @@ function renderSourceCanvas(layout) {
     return;
   }
   const positioned = layout === "architecture" ? architecturePositions(topology.nodes) : livePositions(topology.nodes);
-  const nodeStates = layout === "live" ? liveIncidentNodeStates({ mode: state.mode, events: state.events, source }) : {};
+  const activeIncident = state.mode === "development" && activeIncidentState(state.events);
+  const nodeStates = layout === "live" || activeIncident ? liveIncidentNodeStates({ mode: state.mode, events: state.events, source }) : {};
   if (layout === "architecture") {
     const tiers = ARCHITECTURE_LAYERS.map((layer, layerIndex) => {
       const members = positioned.filter((node) => node.layerIndex === layerIndex);
@@ -324,7 +355,7 @@ function renderSourceCanvas(layout) {
     const lane = index % 2 ? Math.ceil(index / 2) : -Math.ceil((index + 1) / 2);
     const path = liveEdgePath(from, to, { ...edgeLayout, lane });
     const edgeState = liveSignalTone(edge, nodeStates);
-    return `<g class="edge-group path-runtime signal-${edgeState}" data-live-edge-id="${escapeHtml(edge.id)}" data-signal-from="${escapeHtml(edge.from)}" data-signal-to="${escapeHtml(edge.to)}" data-signal-order="${signalOrder.get(edge.id) ?? index}"><path class="edge-line is-${edgeState}" d="${path}"/><g class="signal-droplet" aria-hidden="true"><circle class="signal-droplet-tail signal-droplet-tail-far" r="1.8"/><circle class="signal-droplet-tail signal-droplet-tail-near" r="2.7"/><circle class="signal-droplet-body" r="4.5"/><circle class="signal-droplet-specular" r="1.15"/></g><path class="edge-hit" d="${path}" role="button" tabindex="0" aria-label="${escapeHtml(edge.label)} from ${escapeHtml(from.label)} to ${escapeHtml(to.label)}" data-edge-id="${escapeHtml(edge.id)}" data-edge-from="${escapeHtml(edge.from)}" data-edge-to="${escapeHtml(edge.to)}"/></g>`;
+    return `<g class="edge-group path-runtime signal-${edgeState}" data-live-edge-id="${escapeHtml(edge.id)}" data-signal-from="${escapeHtml(edge.from)}" data-signal-to="${escapeHtml(edge.to)}" data-signal-order="${signalOrder.get(edge.id) ?? index}"><path class="edge-line is-${edgeState}" d="${path}"/><g class="signal-droplet" aria-hidden="true"><circle class="signal-droplet-halo" r="6"/><circle class="signal-droplet-tail signal-droplet-tail-far" r=".8"/><circle class="signal-droplet-tail signal-droplet-tail-near" r="1.35"/><circle class="signal-droplet-body" r="2.6"/><circle class="signal-droplet-specular" r=".65"/></g><path class="edge-hit" d="${path}" role="button" tabindex="0" aria-label="${escapeHtml(edge.label)} from ${escapeHtml(from.label)} to ${escapeHtml(to.label)}" data-edge-id="${escapeHtml(edge.id)}" data-edge-from="${escapeHtml(edge.from)}" data-edge-to="${escapeHtml(edge.to)}"/></g>`;
   }).join("");
   const nodes = positioned.map((node) => sourceNodeMarkup(node, { layout, source, nodeStates })).join("");
   const guideLayers = [...LIVE_LAYERS, ...(topology.unlinked_node_ids.length ? [LIVE_UNLINKED_LAYER] : [])];
@@ -342,11 +373,13 @@ function sourceNodeMarkup(node, { layout, source, nodeStates }) {
   const nodeState = node.connectivity === "unlinked" && layout === "live" ? "unlinked" : nodeStates[node.id] || "observed";
   const nodeStatus = nodeState === "impact" ? "Failure observed" : nodeState === "unlinked" ? "Evidence gap" : source.status === "live" ? "Observed" : "Last known";
   const ariaStatus = nodeState === "unlinked" ? "Insufficient dependency evidence" : nodeStatus;
-  const origin = layout === "architecture" ? kindLabel(node.kind) : `RUNTIME · ${sourceOrigin(layout)}`;
+  const profile = sourceComponentProfile(node);
+  const origin = layout === "architecture" ? profile.capability : `RUNTIME · ${sourceOrigin(layout)}`;
+  const detail = layout === "architecture" ? profile.runtimeIdentity : node.detail || (nodeState === "unlinked" ? "dependency not observed" : "observed service.name");
   const livePositionClass = layout === "live" ? ` live-column-${node.layerIndex} live-count-${node.layerSize} live-index-${node.layerPosition}` : "";
-  return `<button class="twin-node source-node plane-runtime kind-${escapeHtml(node.kind)} is-${nodeState}${livePositionClass}" type="button" data-node-id="${escapeHtml(node.id)}" data-transition-key="${escapeHtml(transitionKey(node.id))}" aria-label="${escapeHtml(kindLabel(node.kind))} ${escapeHtml(node.label)}, ${escapeHtml(ariaStatus)}">
+  return `<button class="twin-node source-node plane-runtime kind-${escapeHtml(node.kind)} is-${nodeState}${livePositionClass}" type="button" data-node-id="${escapeHtml(node.id)}" data-transition-key="${escapeHtml(transitionKey(node.id))}" aria-label="${escapeHtml(profile.capability)}, ${escapeHtml(kindLabel(node.kind))} ${escapeHtml(node.label)}, ${escapeHtml(profile.runtimeIdentity)}, ${escapeHtml(ariaStatus)}">
     <span class="node-icon" aria-hidden="true"><i class="ph ph-${iconForLive(node)}"></i></span>
-    <span class="node-copy"><span class="node-origin">${escapeHtml(origin)}</span><strong>${escapeHtml(node.label)}</strong><span class="node-detail">${escapeHtml(node.detail || (nodeState === "unlinked" ? "dependency not observed" : "observed service.name"))}</span><span class="node-status">${escapeHtml(nodeStatus)}</span></span>
+    <span class="node-copy"><span class="node-origin">${escapeHtml(origin)}</span><strong>${escapeHtml(node.label)}</strong><span class="node-detail">${escapeHtml(detail)}</span><span class="node-status">${escapeHtml(nodeStatus)}</span></span>
     <span class="node-status-dot" aria-hidden="true"></span>
   </button>`;
 }
@@ -418,26 +451,33 @@ function startLiveSignalLoop() {
       return;
     }
     const path = group.querySelector(".edge-line");
+    const halo = group.querySelector(".signal-droplet-halo");
     const body = group.querySelector(".signal-droplet-body");
     const specular = group.querySelector(".signal-droplet-specular");
     const nearTail = group.querySelector(".signal-droplet-tail-near");
     const farTail = group.querySelector(".signal-droplet-tail-far");
     if (!path || !body) return;
+    const pathLength = path.getTotalLength();
+    const duration = liveSignalDuration(pathLength);
     group.dataset.signalProgress = "0";
+    group.dataset.signalPathLength = pathLength.toFixed(1);
+    group.dataset.signalDuration = Math.round(duration);
+    group.dataset.signalSpeed = "520";
     group.classList.add("is-signal-active");
-    const duration = 620;
     let startedAt = null;
     const travel = (timestamp) => {
       if (generation !== liveSignalGeneration) return;
       startedAt ??= timestamp;
-      const progress = Math.min(1, (timestamp - startedAt) / duration);
+      const elapsed = timestamp - startedAt;
+      const progress = liveSignalProgress(elapsed, pathLength);
       group.dataset.signalProgress = progress.toFixed(3);
       const bodyPoint = pointAt(path, progress);
       place(body, bodyPoint);
+      place(halo, bodyPoint);
       place(specular, { x: bodyPoint.x - 1.25, y: bodyPoint.y - 1.25 });
       place(nearTail, pointAt(path, progress - .016));
       place(farTail, pointAt(path, progress - .034));
-      if (progress < 1) {
+      if (elapsed < duration && progress < 1) {
         liveSignalFrame = requestAnimationFrame(travel);
         return;
       }
@@ -641,8 +681,9 @@ function renderTimeline() {
 
 function renderApproval() {
   const visible = state.waiting_for_approval && (mode === "live" || (mode === "replay" && cursor >= 5));
+  const activeIncident = state.mode === "development" && activeIncidentState(state.events);
   els["approval-banner"].hidden = !visible;
-  els["incident-strip"].hidden = visible || mode !== "live";
+  els["incident-strip"].hidden = visible || mode !== "live" || !activeIncident;
   els["approval-copy"].textContent = state.mode === "development" ? "Restore the known-good flag and recreate only the local checkout container." : "Rollback is bounded to checkout:2.18.0.";
   els["manager-open-button"].textContent = "Recover";
 }
@@ -814,6 +855,8 @@ function renderDrawer() {
 
 function selectionMeta(focus) {
   if (focus.type === "node") {
+    const context = sourceComponentContext(focus.id);
+    if (context) return { kind: kindLabel(context.node.kind), title: context.node.label, subtitle: `${context.profile.capability} · ${context.profile.runtimeIdentity}` };
     const node = NODE_BY_ID.get(focus.id) || topologyIntegrity(sourceState().topology).nodes.find((item) => item.id === focus.id) || agentControl().graph.nodes.find((item) => item.id === focus.id);
     return { kind: kindLabel(node?.kind || "component"), title: node?.label || focus.id, subtitle: node?.connectivity === "unlinked" ? "Insufficient dependency evidence in the authoritative OTLP window" : node?.detail || "System component" };
   }
@@ -833,26 +876,29 @@ function selectionMeta(focus) {
 function drawerContent(tab) {
   if (selected?.type === "node" && agentControl().graph.nodes.some((node) => node.id === selected.id)) return renderAgentOperationDetail(selected.id);
   if (selected?.type === "agent-edge") return renderAgentEdgeDetail(selected.id);
+  const component = selected?.type === "node" ? sourceComponentContext(selected.id) : null;
+  const componentIntro = component ? renderSourceComponentContext(component) : "";
   const visibleEvents = projectedEvents();
-  const visibleEvidence = projectedEvidence(visibleEvents);
+  const visibleEvidence = component ? [...projectedEvidence(visibleEvents), ...sourceState().evidence] : projectedEvidence(visibleEvents);
   const focusedEvidence = filterBySelection(visibleEvidence);
   const focusedEvents = filterEventsBySelection(visibleEvents);
   if (["metrics", "logs", "traces", "changes", "evidence"].includes(tab)) {
     const kinds = { metrics: ["metric"], logs: ["log"], traces: ["trace"], changes: ["deploy", "commit"], evidence: null }[tab];
     const records = kinds ? focusedEvidence.filter((item) => kinds.includes(item.kind)) : focusedEvidence;
-    return records.length ? records.map(renderEvidenceRecord).join("") : emptyDetail(`No ${tab} evidence is available at this replay position.`);
+    const recent = [...records].sort((a, b) => String(b.at || "").localeCompare(String(a.at || ""))).slice(0, 16);
+    return componentIntro + (recent.length ? recent.map(renderEvidenceRecord).join("") : emptyDetail(`No component-scoped ${tab} evidence is available in the current authoritative window.`));
   }
   if (tab === "agent") {
     const records = focusedEvents.filter((event) => ["hypothesis.proposed", "plan.revised", "tool.called", "live.run.started", "live.run.completed", "live.run.failed"].includes(event.type));
-    return records.length ? records.map(renderEventRecord).join("") : emptyDetail("Agent reasoning has not entered the ledger at this replay position.");
+    return componentIntro + (records.length ? records.map(renderEventRecord).join("") : emptyDetail("No agent reasoning is currently linked to this component."));
   }
   if (tab === "eval") {
     const records = focusedEvents.filter((event) => ["evaluation.rejected", "evaluation.accepted", "outcome.classified"].includes(event.type));
-    return records.length ? records.map(renderEventRecord).join("") : emptyDetail("Adversarial evaluation has not entered the ledger at this replay position.");
+    return componentIntro + (records.length ? records.map(renderEventRecord).join("") : emptyDetail("No adversarial evaluation is currently linked to this component."));
   }
-  if (tab === "repair") return renderRepairDetail(focusedEvents);
-  if (tab === "verify") return renderVerificationDetail(focusedEvents);
-  if (tab === "evolve") return renderEvolveDetail(focusedEvents);
+  if (tab === "repair") return componentIntro + renderRepairDetail(focusedEvents);
+  if (tab === "verify") return componentIntro + renderVerificationDetail(focusedEvents);
+  if (tab === "evolve") return componentIntro + renderEvolveDetail(focusedEvents);
   return emptyDetail("Select a detail category.");
 }
 
@@ -881,8 +927,41 @@ function renderEvidenceRecord(item) {
     <h3>${escapeHtml(item.title)}</h3>
     <p>${escapeHtml(item.fact)}</p>
     <div class="citation-list"><span class="citation">${escapeHtml(item.entity)}</span><span class="citation">${escapeHtml(formatTime(item.at))}</span></div>
+    ${renderTelemetryPreview(item)}
+    ${item.provenance ? `<div class="telemetry-provenance"><span>${escapeHtml(item.provenance.file || "OTLP capture")}</span><span>bytes ${escapeHtml(item.provenance.byte_start ?? "n/a")}–${escapeHtml(item.provenance.byte_end ?? "n/a")}</span><span>sha256 ${escapeHtml(String(item.provenance.sha256 || "").slice(0, 16))}</span></div>` : ""}
     ${item.value ? `<pre class="payload">${escapeHtml(JSON.stringify(item.value, null, 2))}</pre>` : ""}
   </article>`;
+}
+
+function renderTelemetryPreview(item) {
+  if (!item?.provenance || !item.payload) return "";
+  const rows = [];
+  if (item.signal === "logs") {
+    for (const resource of item.payload.resourceLogs || []) {
+      for (const scope of resource.scopeLogs || []) {
+        for (const record of scope.logRecords || []) {
+          const body = otlpValue(record.body);
+          if (body) rows.push(`${record.severityText || "LOG"} · ${body}${record.traceId ? ` · trace ${record.traceId.slice(0, 12)}` : ""}`);
+        }
+      }
+    }
+  }
+  if (item.signal === "traces") {
+    for (const resource of item.payload.resourceSpans || []) {
+      for (const scope of resource.scopeSpans || []) {
+        for (const span of scope.spans || []) rows.push(`${span.status?.code === 2 ? "ERROR" : "SPAN"} · ${span.name || "unnamed span"}${span.traceId ? ` · trace ${span.traceId.slice(0, 12)}` : ""}`);
+      }
+    }
+  }
+  if (item.signal === "metrics") {
+    for (const resource of item.payload.resourceMetrics || []) {
+      for (const scope of resource.scopeMetrics || []) {
+        for (const metric of scope.metrics || []) rows.push(`METRIC · ${metric.name || "unnamed metric"}${metric.unit ? ` · ${metric.unit}` : ""}`);
+      }
+    }
+  }
+  if (!rows.length) return "";
+  return `<ul class="telemetry-preview">${rows.slice(-5).map((row) => `<li>${escapeHtml(row)}</li>`).join("")}</ul>`;
 }
 
 function renderEventRecord(event) {
@@ -942,7 +1021,7 @@ function filterEventsBySelection(events) {
   const entities = selectionEntities();
   if (!entities.size || ["ledger", "agent", "evaluator", "deployment"].includes(selected?.id)) return events;
   const evidenceIds = new Set(state.evidence.filter((item) => entities.has(item.entity)).map((item) => item.id));
-  return events.filter((event) => !event.evidence_refs.length || event.evidence_refs.some((id) => evidenceIds.has(id)));
+  return events.filter((event) => (event.evidence_refs || []).some((id) => evidenceIds.has(id)) || [...entities].some((entity) => JSON.stringify(event.payload || {}).includes(entity)));
 }
 
 function selectionEntities() {
@@ -983,6 +1062,11 @@ function handleDrawerTab(event) {
   if (!tab) return;
   activeTab = tab.dataset.tab;
   renderDrawer();
+}
+
+function handleDrawerEntityFocus(event) {
+  const target = event.target.closest("[data-focus-entity]");
+  if (target) openDrawer({ type: "node", id: target.dataset.focusEntity }, "evidence");
 }
 
 function openDrawer(focus, tab = "evidence") {
@@ -1445,6 +1529,7 @@ function tabForAnnotation(id) {
 
 function defaultTabForNode(id) {
   if (agentControl().graph.nodes.some((node) => node.id === id)) return "agent";
+  if (["architecture", "live"].includes(mode) && sourceState().topology?.nodes?.some((node) => node.id === id)) return "evidence";
   if (id === "deployment") return "changes";
   if (id === "agent") return "agent";
   if (id === "evaluator") return "eval";
@@ -1518,6 +1603,76 @@ function handleNavigation(tab) {
 
 function sourceState() {
   return state?.source || { status: "disconnected", label: "Disconnected", topology: { nodes: [], edges: [] }, evidence: [], counts: {}, freshness_ms: null };
+}
+
+function sourceComponentContext(id) {
+  if (!["architecture", "live"].includes(mode)) return null;
+  const source = sourceState();
+  const topology = topologyIntegrity(source.topology);
+  const node = topology.nodes.find((item) => item.id === id);
+  if (!node) return null;
+  const incoming = topology.edges.filter((edge) => edge.to === id).map((edge) => topology.nodes.find((item) => item.id === edge.from)).filter(Boolean);
+  const outgoing = topology.edges.filter((edge) => edge.from === id).map((edge) => topology.nodes.find((item) => item.id === edge.to)).filter(Boolean);
+  const evidence = source.evidence.filter((item) => item.entity === id || item.value?.services?.includes(id));
+  const nodeStates = liveIncidentNodeStates({ mode: state.mode, events: state.events, source });
+  return { node, profile: sourceComponentProfile(node), incoming, outgoing, evidence, status: nodeStates[id] || "observed", source };
+}
+
+function sourceComponentProfile(node) {
+  const observed = sourceComponentCatalog().get(node.id) || {};
+  const signals = [...new Set([...(node.signals || []), ...(observed.signals || [])])].sort();
+  const language = displayRuntimeLanguage(observed["telemetry.sdk.language"]);
+  const runtimeParts = [`service.name=${node.id}`];
+  if (language) runtimeParts.push(language);
+  if (signals.length) runtimeParts.push(signals.join(" + "));
+  return {
+    capability: COMPONENT_CAPABILITIES[node.id] || kindLabel(node.kind),
+    runtimeIdentity: runtimeParts.join(" · "),
+    language,
+    signals,
+    attributes: observed
+  };
+}
+
+function sourceComponentCatalog() {
+  const source = sourceState();
+  if (componentCatalogSource === source) return componentCatalogCache;
+  const catalog = new Map();
+  for (const item of source.evidence || []) {
+    for (const key of ["resourceSpans", "resourceMetrics", "resourceLogs"]) {
+      for (const resource of item.payload?.[key] || []) {
+        const attributes = Object.fromEntries((resource.resource?.attributes || []).map((attribute) => [attribute.key, otlpValue(attribute.value)]));
+        const service = attributes["service.name"];
+        if (!service) continue;
+        catalog.set(service, { ...(catalog.get(service) || {}), ...attributes, signals: [...new Set([...(catalog.get(service)?.signals || []), item.signal])].sort() });
+      }
+    }
+  }
+  componentCatalogSource = source;
+  componentCatalogCache = catalog;
+  return catalog;
+}
+
+function renderSourceComponentContext(context) {
+  const { node, profile, incoming, outgoing, evidence, status, source } = context;
+  const latest = [...evidence].sort((a, b) => String(b.at || "").localeCompare(String(a.at || "")))[0];
+  const dependencyGroup = (label, nodes, empty) => `<div class="component-dependencies"><span>${label}</span><div>${nodes.length ? nodes.map((item) => `<button type="button" data-focus-entity="${escapeHtml(item.id)}">${escapeHtml(item.label)}</button>`).join("") : `<small>${empty}</small>`}</div></div>`;
+  return `<section class="component-context is-${escapeHtml(status)}">
+    <header><div><span>Business capability</span><strong>${escapeHtml(profile.capability)}</strong></div><span class="component-health">${escapeHtml(status === "impact" ? "Failure observed" : source.status === "live" ? "Live observed" : "Last known")}</span></header>
+    <div class="component-runtime"><code>${escapeHtml(`service.name=${node.id}`)}</code>${profile.language ? `<span>${escapeHtml(profile.language)}</span>` : ""}${profile.signals.map((signal) => `<span>${escapeHtml(signal)}</span>`).join("")}</div>
+    <dl><div><dt>Type</dt><dd>${escapeHtml(kindLabel(node.kind))}</dd></div><div><dt>Evidence</dt><dd>${evidence.length} OTLP record${evidence.length === 1 ? "" : "s"}</dd></div><div><dt>Latest</dt><dd>${escapeHtml(latest ? formatTime(latest.at) : "No scoped record")}</dd></div></dl>
+    ${dependencyGroup("Upstream", incoming, "Observed entry/root")}
+    ${dependencyGroup("Downstream", outgoing, "No downstream edge in this window")}
+    <p>These records and dependency endpoints are available to the investigation agents with immutable IDs, hashes, and capture offsets.</p>
+  </section>`;
+}
+
+function otlpValue(value = {}) {
+  return value.stringValue ?? value.intValue ?? value.doubleValue ?? value.boolValue ?? null;
+}
+
+function displayRuntimeLanguage(value) {
+  return ({ go: "Go", js: "JavaScript", javascript: "JavaScript", nodejs: "Node.js", python: "Python", java: "Java", dotnet: ".NET", cpp: "C++", rust: "Rust", ruby: "Ruby", php: "PHP" })[String(value || "").toLowerCase()] || (value ? String(value) : "");
 }
 
 function architectureTopology() {

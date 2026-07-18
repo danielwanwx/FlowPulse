@@ -9,6 +9,7 @@ import {
   TWIN_ICONS,
   TWIN_NODES,
   TWIN_STAGES,
+  activeIncidentState,
   availableStage,
   architecturePositions,
   compareFrames,
@@ -17,6 +18,8 @@ import {
   liveEdgePath,
   liveEdgeRoute,
   liveIncidentNodeStates,
+  liveSignalDuration,
+  liveSignalProgress,
   livePulseSlots,
   livePositions,
   orderedSignalEdges,
@@ -65,11 +68,14 @@ test("architecture layout is deterministic, layered, and leaves room for complet
   assert.match(appJs, /if \(layout === "architecture"\) \{[\s\S]+architecture-stack/);
   assert.doesNotMatch(appJs.match(/if \(layout === "architecture"\) \{[\s\S]+?return;/)?.[0] || "", /edge-map|pulse-flow/);
   assert.doesNotMatch(appJs, /style="left:\$\{node\.x\}/);
-  assert.match(stylesCss, /\.architecture-tier-row \{[^}]+gap: 0/s);
+  assert.match(stylesCss, /\.architecture-tier-row \{[^}]+height: 88px;[^}]+gap: 0/s);
   assert.match(stylesCss, /\.architecture-tier \{[^}]+margin-top: -1px/s);
   assert.match(stylesCss, /\.architecture-tier \.source-node \{[\s\S]+position: relative;[\s\S]+margin: 0 0 0 -1px/s);
   assert.match(stylesCss, /--architecture-card-width: clamp\(106px, 8\.6vw, 124px\)/);
   assert.match(stylesCss, /\.architecture-tier \.source-node strong \{[^}]+font-size: 12px/s);
+  assert.match(appJs, /service\.name=\$\{node\.id\}/);
+  assert.match(appJs, /telemetry\.sdk\.language/);
+  assert.match(stylesCss, /\.is-architecture-source \.source-node \.node-detail \{[^}]+display: block/s);
 });
 
 test("live layout keeps the same deterministic layers with more room for dependency pulses", () => {
@@ -296,16 +302,52 @@ test("live pulses follow deterministic topology depth with one segment per edge"
   assert.match(appJs, /path\.getPointAtLength\(path\.getTotalLength\(\) \* Math\.max/);
   assert.match(appJs, /place\(body, bodyPoint\)/);
   assert.match(appJs, /group\.dataset\.signalProgress = progress\.toFixed\(3\)/);
-  assert.match(stylesCss, /\.is-live-source \.edge-group \{ --edge-signal: var\(--ink\); \}/);
+  assert.match(stylesCss, /\.is-live-source \.edge-group \{ --edge-signal: var\(--live-pulse\); \}/);
+  assert.match(stylesCss, /--live-pulse: #159fe8/);
+  assert.match(stylesCss, /\.signal-droplet-halo \{[^}]+opacity: \.15/s);
   assert.match(stylesCss, /\.edge-group\.is-signal-active \.signal-droplet \{ display: block; \}/);
   assert.doesNotMatch(stylesCss, /\.edge-group\.is-signal-active \.edge-line[^}]+animation/s);
   assert.doesNotMatch(appJs, /class="signal-trace"/);
   assert.doesNotMatch(appJs.match(/function startLiveSignalLoop\(\)[\s\S]+?\n\}/)?.[0] || "", /setInterval/);
   assert.match(appJs, /candidate\.dataset\.signalFrom === group\.dataset\.signalTo/);
+  assert.match(appJs, /liveSignalDuration\(pathLength\)/);
+  assert.match(appJs, /liveSignalProgress\(elapsed, pathLength\)/);
   assert.doesNotMatch(stylesCss.match(/@keyframes signal-node-arrival \{[\s\S]+?\n\}/)?.[0] || "", /border-color/);
   assert.match(stylesCss, /prefers-reduced-motion:[\s\S]+\.edge-group\.is-signal-active \.signal-droplet \{ display: none;/s);
   assert.match(appJs, /data-recovery-command-send/);
   assert.match(appJs, /sendRecoveryCommand\(commandButton\.closest\("form"\)\)/);
+});
+
+test("live signal travel keeps one physical speed and slows only at the destination", () => {
+  const short = liveSignalDuration(100);
+  const long = liveSignalDuration(300);
+  assert.ok(Math.abs(long / short - 3) < 1e-9);
+  assert.equal(liveSignalProgress(100, 520), .1);
+  const terminalStartMs = (.84 * 520 / 520) * 1000;
+  assert.equal(liveSignalProgress(terminalStartMs, 520), .84);
+  assert.ok(liveSignalProgress(terminalStartMs + 100, 520) > .84);
+  assert.equal(liveSignalProgress(liveSignalDuration(520), 520), 1);
+});
+
+test("active incident chrome appears only for unresolved real-development runs", () => {
+  const unresolved = [{ type: "incident.opened" }];
+  const resolved = [...unresolved, { type: "verification.completed", payload: { passed: true } }];
+  assert.equal(activeIncidentState(unresolved), true);
+  assert.equal(activeIncidentState(resolved), false);
+  assert.match(appJs, /state\.mode === "development" && activeIncidentState\(state\.events\)/);
+  assert.match(appJs, /mode !== "live" \|\| !activeIncident/);
+});
+
+test("source component drawers expose scoped topology, raw signal previews, and immutable provenance", () => {
+  assert.match(appJs, /function sourceComponentContext\(id\)/);
+  assert.match(appJs, /Business capability/);
+  assert.match(appJs, /Upstream/);
+  assert.match(appJs, /Downstream/);
+  assert.match(appJs, /function renderTelemetryPreview\(item\)/);
+  assert.match(appJs, /item\.provenance\.byte_start/);
+  assert.match(appJs, /item\.provenance\.sha256/);
+  assert.match(stylesCss, /\.component-context/);
+  assert.match(stylesCss, /\.telemetry-preview/);
 });
 
 test("pure-black mode keeps structural component and connector edges high contrast", () => {

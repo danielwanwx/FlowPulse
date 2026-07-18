@@ -353,6 +353,33 @@ export function liveIncidentNodeStates({ mode, events = [], source = {} } = {}) 
   return states;
 }
 
+export function activeIncidentState(events = []) {
+  const opened = events.some((event) => event.type === "incident.opened");
+  const verified = events.some((event) => event.type === "verification.completed" && event.payload?.passed === true);
+  return opened && !verified;
+}
+
+export function liveSignalDuration(pathLength, speed = 520, terminalFraction = .16) {
+  const length = Math.max(0, Number(pathLength) || 0);
+  const velocity = Math.max(1, Number(speed) || 1);
+  const terminal = Math.max(0, Math.min(.4, Number(terminalFraction) || 0));
+  return (length / velocity) * (1 + terminal) * 1000;
+}
+
+export function liveSignalProgress(elapsedMs, pathLength, speed = 520, terminalFraction = .16) {
+  const length = Math.max(0, Number(pathLength) || 0);
+  if (!length) return 1;
+  const velocity = Math.max(1, Number(speed) || 1);
+  const terminal = Math.max(0, Math.min(.4, Number(terminalFraction) || 0));
+  const cruiseDistance = length * (1 - terminal);
+  const cruiseMs = (cruiseDistance / velocity) * 1000;
+  const elapsed = Math.max(0, Number(elapsedMs) || 0);
+  if (elapsed <= cruiseMs || !terminal) return Math.min(1, elapsed * velocity / 1000 / length);
+  const terminalMs = (2 * length * terminal / velocity) * 1000;
+  const phase = Math.min(1, (elapsed - cruiseMs) / terminalMs);
+  return (1 - terminal) + terminal * (1 - (1 - phase) ** 2);
+}
+
 export function livePulseSlots(topology = {}) {
   const nodes = topology.nodes || [];
   const edges = topology.edges || [];
