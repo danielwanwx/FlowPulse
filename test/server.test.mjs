@@ -15,6 +15,10 @@ test("judge API serves state and advances the replay", async (context) => {
   context.after(() => child.kill("SIGTERM"));
   await waitForServer(child, port);
 
+  const health = await fetch(`http://127.0.0.1:${port}/api/health`).then((response) => response.json());
+  assert.equal(health.ok, true);
+  assert.equal(health.ledger, "sqlite-append-only");
+
   const initial = await fetch(`http://127.0.0.1:${port}/api/state`).then((response) => response.json());
   assert.equal(initial.status, "investigating");
   assert.equal(initial.events[0].type, "run.started");

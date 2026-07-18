@@ -1,9 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtemp, readFile, stat } from "node:fs/promises";
-import { createServer } from "node:net";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { readFile, stat } from "node:fs/promises";
 
 const root = new URL("..", import.meta.url);
 const required = [
@@ -17,8 +14,7 @@ const required = [
 for (const path of required) await stat(new URL(path, root));
 await assertTrackedFilesAreSafe();
 await run(process.platform === "win32" ? "npm.cmd" : "npm", ["test"]);
-await smokeFreshServer();
-console.log("submission:check passed — deterministic judge path is self-contained and credential-free.");
+console.log("submission:check passed — tests include an isolated fresh-port health and deterministic owner-gate API smoke.");
 
 async function assertTrackedFilesAreSafe() {
   const result = spawnSync("git", ["ls-files", "-z"], { cwd: root, encoding: "utf8" });
@@ -36,78 +32,10 @@ async function assertTrackedFilesAreSafe() {
   }
 }
 
-async function smokeFreshServer() {
-  const port = await freePort();
-  const directory = await mkdtemp(join(tmpdir(), "flowpulse-submission-"));
-  const child = spawn(process.execPath, ["src/server.mjs"], {
-    cwd: root,
-    env: { ...process.env, PORT: String(port), HOST: "127.0.0.1", FLOWPULSE_DB: join(directory, "ledger.db"), FLOWPULSE_OTLP_DIR: join(directory, "otel"), FLOWPULSE_DEVELOPMENT_ENABLED: "0" },
-    stdio: ["ignore", "pipe", "pipe"]
-  });
-  try {
-    await waitForServer(child, port);
-    const health = await request(port, "/api/health");
-    assert.equal(health.status, 200);
-    assert.equal(health.body.ok, true);
-    let state = (await request(port, "/api/state")).body;
-    assert.equal(state.status, "investigating");
-    for (let index = 0; index < 7; index++) state = (await request(port, "/api/next", "POST")).body;
-    assert.equal(state.waiting_for_approval, true);
-    assert.equal(state.events.some((event) => event.type === "evaluation.rejected" && event.payload.hypothesis_id === "hyp-kafka"), true);
-    assert.equal(state.events.some((event) => event.type === "repair.executed"), false);
-    state = (await request(port, "/api/approve", "POST", { owner: "Release check owner" })).body;
-    state = (await request(port, "/api/next", "POST")).body;
-    state = (await request(port, "/api/next", "POST")).body;
-    assert.equal(state.complete, true);
-    assert.equal(state.status, "resolved");
-    assert.equal(state.events.some((event) => event.type === "regression.created"), true);
-    assert.equal(state.events.some((event) => event.type === "policy.evaluated" && event.payload.passed), true);
-  } finally {
-    child.kill("SIGTERM");
-    await new Promise((resolve) => child.once("exit", resolve));
-  }
-}
-
 function run(command, args) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { cwd: root, stdio: "inherit", env: { ...process.env, HOST: "127.0.0.1" } });
     child.once("exit", (code) => code === 0 ? resolve() : reject(new Error(`${command} ${args.join(" ")} exited ${code}`)));
     child.once("error", reject);
-  });
-}
-
-function request(port, path, method = "GET", body = undefined) {
-  return fetch(`http://127.0.0.1:${port}${path}`, {
-    method,
-    headers: body ? { "content-type": "application/json" } : undefined,
-    body: body ? JSON.stringify(body) : undefined
-  }).then(async (response) => ({ status: response.status, body: await response.json() }));
-}
-
-function freePort() {
-  return new Promise((resolve, reject) => {
-    const server = createServer();
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const { port } = server.address();
-      server.close((error) => error ? reject(error) : resolve(port));
-    });
-  });
-}
-
-function waitForServer(child, port) {
-  return new Promise(async (resolve, reject) => {
-    let output = "";
-    child.stdout.on("data", (chunk) => { output += chunk; });
-    child.stderr.on("data", (chunk) => { output += chunk; });
-    const deadline = Date.now() + 8_000;
-    while (Date.now() < deadline) {
-      if (child.exitCode !== null || child.signalCode !== null) return reject(new Error(`Fresh judge server exited ${child.exitCode ?? child.signalCode}: ${output.trim()}`));
-      try {
-        if ((await fetch(`http://127.0.0.1:${port}/api/health`)).ok) return resolve();
-      } catch { /* poll the isolated server until its bounded deadline */ }
-      await new Promise((done) => setTimeout(done, 100));
-    }
-    reject(new Error(`Fresh judge server did not become healthy: ${output.trim()}`));
   });
 }
