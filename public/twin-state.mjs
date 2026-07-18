@@ -146,6 +146,48 @@ export function livePositions(nodes = []) {
   });
 }
 
+export function primaryLiveEdges(topology = {}) {
+  const nodes = topology.nodes || [];
+  const edges = topology.edges || [];
+  if (!nodes.length || !edges.length) return [];
+
+  const positioned = new Map(livePositions(nodes).map((node) => [node.id, node]));
+  const valid = edges.filter((edge) => positioned.has(edge.from) && positioned.has(edge.to));
+  const compare = (a, b) => {
+    const fromA = positioned.get(a.from);
+    const toA = positioned.get(a.to);
+    const fromB = positioned.get(b.from);
+    const toB = positioned.get(b.to);
+    const deltaA = toA.layerIndex - fromA.layerIndex;
+    const deltaB = toB.layerIndex - fromB.layerIndex;
+    const directionA = deltaA > 0 ? 0 : deltaA === 0 ? 1 : 2;
+    const directionB = deltaB > 0 ? 0 : deltaB === 0 ? 1 : 2;
+    return directionA - directionB || Math.abs(deltaA) - Math.abs(deltaB) || a.id.localeCompare(b.id);
+  };
+
+  const incoming = new Map();
+  for (const edge of valid) {
+    if (!incoming.has(edge.to)) incoming.set(edge.to, []);
+    incoming.get(edge.to).push(edge);
+  }
+
+  const selected = new Map();
+  for (const target of [...incoming.keys()].sort()) {
+    const edge = incoming.get(target).sort(compare)[0];
+    selected.set(edge.id, edge);
+  }
+
+  const connected = new Set(valid.flatMap((edge) => [edge.from, edge.to]));
+  const covered = () => new Set([...selected.values()].flatMap((edge) => [edge.from, edge.to]));
+  for (const nodeId of [...connected].sort()) {
+    if (covered().has(nodeId)) continue;
+    const edge = valid.filter((candidate) => candidate.from === nodeId || candidate.to === nodeId).sort(compare)[0];
+    if (edge) selected.set(edge.id, edge);
+  }
+
+  return [...selected.values()].sort((a, b) => a.id.localeCompare(b.id));
+}
+
 export function orderedSignalEdges(edges = [], pulseSlots = {}) {
   const compare = (a, b) => (pulseSlots[a.id] ?? 0) - (pulseSlots[b.id] ?? 0) || a.id.localeCompare(b.id);
   const outgoing = new Map();

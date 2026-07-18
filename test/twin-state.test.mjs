@@ -23,6 +23,7 @@ import {
   livePulseSlots,
   livePositions,
   orderedSignalEdges,
+  primaryLiveEdges,
   topologyIntegrity
 } from "../public/twin-state.mjs";
 
@@ -316,6 +317,38 @@ test("live pulses follow deterministic topology depth with one segment per edge"
   assert.match(stylesCss, /prefers-reduced-motion:[\s\S]+\.edge-group\.is-signal-active \.signal-droplet \{ display: none;/s);
   assert.match(appJs, /data-recovery-command-send/);
   assert.match(appJs, /sendRecoveryCommand\(commandButton\.closest\("form"\)\)/);
+});
+
+test("live renders a deterministic primary dependency skeleton without losing connected components", () => {
+  const topology = topologyIntegrity({
+    nodes: ["load-generator", "frontend-web", "frontend-proxy", "frontend", "checkout", "cart", "payment", "flagd"].map((id) => ({ id, kind: "service" })),
+    edges: [
+      { id: "load-generator->frontend-proxy", from: "load-generator", to: "frontend-proxy" },
+      { id: "frontend-web->frontend-proxy", from: "frontend-web", to: "frontend-proxy" },
+      { id: "frontend-proxy->frontend", from: "frontend-proxy", to: "frontend" },
+      { id: "frontend->checkout", from: "frontend", to: "checkout" },
+      { id: "frontend->cart", from: "frontend", to: "cart" },
+      { id: "checkout->cart", from: "checkout", to: "cart" },
+      { id: "checkout->payment", from: "checkout", to: "payment" },
+      { id: "load-generator->flagd", from: "load-generator", to: "flagd" },
+      { id: "cart->flagd", from: "cart", to: "flagd" }
+    ]
+  });
+  const selected = primaryLiveEdges(topology);
+  const selectedReversed = primaryLiveEdges({ nodes: [...topology.nodes].reverse(), edges: [...topology.edges].reverse() });
+  const authoritative = new Set(topology.edges.map(({ id }) => id));
+  const covered = new Set(selected.flatMap((edge) => [edge.from, edge.to]));
+  const connected = new Set(topology.edges.flatMap((edge) => [edge.from, edge.to]));
+
+  assert.ok(selected.length < topology.edges.length);
+  assert.ok(selected.every(({ id }) => authoritative.has(id)));
+  assert.deepEqual([...covered].sort(), [...connected].sort());
+  assert.deepEqual(selectedReversed.map(({ id }) => id), selected.map(({ id }) => id));
+  const inboundCounts = selected.reduce((counts, { to }) => counts.set(to, (counts.get(to) || 0) + 1), new Map());
+  assert.equal(Math.max(...inboundCounts.values()), 2);
+  assert.match(appJs, /const primaryEdges = primaryLiveEdges\(topology\)/);
+  assert.match(appJs, /dataset\.observedEdges/);
+  assert.match(appJs, /dataset\.displayedEdges/);
 });
 
 test("live signal travel keeps one physical speed and slows only at the destination", () => {

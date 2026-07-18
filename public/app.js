@@ -20,6 +20,7 @@ import {
   livePulseSlots,
   livePositions,
   orderedSignalEdges,
+  primaryLiveEdges,
   topologyIntegrity
 } from "./twin-state.mjs";
 
@@ -243,11 +244,12 @@ function renderMetrics() {
   if (mode === "architecture" || mode === "live" || state.mode === "development") {
     const source = sourceState();
     const topology = topologyIntegrity(mode === "architecture" ? architectureTopology() : source.topology);
+    const visibleDependencies = mode === "live" ? primaryLiveEdges(topology).length : topology?.edges?.length || 0;
     els["metric-checkout-label"].textContent = "Services";
     els["metric-payment-label"].textContent = "Dependencies";
     els["metric-kafka-label"].textContent = "Source age";
     setMetric("checkout", String(topology?.nodes?.length || 0), "observed service.name");
-    setMetric("payment", String(topology?.edges?.length || 0), mode === "architecture" ? "hidden in Architecture" : topology.unlinked_node_ids.length ? `${topology.unlinked_node_ids.length} evidence gap${topology.unlinked_node_ids.length === 1 ? "" : "s"}` : `${source.counts?.traces || 0} trace batches`);
+    setMetric("payment", String(topology?.edges?.length || 0), mode === "architecture" ? "hidden in Architecture" : `${visibleDependencies} primary paths shown${topology.unlinked_node_ids.length ? ` · ${topology.unlinked_node_ids.length} gaps` : ""}`);
     setMetric("kafka", source.freshness_ms == null ? "—" : formatAge(source.freshness_ms), source.status);
     return;
   }
@@ -341,15 +343,17 @@ function renderSourceCanvas(layout) {
     return;
   }
   const positions = new Map(positioned.map((node) => [node.id, node]));
-  const pulseSlots = livePulseSlots(topology);
-  const signalOrder = new Map(orderedSignalEdges(topology.edges, pulseSlots).map((edge, index) => [edge.id, index]));
+  const primaryEdges = primaryLiveEdges(topology);
+  const primaryTopology = { ...topology, edges: primaryEdges };
+  const pulseSlots = livePulseSlots(primaryTopology);
+  const signalOrder = new Map(orderedSignalEdges(primaryEdges, pulseSlots).map((edge, index) => [edge.id, index]));
   const edgeLayout = {
     canvasWidth: LIVE_WORLD.width,
     canvasHeight: LIVE_WORLD.height,
     nodeWidth: 156,
     nodeHeight: 76
   };
-  const edges = topology.edges.filter((edge) => positions.has(edge.from) && positions.has(edge.to)).map((edge, index) => {
+  const edges = primaryEdges.filter((edge) => positions.has(edge.from) && positions.has(edge.to)).map((edge, index) => {
     const from = positions.get(edge.from);
     const to = positions.get(edge.to);
     const lane = index % 2 ? Math.ceil(index / 2) : -Math.ceil((index + 1) / 2);
@@ -365,8 +369,10 @@ function renderSourceCanvas(layout) {
   startLiveSignalLoop();
   els["twin-canvas"].dataset.invalidEdges = String(topology.invalid_edges.length);
   els["twin-canvas"].dataset.unlinkedNodes = String(topology.unlinked_node_ids.length);
+  els["twin-canvas"].dataset.observedEdges = String(topology.edges.length);
+  els["twin-canvas"].dataset.displayedEdges = String(primaryEdges.length);
   setAnnotations(mode === "replay" ? developmentAnnotations(cursor) : []);
-  els["twin-canvas"].setAttribute("aria-label", `Runtime topology with ${positioned.length} observed services, ${topology.edges.length} authoritative dependencies, and ${topology.unlinked_node_ids.length} components with insufficient dependency evidence from ${sourceOrigin(layout)}`);
+  els["twin-canvas"].setAttribute("aria-label", `Runtime topology with ${positioned.length} observed services. ${primaryEdges.length} primary paths are shown from ${topology.edges.length} authoritative dependencies, with ${topology.unlinked_node_ids.length} components lacking dependency evidence from ${sourceOrigin(layout)}`);
 }
 
 function sourceNodeMarkup(node, { layout, source, nodeStates }) {
