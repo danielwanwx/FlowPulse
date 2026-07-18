@@ -194,6 +194,7 @@ The original product contract is in [`docs/specs/2026-07-16-flowpulse-design.md`
 
 The submission-ready assets are in [`docs/submission/`](docs/submission/):
 the [Devpost draft](docs/submission/devpost.md), [2:30 video script](docs/submission/video-script.md), and [owner-visible final checklist](docs/submission/submission-checklist.md). The exact local real-OTLP proof—including evidence IDs, ledger order, and the one fail-closed GPT-5.6 run—is in the [runtime QA record](docs/qa/2026-07-18-competition-backend-hardening-qa.md).
+The public competition repository is [github.com/danielwanwx/FlowPulse](https://github.com/danielwanwx/FlowPulse).
 The Manager and synchronized specialist-operations contract is in [`docs/specs/2026-07-17-agent-control-and-transparent-recovery.md`](docs/specs/2026-07-17-agent-control-and-transparent-recovery.md).
 The compact Architecture, routed Live, and harness-linkage refinement is in [`docs/superpowers/specs/2026-07-17-compact-architecture-and-orchestrated-live-design.md`](docs/superpowers/specs/2026-07-17-compact-architecture-and-orchestrated-live-design.md).
 

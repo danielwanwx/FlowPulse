@@ -2,7 +2,7 @@
 
 | Gate | Status | Owner action |
 | --- | --- | --- |
-| Repository / release candidate | Ready locally at `85f1d39` baseline plus release-candidate commit | Choose and publish the approved repository URL. |
+| Repository / release candidate | Ready: [github.com/danielwanwx/FlowPulse](https://github.com/danielwanwx/FlowPulse) on `main` after this metadata pass | None. |
 | Deterministic judge path | Ready: `npm ci && npm run submission:check && npm start` | None. |
 | Runtime-proof record | Ready locally | Keep the linked QA record with submission materials. |
 | Hosted URL | Pending external human gate | Deploy the approved Docker image or equivalent behind authentication as appropriate; do not expose local mutation mode. |
@@ -19,6 +19,7 @@ npm run submission:check
 npm start
 ```
 
-The release check starts an isolated temporary server, verifies health, runs
-the full deterministic incident through its owner gate, and exits. It requires
-no Docker, OpenAI, Langfuse, or telemetry collector.
+The release check runs the complete test suite. Its server test launches an
+isolated fresh-port server, verifies `/api/health`, and drives the full
+deterministic incident through the owner gate. It requires no Docker, OpenAI,
+Langfuse, or telemetry collector.
