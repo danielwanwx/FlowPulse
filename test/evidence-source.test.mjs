@@ -63,6 +63,15 @@ test("diagnosis repair must match the real development contract exactly", () => 
   assert.throws(() => validateDiagnosis({ evidence_refs: [change.id, "live-only"], proposed_repair: { ...contract, command_id: "other", reason: "bad" } }, snapshot, contract), /outside the approved boundary/);
 });
 
+test("checkout payment name-resolution failures are a bounded dependency mechanism", () => {
+  const change = versionedChangeEvidence({ manifest: manifest(), applied: { before: "off", after: "on", applied_at: "2026-07-18T10:00:00.000Z" }, ledgerEvent: { id: "evt-change", recorded_at: "2026-07-18T10:00:00.100Z" } });
+  const failure = record("resolver-failure", "2026-07-18T10:00:01.000Z", "checkout", "trace");
+  failure.value.trace = { service: "checkout", operation: "oteldemo.PaymentService/Charge", peer_target: null, status: "error", error: "name resolver error: produced zero addresses", observed_at: failure.at };
+  const snapshot = new LiveOtlpEvidenceSource(project("live", [change, failure])).freeze({ executable: false });
+  const contract = { repair_id: "repair-payment-reachable-v1", action: "restore known-good paymentUnreachable flag and recreate checkout", target: "checkout", command_id: "astronomy.restore-payment-and-recreate-checkout" };
+  assert.doesNotThrow(() => validateDiagnosis({ evidence_refs: [change.id, failure.id], proposed_repair: { ...contract, reason: "Payment endpoint DNS resolution fails after the change." } }, snapshot, contract));
+});
+
 test("sanitizes secrets and identifiers on list, detail, tool, and source-style projections", () => {
   const secret = "https://alice:password@payment.example/pay?sessionId=123456789012345678&api_key=topsecret#fragment Bearer eyJhbGciOiJIUzI1NiJ9.abc.def jane@example.com 018f63ed-9b24-7330-b0e1-82581d7d4c3a session_id=018f63ed-9b24-7330-b0e1-82581d7d4c3a user.id=alice-42 account-id:acct_123456 X-API-Key topsecret";
   const unsafe = record("unsafe", "2026-07-18T10:00:01.000Z", "checkout", "trace");

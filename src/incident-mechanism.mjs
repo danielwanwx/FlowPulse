@@ -7,7 +7,7 @@ export function isCheckoutPaymentUnreachableTrace(record) {
     .map((value) => String(value).toLowerCase());
   const dependency = `${trace.peer_target || ""} ${trace.operation || ""}`.toLowerCase();
   const failure = `${trace.error || ""}`.toLowerCase();
-  const networkFailure = /econnrefused|connection refused|unavailable|connect(?:ion)? (?:failed|refused)|network unreachable/.test(failure);
+  const networkFailure = /econnrefused|connection refused|unavailable|connect(?:ion)? (?:failed|refused)|network unreachable|name resolver error|produced zero addresses|no such host|dns lookup/.test(failure);
   return record?.kind === "trace"
     && services.some((service) => service.includes("checkout"))
     && dependency.includes("payment")
