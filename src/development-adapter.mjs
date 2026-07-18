@@ -59,7 +59,7 @@ export async function applyDevelopmentCase() {
   assertEnabled();
   const status = await developmentStatus();
   if (!status.ready) throw new Error("The pinned local Astronomy Shop runtime is not ready");
-  const change = await readJson(join(integration, "change.payment-unreachable.json"));
+  const change = await developmentChangeManifest();
   const flags = await readFlags();
   if (!flags.flags?.[change.flag]) throw new Error(`Upstream flag ${change.flag} is unavailable`);
   const before = flags.flags[change.flag].defaultVariant;
@@ -70,7 +70,7 @@ export async function applyDevelopmentCase() {
 
 export async function executeApprovedRollback({ commandId }) {
   assertEnabled();
-  const change = await readJson(join(integration, "change.payment-unreachable.json"));
+  const change = await developmentChangeManifest();
   if (commandId !== change.repair_command_id) throw new Error("Repair command is outside the allowlist");
   const flags = await readFlags();
   if (!flags.flags?.[change.flag]) throw new Error(`Upstream flag ${change.flag} is unavailable`);
@@ -80,6 +80,10 @@ export async function executeApprovedRollback({ commandId }) {
     cwd: checkout, env: composeEnv(), timeout: change.timeout_seconds * 1_000, maxBuffer: 1_000_000
   });
   return { change, completed_at: new Date().toISOString(), command_id: commandId, stdout: summarize(result.stdout), stderr: summarize(result.stderr) };
+}
+
+export async function developmentChangeManifest() {
+  return readJson(join(integration, "change.payment-unreachable.json"));
 }
 
 export async function stopDevelopment() {

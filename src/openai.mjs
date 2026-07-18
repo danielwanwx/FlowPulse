@@ -4,11 +4,14 @@ const MODEL = () => process.env.OPENAI_MODEL || "gpt-5.6";
 const API_URL = "https://api.openai.com/v1/responses";
 const MAX_TOOL_ROUNDS = 6;
 
-export async function runLiveInvestigation({ runtime, runId, evidenceSource }) {
+export async function runLiveInvestigation({ runtime, runId, evidenceSource, repairContract = null }) {
   if (!process.env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY is required for live mode");
   if (!evidenceSource?.metadata || !evidenceSource?.query) throw new Error("A selected bounded evidence source is required for live mode");
   const sourceMetadata = evidenceSource.metadata();
   if (sourceMetadata.mode !== "live_gpt_5_6_frozen_otlp_snapshot") throw new Error("GPT-5.6 live mode requires a frozen live OTLP snapshot");
+  if (repairContract && !evidenceSource.query({ kind: "change", entity: repairContract.target }).length) {
+    throw new Error("Executable GPT investigation requires a frozen applied change record");
+  }
   const { bundle } = runtime;
   runtime.append(runId, "live.run.started", "runtime", { model: MODEL(), authority: "flowpulse-ledger" });
 
@@ -27,8 +30,8 @@ export async function runLiveInvestigation({ runtime, runId, evidenceSource }) {
           attempt
         });
       }
-      const diagnosis = await investigate({ runtime, runId, observability, feedback, evidenceSource });
-      validateDiagnosis(diagnosis, evidenceSource);
+      const diagnosis = await investigate({ runtime, runId, observability, feedback, evidenceSource, repairContract });
+      validateDiagnosis(diagnosis, evidenceSource, repairContract);
       runtime.append(runId, "hypothesis.proposed", "live-investigator", {
         ...diagnosis,
         live: true,
@@ -48,18 +51,23 @@ export async function runLiveInvestigation({ runtime, runId, evidenceSource }) {
     }
 
     runtime.append(runId, "live.run.completed", "runtime", finalResult, finalResult.diagnosis.evidence_refs);
-    if (finalResult.evaluation.accepted) {
+    if (finalResult.evaluation.accepted && repairContract) {
       runtime.append(runId, "repair.proposed", "live-investigator", {
-        ...bundle.repair,
+        ...repairContract,
         diagnosis_id: finalResult.diagnosis.id,
         bounded: true,
         expected_effect: finalResult.diagnosis.proposed_repair.reason
       }, finalResult.diagnosis.evidence_refs);
       runtime.append(runId, "approval.requested", "runtime", {
-        repair_id: bundle.repair.id,
-        owner_team: "commerce",
-        reason: "The live GPT-5.6 finding passed adversarial evaluation. The checkout rollback still requires owner approval."
+        ...repairContract,
+        owner_team: "local-development",
+        reason: "The frozen OTLP finding passed adversarial evaluation. This exact local checkout repair still requires owner approval."
       });
+    } else if (finalResult.evaluation.accepted) {
+      runtime.append(runId, "outcome.classified", "live-evaluator", {
+        classification: "insufficient_evidence",
+        explanation: "This is a model-only frozen-evidence investigation. No applied development change contract exists, so FlowPulse did not create an executable repair or approval request."
+      }, finalResult.diagnosis.evidence_refs);
     } else {
       runtime.append(runId, "outcome.classified", "live-evaluator", {
         classification: "insufficient_evidence",
@@ -70,7 +78,7 @@ export async function runLiveInvestigation({ runtime, runId, evidenceSource }) {
   });
 }
 
-async function investigate({ runtime, runId, observability, feedback, evidenceSource }) {
+async function investigate({ runtime, runId, observability, feedback, evidenceSource, repairContract }) {
   const { bundle } = runtime;
   const tools = toolDefinitions(evidenceSource);
   const input = [{
@@ -78,7 +86,9 @@ async function investigate({ runtime, runId, observability, feedback, evidenceSo
     content: [
       `Investigate this production incident: ${bundle.incident.summary}`,
       "Use the evidence tools. Distinguish initiating cause from downstream symptoms.",
-      "Cite only evidence IDs returned by tools. Propose only a checkout rollback if supported.",
+      repairContract
+        ? `Cite only evidence IDs returned by tools. Your repair must exactly be ${JSON.stringify(repairContract)}.`
+        : "Cite only evidence IDs returned by tools. This model-only run has no executable repair contract; use no_execution.",
       "Query only the services needed to prove or disprove the current causal chain, then stop.",
       feedback ? `The evaluator rejected the prior attempt: ${JSON.stringify(feedback)}` : ""
     ].filter(Boolean).join("\n")
@@ -96,7 +106,7 @@ async function investigate({ runtime, runId, observability, feedback, evidenceSo
       max_output_tokens: 1800,
       store: false,
       safety_identifier: "flowpulse-build-week",
-      text: { format: diagnosisFormat() }
+      text: { format: diagnosisFormat(repairContract) }
     };
     const response = await callOpenAI(body, observability, `investigator.round-${round + 1}`);
     input.push(...response.output);
@@ -181,7 +191,8 @@ export function executeTool(evidenceSource, name, args) {
     query_traces: "trace",
     query_logs: "log",
     query_deploys: "deploy",
-    query_commits: "commit"
+    query_commits: "commit",
+    query_changes: "change"
   };
   const kind = kindByTool[name];
   if (!kind) throw new Error(`Tool is not allowlisted: ${name}`);
@@ -190,7 +201,7 @@ export function executeTool(evidenceSource, name, args) {
 
 function toolDefinitions(evidenceSource) {
   const entities = evidenceSource.entities();
-  return ["metrics", "traces", "logs", "deploys", "commits"].map((name) => ({
+  return ["metrics", "traces", "logs", "changes", "deploys", "commits"].map((name) => ({
     type: "function",
     name: `query_${name}`,
     description: `Return captured ${name} evidence for one incident entity.`,
@@ -204,7 +215,26 @@ function toolDefinitions(evidenceSource) {
   }));
 }
 
-function diagnosisFormat() {
+function diagnosisFormat(repairContract) {
+  const repair = repairContract
+    ? {
+        properties: {
+          repair_id: { type: "string", enum: [repairContract.repair_id] },
+          action: { type: "string", enum: [repairContract.action] },
+          target: { type: "string", enum: [repairContract.target] },
+          command_id: { type: "string", enum: [repairContract.command_id] },
+          reason: { type: "string" }
+        },
+        required: ["repair_id", "action", "target", "command_id", "reason"]
+      }
+    : {
+        properties: {
+          action: { type: "string", enum: ["no_execution"] },
+          target: { type: "string", enum: ["checkout"] },
+          reason: { type: "string" }
+        },
+        required: ["action", "target", "reason"]
+      };
   return {
     type: "json_schema",
     name: "flowpulse_diagnosis",
@@ -222,8 +252,8 @@ function diagnosisFormat() {
         evidence_refs: { type: "array", items: { type: "string" } },
         proposed_repair: {
           type: "object",
-          properties: { action: { type: "string", enum: ["rollback_deployment"] }, target: { type: "string", enum: ["checkout"] }, reason: { type: "string" } },
-          required: ["action", "target", "reason"],
+          properties: repair.properties,
+          required: repair.required,
           additionalProperties: false
         }
       },
@@ -265,13 +295,18 @@ function parseStructuredText(response) {
   throw new Error("OpenAI response did not contain structured output");
 }
 
-export function validateDiagnosis(diagnosis, evidenceSource) {
+export function validateDiagnosis(diagnosis, evidenceSource, repairContract = null) {
   const known = new Set(evidenceSource.list({ limit: 50 }).items.map((item) => item.id));
   const allKnown = diagnosis.evidence_refs.every((id) => evidenceSource.has ? evidenceSource.has(id) : known.has(id));
   if (!diagnosis.evidence_refs.length || !allKnown) {
     throw new Error("Diagnosis contains missing or unknown evidence references");
   }
-  if (diagnosis.proposed_repair.target !== "checkout" || diagnosis.proposed_repair.action !== "rollback_deployment") {
+  if (!repairContract) {
+    if (diagnosis.proposed_repair.target !== "checkout" || diagnosis.proposed_repair.action !== "no_execution") throw new Error("Model-only investigation proposed an executable repair");
+    return;
+  }
+  const proposed = diagnosis.proposed_repair;
+  if (proposed.repair_id !== repairContract.repair_id || proposed.action !== repairContract.action || proposed.target !== repairContract.target || proposed.command_id !== repairContract.command_id) {
     throw new Error("Diagnosis proposed a repair outside the approved boundary");
   }
 }

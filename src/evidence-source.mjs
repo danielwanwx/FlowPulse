@@ -53,11 +53,12 @@ export class LiveOtlpEvidenceSource {
   entities() { return [...new Set(this.records.map((record) => record.entity))].sort(); }
   has(id) { return this.records.some((record) => record.id === id); }
 
-  freeze({ incidentId, runId, after, entities = INCIDENT_ENTITIES, maxRecords = SNAPSHOT_MAX_RECORDS, maxBytes = SNAPSHOT_MAX_BYTES } = {}) {
+  freeze({ incidentId, runId, after, entities = INCIDENT_ENTITIES, supplementalRecords = [], maxRecords = SNAPSHOT_MAX_RECORDS, maxBytes = SNAPSHOT_MAX_BYTES } = {}) {
     if (this.project.status !== "live") throw new InsufficientEvidenceError(`OTLP source is ${this.project.status}; a live frozen snapshot cannot be created`);
     const afterMs = after ? Date.parse(after) : Number.NEGATIVE_INFINITY;
     const allowedEntities = new Set(entities);
-    const relevant = this.records.filter((record) => allowedEntities.has(record.entity) && Date.parse(record.at) >= afterMs);
+    const relevant = [...this.records.filter((record) => allowedEntities.has(record.entity) && Date.parse(record.at) >= afterMs), ...supplementalRecords]
+      .sort(compareEvidence);
     const included = [];
     let bytes = 0;
     for (const record of relevant) {
@@ -67,7 +68,7 @@ export class LiveOtlpEvidenceSource {
       bytes += size;
     }
     if (!included.length) throw new InsufficientEvidenceError("Fresh OTLP has no relevant bounded evidence for the checkout incident");
-    const sourceHash = hash(this.records.map((record) => `${record.id}:${record.provenance?.sha256 || ""}`).join("\n"));
+    const sourceHash = hash([...this.records, ...supplementalRecords].sort(compareEvidence).map((record) => `${record.id}:${record.provenance?.sha256 || record.hash || ""}`).join("\n"));
     const contentHash = hash(included.map((record) => `${record.id}:${record.provenance?.sha256 || ""}`).join("\n"));
     return new FrozenEvidenceSnapshot({
       id: `snapshot-${contentHash.slice(0, 16)}`,
@@ -102,7 +103,7 @@ export class FrozenEvidenceSnapshot {
     this.mode = this.snapshot.mode;
   }
 
-  metadata() { return { ...this.snapshot, evidence_ids: undefined }; }
+  metadata() { return { ...this.snapshot, evidence_ids: [...this.snapshot.evidence_ids] }; }
   list(options = {}) { return page(this.records, options); }
   detail(id) { return detailFor(this.records, id); }
   summariesById(ids) { return selected(this.records, ids).map(summarizeEvidence); }
@@ -176,7 +177,57 @@ function matches({ kind, entity }) {
 }
 
 function safeValue(value = {}) {
-  return { services: Array.isArray(value.services) ? value.services.slice(0, 12) : [], raw_sha256: value.raw_sha256 || null };
+  return {
+    services: Array.isArray(value.services) ? value.services.slice(0, 12) : [],
+    raw_sha256: value.raw_sha256 || null,
+    trace: safeObject(value.trace, ["operation", "peer_target", "status", "error", "observed_at"]),
+    log: safeObject(value.log, ["severity", "message", "trace_id", "span_id", "observed_at"]),
+    metric: safeObject(value.metric, ["name", "value", "unit", "aggregation", "observed_at"]),
+    change: safeObject(value.change, ["id", "target", "flag", "before", "after", "repair_id", "repair_command_id", "applied_at"])
+  };
+}
+
+export function versionedChangeEvidence({ manifest, applied, ledgerEvent }) {
+  const value = {
+    id: manifest.id,
+    target: manifest.target,
+    flag: manifest.flag,
+    before: applied.before,
+    after: applied.after,
+    repair_id: manifest.repair_id,
+    repair_command_id: manifest.repair_command_id,
+    applied_at: applied.applied_at
+  };
+  const manifestHash = hash(JSON.stringify(manifest));
+  const contentHash = hash(JSON.stringify({ manifest_hash: manifestHash, applied: value, ledger_event_id: ledgerEvent.id, recorded_at: ledgerEvent.recorded_at }));
+  return {
+    id: `change-${contentHash.slice(0, 16)}`,
+    kind: "change",
+    signal: "change",
+    title: `Versioned ${manifest.target} change ${manifest.id}`,
+    fact: `${manifest.target} flag ${manifest.flag} changed ${applied.before} → ${applied.after} at ${applied.applied_at}.`,
+    entity: manifest.target,
+    source: "repo-owned change manifest + append-only change.applied event",
+    at: applied.applied_at,
+    captured_at: ledgerEvent.recorded_at,
+    value: { change: value, raw_sha256: contentHash },
+    hash: contentHash,
+    provenance: {
+      file: "integrations/astronomy-shop/change.payment-unreachable.json",
+      line: null,
+      byte_start: null,
+      byte_end: null,
+      sha256: contentHash,
+      manifest_sha256: manifestHash,
+      ledger_event_id: ledgerEvent.id,
+      immutable_capture: true
+    }
+  };
+}
+
+function safeObject(value, fields) {
+  if (!value || typeof value !== "object") return null;
+  return Object.fromEntries(fields.filter((key) => value[key] != null).map((key) => [key, value[key]]));
 }
 
 function safeProvenance(provenance = {}) {
@@ -186,6 +237,8 @@ function safeProvenance(provenance = {}) {
     byte_start: provenance.byte_start ?? null,
     byte_end: provenance.byte_end ?? null,
     sha256: provenance.sha256 || null,
+    manifest_sha256: provenance.manifest_sha256 || null,
+    ledger_event_id: provenance.ledger_event_id || null,
     immutable_capture: Boolean(provenance.immutable_capture)
   };
 }

@@ -88,7 +88,7 @@ FlowPulse never labels fixture evidence as live. The API and canvas expose one o
 
 - **Deterministic replay** — the default judge path. It uses the immutable Astronomy Shop incident bundle and has no credentials or Docker dependency.
 - **Captured real evidence** — hashed local OTLP records are available as bounded, provenance-preserving evidence summaries and details.
-- **Live GPT-5.6 over frozen OTLP snapshot** — only a fresh `live` Collector spool can create a capped, immutable snapshot for the investigator and adversarial evaluator. A stale, disconnected, or irrelevant spool becomes `insufficient_evidence`; it never silently falls back to the fixture.
+- **Live GPT-5.6 over frozen OTLP snapshot** — only a fresh `live` Collector spool can create a capped, immutable snapshot for the investigator and adversarial evaluator. Trace summaries contain bounded operation/target/status/error facts, logs contain bounded severity/message/correlation, and metrics contain bounded name/value/unit facts. A development investigation also freezes one hashed, repo-owned `change.applied` record from the checked-in manifest. A stale, disconnected, or irrelevant spool becomes `insufficient_evidence`; it never silently falls back to the fixture.
 
 `/api/state` and `/api/source` return bounded projections only. `/api/evidence` supports cursor-paged evidence summaries and `/api/evidence/:id` returns one redacted detail with its hash and file/byte provenance. Raw OTLP payloads are not exposed to the browser or model.
 
@@ -108,13 +108,15 @@ OPENAI_MODEL=gpt-5.6
 Restart the server. The **Run fresh GPT-5.6** control will:
 
 - Give GPT-5.6 strict, allowlisted metric, trace, log, deploy, and commit tools.
-- Execute model-selected tools against the selected frozen OTLP snapshot, never a live unbounded stream or the static judge bundle.
+- Execute model-selected tools against the selected frozen OTLP snapshot, never a live unbounded stream or the static judge bundle. The explicit `query_changes` tool returns only the hashed applied development change; it does not pretend there is a source commit or deploy record when there is not.
 - Validate every returned evidence ID and repair boundary.
 - Send the candidate diagnosis to a separate GPT-5.6 adversarial evaluator.
 - Replan once with evaluator feedback if the claim is rejected.
 - Record model calls, tool calls, decisions, latency, usage, and scores in the FlowPulse ledger.
 
 GPT-5.6 is used through the Responses API with medium reasoning effort, strict function schemas, structured outputs, explicit token limits, `store: false`, and a stable safety identifier. Tool and evaluator results are recorded in the append-only ledger, while Langfuse is an observability mirror only. The official guidance recommends the Responses API for reasoning and tool-calling workflows and documents `gpt-5.6` as the flagship alias: [Using GPT-5.6](https://developers.openai.com/api/docs/guides/latest-model), [Function calling](https://developers.openai.com/api/docs/guides/function-calling), and [Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs).
+
+For an active local development case, the only model-proposable repair contract is identical to the checked-in adapter contract: `repair-payment-reachable-v1`, `restore known-good paymentUnreachable flag and recreate checkout`, target `checkout`, command `astronomy.restore-payment-and-recreate-checkout`. FlowPulse compares the proposal and approval request against that contract before the adapter can run. The standalone **Run fresh GPT-5.6** path is model-only: without an active applied development change it cannot create an executable repair or approval request.
 
 ## Langfuse tracing
 

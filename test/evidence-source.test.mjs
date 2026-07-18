@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { CapturedBundleEvidenceSource, InsufficientEvidenceError, LiveOtlpEvidenceSource, SNAPSHOT_MAX_BYTES } from "../src/evidence-source.mjs";
+import { CapturedBundleEvidenceSource, InsufficientEvidenceError, LiveOtlpEvidenceSource, SNAPSHOT_MAX_BYTES, versionedChangeEvidence } from "../src/evidence-source.mjs";
 import { executeTool, validateDiagnosis } from "../src/openai.mjs";
 import { loadBundle } from "../src/bundle.mjs";
 
@@ -30,8 +30,34 @@ test("GPT evidence tools query the selected frozen snapshot rather than the stat
   const result = executeTool(snapshot, "query_traces", { entity: "checkout" });
   assert.deepEqual(result.map((item) => item.id), ["live-only"]);
   assert.equal(result.some((item) => item.id === "ev-trace-payment-refused"), false);
-  assert.throws(() => validateDiagnosis({ evidence_refs: ["ev-trace-payment-refused"], proposed_repair: { action: "rollback_deployment", target: "checkout" } }, snapshot), /missing or unknown evidence/);
+  assert.throws(() => validateDiagnosis({ evidence_refs: ["ev-trace-payment-refused"], proposed_repair: { action: "no_execution", target: "checkout" } }, snapshot), /missing or unknown evidence/);
   assert.equal(new CapturedBundleEvidenceSource(loadBundle()).has("ev-trace-payment-refused"), true);
+});
+
+test("frozen development snapshot includes a hashed applied change and bounded failure facts", () => {
+  const change = versionedChangeEvidence({
+    manifest: manifest(),
+    applied: { before: "off", after: "on", applied_at: "2026-07-18T10:00:00.000Z" },
+    ledgerEvent: { id: "evt-change", recorded_at: "2026-07-18T10:00:00.100Z" }
+  });
+  const failedTrace = record("failure", "2026-07-18T10:00:01.000Z", "checkout", "trace");
+  failedTrace.value.trace = { operation: "POST /checkout", peer_target: "payment:8080", status: "error", error: "connection refused", observed_at: failedTrace.at };
+  const snapshot = new LiveOtlpEvidenceSource(project("live", [failedTrace])).freeze({ supplementalRecords: [change] });
+  const trace = executeTool(snapshot, "query_traces", { entity: "checkout" })[0];
+  const applied = executeTool(snapshot, "query_changes", { entity: "checkout" })[0];
+  assert.deepEqual(trace.value.trace, failedTrace.value.trace);
+  assert.equal(applied.value.change.applied_at, "2026-07-18T10:00:00.000Z");
+  assert.equal(applied.value.change.repair_id, "repair-payment-reachable-v1");
+  assert.match(applied.hash, /^[a-f0-9]{64}$/);
+  assert.equal(snapshot.metadata().evidence_ids.includes(applied.id), true);
+  assert.equal(snapshot.metadata().content_hash.length, 64);
+});
+
+test("diagnosis repair must match the real development contract exactly", () => {
+  const snapshot = new LiveOtlpEvidenceSource(project("live", [record("live-only", "2026-07-18T10:00:01.000Z", "checkout", "trace")])).freeze({});
+  const contract = { repair_id: "repair-payment-reachable-v1", action: "restore known-good paymentUnreachable flag and recreate checkout", target: "checkout", command_id: "astronomy.restore-payment-and-recreate-checkout" };
+  assert.doesNotThrow(() => validateDiagnosis({ evidence_refs: ["live-only"], proposed_repair: { ...contract, reason: "Failure follows the applied change." } }, snapshot, contract));
+  assert.throws(() => validateDiagnosis({ evidence_refs: ["live-only"], proposed_repair: { ...contract, command_id: "other", reason: "bad" } }, snapshot, contract), /outside the approved boundary/);
 });
 
 test("list and detail stay bounded and fail closed", () => {
@@ -61,5 +87,15 @@ function record(id, at, entity, kind = "trace") {
     value: { services: [entity], raw_sha256: "a".repeat(64) },
     provenance: { file: "traces.jsonl", line: 1, byte_start: 0, byte_end: 10, sha256: "a".repeat(64), immutable_capture: true },
     payload: { resourceSpans: [{ resource: { attributes: [{ key: "service.name", value: { stringValue: entity } }] } }] }
+  };
+}
+
+function manifest() {
+  return {
+    id: "change-payment-unreachable-v1",
+    target: "checkout",
+    flag: "paymentUnreachable",
+    repair_id: "repair-payment-reachable-v1",
+    repair_command_id: "astronomy.restore-payment-and-recreate-checkout"
   };
 }

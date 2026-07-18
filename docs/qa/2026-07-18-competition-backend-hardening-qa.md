@@ -50,3 +50,24 @@
 No public hosted URL, public YouTube demo, `/feedback` Session ID, or Devpost
 submission was created by this QA pass. Those remain human-owned submission
 steps.
+
+## Acceptance repair 1
+
+- The initial acceptance review correctly rejected generic live facts and a
+  static-bundle rollback schema. This repair adds bounded semantic signal facts
+  and a hashed applied-change evidence record to development snapshots.
+- Example safe facts: trace `{ operation: "POST /checkout", peer_target:
+  "payment:8080", status: "error", error: "connection refused" }`; log
+  `{ severity: "ERROR", message: "payment call refused", trace_id: "abc" }`;
+  metric `{ name: "checkout.errors", value: 42, unit: "1", aggregation:
+  "sum" }`; change `{ flag: "paymentUnreachable", before: "off", after:
+  "on", repair_id: "repair-payment-reachable-v1" }`.
+- The repair-contract test proves the model boundary, `repair.proposed`,
+  `approval.requested`, and adapter command use the same ID/action/target/
+  command. A mismatched approval request fails before adapter execution.
+- No OpenAI request, flag mutation, container restart, deployment, push, or
+  publish was performed during this repair pass.
+- Final repair checks: `npm test` — 63 passing, 0 failing;
+  `FLOWPULSE_DEVELOPMENT_ENABLED=1 npm run live:check` — ready; Architecture,
+  Live, Diagnose, Recovery Console, and Compare smoke-tested with 0 browser
+  console errors or warnings.

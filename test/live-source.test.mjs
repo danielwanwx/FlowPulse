@@ -50,6 +50,21 @@ test("labels old captures as stale", async () => {
   assert.equal(source.status, "stale");
 });
 
+test("derives bounded trace, log, and metric facts without exposing payload as a fact", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "flowpulse-live-facts-"));
+  await writeFile(join(directory, "traces.jsonl"), `${JSON.stringify({ resourceSpans: [resourceSpans("checkout", [{ name: "POST /checkout", status: { code: 2, message: "connection refused" }, attributes: [{ key: "server.address", value: { stringValue: "payment" } }, { key: "server.port", value: { intValue: "8080" } }] }])] })}\n`);
+  await writeFile(join(directory, "logs.jsonl"), `${JSON.stringify({ resourceLogs: [{ resource: { attributes: [{ key: "service.name", value: { stringValue: "checkout" } }] }, scopeLogs: [{ logRecords: [{ severityText: "ERROR", body: { stringValue: "payment call refused" }, traceId: "abc", spanId: "def" }] }] }] })}\n`);
+  await writeFile(join(directory, "metrics.jsonl"), `${JSON.stringify({ resourceMetrics: [{ resource: { attributes: [{ key: "service.name", value: { stringValue: "checkout" } }] }, scopeMetrics: [{ metrics: [{ name: "checkout.errors", unit: "1", sum: { dataPoints: [{ asInt: "42" }] } }] }] }] })}\n`);
+  const source = await new LiveSource({ directory }).project();
+  const trace = source.evidence.find((item) => item.kind === "trace");
+  const log = source.evidence.find((item) => item.kind === "log");
+  const metric = source.evidence.find((item) => item.kind === "metric");
+  assert.deepEqual(trace.value.trace, { operation: "POST /checkout", peer_target: "payment:8080", status: "error", error: "connection refused", observed_at: null });
+  assert.deepEqual(log.value.log, { severity: "ERROR", message: "payment call refused", trace_id: "abc", span_id: "def", observed_at: null });
+  assert.deepEqual(metric.value.metric, { name: "checkout.errors", value: 42, unit: "1", aggregation: "sum", observed_at: null });
+  assert.equal(Object.hasOwn(trace.value, "payload"), false);
+});
+
 function resourceSpans(service, spans) {
   return {
     resource: { attributes: [{ key: "service.name", value: { stringValue: service } }] },

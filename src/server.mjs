@@ -9,7 +9,7 @@ import { IncidentRuntime } from "./runtime.mjs";
 import { runLiveInvestigation } from "./openai.mjs";
 import { initializeObservability, shutdownObservability, withAgentControlTrace } from "./observability.mjs";
 import { LiveSource } from "./live-source.mjs";
-import { CapturedBundleEvidenceSource, InsufficientEvidenceError, LiveOtlpEvidenceSource } from "./evidence-source.mjs";
+import { CapturedBundleEvidenceSource, InsufficientEvidenceError, LiveOtlpEvidenceSource, versionedChangeEvidence } from "./evidence-source.mjs";
 import { DevelopmentRuntime } from "./development-runtime.mjs";
 import * as developmentAdapter from "./development-adapter.mjs";
 import { AgentControlService } from "./agent-control-service.mjs";
@@ -121,7 +121,7 @@ const server = createServer(async (request, response) => {
       requireJson(request);
       const runId = runtime.ensureRun();
       const snapshot = await freezeLiveEvidence(runId);
-      if (process.env.OPENAI_API_KEY) await runLiveInvestigation({ runtime, runId, evidenceSource: snapshot });
+      if (process.env.OPENAI_API_KEY) await runLiveInvestigation({ runtime, runId, evidenceSource: snapshot, repairContract: development.repairContract(runId) });
       else await development.investigate(runId, snapshot);
       return json(response, 200, await stateWithSource(runId));
     }
@@ -280,8 +280,14 @@ async function sourceProjection(runId = runtime.ensureRun(), source = null) {
 async function freezeLiveEvidence(runId) {
   const live = new LiveOtlpEvidenceSource(await liveSource.project());
   const runEvents = runtime.ledger.list(runId);
-  const after = runEvents.find((event) => event.type === "change.applied")?.payload.applied_at;
-  const snapshot = live.freeze({ incidentId: bundle.incident.id, runId, after });
+  const applied = runEvents.find((event) => event.type === "change.applied");
+  const after = applied?.payload.applied_at;
+  const supplementalRecords = applied ? [versionedChangeEvidence({
+    manifest: await developmentAdapter.developmentChangeManifest(),
+    applied: applied.payload,
+    ledgerEvent: applied
+  })] : [];
+  const snapshot = live.freeze({ incidentId: bundle.incident.id, runId, after, supplementalRecords });
   snapshots.set(runId, snapshot);
   const metadata = snapshot.metadata();
   runtime.append(runId, "evidence.snapshot.created", "runtime", {

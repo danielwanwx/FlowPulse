@@ -35,3 +35,11 @@ Tests cover deterministic snapshot ordering/caps, stale-source rejection, unknow
 ## Self-review
 
 The design preserves the ledger as authority, keeps real/captured/fixture labels honest, prevents unbounded telemetry from reaching either the API or model, and does not introduce a future-connector abstraction. It preserves the exact checkout → payment → retry → Kafka-lag story and its adversarial rejection, approval, verification, and learning gates.
+
+## Acceptance repair 1 — causal utility and repair identity
+
+The initial snapshot boundary was source-correct but too thin for causal review: it exposed service names and raw hashes but not the bounded operation, status, target, error, log, or metric facts needed to establish a mechanism. It also lacked the real local `change.applied` record, while the model's rollback schema differed from the adapter's checked-in recovery command.
+
+Resolution: normalized trace, log, and metric summaries expose only bounded semantic fields. An active development snapshot adds exactly one deterministic `change` evidence record derived from `change.payment-unreachable.json` and its append-only `change.applied` event. Its content hash, manifest hash, ledger event ID, applied timestamp, target, flag, before/after values, and repair ID are retained. The source hash, content hash, and snapshot evidence IDs include this record.
+
+The live-development GPT schema now has one literal repair contract: `repair-payment-reachable-v1`; `restore known-good paymentUnreachable flag and recreate checkout`; target `checkout`; command `astronomy.restore-payment-and-recreate-checkout`. The proposed repair, approval request, approval grant, and adapter invocation must all match it. `/api/live` remains a model-only frozen-evidence path without an active applied development change, so it never creates an executable-looking approval or repair.

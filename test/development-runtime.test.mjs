@@ -61,10 +61,31 @@ test("development investigation stops when fresh telemetry cannot prove the mech
   assert.equal(development.state(runId).events.find((event) => event.type === "outcome.classified").payload.classification, "insufficient_evidence");
 });
 
+test("mismatched approval request cannot execute the checked-in development repair", async () => {
+  const runtime = new IncidentRuntime({
+    ledger: new Ledger(join(mkdtempSync(join(tmpdir(), "flowpulse-development-mismatch-")), "ledger.db")),
+    bundle: loadBundle()
+  });
+  let executions = 0;
+  const development = new DevelopmentRuntime({
+    runtime,
+    source: { async project() { return { status: "live", evidence: [failureEvidence()] }; } },
+    adapter: {
+      async applyDevelopmentCase() { return { change: change(), before: "off", after: "on", applied_at: "2026-07-17T12:00:00.000Z", source: "test" }; },
+      async executeApprovedRollback() { executions += 1; return { command_id: "should-not-run" }; }
+    }
+  });
+  const runId = await development.start();
+  runtime.append(runId, "approval.requested", "test", { repair_id: "unrelated", action: "other", target: "payment", command_id: "other" });
+  await assert.rejects(() => development.approve(runId), /does not match/);
+  assert.equal(executions, 0);
+});
+
 function change() {
   return {
     id: "change-payment-unreachable-v1",
     target: "checkout",
+    flag: "paymentUnreachable",
     after: "on",
     known_good: "off",
     repair_id: "repair-payment-reachable-v1",

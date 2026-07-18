@@ -76,19 +76,16 @@ export class DevelopmentRuntime {
     this.runtime.append(runId, "loop.root_cause_confirmed", "runtime", { step: "confirm local root cause" }, refs);
     const change = this.changeFor(runId);
     this.runtime.append(runId, "repair.proposed", "investigator", {
-      id: change.repair_id,
-      action: "restore known-good flag and recreate checkout",
-      target: change.target,
+      ...repairContract(change),
       from: change.after,
       to: change.known_good,
-      command_id: change.repair_command_id,
       bounded: true,
       timeout_seconds: change.timeout_seconds,
       abort_if: change.abort_if,
       expected_effect: "Restore checkout payment calls and confirm recovery from fresh post-repair OTLP evidence."
     }, refs);
     this.runtime.append(runId, "approval.requested", "runtime", {
-      repair_id: change.repair_id,
+      ...repairContract(change),
       owner_team: "local-development",
       reason: "Recreating a running checkout container is consequential and requires owner approval."
     });
@@ -99,15 +96,21 @@ export class DevelopmentRuntime {
   async approve(runId = this.runtime.ensureRun(), owner = "Development owner") {
     this.assertMode(runId);
     const events = this.runtime.ledger.list(runId);
-    if (!events.some((event) => event.type === "approval.requested")) throw new Error("No local repair is awaiting approval");
-    if (events.some((event) => event.type === "approval.granted")) throw new Error("Local repair is already approved");
     const change = this.changeFor(runId);
-    this.runtime.append(runId, "approval.granted", "owner", { owner, repair_id: change.repair_id, scope: "local checkout container only" });
-    const result = await this.adapter.executeApprovedRollback({ commandId: change.repair_command_id });
+    const contract = repairContract(change);
+    const request = events.find((event) => event.type === "approval.requested");
+    const proposal = events.find((event) => event.type === "repair.proposed");
+    if (!request) throw new Error("No local repair is awaiting approval");
+    if (events.some((event) => event.type === "approval.granted")) throw new Error("Local repair is already approved");
+    if (!sameRepairContract(request.payload, contract) || !proposal || !sameRepairContract(proposal.payload, contract)) {
+      throw new Error("Requested repair does not match the checked-in development repair contract");
+    }
+    this.runtime.append(runId, "approval.granted", "owner", { owner, ...contract, scope: "local checkout container only" });
+    const result = await this.adapter.executeApprovedRollback({ commandId: contract.command_id });
     this.runtime.append(runId, "repair.executed", "remediation", {
       repair_id: change.repair_id,
-      action: "restore known-good flag and recreate checkout",
-      target: change.target,
+      action: contract.action,
+      target: contract.target,
       from: change.after,
       to: change.known_good,
       mode: "local-development",
@@ -176,6 +179,24 @@ export class DevelopmentRuntime {
     if (!change) throw new Error("Versioned development change is missing");
     return change;
   }
+
+  repairContract(runId = this.runtime.ensureRun()) { return repairContract(this.changeFor(runId)); }
+}
+
+export function repairContract(change) {
+  return {
+    repair_id: change.repair_id,
+    action: `restore known-good ${change.flag || "paymentUnreachable"} flag and recreate checkout`,
+    target: change.target,
+    command_id: change.repair_command_id
+  };
+}
+
+function sameRepairContract(candidate = {}, expected) {
+  return candidate.repair_id === expected.repair_id
+    && candidate.action === expected.action
+    && candidate.target === expected.target
+    && candidate.command_id === expected.command_id;
 }
 
 function relevantFailure(item) {

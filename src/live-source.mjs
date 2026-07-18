@@ -93,7 +93,7 @@ async function readSignal(path, signal, root) {
         source: "OpenTelemetry Collector file exporter",
         hash: digest,
         at: observedAt(payload) || info.mtime.toISOString(),
-        value: { services: servicesIn(payload), raw_sha256: digest },
+        value: { services: servicesIn(payload), raw_sha256: digest, ...signalFacts(payload, signal) },
         captured_at: info.mtime.toISOString(),
         provenance: {
           file: relative(root, path),
@@ -156,7 +156,111 @@ function servicesIn(payload) {
 
 function summarize(payload, signal) {
   const services = servicesIn(payload);
-  return `Observed ${signal} from ${services.length ? services.join(", ") : "an OTLP resource"}.`;
+  const service = services[0] || "an OTLP resource";
+  const facts = signalFacts(payload, signal);
+  if (facts.trace) {
+    const status = facts.trace.status || "status missing";
+    const target = facts.trace.peer_target ? ` to ${facts.trace.peer_target}` : "";
+    const error = facts.trace.error ? `: ${facts.trace.error}` : "";
+    return `${service} span ${facts.trace.operation || "operation missing"}${target} reported ${status}${error}.`;
+  }
+  if (facts.log) return `${service} ${facts.log.severity || "log"}: ${facts.log.message || "message redacted or missing"}.`;
+  if (facts.metric) return `${service} metric ${facts.metric.name || "name missing"}=${facts.metric.value ?? "value missing"}${facts.metric.unit ? ` ${facts.metric.unit}` : ""}.`;
+  return `Observed ${signal} from ${service}.`;
+}
+
+function signalFacts(payload, signal) {
+  if (signal === "traces") return { trace: traceFact(payload) };
+  if (signal === "logs") return { log: logFact(payload) };
+  if (signal === "metrics") return { metric: metricFact(payload) };
+  return {};
+}
+
+function traceFact(payload) {
+  const span = firstSpan(payload);
+  if (!span) return { operation: null, peer_target: null, status: "missing", error: null, observed_at: observedAt(payload) };
+  const target = targetFor(span);
+  const status = span.status?.code === 2 ? "error" : span.status?.code === 1 ? "ok" : span.status?.code === 0 ? "unset" : "missing";
+  const exception = exceptionFor(span);
+  return {
+    operation: bounded(span.name, 160),
+    peer_target: bounded(target, 160),
+    status,
+    error: bounded(span.status?.message || exception, 240),
+    observed_at: observedAt(payload)
+  };
+}
+
+function logFact(payload) {
+  for (const resource of payload.resourceLogs || []) {
+    for (const scope of resource.scopeLogs || []) {
+      const log = scope.logRecords?.[0];
+      if (!log) continue;
+      return {
+        severity: bounded(log.severityText || log.severityNumber ? String(log.severityText || log.severityNumber) : null, 40),
+        message: bounded(anyValue(log.body), 240),
+        trace_id: bounded(log.traceId, 64),
+        span_id: bounded(log.spanId, 32),
+        observed_at: observedAt(payload)
+      };
+    }
+  }
+  return { severity: null, message: null, trace_id: null, span_id: null, observed_at: observedAt(payload) };
+}
+
+function metricFact(payload) {
+  for (const resource of payload.resourceMetrics || []) {
+    for (const scope of resource.scopeMetrics || []) {
+      const metric = scope.metrics?.[0];
+      if (!metric) continue;
+      const aggregation = ["gauge", "sum", "histogram", "summary", "exponentialHistogram"].find((key) => metric[key]);
+      const point = aggregation ? metric[aggregation]?.dataPoints?.[0] : null;
+      return {
+        name: bounded(metric.name, 160),
+        value: numericValue(point),
+        unit: bounded(metric.unit, 40),
+        aggregation: aggregation || null,
+        observed_at: observedAt(payload)
+      };
+    }
+  }
+  return { name: null, value: null, unit: null, aggregation: null, observed_at: observedAt(payload) };
+}
+
+function firstSpan(payload) {
+  for (const resource of payload.resourceSpans || []) for (const scope of resource.scopeSpans || []) if (scope.spans?.[0]) return scope.spans[0];
+  return null;
+}
+
+function targetFor(span) {
+  const attributes = span.attributes || [];
+  const host = attributeValue(attributes, "server.address") || attributeValue(attributes, "net.peer.name") || attributeValue(attributes, "peer.service") || attributeValue(attributes, "http.url");
+  const port = attributeValue(attributes, "server.port") || attributeValue(attributes, "net.peer.port");
+  return host && port && !String(host).includes(":") ? `${host}:${port}` : host;
+}
+
+function exceptionFor(span) {
+  for (const event of span.events || []) {
+    if (event.name !== "exception") continue;
+    return attributeValue(event.attributes, "exception.message") || attributeValue(event.attributes, "exception.type") || null;
+  }
+  return null;
+}
+
+function anyValue(value) {
+  if (!value || typeof value !== "object") return value == null ? null : String(value);
+  return value.stringValue ?? value.intValue ?? value.doubleValue ?? value.boolValue ?? null;
+}
+
+function numericValue(point) {
+  if (!point) return null;
+  const value = point.asDouble ?? point.asInt ?? point.sum;
+  return value == null || !Number.isFinite(Number(value)) ? null : Number(value);
+}
+
+function bounded(value, length) {
+  if (value == null || value === "") return null;
+  return String(value).replace(/[\r\n\t]+/g, " ").slice(0, length);
 }
 
 function observedAt(payload) {
