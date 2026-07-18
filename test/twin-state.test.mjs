@@ -13,6 +13,7 @@ import {
   availableStage,
   architecturePositions,
   compareFrames,
+  compareProvenance,
   eventsAtStage,
   frameFor,
   liveEdgePath,
@@ -211,6 +212,29 @@ test("compare uses incident and verified frames without changing layout", () => 
   assert.match(appJs, /function updateCompareFromPointer\(clientX\)/);
   assert.doesNotMatch(appJs, /Math\.round\(comparePercent \/ 10\)/);
   assert.doesNotMatch(stylesCss, /\.compare-value-\d+/);
+});
+
+test("compare is always available and labels captured previews separately from current verification", () => {
+  assert.deepEqual(compareProvenance([]), {
+    label: "Captured recovery preview",
+    tone: "preview",
+    status: "Deterministic captured preview",
+    caption: "Verified recovery is projected from the deterministic captured incident bundle",
+    aria: "captured deterministic recovery preview"
+  });
+  assert.equal(compareProvenance([{ type: "verification.completed", payload: { passed: false } }]).label, "Captured recovery preview");
+  assert.deepEqual(compareProvenance([{ type: "verification.completed", payload: { passed: true } }]), {
+    label: "Current verified run",
+    tone: "verified",
+    status: "Authoritative current-run comparison",
+    caption: "Passed recovery verification recorded in the current immutable ledger",
+    aria: "current run with passed recovery verification"
+  });
+  const setModeSource = appJs.match(/function setMode\(nextMode\) \{[\s\S]+?\n\}/)?.[0] || "";
+  assert.doesNotMatch(setModeSource, /nextMode === "compare"/);
+  assert.match(appJs, /Drag to compare incident with \$\{provenance\.aria\}/);
+  assert.match(appJs, /mode === "compare" \? compareProvenance\(state\.events\)\.tone : source\.status/);
+  assert.match(stylesCss, /\.capture-label\.source-preview::before \{ background: var\(--amber\); \}/);
 });
 
 test("live connector paths terminate at card boundaries for target viewport widths", () => {

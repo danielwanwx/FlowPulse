@@ -352,6 +352,25 @@ export function compareFrames() {
   return { incident: frameFor(2), recovered: frameFor(6) };
 }
 
+export function compareProvenance(events = []) {
+  const currentRunVerified = events.some((event) => event.type === "verification.completed" && event.payload?.passed === true);
+  return currentRunVerified
+    ? {
+        label: "Current verified run",
+        tone: "verified",
+        status: "Authoritative current-run comparison",
+        caption: "Passed recovery verification recorded in the current immutable ledger",
+        aria: "current run with passed recovery verification"
+      }
+    : {
+        label: "Captured recovery preview",
+        tone: "preview",
+        status: "Deterministic captured preview",
+        caption: "Verified recovery is projected from the deterministic captured incident bundle",
+        aria: "captured deterministic recovery preview"
+      };
+}
+
 export function metricSnapshot(index) {
   if (index >= 6) return {
     checkout: { value: "0.8%", note: "verified" },

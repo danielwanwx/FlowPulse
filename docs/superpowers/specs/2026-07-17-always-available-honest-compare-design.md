@@ -35,3 +35,13 @@ Only a passed verification event counts as current verified recovery. Stage posi
 ## Stop conditions
 
 Stop when Compare can be opened from any run stage, provenance is explicit in visible and accessible copy, automated tests pass, browser QA passes, the latest server remains available on port 4310, and the worktree is committed and clean. Do not add backend state, synthetic telemetry, or automatic remediation side effects.
+
+## QA record
+
+- Full automated suite: 47/47 passing.
+- Pre-verification replay: Compare opened at the Propagate stage without advancing or mutating the run.
+- Provenance: the visible badge reads `Captured recovery preview`; the caption and canvas accessible name identify the deterministic captured incident bundle.
+- Interaction: the `70% verified` preset changed the shared split to 30% incident and 70% verified.
+- Themes: light and pure-black Compare views both rendered at 1440x900.
+- Browser console: zero errors and zero warnings.
+- Screenshots: `docs/qa/always-available-compare-preview-1440x900.jpg` and `docs/qa/always-available-compare-preview-dark-1440x900.jpg`.

@@ -11,6 +11,7 @@ import {
   availableStage,
   architecturePositions,
   compareFrames,
+  compareProvenance,
   eventsAtStage,
   frameFor,
   liveEdgePath,
@@ -191,7 +192,7 @@ function renderHeader() {
   els["status-text"].textContent = modeStatus();
   els["ledger-state"].textContent = `${state.events.length} immutable events`;
   els["capture-label"].textContent = captureLabel();
-  els["capture-label"].className = `capture-label source-${source.status}`;
+  els["capture-label"].className = `capture-label source-${mode === "compare" ? compareProvenance(state.events).tone : source.status}`;
   els["zoom-controls"].hidden = mode !== "live";
   updateZoomControls();
   els["canvas-caption"].textContent = modeCaption(frame);
@@ -293,11 +294,13 @@ function renderCanvas() {
   }
   if (mode === "compare") {
     const { incident, recovered } = compareFrames();
+    const provenance = compareProvenance(state.events);
     els["canvas-layers"].innerHTML = `${renderTwinLayer(recovered, "after", true)}${renderTwinLayer(incident, "before", false)}`;
     els["compare-handle"].hidden = false;
     els["compare-canvas-range"].hidden = false;
     setAnnotations([]);
-    els["twin-canvas"].setAttribute("aria-label", "Compare incident impact on the left with verified recovery on the right");
+    els["twin-canvas"].setAttribute("aria-label", `Compare incident impact on the left with ${provenance.aria} on the right`);
+    els["compare-canvas-range"].setAttribute("aria-label", `Drag to compare incident with ${provenance.aria}`);
     renderComparePosition();
     return;
   }
@@ -1090,14 +1093,6 @@ function closeDrawer() {
 function setMode(nextMode) {
   stopPlayback();
   if (!state) return;
-  if (nextMode === "compare" && state.mode === "development") {
-    showToast("Compare is available for the verified complex replay. Restart Diagnose to open it.", true);
-    return;
-  }
-  if (nextMode === "compare" && availableStage(state.events) < 6) {
-    showToast("Complete recovery verification before opening Compare.", true);
-    return;
-  }
   mode = nextMode;
   if (mode === "live" || mode === "agents") cursor = availableStage(state.events);
   if (mode === "compare") closeDrawerWithoutFocus();
@@ -1491,7 +1486,7 @@ function modeStatus() {
   if (mode === "architecture") return sourceState().status === "live" ? "Current source projection" : "Last-known source projection";
   if (mode === "live") return sourceState().status === "live" ? "Fresh authoritative telemetry" : "Source truth preserved";
   if (mode === "agents") return `${agentControl().current_agent_id.replaceAll("_", " ")} · ledger synchronized`;
-  if (mode === "compare") return "Interactive state delta";
+  if (mode === "compare") return compareProvenance(state.events).status;
   if (state.waiting_for_approval && cursor >= 5) return "Paused at human gate";
   if (state.complete && cursor >= 7) return "Verified and recorded";
   return "Deterministic reconstruction";
@@ -1514,7 +1509,7 @@ function modeCaption(frame) {
     const control = agentControl();
     return `${agentLabel(control.current_agent_id)} · ledger ${control.last_sequence}`;
   }
-  if (mode === "compare") return "Drag to compare incident and verified state";
+  if (mode === "compare") return compareProvenance(state.events).caption;
   if (state.mode === "development") return `${timelineStages()[cursor].time} · hashed OTLP · ${eventsAtStage(state.events, cursor).length} events`;
   return `${frame.stage.time} · ${eventsAtStage(state.events, cursor).length} immutable events`;
 }
@@ -1707,7 +1702,7 @@ function captureLabel() {
   if (mode === "architecture") return sourceState().status === "live" ? "Live architecture" : "Captured architecture";
   if (mode === "live") return sourceState().status === "live" ? "Live OTLP" : "Last-known OTLP";
   if (mode === "agents") return agentControl().langfuse === "observing" ? "Agent traces live" : "Ledger agent view";
-  if (mode === "compare") return "Verified comparison";
+  if (mode === "compare") return compareProvenance(state.events).label;
   return state.mode === "development" ? "Hashed incident" : "Captured incident";
 }
 

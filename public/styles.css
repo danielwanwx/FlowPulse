@@ -124,6 +124,8 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .capture-label { display: inline-flex; align-items: center; gap: 6px; padding: 3px 7px; border: 1px solid var(--line-strong); border-radius: 3px; color: var(--ink); font-weight: 650; }
 .capture-label::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--faint); }
 .capture-label.source-live::before { background: var(--green); }
+.capture-label.source-verified::before { background: var(--green); }
+.capture-label.source-preview::before { background: var(--amber); }
 .capture-label.source-stale::before, .capture-label.source-connecting::before { background: var(--amber); }
 .theme-toggle { width: 28px; min-height: 28px; display: inline-grid; place-items: center; padding: 0; border: 1px solid var(--line); border-radius: 3px; color: var(--ink); background: var(--surface); cursor: pointer; }
 .theme-toggle:hover { background: var(--surface-2); }
