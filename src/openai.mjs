@@ -4,6 +4,10 @@ const MODEL = () => process.env.OPENAI_MODEL || "gpt-5.6";
 const API_URL = "https://api.openai.com/v1/responses";
 const MAX_TOOL_ROUNDS = 6;
 
+export class CausalEvidenceError extends Error {
+  constructor(message, classification = "insufficient_evidence") { super(message); this.name = "CausalEvidenceError"; this.classification = classification; }
+}
+
 export async function runLiveInvestigation({ runtime, runId, evidenceSource, repairContract = null }) {
   if (!process.env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY is required for live mode");
   if (!evidenceSource?.metadata || !evidenceSource?.query) throw new Error("A selected bounded evidence source is required for live mode");
@@ -39,6 +43,7 @@ export async function runLiveInvestigation({ runtime, runId, evidenceSource, rep
       }, diagnosis.evidence_refs);
 
       const evaluation = await evaluate({ diagnosis, evidenceSource, observability, attempt });
+      validateEvaluation(evaluation, evidenceSource);
       runtime.append(runId, evaluation.accepted ? "evaluation.accepted" : "evaluation.rejected", "live-evaluator", {
         ...evaluation,
         hypothesis_id: diagnosis.id,
@@ -62,7 +67,7 @@ export async function runLiveInvestigation({ runtime, runId, evidenceSource, rep
         ...repairContract,
         owner_team: "local-development",
         reason: "The frozen OTLP finding passed adversarial evaluation. This exact local checkout repair still requires owner approval."
-      });
+      }, finalResult.diagnosis.evidence_refs);
     } else if (finalResult.evaluation.accepted) {
       runtime.append(runId, "outcome.classified", "live-evaluator", {
         classification: "insufficient_evidence",
@@ -309,4 +314,23 @@ export function validateDiagnosis(diagnosis, evidenceSource, repairContract = nu
   if (proposed.repair_id !== repairContract.repair_id || proposed.action !== repairContract.action || proposed.target !== repairContract.target || proposed.command_id !== repairContract.command_id) {
     throw new Error("Diagnosis proposed a repair outside the approved boundary");
   }
+  validateExecutableCausalEvidence(diagnosis.evidence_refs, evidenceSource, repairContract);
+}
+
+export function validateEvaluation(evaluation, evidenceSource) {
+  const unknown = (evaluation.counter_evidence_refs || []).some((id) => !evidenceSource.has(id));
+  if (unknown) throw new CausalEvidenceError("Evaluator contains missing or unknown counter-evidence references", "agent_false_positive");
+}
+
+export function validateExecutableCausalEvidence(ids, evidenceSource, repairContract) {
+  const cited = evidenceSource.summariesById(ids);
+  const change = cited.find((item) => item.kind === "change" && item.value?.change?.repair_id === repairContract.repair_id
+    && item.value.change.target === repairContract.target
+    && item.value.change.repair_command_id === repairContract.command_id
+    && repairContract.action === `restore known-good ${item.value.change.flag} flag and recreate checkout`);
+  const appliedAt = Date.parse(change?.value?.change?.applied_at || "");
+  const failure = cited.find((item) => item.kind === "trace" && ["checkout", "payment"].includes(item.entity)
+    && (item.value?.trace?.status === "error" || Boolean(item.value?.trace?.error))
+    && Number.isFinite(appliedAt) && Date.parse(item.at) >= appliedAt);
+  if (!change || !failure) throw new CausalEvidenceError("Diagnosis lacks the exact cited change and post-change failure evidence required for executable repair");
 }

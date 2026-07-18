@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { Ledger } from "./ledger.mjs";
 import { loadBundle } from "./bundle.mjs";
 import { IncidentRuntime } from "./runtime.mjs";
-import { runLiveInvestigation } from "./openai.mjs";
+import { CausalEvidenceError, runLiveInvestigation } from "./openai.mjs";
 import { initializeObservability, shutdownObservability, withAgentControlTrace } from "./observability.mjs";
 import { LiveSource } from "./live-source.mjs";
 import { CapturedBundleEvidenceSource, InsufficientEvidenceError, LiveOtlpEvidenceSource, versionedChangeEvidence } from "./evidence-source.mjs";
@@ -160,8 +160,14 @@ const server = createServer(async (request, response) => {
         const result = await runLiveInvestigation({ runtime, runId, evidenceSource: snapshot });
         return json(response, 200, { result, state: await stateWithSource(runId) });
       } catch (error) {
+        if (error instanceof CausalEvidenceError) {
+          runtime.append(runId, "outcome.classified", "live-evaluator", {
+            classification: error.classification,
+            explanation: error.message
+          });
+        }
         runtime.append(runId, "live.run.failed", "runtime", {
-          classification: error instanceof InsufficientEvidenceError ? "insufficient_evidence" : error.message.includes("approved boundary") ? "agent_false_positive" : "tool_data_failure",
+          classification: error instanceof CausalEvidenceError ? error.classification : error instanceof InsufficientEvidenceError ? "insufficient_evidence" : error.message.includes("approved boundary") ? "agent_false_positive" : "tool_data_failure",
           reason: error.message
         });
         return json(response, 422, { error: error.message, state: await stateWithSource(runId) });
@@ -283,11 +289,11 @@ async function freezeLiveEvidence(runId) {
   const applied = runEvents.find((event) => event.type === "change.applied");
   const after = applied?.payload.applied_at;
   const supplementalRecords = applied ? [versionedChangeEvidence({
-    manifest: await developmentAdapter.developmentChangeManifest(),
+    manifest: applied.payload.change,
     applied: applied.payload,
     ledgerEvent: applied
   })] : [];
-  const snapshot = live.freeze({ incidentId: bundle.incident.id, runId, after, supplementalRecords });
+  const snapshot = live.freeze({ incidentId: bundle.incident.id, runId, after, supplementalRecords, executable: Boolean(applied) });
   snapshots.set(runId, snapshot);
   const metadata = snapshot.metadata();
   runtime.append(runId, "evidence.snapshot.created", "runtime", {

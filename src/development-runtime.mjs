@@ -28,6 +28,9 @@ export class DevelopmentRuntime {
     const source = await this.source.project();
     const appliedAt = this.runtime.ledger.list(runId).find((event) => event.type === "change.applied")?.payload.applied_at;
     const selected = evidenceSource?.records || source.evidence;
+    const change = this.changeFor(runId);
+    const contract = repairContract(change);
+    const changeEvidence = evidenceSource ? selected.find((item) => item.kind === "change" && matchesChange(item, contract, appliedAt)) : null;
     const candidates = selected.filter((item) => relevantFailure(item) && Date.parse(item.at) >= Date.parse(appliedAt));
     if (source.status !== "live" || candidates.length === 0) {
       this.runtime.append(runId, "outcome.classified", "evaluator", {
@@ -36,11 +39,18 @@ export class DevelopmentRuntime {
       }, candidates.map((item) => item.id));
       throw new Error("Fresh checkout/payment failure evidence is not available yet");
     }
-    const refs = candidates.map((item) => item.id);
+    if (evidenceSource && !changeEvidence) {
+      this.runtime.append(runId, "outcome.classified", "evaluator", {
+        classification: "insufficient_evidence",
+        explanation: "The frozen development snapshot is missing the exact applied versioned change record."
+      }, candidates.map((item) => item.id));
+      throw new Error("Frozen development change evidence is missing or mismatched");
+    }
+    const refs = [...new Set([...(changeEvidence ? [changeEvidence.id] : []), ...candidates.map((item) => item.id)])];
     this.runtime.append(runId, "evidence.queried", "investigator", {
       tool: "query_live_otlp",
       result_count: refs.length,
-      evidence_mode: evidenceSource?.metadata?.().mode || "live_otlp"
+      evidence_mode: evidenceSource?.metadata?.().mode || "unit-only-fallback"
     }, refs);
     this.runtime.append(runId, "loop.symptoms_collected", "runtime", { step: "inspect fresh local telemetry" }, refs);
     this.runtime.append(runId, "hypothesis.proposed", "investigator", {
@@ -74,7 +84,6 @@ export class DevelopmentRuntime {
       reason: "The allowlisted change, target, timing, and fresh failure telemetry support a bounded checkout rollback."
     }, refs);
     this.runtime.append(runId, "loop.root_cause_confirmed", "runtime", { step: "confirm local root cause" }, refs);
-    const change = this.changeFor(runId);
     this.runtime.append(runId, "repair.proposed", "investigator", {
       ...repairContract(change),
       from: change.after,
@@ -88,8 +97,8 @@ export class DevelopmentRuntime {
       ...repairContract(change),
       owner_team: "local-development",
       reason: "Recreating a running checkout container is consequential and requires owner approval."
-    });
-    this.runtime.append(runId, "loop.approval_requested", "runtime", { step: "request owner approval" });
+    }, refs);
+    this.runtime.append(runId, "loop.approval_requested", "runtime", { step: "request owner approval" }, refs);
     return source;
   }
 
@@ -105,7 +114,7 @@ export class DevelopmentRuntime {
     if (!sameRepairContract(request.payload, contract) || !proposal || !sameRepairContract(proposal.payload, contract)) {
       throw new Error("Requested repair does not match the checked-in development repair contract");
     }
-    this.runtime.append(runId, "approval.granted", "owner", { owner, ...contract, scope: "local checkout container only" });
+    this.runtime.append(runId, "approval.granted", "owner", { owner, ...contract, scope: "local checkout container only" }, proposal.evidence_refs);
     const result = await this.adapter.executeApprovedRollback({ commandId: contract.command_id });
     this.runtime.append(runId, "repair.executed", "remediation", {
       repair_id: change.repair_id,
@@ -184,9 +193,12 @@ export class DevelopmentRuntime {
 }
 
 export function repairContract(change) {
+  for (const key of ["repair_id", "flag", "target", "repair_command_id"]) {
+    if (!change?.[key]) throw new Error(`Captured development change is missing ${key}`);
+  }
   return {
     repair_id: change.repair_id,
-    action: `restore known-good ${change.flag || "paymentUnreachable"} flag and recreate checkout`,
+    action: `restore known-good ${change.flag} flag and recreate checkout`,
     target: change.target,
     command_id: change.repair_command_id
   };
@@ -200,13 +212,26 @@ function sameRepairContract(candidate = {}, expected) {
 }
 
 function relevantFailure(item) {
-  const text = JSON.stringify(item.payload).toLowerCase();
+  const semantic = item.value?.trace;
+  if (item.kind === "trace" && ["checkout", "payment"].includes(item.entity) && (semantic?.status === "error" || semantic?.error)) return true;
+  const text = JSON.stringify(item.payload || {}).toLowerCase();
   const services = item.value?.services || [];
   return item.signal === "traces" && services.some((name) => name.includes("checkout") || name.includes("payment")) && /(error|exception|unavailable|refused|"code"\s*:\s*2)/.test(text);
 }
 
+function matchesChange(item, contract, appliedAt) {
+  const change = item.value?.change;
+  return change?.repair_id === contract.repair_id
+    && change?.target === contract.target
+    && change?.repair_command_id === contract.command_id
+    && changeAction(change.flag) === contract.action
+    && change?.applied_at === appliedAt;
+}
+
+function changeAction(flag) { return flag ? `restore known-good ${flag} flag and recreate checkout` : null; }
+
 function relevantHealthy(item) {
-  const text = JSON.stringify(item.payload).toLowerCase();
+  const text = JSON.stringify(item.payload || {}).toLowerCase();
   const services = item.value?.services || [];
   return item.signal === "traces" && services.some((name) => name.includes("checkout") || name.includes("payment")) && !/(error|exception|unavailable|refused|"code"\s*:\s*2)/.test(text);
 }

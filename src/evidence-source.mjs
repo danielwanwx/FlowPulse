@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { evidenceById, queryEvidence } from "./bundle.mjs";
+import { sanitizeTelemetryText } from "./telemetry-sanitizer.mjs";
 
 export const EVIDENCE_LIST_DEFAULT = 25;
 export const EVIDENCE_LIST_MAX = 50;
@@ -53,15 +54,16 @@ export class LiveOtlpEvidenceSource {
   entities() { return [...new Set(this.records.map((record) => record.entity))].sort(); }
   has(id) { return this.records.some((record) => record.id === id); }
 
-  freeze({ incidentId, runId, after, entities = INCIDENT_ENTITIES, supplementalRecords = [], maxRecords = SNAPSHOT_MAX_RECORDS, maxBytes = SNAPSHOT_MAX_BYTES } = {}) {
+  freeze({ incidentId, runId, after, entities = INCIDENT_ENTITIES, supplementalRecords = [], executable = false, maxRecords = SNAPSHOT_MAX_RECORDS, maxBytes = SNAPSHOT_MAX_BYTES } = {}) {
     if (this.project.status !== "live") throw new InsufficientEvidenceError(`OTLP source is ${this.project.status}; a live frozen snapshot cannot be created`);
     const afterMs = after ? Date.parse(after) : Number.NEGATIVE_INFINITY;
     const allowedEntities = new Set(entities);
     const relevant = [...this.records.filter((record) => allowedEntities.has(record.entity) && Date.parse(record.at) >= afterMs), ...supplementalRecords]
       .sort(compareEvidence);
+    const reserved = executable ? requiredCausalRecords(relevant, supplementalRecords, after) : [];
     const included = [];
     let bytes = 0;
-    for (const record of relevant) {
+    for (const record of [...reserved, ...relevant.filter((record) => !reserved.some((item) => item.id === record.id))]) {
       const size = Buffer.byteLength(JSON.stringify(summarizeEvidence(record)));
       if (included.length >= maxRecords || bytes + size > maxBytes) break;
       included.push(record);
@@ -89,6 +91,7 @@ export class LiveOtlpEvidenceSource {
         bytes,
         caps: { max_records: maxRecords, max_bytes: maxBytes },
         truncated: included.length < relevant.length,
+        reserved_causal_ids: reserved.map((record) => record.id),
         evidence_ids: included.map((record) => record.id)
       }
     });
@@ -122,9 +125,9 @@ export function summarizeEvidence(record) {
     kind: record.kind,
     signal: record.signal,
     title: record.title,
-    fact: record.fact,
-    entity: record.entity,
-    source: record.source,
+    fact: sanitizeTelemetryText(record.fact, { limit: 360 }),
+    entity: sanitizeTelemetryText(record.entity, { limit: 120 }),
+    source: sanitizeTelemetryText(record.source, { limit: 160 }),
     at: record.at,
     captured_at: record.captured_at,
     value: safeValue(record.value),
@@ -178,8 +181,7 @@ function matches({ kind, entity }) {
 
 function safeValue(value = {}) {
   return {
-    services: Array.isArray(value.services) ? value.services.slice(0, 12) : [],
-    raw_sha256: value.raw_sha256 || null,
+    services: Array.isArray(value.services) ? value.services.slice(0, 12).map((item) => sanitizeTelemetryText(item, { limit: 120 })) : [],
     trace: safeObject(value.trace, ["operation", "peer_target", "status", "error", "observed_at"]),
     log: safeObject(value.log, ["severity", "message", "trace_id", "span_id", "observed_at"]),
     metric: safeObject(value.metric, ["name", "value", "unit", "aggregation", "observed_at"]),
@@ -188,6 +190,7 @@ function safeValue(value = {}) {
 }
 
 export function versionedChangeEvidence({ manifest, applied, ledgerEvent }) {
+  assertAppliedChange(manifest, applied, ledgerEvent);
   const value = {
     id: manifest.id,
     target: manifest.target,
@@ -225,9 +228,38 @@ export function versionedChangeEvidence({ manifest, applied, ledgerEvent }) {
   };
 }
 
+function assertAppliedChange(manifest = {}, applied = {}, ledgerEvent = {}) {
+  for (const key of ["id", "target", "flag", "known_good", "after", "repair_id", "repair_command_id"]) {
+    if (!manifest[key]) throw new InsufficientEvidenceError(`Applied change is missing ${key}`);
+  }
+  for (const key of ["before", "after", "applied_at"]) {
+    if (applied[key] == null || applied[key] === "") throw new InsufficientEvidenceError(`Applied change event is missing ${key}`);
+  }
+  if (!ledgerEvent.id || !ledgerEvent.recorded_at || !Number.isFinite(Date.parse(applied.applied_at))) throw new InsufficientEvidenceError("Applied change ledger provenance is incomplete");
+  if (manifest.after !== applied.after || manifest.known_good !== applied.before) throw new InsufficientEvidenceError("Applied change before/after values differ from the captured manifest");
+}
+
 function safeObject(value, fields) {
   if (!value || typeof value !== "object") return null;
-  return Object.fromEntries(fields.filter((key) => value[key] != null).map((key) => [key, value[key]]));
+  return Object.fromEntries(fields.filter((key) => value[key] != null).map((key) => [key, typeof value[key] === "string" ? sanitizeTelemetryText(value[key], { limit: fieldLimit(key) }) : value[key]]));
+}
+
+function fieldLimit(key) { return key === "error" || key === "message" ? 240 : key === "peer_target" ? 160 : 120; }
+
+function requiredCausalRecords(records, supplementalRecords, after) {
+  const change = supplementalRecords.find((record) => record.kind === "change");
+  if (!change) throw new InsufficientEvidenceError("Executable development snapshot is missing its applied change record");
+  const appliedAt = Date.parse(change.value?.change?.applied_at || after);
+  const failure = records.find((record) => isFailureTrace(record) && Date.parse(record.at) >= appliedAt);
+  if (!Number.isFinite(appliedAt) || !failure) throw new InsufficientEvidenceError("Executable development snapshot is missing a post-change checkout/payment failure trace");
+  return [change, failure].sort(compareEvidence);
+}
+
+export function isFailureTrace(record) {
+  const trace = record.value?.trace;
+  return record.kind === "trace"
+    && ["checkout", "payment"].includes(record.entity)
+    && (trace?.status === "error" || Boolean(trace?.error));
 }
 
 function safeProvenance(provenance = {}) {
@@ -253,7 +285,7 @@ function extractSafeAttributes(payload) {
       }
     }
   }
-  return { service_names: services.slice(0, 12) };
+  return { service_names: services.slice(0, 12).map((service) => sanitizeTelemetryText(service, { limit: 120 })) };
 }
 
 function compareEvidence(a, b) {

@@ -7,6 +7,7 @@ import { loadBundle } from "../src/bundle.mjs";
 import { DevelopmentRuntime } from "../src/development-runtime.mjs";
 import { Ledger } from "../src/ledger.mjs";
 import { IncidentRuntime } from "../src/runtime.mjs";
+import { LiveOtlpEvidenceSource, versionedChangeEvidence } from "../src/evidence-source.mjs";
 
 test("real-development loop rejects weak blame, gates rollback, then verifies fresh evidence", async () => {
   const runtime = new IncidentRuntime({
@@ -79,6 +80,26 @@ test("mismatched approval request cannot execute the checked-in development repa
   runtime.append(runId, "approval.requested", "test", { repair_id: "unrelated", action: "other", target: "payment", command_id: "other" });
   await assert.rejects(() => development.approve(runId), /does not match/);
   assert.equal(executions, 0);
+});
+
+test("frozen development investigation cites both the captured change and failure trace", async () => {
+  const runtime = new IncidentRuntime({ ledger: new Ledger(join(mkdtempSync(join(tmpdir(), "flowpulse-development-frozen-")), "ledger.db")), bundle: loadBundle() });
+  const adapter = { async applyDevelopmentCase() { return { change: change(), before: "off", after: "on", applied_at: "2026-07-17T12:00:00.000Z", source: "test" }; } };
+  const source = { async project() { return { status: "live", evidence: [failureEvidence()] }; } };
+  const development = new DevelopmentRuntime({ runtime, source, adapter });
+  const runId = await development.start();
+  const applied = runtime.ledger.list(runId).find((event) => event.type === "change.applied");
+  const changeEvidence = versionedChangeEvidence({ manifest: applied.payload.change, applied: applied.payload, ledgerEvent: applied });
+  const failure = { ...failureEvidence(), kind: "trace", entity: "checkout", value: { services: ["checkout"], trace: { status: "error", error: "ECONNREFUSED" } } };
+  const frozen = new LiveOtlpEvidenceSource({ status: "live", evidence: [failure] }).freeze({ supplementalRecords: [changeEvidence], executable: true, after: applied.payload.applied_at });
+  await development.investigate(runId, frozen);
+  const expected = new Set([changeEvidence.id, failure.id]);
+  for (const type of ["hypothesis.proposed", "evaluation.accepted", "repair.proposed", "approval.requested"]) {
+    const event = runtime.ledger.list(runId).filter((item) => item.type === type).at(-1);
+    assert.equal(event.evidence_refs.some((id) => expected.has(id)), true);
+    assert.equal(event.evidence_refs.includes(changeEvidence.id), true);
+    assert.equal(event.evidence_refs.includes(failure.id), true);
+  }
 });
 
 function change() {

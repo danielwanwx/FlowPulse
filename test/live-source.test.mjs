@@ -59,10 +59,27 @@ test("derives bounded trace, log, and metric facts without exposing payload as a
   const trace = source.evidence.find((item) => item.kind === "trace");
   const log = source.evidence.find((item) => item.kind === "log");
   const metric = source.evidence.find((item) => item.kind === "metric");
-  assert.deepEqual(trace.value.trace, { operation: "POST /checkout", peer_target: "payment:8080", status: "error", error: "connection refused", observed_at: null });
-  assert.deepEqual(log.value.log, { severity: "ERROR", message: "payment call refused", trace_id: "abc", span_id: "def", observed_at: null });
-  assert.deepEqual(metric.value.metric, { name: "checkout.errors", value: 42, unit: "1", aggregation: "sum", observed_at: null });
+  assert.deepEqual(trace.value.trace, { service: "checkout", operation: "POST /checkout", peer_target: "payment:8080", status: "error", error: "connection refused", observed_at: null });
+  assert.deepEqual(log.value.log, { service: "checkout", severity: "ERROR", message: "payment call refused", trace_id: "abc", span_id: "def", observed_at: null });
+  assert.deepEqual(metric.value.metric, { service: "checkout", name: "checkout.errors", value: 42, unit: "1", aggregation: "sum", observed_at: null });
   assert.equal(Object.hasOwn(trace.value, "payload"), false);
+});
+
+test("selects later failing spans and error logs over earlier healthy batch records", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "flowpulse-live-representative-"));
+  await writeFile(join(directory, "traces.jsonl"), `${JSON.stringify({ resourceSpans: [resourceSpans("checkout", [
+    { name: "GET /health", status: { code: 1 } },
+    { name: "POST /checkout", status: { code: 2, message: "ECONNREFUSED" }, attributes: [{ key: "server.address", value: { stringValue: "payment" } }, { key: "server.port", value: { intValue: "8080" } }] }
+  ])] })}\n`);
+  await writeFile(join(directory, "logs.jsonl"), `${JSON.stringify({ resourceLogs: [{ resource: { attributes: [{ key: "service.name", value: { stringValue: "checkout" } }] }, scopeLogs: [{ logRecords: [
+    { severityText: "INFO", body: { stringValue: "request started" } },
+    { severityText: "ERROR", body: { stringValue: "payment ECONNREFUSED" } }
+  ] }] }] })}\n`);
+  const source = await new LiveSource({ directory }).project();
+  assert.equal(source.evidence.find((item) => item.kind === "trace").value.trace.operation, "POST /checkout");
+  assert.equal(source.evidence.find((item) => item.kind === "trace").value.trace.status, "error");
+  assert.equal(source.evidence.find((item) => item.kind === "log").value.log.severity, "ERROR");
+  assert.equal(source.evidence.find((item) => item.kind === "log").value.log.message, "payment ECONNREFUSED");
 });
 
 function resourceSpans(service, spans) {

@@ -71,3 +71,29 @@ steps.
   `FLOWPULSE_DEVELOPMENT_ENABLED=1 npm run live:check` — ready; Architecture,
   Live, Diagnose, Recovery Console, and Compare smoke-tested with 0 browser
   console errors or warnings.
+
+## Acceptance repair 2
+
+- The second acceptance review rejected truncation-only safe fields, arbitrary
+  first-record selection, cap starvation of failure evidence, and an executable
+  path without a deterministic change-to-failure citation gate.
+- Resolution: all projected message/target text uses one deterministic telemetry
+  sanitizer; representative traces/logs/metrics prefer failure-bearing records;
+  executable snapshots reserve the exact ledger-captured change plus a
+  post-change checkout/payment failure before general cap selection; and the
+  repair/approval path now requires those exact cited records in temporal order.
+- `npm test` — **69 passing, 0 failing**. The suite covers sensitive-string
+  exclusion in list/detail/tool/source projections, healthy-first/error-later
+  batch selection, cap pressure over 120 records, frozen-manifest drift,
+  unknown evaluator refs, irrelevant/missing/reversed causal citations, and
+  approval-contract mismatch.
+- Final current command (no mutation performed):
+  `FLOWPULSE_DEVELOPMENT_ENABLED=1 npm run live:check` returned
+  `docker: true`, `flag_api: false`, `ready: false`. This is an external local
+  runtime gate; no Docker/server restart, incident injection, flag mutation,
+  model request, repair, deploy, push, or publish was performed.
+- A pre-existing server at `127.0.0.1:4310` returned HTTP 200. Its Architecture,
+  Live, Diagnose, Recovery Console, and Compare views switched successfully
+  with zero browser console warnings/errors. It was not restarted for this
+  backend patch, so this visual smoke does not certify current live-development
+  readiness or the newly loaded backend process.

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { open, stat } from "node:fs/promises";
 import { join, relative } from "node:path";
+import { sanitizeTelemetryText } from "./telemetry-sanitizer.mjs";
 
 const SIGNAL_FILES = {
   traces: "traces.jsonl",
@@ -83,17 +84,18 @@ async function readSignal(path, signal, root) {
     try {
       const payload = JSON.parse(entries[index].line);
       const digest = createHash("sha256").update(`${signal}:${entries[index].line}`).digest("hex");
+      const facts = signalFacts(payload, signal);
       records.push({
         id: `live-${signal.slice(0, 3)}-${digest.slice(0, 12)}`,
         signal,
         kind: signal === "traces" ? "trace" : signal === "metrics" ? "metric" : "log",
         title: `${signal.slice(0, -1)} capture`,
-        fact: summarize(payload, signal),
-        entity: servicesIn(payload)[0] || "telemetry-source",
+        fact: summarize(payload, signal, facts),
+        entity: facts.trace?.service || facts.log?.service || facts.metric?.service || servicesIn(payload)[0] || "telemetry-source",
         source: "OpenTelemetry Collector file exporter",
         hash: digest,
         at: observedAt(payload) || info.mtime.toISOString(),
-        value: { services: servicesIn(payload), raw_sha256: digest, ...signalFacts(payload, signal) },
+        value: { services: servicesIn(payload).map((service) => sanitizeTelemetryText(service, { limit: 120 })), raw_sha256: digest, ...facts },
         captured_at: info.mtime.toISOString(),
         provenance: {
           file: relative(root, path),
@@ -154,19 +156,18 @@ function servicesIn(payload) {
   return services.sort();
 }
 
-function summarize(payload, signal) {
+function summarize(payload, signal, facts = signalFacts(payload, signal)) {
   const services = servicesIn(payload);
   const service = services[0] || "an OTLP resource";
-  const facts = signalFacts(payload, signal);
   if (facts.trace) {
     const status = facts.trace.status || "status missing";
     const target = facts.trace.peer_target ? ` to ${facts.trace.peer_target}` : "";
     const error = facts.trace.error ? `: ${facts.trace.error}` : "";
-    return `${service} span ${facts.trace.operation || "operation missing"}${target} reported ${status}${error}.`;
+    return sanitizeTelemetryText(`${service} span ${facts.trace.operation || "operation missing"}${target} reported ${status}${error}.`, { limit: 360 });
   }
-  if (facts.log) return `${service} ${facts.log.severity || "log"}: ${facts.log.message || "message redacted or missing"}.`;
-  if (facts.metric) return `${service} metric ${facts.metric.name || "name missing"}=${facts.metric.value ?? "value missing"}${facts.metric.unit ? ` ${facts.metric.unit}` : ""}.`;
-  return `Observed ${signal} from ${service}.`;
+  if (facts.log) return sanitizeTelemetryText(`${service} ${facts.log.severity || "log"}: ${facts.log.message || "message redacted or missing"}.`, { limit: 360 });
+  if (facts.metric) return sanitizeTelemetryText(`${service} metric ${facts.metric.name || "name missing"}=${facts.metric.value ?? "value missing"}${facts.metric.unit ? ` ${facts.metric.unit}` : ""}.`, { limit: 360 });
+  return sanitizeTelemetryText(`Observed ${signal} from ${service}.`, { limit: 360 });
 }
 
 function signalFacts(payload, signal) {
@@ -177,12 +178,14 @@ function signalFacts(payload, signal) {
 }
 
 function traceFact(payload) {
-  const span = firstSpan(payload);
-  if (!span) return { operation: null, peer_target: null, status: "missing", error: null, observed_at: observedAt(payload) };
+  const candidate = representativeSpan(payload);
+  if (!candidate) return { service: null, operation: null, peer_target: null, status: "missing", error: null, observed_at: observedAt(payload) };
+  const { span, service } = candidate;
   const target = targetFor(span);
   const status = span.status?.code === 2 ? "error" : span.status?.code === 1 ? "ok" : span.status?.code === 0 ? "unset" : "missing";
   const exception = exceptionFor(span);
   return {
+    service: bounded(service, 120),
     operation: bounded(span.name, 160),
     peer_target: bounded(target, 160),
     status,
@@ -192,44 +195,75 @@ function traceFact(payload) {
 }
 
 function logFact(payload) {
-  for (const resource of payload.resourceLogs || []) {
-    for (const scope of resource.scopeLogs || []) {
-      const log = scope.logRecords?.[0];
-      if (!log) continue;
-      return {
-        severity: bounded(log.severityText || log.severityNumber ? String(log.severityText || log.severityNumber) : null, 40),
-        message: bounded(anyValue(log.body), 240),
-        trace_id: bounded(log.traceId, 64),
-        span_id: bounded(log.spanId, 32),
-        observed_at: observedAt(payload)
-      };
-    }
-  }
-  return { severity: null, message: null, trace_id: null, span_id: null, observed_at: observedAt(payload) };
+  const candidate = representativeLog(payload);
+  if (!candidate) return { service: null, severity: null, message: null, trace_id: null, span_id: null, observed_at: observedAt(payload) };
+  const { log, service } = candidate;
+  return {
+    service: bounded(service, 120),
+    severity: bounded(log.severityText || log.severityNumber ? String(log.severityText || log.severityNumber) : null, 40),
+    message: bounded(anyValue(log.body), 240),
+    trace_id: bounded(log.traceId, 64),
+    span_id: bounded(log.spanId, 32),
+    observed_at: observedAt(payload)
+  };
 }
 
 function metricFact(payload) {
-  for (const resource of payload.resourceMetrics || []) {
-    for (const scope of resource.scopeMetrics || []) {
-      const metric = scope.metrics?.[0];
-      if (!metric) continue;
-      const aggregation = ["gauge", "sum", "histogram", "summary", "exponentialHistogram"].find((key) => metric[key]);
-      const point = aggregation ? metric[aggregation]?.dataPoints?.[0] : null;
-      return {
-        name: bounded(metric.name, 160),
-        value: numericValue(point),
-        unit: bounded(metric.unit, 40),
-        aggregation: aggregation || null,
-        observed_at: observedAt(payload)
-      };
-    }
-  }
-  return { name: null, value: null, unit: null, aggregation: null, observed_at: observedAt(payload) };
+  const candidate = representativeMetric(payload);
+  if (!candidate) return { service: null, name: null, value: null, unit: null, aggregation: null, observed_at: observedAt(payload) };
+  const { metric, point, aggregation, service } = candidate;
+  return {
+    service: bounded(service, 120),
+    name: bounded(metric.name, 160),
+    value: numericValue(point),
+    unit: bounded(metric.unit, 40),
+    aggregation: aggregation || null,
+    observed_at: observedAt(payload)
+  };
 }
 
-function firstSpan(payload) {
-  for (const resource of payload.resourceSpans || []) for (const scope of resource.scopeSpans || []) if (scope.spans?.[0]) return scope.spans[0];
-  return null;
+function representativeSpan(payload) {
+  const candidates = [];
+  let index = 0;
+  for (const resource of payload.resourceSpans || []) {
+    const service = attributeValue(resource.resource?.attributes, "service.name");
+    for (const scope of resource.scopeSpans || []) for (const span of scope.spans || []) {
+      const error = span.status?.code === 2 || Boolean(exceptionFor(span));
+      const target = targetFor(span);
+      candidates.push({ span, service, rank: error ? 0 : target ? 1 : 2, index: index++ });
+    }
+  }
+  return candidates.sort((a, b) => a.rank - b.rank || a.index - b.index)[0] || null;
+}
+
+function representativeLog(payload) {
+  const candidates = [];
+  let index = 0;
+  for (const resource of payload.resourceLogs || []) {
+    const service = attributeValue(resource.resource?.attributes, "service.name");
+    for (const scope of resource.scopeLogs || []) for (const log of scope.logRecords || []) {
+      const severity = String(log.severityText || log.severityNumber || "").toUpperCase();
+      const rank = /FATAL|ERROR|17|18|19|20|21|22|23|24/.test(severity) ? 0 : /WARN|13|14|15|16/.test(severity) ? 1 : 2;
+      candidates.push({ log, service, rank, index: index++ });
+    }
+  }
+  return candidates.sort((a, b) => a.rank - b.rank || a.index - b.index)[0] || null;
+}
+
+function representativeMetric(payload) {
+  const candidates = [];
+  let index = 0;
+  for (const resource of payload.resourceMetrics || []) {
+    const service = attributeValue(resource.resource?.attributes, "service.name");
+    for (const scope of resource.scopeMetrics || []) for (const metric of scope.metrics || []) {
+      const aggregation = ["gauge", "sum", "histogram", "summary", "exponentialHistogram"].find((key) => metric[key]);
+      const point = aggregation ? metric[aggregation]?.dataPoints?.find((item) => numericValue(item) != null) : null;
+      if (!metric.name || !point) continue;
+      const rank = /error|fail|unavailable|lag/i.test(metric.name) ? 0 : 1;
+      candidates.push({ metric, point, aggregation, service, rank, index: index++ });
+    }
+  }
+  return candidates.sort((a, b) => a.rank - b.rank || a.index - b.index)[0] || null;
 }
 
 function targetFor(span) {
@@ -259,8 +293,7 @@ function numericValue(point) {
 }
 
 function bounded(value, length) {
-  if (value == null || value === "") return null;
-  return String(value).replace(/[\r\n\t]+/g, " ").slice(0, length);
+  return sanitizeTelemetryText(value, { limit: length });
 }
 
 function observedAt(payload) {
