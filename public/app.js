@@ -27,11 +27,6 @@ import {
 } from "./twin-state.mjs";
 
 const els = Object.fromEntries([...document.querySelectorAll("[id]")].map((element) => [element.id, element]));
-const DETAIL_TABS = [
-  ["metrics", "Metrics"], ["logs", "Logs"], ["traces", "Traces"], ["changes", "Changes"],
-  ["evidence", "Evidence"], ["agent", "Agent"], ["eval", "Eval"], ["repair", "Repair"],
-  ["verify", "Verify"], ["evolve", "Evolve"]
-];
 const IMPACT_SEQUENCE = { checkout: 0, payment: 1, kafka: 2, accounting: 3, fraud: 4 };
 const NODE_BY_ID = new Map(TWIN_NODES.map((node) => [node.id, node]));
 const EDGE_BY_ID = new Map(TWIN_EDGES.map((edge) => [edge.id, edge]));
@@ -320,7 +315,10 @@ function renderCanvas() {
   els["canvas-layers"].innerHTML = renderTwinLayer(frame, "current", true);
   els["compare-handle"].hidden = true;
   els["compare-canvas-range"].hidden = true;
-  setAnnotations(state.mode === "development" ? developmentAnnotations(cursor) : frame.annotations.slice(-2));
+  // Keep one causal cue on the canvas. The full evidence trail remains in the
+  // drawer and timeline, so the diagnosis map can stay readable at a glance.
+  const annotations = state.mode === "development" ? developmentAnnotations(cursor) : frame.annotations;
+  setAnnotations(annotations.length ? [annotations.at(-1)] : []);
   els["twin-canvas"].setAttribute("aria-label", `Incident diagnosis at ${frame.stage.label}`);
 }
 
@@ -570,7 +568,7 @@ function renderAgentCanvas() {
   const conversationMarkup = conversation.length
     ? conversation.map((item) => `<p class="collaboration-message ${item.type === "manager.message.received" ? "is-human" : "is-agent"}"><span>${item.type === "manager.message.received" ? "You" : selectedAgent.label}</span>${escapeHtml(item.summary)}</p>`).join("")
     : `<p class="collaboration-message is-agent"><span>${escapeHtml(selectedAgent.label)}</span>${escapeHtml(managerReply || finding)}</p>`;
-  const quickPrompts = selectedAgent.prompts.map((prompt) => `<button type="submit" form="recovery-command-form" data-recovery-prompt="${escapeHtml(prompt)}">${escapeHtml(prompt)}</button>`).join("");
+  const quickPrompts = selectedAgent.prompts.slice(0, 2).map((prompt) => `<button type="submit" form="recovery-command-form" data-recovery-prompt="${escapeHtml(prompt)}">${escapeHtml(prompt)}</button>`).join("");
   const internalRoles = selectedAgent.roleIds.map((id) => `<span>${escapeHtml(agentLabel(id))}</span>`).join("");
   els["canvas-layers"].innerHTML = `<div class="recovery-console-layout">
     <section class="recovery-diagnosis" aria-label="Current diagnosis">
@@ -585,11 +583,10 @@ function renderAgentCanvas() {
     </section>
     <aside class="recovery-command" aria-label="${escapeHtml(selectedAgent.label)} collaboration panel" aria-live="polite">
       <header class="collaboration-header"><span class="collaboration-avatar is-${escapeHtml(agentNodeTone(selectedAgent.status))}" aria-hidden="true"><i class="ph ph-${escapeHtml(selectedAgent.icon)}"></i><span class="node-status-dot"></span></span><div><span>${escapeHtml(agentStatusLabel(selectedAgent.status))}</span><strong id="collaboration-panel-title" tabindex="-1">${escapeHtml(selectedAgent.label)}</strong><small>${escapeHtml(selectedAgent.responsibility)}</small></div><button type="button" class="collaboration-inspect" data-collaborator-inspect="${escapeHtml(selectedAgent.currentRole)}">Inspect</button></header>
-      <section class="collaboration-finding"><div class="recovery-section-title"><strong>Latest grounded finding</strong><span>${escapeHtml(selectedAgent.currentRole.replaceAll("_", " "))}</span></div><p>${escapeHtml(finding)}</p><div class="collaboration-citations">${citations.map((ref) => `<code>${escapeHtml(ref)}</code>`).join("") || "<span>Insufficient cited evidence</span>"}</div><div class="collaboration-roles" aria-label="Isolated backend roles">${internalRoles}</div></section>
-      <section class="collaboration-prompts"><div class="recovery-section-title"><strong>Quick tasks</strong><span>Scoped to ${escapeHtml(selectedAgent.label)}</span></div><div>${quickPrompts}</div></section>
-      <section class="recovery-work-queue"><div class="recovery-section-title"><strong>Recent activity</strong><span>${activity.length} shown</span></div>${activityMarkup}</section>
-      <section class="recovery-actions"><div class="recovery-section-title"><strong>Available controls</strong><span>Ledger governed</span></div>${actionButtons}</section>
+      <section class="collaboration-finding"><div class="recovery-section-title"><strong>Grounded signal</strong><span>${escapeHtml(selectedAgent.currentRole.replaceAll("_", " "))}</span></div><p>${escapeHtml(finding)}</p><div class="collaboration-citations">${citations.slice(0, 3).map((ref) => `<code>${escapeHtml(ref)}</code>`).join("") || "<span>Insufficient cited evidence</span>"}</div></section>
       <section class="collaboration-thread"><div class="recovery-section-title"><strong>Conversation</strong><span>Manager routed</span></div>${conversationMarkup}</section>
+      <section class="collaboration-prompts"><div class="recovery-section-title"><strong>Suggested prompts</strong><span>Scoped</span></div><div>${quickPrompts}</div></section>
+      <details class="recovery-context"><summary><span>Evidence, activity &amp; controls</span><small>${activity.length} updates · ${control.actions.filter((action) => allowedActionIds.has(action.id)).length} actions</small></summary><div class="recovery-context-body"><div class="collaboration-roles" aria-label="Isolated backend roles">${internalRoles}</div><section class="recovery-work-queue"><div class="recovery-section-title"><strong>Recent activity</strong></div>${activityMarkup}</section><section class="recovery-actions"><div class="recovery-section-title"><strong>Available controls</strong><span>Ledger governed</span></div>${actionButtons}</section></div></details>
       <form class="recovery-command-form" id="recovery-command-form">
         <label for="recovery-command-input">Ask ${escapeHtml(selectedAgent.label)} about this incident</label>
         <div><input id="recovery-command-input" name="message" type="text" maxlength="2000" autocomplete="off" value="${escapeHtml(recoveryDrafts.get(selectedAgent.id) || "")}" placeholder="Ask ${escapeHtml(selectedAgent.label)} about this incident…"><button class="button approve" type="submit" data-recovery-command-send ${busy ? "disabled" : ""}>Send</button></div>
@@ -925,8 +922,27 @@ function renderDrawer() {
   els["drawer-kind"].textContent = meta.kind;
   els["drawer-title"].textContent = meta.title;
   els["drawer-subtitle"].textContent = meta.subtitle;
-  els["drawer-tabs"].innerHTML = DETAIL_TABS.map(([id, label]) => `<button class="drawer-tab" id="tab-${id}" type="button" role="tab" data-tab="${id}" aria-selected="${activeTab === id}" aria-controls="drawer-content">${label}</button>`).join("");
+  const tabs = drawerTabsForSelection(selected);
+  if (!tabs.some(([id]) => id === activeTab)) activeTab = tabs[0]?.[0] || "evidence";
+  els["drawer-tabs"].innerHTML = tabs.map(([id, label]) => `<button class="drawer-tab" id="tab-${id}" type="button" role="tab" data-tab="${id}" aria-selected="${activeTab === id}" aria-controls="drawer-content">${label}</button>`).join("");
   els["drawer-content"].innerHTML = drawerContent(activeTab);
+}
+
+function drawerTabsForSelection(focus) {
+  if (focus?.type === "node" && agentControl().graph.nodes.some((node) => node.id === focus.id)) return [["agent", "Brief"]];
+  if (focus?.type === "agent-edge") return [["agent", "Handoff"]];
+  if (focus?.type === "node") {
+    if (focus.id === "deployment") return [["changes", "Change"], ["evidence", "Evidence"], ["agent", "Reasoning"]];
+    if (focus.id === "agent") return [["agent", "Reasoning"], ["evidence", "Evidence"]];
+    if (focus.id === "evaluator") return [["eval", "Evaluation"], ["evidence", "Evidence"]];
+    if (focus.id === "ledger") return [["evidence", "Evidence"], ["evolve", "Learning"]];
+    const tabs = [["metrics", "Metrics"], ["logs", "Logs"], ["traces", "Traces"], ["evidence", "Evidence"]];
+    if (mode === "replay") tabs.push(["agent", "Reasoning"], ["eval", "Evaluation"]);
+    return tabs;
+  }
+  if (["edge", "annotation"].includes(focus?.type)) return [["evidence", "Evidence"], ["agent", "Reasoning"], ["eval", "Evaluation"]];
+  if (focus?.type === "stage") return [[tabForStage(cursor), "Stage detail"], ["evidence", "Evidence"]];
+  return [["evidence", "Evidence"], ["agent", "Reasoning"], ["eval", "Evaluation"], ["repair", "Recovery"], ["verify", "Verification"], ["evolve", "Learning"]];
 }
 
 function selectionMeta(focus) {
@@ -961,7 +977,7 @@ function drawerContent(tab) {
   if (["metrics", "logs", "traces", "changes", "evidence"].includes(tab)) {
     const kinds = { metrics: ["metric"], logs: ["log"], traces: ["trace"], changes: ["deploy", "commit"], evidence: null }[tab];
     const records = kinds ? focusedEvidence.filter((item) => kinds.includes(item.kind)) : focusedEvidence;
-    const recent = [...records].sort((a, b) => String(b.at || "").localeCompare(String(a.at || ""))).slice(0, 16);
+    const recent = [...records].sort((a, b) => String(b.at || "").localeCompare(String(a.at || ""))).slice(0, 6);
     return componentIntro + (recent.length ? recent.map(renderEvidenceRecord).join("") : emptyDetail(`No component-scoped ${tab} evidence is available in the current authoritative window.`));
   }
   if (tab === "agent") {
@@ -982,12 +998,12 @@ function renderAgentOperationDetail(id) {
   const control = agentControl();
   const node = control.graph.nodes.find((item) => item.id === id);
   if (!node) return emptyDetail("Agent operation detail is unavailable.");
-  const activity = control.activity.filter((item) => item.agent_id === id);
+  const activity = control.activity.filter((item) => item.agent_id === id).slice(-4).reverse();
   const proposals = (control.orchestration?.proposals || []).filter((item) => item.agent_id === node.role);
   const manifest = node.manifest;
-  return `<div class="detail-intro"><strong>${escapeHtml(agentStatusLabel(node.status))}</strong><span>${escapeHtml(node.detail)}. State is reconstructed from ledger sequence ${control.last_sequence}.</span></div>
-    ${manifest ? `<article class="detail-record"><header><span>${escapeHtml(manifest.plane)}</span><span>${escapeHtml(manifest.mode)}</span></header><h3>Role boundary</h3><p>May emit: ${escapeHtml(manifest.emits.join(", "))}</p><div class="citation-list">${manifest.tools.map((tool) => `<span class="citation">${escapeHtml(tool)}</span>`).join("") || '<span class="citation">No direct tools</span>'}</div><pre class="payload">${escapeHtml(JSON.stringify(manifest, null, 2))}</pre></article>` : `<article class="detail-record"><h3>System-owned boundary</h3><p>This component is deterministic infrastructure, not an LLM role.</p></article>`}
-    ${proposals.map((item) => `<article class="detail-record is-accepted"><header><span>Harness validated</span><span>sequence ${item.sequence}</span></header><h3>${escapeHtml(item.type)}</h3><p>${escapeHtml(item.model)} · ${escapeHtml(item.agent_version)}</p><div class="citation-list"><span class="citation">${escapeHtml(item.content_sha256.slice(0, 12))}</span>${item.evidence_refs.map((ref) => `<span class="citation">${escapeHtml(ref)}</span>`).join("")}</div><pre class="payload">${escapeHtml(JSON.stringify({ prompt_hash: item.prompt_hash, budget: item.budget, parent_event_ids: item.parent_event_ids }, null, 2))}</pre></article>`).join("")}
+  return `<div class="detail-intro"><strong>${escapeHtml(agentStatusLabel(node.status))}</strong><span>${escapeHtml(node.detail)} · ledger sequence ${control.last_sequence}.</span></div>
+    ${manifest ? `<article class="detail-record"><header><span>${escapeHtml(manifest.plane)}</span><span>${escapeHtml(manifest.mode)}</span></header><h3>Role boundary</h3><p>Can emit ${escapeHtml(manifest.emits.join(", "))}.</p><div class="citation-list">${manifest.tools.map((tool) => `<span class="citation">${escapeHtml(tool)}</span>`).join("") || '<span class="citation">No direct tools</span>'}</div><details class="record-disclosure"><summary>Manifest and safeguards</summary><pre class="payload">${escapeHtml(JSON.stringify(manifest, null, 2))}</pre></details></article>` : `<article class="detail-record"><h3>System-owned boundary</h3><p>This component is deterministic infrastructure, not an LLM role.</p></article>`}
+    ${proposals.slice(-2).map((item) => `<article class="detail-record is-accepted"><header><span>Harness validated</span><span>sequence ${item.sequence}</span></header><h3>${escapeHtml(item.type)}</h3><p>${escapeHtml(item.model)} · ${escapeHtml(item.agent_version)}</p><div class="citation-list"><span class="citation">${escapeHtml(item.content_sha256.slice(0, 12))}</span>${item.evidence_refs.map((ref) => `<span class="citation">${escapeHtml(ref)}</span>`).join("")}</div><details class="record-disclosure"><summary>Proposal metadata</summary><pre class="payload">${escapeHtml(JSON.stringify({ prompt_hash: item.prompt_hash, budget: item.budget, parent_event_ids: item.parent_event_ids }, null, 2))}</pre></details></article>`).join("")}
     ${activity.length ? activity.map((item) => `<article class="detail-record"><header><span>${escapeHtml(item.actor)}</span><span>sequence ${item.sequence}</span></header><h3>${escapeHtml(item.type)}</h3><p>${escapeHtml(item.summary)}</p>${item.evidence_refs.length ? `<div class="citation-list">${item.evidence_refs.map((ref) => `<span class="citation">${escapeHtml(ref)}</span>`).join("")}</div>` : ""}</article>`).join("") : emptyDetail("This role has not emitted an event in the current run.")}`;
 }
 
@@ -1003,9 +1019,9 @@ function renderEvidenceRecord(item) {
     <h3>${escapeHtml(item.title)}</h3>
     <p>${escapeHtml(item.fact)}</p>
     <div class="citation-list"><span class="citation">${escapeHtml(item.entity)}</span><span class="citation">${escapeHtml(formatTime(item.at))}</span></div>
-    ${renderTelemetryPreview(item)}
+    <details class="record-disclosure"><summary>Inspect signal &amp; provenance</summary>${renderTelemetryPreview(item)}
     ${item.provenance ? `<div class="telemetry-provenance"><span>${escapeHtml(item.provenance.file || "OTLP capture")}</span><span>bytes ${escapeHtml(item.provenance.byte_start ?? "n/a")}–${escapeHtml(item.provenance.byte_end ?? "n/a")}</span><span>sha256 ${escapeHtml(String(item.provenance.sha256 || "").slice(0, 16))}</span></div>` : ""}
-    ${item.value ? `<pre class="payload">${escapeHtml(JSON.stringify(item.value, null, 2))}</pre>` : ""}
+    ${item.value ? `<pre class="payload">${escapeHtml(JSON.stringify(item.value, null, 2))}</pre>` : ""}</details>
   </article>`;
 }
 
@@ -1048,7 +1064,7 @@ function renderEventRecord(event) {
     <p>${escapeHtml(presentation.copy)}</p>
     ${presentation.score ? `<div class="citation-list"><span class="citation">score ${presentation.score}</span></div>` : ""}
     ${event.evidence_refs.length ? `<div class="citation-list">${event.evidence_refs.map((id) => `<span class="citation">${escapeHtml(id)}</span>`).join("")}</div>` : ""}
-    <pre class="payload">${escapeHtml(JSON.stringify(event.payload, null, 2))}</pre>
+    <details class="record-disclosure"><summary>Ledger payload</summary><pre class="payload">${escapeHtml(JSON.stringify(event.payload, null, 2))}</pre></details>
   </article>`;
 }
 
@@ -1732,15 +1748,13 @@ function sourceComponentCatalog() {
 
 function renderSourceComponentContext(context) {
   const { node, profile, incoming, outgoing, evidence, status, source } = context;
-  const latest = [...evidence].sort((a, b) => String(b.at || "").localeCompare(String(a.at || "")))[0];
   const dependencyGroup = (label, nodes, empty) => `<div class="component-dependencies"><span>${label}</span><div>${nodes.length ? nodes.map((item) => `<button type="button" data-focus-entity="${escapeHtml(item.id)}">${escapeHtml(item.label)}</button>`).join("") : `<small>${empty}</small>`}</div></div>`;
   return `<section class="component-context is-${escapeHtml(status)}">
     <header><div><span>Business capability</span><strong>${escapeHtml(profile.capability)}</strong></div><span class="component-health">${escapeHtml(sourceStatusLabel(status, source.status))}</span></header>
-    <div class="component-runtime"><code>${escapeHtml(`service.name=${node.id}`)}</code>${profile.language ? `<span>${escapeHtml(profile.language)}</span>` : ""}${profile.signals.map((signal) => `<span>${escapeHtml(signal)}</span>`).join("")}</div>
-    <dl><div><dt>Type</dt><dd>${escapeHtml(kindLabel(node.kind))}</dd></div><div><dt>Evidence</dt><dd>${evidence.length} OTLP record${evidence.length === 1 ? "" : "s"}</dd></div><div><dt>Latest</dt><dd>${escapeHtml(latest ? formatTime(latest.at) : "No scoped record")}</dd></div></dl>
+    <div class="component-runtime"><code>${escapeHtml(`service.name=${node.id}`)}</code>${profile.language ? `<span>${escapeHtml(profile.language)}</span>` : ""}<span>${evidence.length} cited record${evidence.length === 1 ? "" : "s"}</span></div>
     ${dependencyGroup("Upstream", incoming, "Observed entry/root")}
     ${dependencyGroup("Downstream", outgoing, "No downstream edge in this window")}
-    <p>These records and dependency endpoints are available to the investigation agents with immutable IDs, hashes, and capture offsets.</p>
+    <details class="component-evidence-note"><summary>Evidence availability</summary><p>Records and dependency endpoints retain immutable IDs, hashes, and capture offsets for the investigation agents.</p></details>
   </section>`;
 }
 
@@ -1876,10 +1890,14 @@ function collaboratorCitations(collaborator, control) {
 function collaboratorEdgePath(from, to) {
   const start = { x: from.x * 10, y: from.y * 5.2 - 20 };
   const end = { x: to.x * 10, y: to.y * 5.2 - 20 };
-  if (Math.abs(start.x - end.x) < 1) return `M ${start.x} ${start.y + 28} L ${end.x} ${end.y - 28}`;
-  if (Math.abs(start.y - end.y) < 1) return `M ${start.x + 28} ${start.y} L ${end.x - 28} ${end.y}`;
-  const midpoint = (start.x + end.x) / 2;
-  return `M ${start.x + 18} ${start.y - 12} C ${midpoint} ${start.y - 12} ${midpoint} ${end.y + 12} ${end.x - 18} ${end.y + 12}`;
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  if (Math.abs(dx) < 1) return `M ${start.x} ${start.y + Math.sign(dy || 1) * 31} C ${start.x} ${start.y + dy * .42} ${end.x} ${end.y - dy * .42} ${end.x} ${end.y - Math.sign(dy || 1) * 31}`;
+  const direction = Math.sign(dx);
+  const xOffset = Math.min(108, Math.max(54, Math.abs(dx) * .38));
+  const startX = start.x + direction * 31;
+  const endX = end.x - direction * 31;
+  return `M ${startX} ${start.y} C ${startX + direction * xOffset} ${start.y}, ${endX - direction * xOffset} ${end.y}, ${endX} ${end.y}`;
 }
 function recoveryActionIcon(id) { return ({ advance: "play", verify_recovery: "shield-check", review_recovery: "user-focus", review_learning: "flask", delegate_task: "paper-plane-tilt", review_pr: "git-pull-request", approve_pr_review: "check-circle", draft_jira: "ticket", approve_jira_draft: "check-square" })[id] || "arrow-right"; }
 function recoveryActionReply(id) { return ({ advance: "The Manager delegated the next evidence-grounded step.", verify_recovery: "Verification monitoring is active.", delegate_task: "The diagnosis task was recorded in the immutable ledger.", review_pr: "A cited PR review draft is ready for human review; GitHub was not mutated.", approve_pr_review: "The internal PR review is approved and ready for a configured integration.", draft_jira: "A cited Jira ticket draft is ready for human review; Jira was not mutated.", approve_jira_draft: "The Jira draft is approved and ready for a configured integration." })[id] || "The recovery control state was updated."; }
