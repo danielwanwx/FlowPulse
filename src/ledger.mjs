@@ -27,6 +27,7 @@ export class Ledger {
         correlation_id TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS events_run_sequence ON events(run_id, sequence);
+      CREATE INDEX IF NOT EXISTS events_incident_sequence ON events(incident_id, sequence);
       CREATE TRIGGER IF NOT EXISTS events_no_update
       BEFORE UPDATE ON events BEGIN SELECT RAISE(ABORT, 'FlowPulse ledger is append-only'); END;
       CREATE TRIGGER IF NOT EXISTS events_no_delete
@@ -114,6 +115,10 @@ export class Ledger {
 
   list(runId) {
     return this.query(`SELECT * FROM events WHERE run_id=${sqlValue(runId)} ORDER BY sequence;`).map(decode);
+  }
+
+  listIncident(incidentId) {
+    return this.query(`SELECT * FROM events WHERE incident_id=${sqlValue(incidentId)} ORDER BY sequence;`).map(decode);
   }
 
   latestRun(incidentId) {

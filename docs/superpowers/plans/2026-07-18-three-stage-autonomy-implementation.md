@@ -200,14 +200,13 @@ runtime or screen.
 
 Files/functions:
 
-- Add `src/autonomy-policy.mjs` with:
-  - `resolvePreauthorization({ registry, environment, contract })`;
-  - `validatePreauthorizationEnvelope(envelope, contract, bindings, now)`;
-  - `preauthorizationClaimId({ incidentId, contractSha256, envelopeSha256 })`;
-  - `deriveAuthorityEvidenceFromLedger({ ledger_events, snapshot_manifest, incident_id, run_id })`;
-  - `evaluateAutonomyDecision({ ..., derived_authority })`;
-  - `buildAutonomyDecisionEvent({ decision, derived_authority })`;
-  - bounded factor/outcome/reason enums.
+- Add `src/autonomy-policy.mjs` with a `TrustedAuthorityProvider` and
+  `FrozenAuthoritySnapshotStore`. Its only public decision selector is the
+  server-resolved `{ run_id, incident_id, intent_id }`; the provider itself
+  reads the actual ledger, frozen snapshot, code-owned registry, freshness,
+  and incident locks. Raw ledger rows, manifests, envelopes, authority objects,
+  risk, source state, and preauthorization references are not request/model/UI
+  inputs. The provider returns the v1 decision plus canonical decision event.
 - Extend `src/ledger.mjs` only with the smallest incident-lineage query and
   atomic `appendIfAbsent` claim use required for cross-run lock and single-use
   preauthorization. It must not rewrite historical rows.
@@ -218,14 +217,18 @@ Files/functions:
 
 Data contract/events:
 
-- `evaluateAutonomyDecision` returns the v1 decision schema and one canonical
-  factor result for every hard gate.
-- The server derives a branded authority object only from the decoded append-only
-  ledger stream and frozen snapshot manifest. It binds the evaluator and
+- The trusted provider returns the v1 decision schema and one canonical factor
+  result for every hard gate.
+- The provider derives authority only from the actual decoded append-only ledger
+  stream and frozen snapshot store. It binds the evaluator and
   deterministic-gate event IDs, sequences, payload hashes, manifest hash, and
   selected evidence record hashes/sources/modes. Request/model/UI values cannot
   provide or deserialize this authority object; confidence alone cannot satisfy
   evidence completeness.
+- The compact legacy `DevelopmentRuntime` evaluator rows are non-authoritative
+  for this provider. Slice 2 must emit the full strict evaluator and
+  proposed-action-contract binding before any runtime path can request a
+  preauthorized decision; checkout remains an Owner-Gated medium-risk path.
 - `autonomy.decision.recorded` appends once after deterministic diagnosis
   acceptance and before any action request.
 - A decision binds `envelope_sha256`, `contract_sha256`, `incident_id`,
