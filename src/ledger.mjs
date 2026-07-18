@@ -1,7 +1,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 const sqlValue = (value) => value == null ? "NULL" : `'${String(value).replaceAll("'", "''")}'`;
 
@@ -124,6 +124,7 @@ export class Ledger {
 
 function decode(row) {
   if (!row) return null;
+  const payload = JSON.parse(row.payload_json);
   return {
     sequence: row.sequence,
     id: row.id,
@@ -133,9 +134,22 @@ function decode(row) {
     offset_ms: row.offset_ms,
     type: row.type,
     actor: row.actor,
-    payload: JSON.parse(row.payload_json),
+    payload,
+    payload_sha256: sha256Canonical(payload),
     evidence_refs: JSON.parse(row.evidence_refs_json),
     parent_id: row.parent_id,
     correlation_id: row.correlation_id
   };
+}
+
+function sha256Canonical(value) {
+  return createHash("sha256").update(canonicalJson(value), "utf8").digest("hex");
+}
+
+function canonicalJson(value) {
+  if (value === null || typeof value === "boolean" || typeof value === "string") return JSON.stringify(value);
+  if (typeof value === "number") return Number.isFinite(value) ? JSON.stringify(value) : "null";
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (!value || typeof value !== "object") return "null";
+  return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
 }

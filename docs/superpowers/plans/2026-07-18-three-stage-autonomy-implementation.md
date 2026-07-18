@@ -204,8 +204,9 @@ Files/functions:
   - `resolvePreauthorization({ registry, environment, contract })`;
   - `validatePreauthorizationEnvelope(envelope, contract, bindings, now)`;
   - `preauthorizationClaimId({ incidentId, contractSha256, envelopeSha256 })`;
-  - `evaluateAutonomyDecision(input)`;
-  - `buildAutonomyDecisionEvent(decision)`;
+  - `deriveAuthorityEvidenceFromLedger({ ledger_events, snapshot_manifest, incident_id, run_id })`;
+  - `evaluateAutonomyDecision({ ..., derived_authority })`;
+  - `buildAutonomyDecisionEvent({ decision, derived_authority })`;
   - bounded factor/outcome/reason enums.
 - Extend `src/ledger.mjs` only with the smallest incident-lineage query and
   atomic `appendIfAbsent` claim use required for cross-run lock and single-use
@@ -219,8 +220,12 @@ Data contract/events:
 
 - `evaluateAutonomyDecision` returns the v1 decision schema and one canonical
   factor result for every hard gate.
-- Evaluator acceptance and deterministic Diagnosis Gate are explicit inputs;
-  confidence alone cannot satisfy evidence completeness.
+- The server derives a branded authority object only from the decoded append-only
+  ledger stream and frozen snapshot manifest. It binds the evaluator and
+  deterministic-gate event IDs, sequences, payload hashes, manifest hash, and
+  selected evidence record hashes/sources/modes. Request/model/UI values cannot
+  provide or deserialize this authority object; confidence alone cannot satisfy
+  evidence completeness.
 - `autonomy.decision.recorded` appends once after deterministic diagnosis
   acceptance and before any action request.
 - A decision binds `envelope_sha256`, `contract_sha256`, `incident_id`,

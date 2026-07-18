@@ -9,6 +9,7 @@ const HEX_64 = /^[a-f0-9]{64}$/;
 const PREFIXED_SHA_256 = /^sha256:[a-f0-9]{64}$/;
 const MAX_EVENT_BYTES = 12 * 1024;
 const MAX_REFS = 32;
+const DERIVED_AUTHORITY = Symbol("flowpulse.derived-authority");
 
 export class AutonomyPolicyError extends Error {
   constructor(code, fieldPath = null) {
@@ -29,18 +30,41 @@ export function canonicalDecisionHash(decision) {
   return sha256Canonical(unsigned);
 }
 
-export function buildAuthorityGateBinding(input) {
-  assertExactObject(input, ["event_id", "event_type", "snapshot_sha256", "evidence_refs"], "authority_gate", "authority_evidence_invalid");
-  const eventId = requireText(input.event_id, "authority_gate.event_id", 160, "authority_evidence_invalid");
-  const eventType = requireText(input.event_type, "authority_gate.event_type", 80, "authority_evidence_invalid");
-  const snapshotSha256 = requireHash(input.snapshot_sha256, "authority_gate.snapshot_sha256", "authority_evidence_invalid");
-  const evidenceRefs = normalizedRefArray(input.evidence_refs, "authority_gate.evidence_refs", MAX_REFS, "authority_evidence_invalid", true);
-  return freezeClone({
-    event_id: eventId,
-    event_type: eventType,
-    event_sha256: sha256Canonical({ event_id: eventId, event_type: eventType, snapshot_sha256: snapshotSha256, evidence_refs: evidenceRefs }),
-    snapshot_sha256: snapshotSha256,
-    evidence_refs: evidenceRefs
+export function deriveAuthorityEvidenceFromLedger(input) {
+  // This boundary is invoked by the server from Ledger.list(runId) and a
+  // frozen snapshot manifest. The branded result deliberately cannot be
+  // recreated from request, model, or UI JSON.
+  assertExactObject(input, ["ledger_events", "snapshot_manifest", "incident_id", "run_id"], "authority_context", "authority_evidence_invalid");
+  const incidentId = requireText(input.incident_id, "authority_context.incident_id", 160, "authority_evidence_invalid");
+  const runId = requireText(input.run_id, "authority_context.run_id", 160, "authority_evidence_invalid");
+  const snapshot = normalizeSnapshotManifest(input.snapshot_manifest);
+  const events = normalizeDecodedLedgerStream(input.ledger_events, incidentId, runId);
+  const evaluatorEvents = events.filter((event) => event.type === "evaluation.accepted");
+  const diagnosisEvents = events.filter((event) => event.type === "diagnosis.gate.passed");
+  if (evaluatorEvents.length !== 1 || diagnosisEvents.length !== 1) fail("authority_gate_event_conflict", "authority_context.ledger_events");
+
+  const evaluator = evaluatorEvents[0];
+  const diagnosis = diagnosisEvents[0];
+  if (evaluator.sequence >= diagnosis.sequence) fail("authority_gate_order_invalid", "authority_context.ledger_events");
+  const diagnosisPayload = normalizeDiagnosisGatePayload(diagnosis.payload, snapshot);
+  const evaluatorPayload = normalizeEvaluatorGatePayload(evaluator.payload);
+  if (evaluatorPayload.hypothesis_id !== diagnosisPayload.hypothesis_id) fail("authority_gate_hypothesis_mismatch", "authority_context.ledger_events");
+  if (!sameSet(evaluator.evidence_refs, diagnosisPayload.evidence_refs) || !sameSet(diagnosis.evidence_refs, diagnosisPayload.evidence_refs)) {
+    fail("authority_gate_evidence_mismatch", "authority_context.ledger_events");
+  }
+  assertEvidenceMembership(diagnosisPayload.evidence_refs, snapshot);
+
+  return freezeDerivedAuthority({
+    schema_version: "flowpulse.authority-evidence.v1",
+    snapshot_id: snapshot.id,
+    snapshot_sha256: snapshot.content_sha256,
+    snapshot_mode: snapshot.mode,
+    snapshot_manifest_sha256: snapshot.manifest_sha256,
+    evidence_refs: diagnosisPayload.evidence_refs,
+    evidence_records: diagnosisPayload.evidence_refs.map((id) => snapshot.records.find((record) => record.id === id)),
+    conflict_status: "none",
+    deterministic_gate: gateBindingFromDecodedEvent(diagnosis),
+    evaluator_gate: gateBindingFromDecodedEvent(evaluator)
   });
 }
 
@@ -118,13 +142,13 @@ export function hasFailureLock({ events, incident_id, contract_sha256, target })
 export function evaluateAutonomyDecision(input) {
   assertExactObject(input, [
     "registry", "contract", "environment", "incident_id", "run_id", "snapshot_sha256", "target", "now", "impact", "source",
-    "authority_evidence", "advisory", "action", "notification", "truth_mode", "failure_lock_events"
+    "derived_authority", "advisory", "action", "notification", "truth_mode", "failure_lock_events"
   ], "input", "autonomy_input_invalid");
   const binding = buildBinding(input);
   const contract = freezeClone(input.contract);
   const impact = normalizeImpact(input.impact);
   const source = normalizeSource(input.source);
-  const authorityEvidence = normalizeAuthorityEvidence(input.authority_evidence, binding.snapshot_sha256);
+  const authorityEvidence = requireDerivedAuthority(input.derived_authority, binding);
   const advisory = normalizeAdvisory(input.advisory, authorityEvidence.evidence_refs);
   const action = normalizeAction(input.action);
   const notification = normalizeNotification(input.notification);
@@ -185,6 +209,7 @@ export function evaluateAutonomyDecision(input) {
     preauthorization_id: preauthorization?.preauthorization_id ?? null,
     preauthorization_error_code: preauthorizationError?.code ?? null,
     authority_evidence: authorityEvidence,
+    authority_evidence_sha256: sha256Canonical(authorityEvidence),
     advisory,
     source,
     action,
@@ -208,10 +233,12 @@ export function evaluateAutonomyDecision(input) {
 }
 
 export function revalidateExecutionAuthority(input) {
-  assertExactObject(input, ["decision", "registry", "now", "source", "failure_lock_events", "executor_enabled"], "revalidation", "revalidation_input_invalid");
+  assertExactObject(input, ["decision", "registry", "now", "source", "failure_lock_events", "executor_enabled", "derived_authority"], "revalidation", "revalidation_input_invalid");
   const decision = assertCanonicalDecision(input.decision);
+  const authorityEvidence = requireDerivedAuthority(input.derived_authority, decision.binding);
   const source = normalizeSource(input.source);
   const reasons = [];
+  if (canonicalJson(authorityEvidence) !== canonicalJson(decision.authority_evidence)) reasons.push("authority_provenance_changed");
   try {
     const envelope = resolvePreauthorization({ registry: input.registry, environment: decision.environment, contract: decision.contract });
     const current = validatePreauthorizationEnvelope(envelope, decision.contract, decision.binding, input.now);
@@ -236,8 +263,11 @@ export function revalidateExecutionAuthority(input) {
   return freezeClone({ schema_version: AUTONOMY_SCHEMA_VERSION, passed: reasons.length === 0, reason_codes: unique(reasons), decision_sha256: decision.decision_sha256 });
 }
 
-export function buildAutonomyDecisionEvent(decision) {
-  const canonical = assertCanonicalDecision(decision);
+export function buildAutonomyDecisionEvent(input) {
+  assertExactObject(input, ["decision", "derived_authority"], "decision_event", "decision_event_input_invalid");
+  const canonical = assertCanonicalDecision(input.decision);
+  const authorityEvidence = requireDerivedAuthority(input.derived_authority, canonical.binding);
+  if (canonicalJson(authorityEvidence) !== canonicalJson(canonical.authority_evidence)) fail("authority_provenance_changed", "derived_authority");
   const payload = {
     schema_version: AUTONOMY_SCHEMA_VERSION,
     decision_sha256: canonical.decision_sha256,
@@ -252,6 +282,7 @@ export function buildAutonomyDecisionEvent(decision) {
     envelope_sha256: canonical.envelope_sha256,
     policy_sha256: canonical.policy_sha256,
     preauthorization_id: canonical.preauthorization_id,
+    authority_evidence_sha256: canonical.authority_evidence_sha256,
     authority_evidence: safeAuthorityEvidence(canonical.authority_evidence),
     factor_results: canonical.factor_results,
     reason_codes: canonical.reason_codes,
@@ -274,8 +305,10 @@ export function buildAutonomyDecisionEvent(decision) {
 }
 
 export function buildPreauthorizationConsumptionEvent(input) {
-  assertExactObject(input, ["decision"], "consumption", "consumption_input_invalid");
+  assertExactObject(input, ["decision", "derived_authority"], "consumption", "consumption_input_invalid");
   const decision = assertCanonicalDecision(input.decision);
+  const authorityEvidence = requireDerivedAuthority(input.derived_authority, decision.binding);
+  if (canonicalJson(authorityEvidence) !== canonicalJson(decision.authority_evidence)) fail("authority_provenance_changed", "derived_authority");
   if (decision.outcome !== "auto_execute_pre_authorized" || !decision.preauthorization_envelope) fail("consumption_decision_not_eligible", "decision.outcome");
   const claimId = preauthorizationClaimId({
     incident_id: decision.incident_id,
@@ -292,6 +325,10 @@ export function buildPreauthorizationConsumptionEvent(input) {
     envelope_sha256: decision.envelope_sha256,
     contract_sha256: decision.contract_sha256,
     policy_sha256: decision.policy_sha256,
+    authority_evidence_sha256: decision.authority_evidence_sha256,
+    snapshot_manifest_sha256: decision.authority_evidence.snapshot_manifest_sha256,
+    evaluator_gate: decision.authority_evidence.evaluator_gate,
+    deterministic_gate: decision.authority_evidence.deterministic_gate,
     snapshot_sha256: decision.snapshot_sha256,
     incident_id: decision.incident_id,
     run_id: decision.run_id,
@@ -344,7 +381,7 @@ function assertCanonicalDecision(value) {
   assertExactObject(value, [
     "schema_version", "decided_at", "impact", "risk_class", "outcome", "human_gate", "incident_id", "run_id", "environment", "target", "snapshot_sha256",
     "binding", "binding_sha256", "contract", "contract_sha256", "preauthorization_envelope", "envelope_sha256", "policy_sha256", "preauthorization_id",
-    "preauthorization_error_code", "authority_evidence", "advisory", "source", "action", "notification", "truth_mode", "failure_lock_state", "factor_results",
+    "preauthorization_error_code", "authority_evidence", "authority_evidence_sha256", "advisory", "source", "action", "notification", "truth_mode", "failure_lock_state", "factor_results",
     "reason_codes", "evidence_refs", "execution", "action_event_type", "legacy_detail_status", "decision_sha256"
   ], "decision", "decision_schema_invalid");
   if (value.schema_version !== AUTONOMY_SCHEMA_VERSION) fail("decision_schema_invalid", "decision.schema_version");
@@ -359,6 +396,7 @@ function assertCanonicalDecision(value) {
   const impact = normalizeImpact(value.impact);
   const source = normalizeSource(value.source);
   const authorityEvidence = normalizeAuthorityEvidence(value.authority_evidence, binding.snapshot_sha256);
+  if (sha256Canonical(authorityEvidence) !== value.authority_evidence_sha256) fail("decision_authority_evidence_hash_mismatch", "decision.authority_evidence_sha256");
   const advisory = normalizeAdvisory(value.advisory, authorityEvidence.evidence_refs);
   const action = normalizeAction(value.action);
   const notification = normalizeNotification(value.notification);
@@ -442,14 +480,19 @@ function inspectFailureLockState({ events, incident_id, contract_sha256, target 
     const eventIncidentId = event.incident_id ?? event.incidentId;
     const touchesIncident = eventIncidentId === incident_id || payload?.incident_id === incident_id;
     if (!touchesIncident) continue;
-    if (!isPlainObject(payload)) return freezeClone({ status: "unavailable", lock_key: expectedKey });
-    const maybeRelated = payload.incident_id === incident_id && (
-      payload.contract_sha256 === contract_sha256 || payload.target === target ||
-      payload.contract_sha256 == null || payload.target == null || payload.lock_key == null
-    );
-    if (!maybeRelated) continue;
     try {
+      assertExactObject(event, ["sequence", "id", "run_id", "incident_id", "recorded_at", "offset_ms", "type", "actor", "payload", "payload_sha256", "evidence_refs", "parent_id", "correlation_id"], "failure_lock.event", "failure_lock_invalid");
+      requireText(eventIncidentId, "failure_lock.incident_id", 160, "failure_lock_invalid");
+      requireText(event.run_id, "failure_lock.run_id", 160, "failure_lock_invalid");
+      requireText(event.id, "failure_lock.id", 160, "failure_lock_invalid");
+      parseTimestamp(event.recorded_at, "failure_lock.recorded_at");
+      if (!Number.isInteger(event.sequence) || event.sequence < 1 || !Number.isInteger(event.offset_ms)) fail("failure_lock_invalid", "failure_lock.sequence");
+      requireText(event.actor, "failure_lock.actor", 160, "failure_lock_invalid");
+      normalizedRefArray(event.evidence_refs, "failure_lock.evidence_refs", MAX_REFS, "failure_lock_invalid", false);
+      if (!(event.parent_id === null || typeof event.parent_id === "string")) fail("failure_lock_invalid", "failure_lock.parent_id");
+      requireText(event.correlation_id, "failure_lock.correlation_id", 160, "failure_lock_invalid");
       assertExactObject(payload, ["schema_version", "lock_key", "incident_id", "contract_sha256", "target", "binding_sha256", "decision_sha256", "failed_event_ref", "reason_code"], "failure_lock.payload", "failure_lock_invalid");
+      if (requireHash(event.payload_sha256, "failure_lock.payload_sha256", "failure_lock_invalid") !== sha256Canonical(payload)) fail("failure_lock_invalid", "failure_lock.payload_sha256");
       if (payload.schema_version !== AUTONOMY_SCHEMA_VERSION || eventIncidentId !== payload.incident_id) fail("failure_lock_invalid", "failure_lock.payload");
       requireText(payload.incident_id, "failure_lock.incident_id", 160, "failure_lock_invalid");
       requireHash(payload.contract_sha256, "failure_lock.contract_sha256", "failure_lock_invalid");
@@ -477,28 +520,165 @@ function normalizeFailureLockState(value, binding, contractHash) {
   return freezeClone(value);
 }
 
-function normalizeAuthorityEvidence(value, snapshotHash) {
-  assertExactObject(value, ["snapshot_sha256", "evidence_refs", "conflict_status", "deterministic_gate", "evaluator_gate"], "authority_evidence", "authority_evidence_invalid");
-  if (requireHash(value.snapshot_sha256, "authority_evidence.snapshot_sha256", "authority_evidence_invalid") !== snapshotHash) fail("authority_snapshot_mismatch", "authority_evidence.snapshot_sha256");
-  const refs = normalizedRefArray(value.evidence_refs, "authority_evidence.evidence_refs", MAX_REFS, "authority_evidence_invalid", true);
-  const deterministicGate = normalizeGate(value.deterministic_gate, "authority_evidence.deterministic_gate", snapshotHash, refs);
-  const evaluatorGate = normalizeGate(value.evaluator_gate, "authority_evidence.evaluator_gate", snapshotHash, refs);
-  if (!["none", "conflicting", "unknown"].includes(value.conflict_status)) fail("authority_evidence_invalid", "authority_evidence.conflict_status");
-  return freezeClone({ snapshot_sha256: snapshotHash, evidence_refs: refs, conflict_status: value.conflict_status, deterministic_gate: deterministicGate, evaluator_gate: evaluatorGate });
+function requireDerivedAuthority(derived, binding) {
+  if (!derived || derived[DERIVED_AUTHORITY] !== true) fail("authority_provenance_unverified", "derived_authority");
+  const authority = freezeDerivedAuthority(normalizeAuthorityEvidence(derived, binding.snapshot_sha256));
+  if (authority.snapshot_sha256 !== binding.snapshot_sha256) fail("authority_snapshot_mismatch", "derived_authority.snapshot_sha256");
+  return authority;
 }
 
-function normalizeGate(value, path, snapshotHash, evidenceRefs) {
-  assertExactObject(value, ["event_id", "event_type", "event_sha256", "snapshot_sha256", "evidence_refs"], path, "authority_evidence_invalid");
-  const refs = normalizedRefArray(value.evidence_refs, `${path}.evidence_refs`, MAX_REFS, "authority_evidence_invalid", true);
-  if (!sameSet(refs, evidenceRefs)) fail("authority_evidence_mismatch", `${path}.evidence_refs`);
-  if (requireHash(value.snapshot_sha256, `${path}.snapshot_sha256`, "authority_evidence_invalid") !== snapshotHash) fail("authority_snapshot_mismatch", `${path}.snapshot_sha256`);
+function normalizeSnapshotManifest(value) {
+  assertExactObject(value, ["id", "content_sha256", "mode", "records"], "snapshot_manifest", "authority_evidence_invalid");
+  const id = requireText(value.id, "snapshot_manifest.id", 160, "authority_evidence_invalid");
+  const contentSha256 = requireHash(value.content_sha256, "snapshot_manifest.content_sha256", "authority_evidence_invalid");
+  const mode = requireText(value.mode, "snapshot_manifest.mode", 80, "authority_evidence_invalid");
+  if (!["frozen_real_otlp_snapshot", "deterministic_replay"].includes(mode)) fail("authority_evidence_invalid", "snapshot_manifest.mode");
+  if (!Array.isArray(value.records) || value.records.length === 0 || value.records.length > 120) fail("authority_evidence_invalid", "snapshot_manifest.records");
+  const records = value.records.map((record, index) => {
+    assertExactObject(record, ["id", "sha256", "source", "mode"], `snapshot_manifest.records[${index}]`, "authority_evidence_invalid");
+    return {
+      id: requireText(record.id, `snapshot_manifest.records[${index}].id`, 160, "authority_evidence_invalid"),
+      sha256: requireHash(record.sha256, `snapshot_manifest.records[${index}].sha256`, "authority_evidence_invalid"),
+      source: requireText(record.source, `snapshot_manifest.records[${index}].source`, 160, "authority_evidence_invalid"),
+      mode: requireText(record.mode, `snapshot_manifest.records[${index}].mode`, 80, "authority_evidence_invalid")
+    };
+  }).sort(compareById);
+  if (new Set(records.map((record) => record.id)).size !== records.length) fail("authority_evidence_invalid", "snapshot_manifest.records");
+  const computedContentHash = sha256Canonical(records);
+  if (computedContentHash !== contentSha256) fail("snapshot_manifest_content_hash_mismatch", "snapshot_manifest.content_sha256");
+  const snapshot = { id, content_sha256: contentSha256, mode, records };
+  return freezeClone({ ...snapshot, manifest_sha256: sha256Canonical(snapshot) });
+}
+
+function normalizeDecodedLedgerStream(value, incidentId, runId) {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 512) fail("authority_evidence_invalid", "authority_context.ledger_events");
+  const ids = new Set();
+  let previousSequence = 0;
+  return value.map((event, index) => {
+    assertExactObject(event, ["sequence", "id", "run_id", "incident_id", "recorded_at", "offset_ms", "type", "actor", "payload", "payload_sha256", "evidence_refs", "parent_id", "correlation_id"], `authority_context.ledger_events[${index}]`, "authority_evidence_invalid");
+    if (!Number.isInteger(event.sequence) || event.sequence < 1 || event.sequence <= previousSequence) fail("authority_ledger_sequence_invalid", `authority_context.ledger_events[${index}].sequence`);
+    previousSequence = event.sequence;
+    const id = requireText(event.id, `authority_context.ledger_events[${index}].id`, 160, "authority_evidence_invalid");
+    if (ids.has(id)) fail("authority_ledger_event_duplicate", `authority_context.ledger_events[${index}].id`);
+    ids.add(id);
+    if (event.run_id !== runId || event.incident_id !== incidentId) fail("authority_ledger_scope_mismatch", `authority_context.ledger_events[${index}]`);
+    parseTimestamp(event.recorded_at, `authority_context.ledger_events[${index}].recorded_at`);
+    if (!Number.isInteger(event.offset_ms)) fail("authority_evidence_invalid", `authority_context.ledger_events[${index}].offset_ms`);
+    requireText(event.type, `authority_context.ledger_events[${index}].type`, 80, "authority_evidence_invalid");
+    requireText(event.actor, `authority_context.ledger_events[${index}].actor`, 160, "authority_evidence_invalid");
+    assertPlainObject(event.payload, `authority_context.ledger_events[${index}].payload`, "authority_evidence_invalid");
+    if (requireHash(event.payload_sha256, `authority_context.ledger_events[${index}].payload_sha256`, "authority_evidence_invalid") !== sha256Canonical(event.payload)) {
+      fail("authority_ledger_payload_hash_mismatch", `authority_context.ledger_events[${index}].payload_sha256`);
+    }
+    const evidenceRefs = normalizedRefArray(event.evidence_refs, `authority_context.ledger_events[${index}].evidence_refs`, MAX_REFS, "authority_evidence_invalid", false);
+    if (!(event.parent_id === null || typeof event.parent_id === "string")) fail("authority_evidence_invalid", `authority_context.ledger_events[${index}].parent_id`);
+    requireText(event.correlation_id, `authority_context.ledger_events[${index}].correlation_id`, 160, "authority_evidence_invalid");
+    return freezeClone({ ...event, evidence_refs: evidenceRefs });
+  });
+}
+
+function normalizeDiagnosisGatePayload(value, snapshot) {
+  assertAllowedObject(value, ["version", "harness", "snapshot", "accepted", "rejected", "repair_contract", "candidate_sha256", "context_sha256"], ["snapshot", "accepted"], "diagnosis_gate.payload", "authority_evidence_invalid");
+  const snapshotBinding = value.snapshot;
+  assertAllowedObject(snapshotBinding, ["id", "mode", "content_sha256", "source_sha256"], ["id", "mode", "content_sha256"], "diagnosis_gate.payload.snapshot", "authority_evidence_invalid");
+  if (snapshotBinding.id !== snapshot.id || snapshotBinding.content_sha256 !== snapshot.content_sha256 || snapshotBinding.mode !== snapshot.mode) {
+    fail("authority_gate_snapshot_mismatch", "diagnosis_gate.payload.snapshot");
+  }
+  const accepted = value.accepted;
+  assertAllowedObject(accepted, ["diagnosis", "evaluation", "evidence_ids", "evidence_bindings"], ["diagnosis", "evaluation", "evidence_ids"], "diagnosis_gate.payload.accepted", "authority_evidence_invalid");
+  const diagnosis = accepted.diagnosis;
+  const evaluation = accepted.evaluation;
+  assertAllowedObject(diagnosis, ["id", "title", "claim", "confidence", "initiating_change", "failure_mechanism", "propagation", "evidence_refs", "proposed_repair"], ["id", "evidence_refs"], "diagnosis_gate.payload.accepted.diagnosis", "authority_evidence_invalid");
+  const hypothesisId = requireText(diagnosis.id, "diagnosis_gate.payload.accepted.diagnosis.id", 160, "authority_evidence_invalid");
+  const evidenceRefs = normalizedRefArray(diagnosis.evidence_refs, "diagnosis_gate.payload.accepted.diagnosis.evidence_refs", MAX_REFS, "authority_evidence_invalid", true);
+  const normalizedEvaluation = normalizeAcceptedEvaluation(evaluation, "diagnosis_gate.payload.accepted.evaluation", false);
+  if (!sameSet(normalizedEvaluation.counter_evidence_refs, evidenceRefs)) fail("authority_gate_evidence_mismatch", "diagnosis_gate.payload.accepted.evaluation");
+  if (!sameSet(accepted.evidence_ids, evidenceRefs)) fail("authority_gate_evidence_mismatch", "diagnosis_gate.payload.accepted.evidence_ids");
+  return { hypothesis_id: hypothesisId, evidence_refs: evidenceRefs };
+}
+
+function normalizeEvaluatorGatePayload(value) {
+  return normalizeAcceptedEvaluation(value, "evaluator_gate.payload", true);
+}
+
+function normalizeAcceptedEvaluation(value, path, requireHypothesisId) {
+  assertAllowedObject(value, ["accepted", "score", "classification", "phase", "gate_checks", "reason", "missing_evidence", "counter_evidence_refs", "hypothesis_id", "live", "attempt"], ["accepted", "score", "classification", "phase", "gate_checks", "reason", "missing_evidence", "counter_evidence_refs", ...(requireHypothesisId ? ["hypothesis_id"] : [])], path, "authority_evidence_invalid");
+  if (value.accepted !== true) fail("authority_evidence_invalid", `${path}.accepted`);
+  const hypothesisId = requireHypothesisId ? requireText(value.hypothesis_id, `${path}.hypothesis_id`, 160, "authority_evidence_invalid") : null;
+  if (typeof value.score !== "number" || !Number.isFinite(value.score) || value.score < 0 || value.score > 1) fail("authority_evidence_invalid", `${path}.score`);
+  if (!["confirmed_system_bug", "insufficient_evidence"].includes(value.classification)) fail("authority_evidence_invalid", `${path}.classification`);
+  if (value.phase !== "diagnosis_pre_approval") fail("authority_evidence_invalid", `${path}.phase`);
+  assertExactObject(value.gate_checks, ["initiating_change", "temporal_order", "implementation_semantics", "controlled_off_on_contrast", "repeated_direct_failures"], `${path}.gate_checks`, "authority_evidence_invalid");
+  if (Object.values(value.gate_checks).some((passed) => passed !== true)) fail("authority_evidence_invalid", `${path}.gate_checks`);
+  requireText(value.reason, `${path}.reason`, 4096, "authority_evidence_invalid");
+  normalizedRefArray(value.missing_evidence, `${path}.missing_evidence`, 24, "authority_evidence_invalid", false);
+  const counterEvidenceRefs = normalizedRefArray(value.counter_evidence_refs, `${path}.counter_evidence_refs`, MAX_REFS, "authority_evidence_invalid", true);
+  if (value.live != null && typeof value.live !== "boolean") fail("authority_evidence_invalid", `${path}.live`);
+  if (value.attempt != null && (!Number.isInteger(value.attempt) || value.attempt < 1 || value.attempt > 2)) fail("authority_evidence_invalid", `${path}.attempt`);
+  return { hypothesis_id: hypothesisId, counter_evidence_refs: counterEvidenceRefs };
+}
+
+function assertEvidenceMembership(refs, snapshot) {
+  const records = new Map(snapshot.records.map((record) => [record.id, record]));
+  for (const ref of refs) if (!records.has(ref)) fail("authority_evidence_nonmember", "authority_context.snapshot_manifest.records");
+}
+
+function gateBindingFromDecodedEvent(event) {
+  return freezeClone({ event_id: event.id, event_type: event.type, sequence: event.sequence, payload_sha256: event.payload_sha256 });
+}
+
+function normalizeAuthorityEvidence(value, snapshotHash) {
+  assertExactObject(value, ["schema_version", "snapshot_id", "snapshot_sha256", "snapshot_mode", "snapshot_manifest_sha256", "evidence_refs", "evidence_records", "conflict_status", "deterministic_gate", "evaluator_gate"], "authority_evidence", "authority_evidence_invalid");
+  if (value.schema_version !== "flowpulse.authority-evidence.v1") fail("authority_evidence_invalid", "authority_evidence.schema_version");
+  requireText(value.snapshot_id, "authority_evidence.snapshot_id", 160, "authority_evidence_invalid");
+  requireText(value.snapshot_mode, "authority_evidence.snapshot_mode", 80, "authority_evidence_invalid");
+  requireHash(value.snapshot_manifest_sha256, "authority_evidence.snapshot_manifest_sha256", "authority_evidence_invalid");
+  if (requireHash(value.snapshot_sha256, "authority_evidence.snapshot_sha256", "authority_evidence_invalid") !== snapshotHash) fail("authority_snapshot_mismatch", "authority_evidence.snapshot_sha256");
+  const refs = normalizedRefArray(value.evidence_refs, "authority_evidence.evidence_refs", MAX_REFS, "authority_evidence_invalid", true);
+  const evidenceRecords = normalizeAuthorityEvidenceRecords(value.evidence_records, refs);
+  const deterministicGate = normalizeGate(value.deterministic_gate, "authority_evidence.deterministic_gate", snapshotHash, refs);
+  const evaluatorGate = normalizeGate(value.evaluator_gate, "authority_evidence.evaluator_gate", snapshotHash, refs);
+  if (evaluatorGate.sequence >= deterministicGate.sequence) fail("authority_gate_order_invalid", "authority_evidence");
+  if (!["none", "conflicting", "unknown"].includes(value.conflict_status)) fail("authority_evidence_invalid", "authority_evidence.conflict_status");
+  return freezeClone({
+    schema_version: value.schema_version,
+    snapshot_id: value.snapshot_id,
+    snapshot_sha256: snapshotHash,
+    snapshot_mode: value.snapshot_mode,
+    snapshot_manifest_sha256: value.snapshot_manifest_sha256,
+    evidence_refs: refs,
+    evidence_records: evidenceRecords,
+    conflict_status: value.conflict_status,
+    deterministic_gate: deterministicGate,
+    evaluator_gate: evaluatorGate
+  });
+}
+
+function normalizeAuthorityEvidenceRecords(value, refs) {
+  if (!Array.isArray(value) || value.length !== refs.length) fail("authority_evidence_invalid", "authority_evidence.evidence_records");
+  const records = value.map((record, index) => {
+    assertExactObject(record, ["id", "sha256", "source", "mode"], `authority_evidence.evidence_records[${index}]`, "authority_evidence_invalid");
+    return {
+      id: requireText(record.id, `authority_evidence.evidence_records[${index}].id`, 160, "authority_evidence_invalid"),
+      sha256: requireHash(record.sha256, `authority_evidence.evidence_records[${index}].sha256`, "authority_evidence_invalid"),
+      source: requireText(record.source, `authority_evidence.evidence_records[${index}].source`, 160, "authority_evidence_invalid"),
+      mode: requireText(record.mode, `authority_evidence.evidence_records[${index}].mode`, 80, "authority_evidence_invalid")
+    };
+  }).sort(compareById);
+  if (new Set(records.map((record) => record.id)).size !== records.length || !sameSet(records.map((record) => record.id), refs)) {
+    fail("authority_evidence_nonmember", "authority_evidence.evidence_records");
+  }
+  return records;
+}
+
+function normalizeGate(value, path, _snapshotHash, _evidenceRefs) {
+  assertExactObject(value, ["event_id", "event_type", "sequence", "payload_sha256"], path, "authority_evidence_invalid");
   const expectedType = path.endsWith("deterministic_gate") ? "diagnosis.gate.passed" : "evaluation.accepted";
   if (value.event_type !== expectedType) fail("authority_gate_type_mismatch", `${path}.event_type`);
   const eventId = requireText(value.event_id, `${path}.event_id`, 160, "authority_evidence_invalid");
-  const eventSha256 = requireHash(value.event_sha256, `${path}.event_sha256`, "authority_evidence_invalid");
-  const expectedHash = sha256Canonical({ event_id: eventId, event_type: expectedType, snapshot_sha256: snapshotHash, evidence_refs: refs });
-  if (eventSha256 !== expectedHash) fail("authority_gate_hash_mismatch", `${path}.event_sha256`);
-  return freezeClone({ event_id: eventId, event_type: expectedType, event_sha256: eventSha256, snapshot_sha256: snapshotHash, evidence_refs: refs });
+  if (!Number.isInteger(value.sequence) || value.sequence < 1) fail("authority_evidence_invalid", `${path}.sequence`);
+  const payloadSha256 = requireHash(value.payload_sha256, `${path}.payload_sha256`, "authority_evidence_invalid");
+  return freezeClone({ event_id: eventId, event_type: expectedType, sequence: value.sequence, payload_sha256: payloadSha256 });
 }
 
 function normalizeAdvisory(value, authorityRefs) {
@@ -586,11 +766,16 @@ function buildBinding(input) {
 
 function safeAuthorityEvidence(value) {
   return freezeClone({
+    schema_version: value.schema_version,
+    snapshot_id: value.snapshot_id,
     snapshot_sha256: value.snapshot_sha256,
+    snapshot_mode: value.snapshot_mode,
+    snapshot_manifest_sha256: value.snapshot_manifest_sha256,
     evidence_refs: value.evidence_refs,
+    evidence_records: value.evidence_records,
     conflict_status: value.conflict_status,
-    deterministic_gate: { event_id: value.deterministic_gate.event_id, event_type: value.deterministic_gate.event_type, event_sha256: value.deterministic_gate.event_sha256 },
-    evaluator_gate: { event_id: value.evaluator_gate.event_id, event_type: value.evaluator_gate.event_type, event_sha256: value.evaluator_gate.event_sha256 }
+    deterministic_gate: value.deterministic_gate,
+    evaluator_gate: value.evaluator_gate
   });
 }
 
@@ -615,6 +800,10 @@ function sameSet(left, right) {
   return Array.isArray(left) && Array.isArray(right) && left.length === right.length && [...left].sort().every((entry, index) => entry === [...right].sort()[index]);
 }
 
+function compareById(left, right) {
+  return left.id.localeCompare(right.id);
+}
+
 function unique(values) {
   return [...new Set(values)];
 }
@@ -624,6 +813,12 @@ function assertExactObject(value, keys, path, code = "schema_invalid") {
   const actual = Object.keys(value).sort();
   const expected = [...keys].sort();
   if (actual.length !== expected.length || actual.some((key, index) => key !== expected[index])) fail(code, path);
+}
+
+function assertAllowedObject(value, allowedKeys, requiredKeys, path, code = "schema_invalid") {
+  assertPlainObject(value, path, code);
+  const allowed = new Set(allowedKeys);
+  if (Object.keys(value).some((key) => !allowed.has(key)) || requiredKeys.some((key) => !Object.hasOwn(value, key))) fail(code, path);
 }
 
 function assertPlainObject(value, path, code = "schema_invalid") {
@@ -673,6 +868,12 @@ function canonicalJson(value) {
 
 function freezeClone(value) {
   return deepFreeze(structuredClone(value));
+}
+
+function freezeDerivedAuthority(value) {
+  const clone = structuredClone(value);
+  Object.defineProperty(clone, DERIVED_AUTHORITY, { value: true, enumerable: false, configurable: false, writable: false });
+  return deepFreeze(clone);
 }
 
 function deepFreeze(value) {
