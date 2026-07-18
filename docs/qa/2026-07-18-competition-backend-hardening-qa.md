@@ -97,3 +97,37 @@ steps.
   with zero browser console warnings/errors. It was not restarted for this
   backend patch, so this visual smoke does not certify current live-development
   readiness or the newly loaded backend process.
+
+## Acceptance repair 3
+
+- The third acceptance review found that a known but irrelevant checkout database
+  timeout could authorize the payment-unreachable repair, selected records could
+  inherit a later batch timestamp, identifier/key redaction missed common
+  variants, executable caps could return only a subset of reserved evidence, and
+  GPT causal errors from the development route were not ledger-classified.
+- Resolution: one shared mechanism predicate now requires a checkout → payment
+  dependency plus a bounded network-unreachable signal. It is used by executable
+  snapshot reservation, GPT diagnosis validation, and deterministic development
+  investigation. A checkout `SELECT orders` / `postgres:5432` timeout is
+  explicitly rejected; a checkout `payment:8080` `ECONNREFUSED` trace passes.
+- Selected trace/log/metric facts now carry the selected signal's own time. The
+  mixed-batch regression proves a pre-change failing checkout→payment span stays
+  pre-change even if a later healthy span is present, so it cannot authorize the
+  repair.
+- Safe projections redact UUIDv7, `session_id`, `user.id`, `account-id`, and
+  whitespace-separated `X-API-Key` values across list, detail, tool, and
+  source-style output. Cap preflight rejects any executable snapshot that cannot
+  retain both the exact captured change and exact failure trace. Development GPT
+  causal failures record one `insufficient_evidence` classification and failure
+  event with no repair/approval event.
+- `npm test` — **73 passing, 0 failing**.
+- Current non-mutating command: `env FLOWPULSE_DEVELOPMENT_ENABLED=1 npm run
+  live:check` returned `docker: true`, pinned revision
+  `18b36c73ccc2dbc86759dab2e0ef05175a7a8ca5`, `flag_api: false`, and
+  `ready: false`. No Docker/server start or restart, incident injection, flag
+  mutation, model request, repair, deploy, push, or publish was performed.
+- Browser/API smoke was intentionally not repeated: the existing 4310 process
+  was not restarted and cannot certify this commit. A current read-only
+  `curl http://127.0.0.1:4310/api/health` could not connect, so browser/API QA
+  is an external runtime gate rather than a pass. The unavailable flag API is
+  likewise an external runtime gate, not a code-acceptance pass.

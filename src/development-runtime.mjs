@@ -1,3 +1,5 @@
+import { isCheckoutPaymentUnreachableTrace } from "./incident-mechanism.mjs";
+
 export class DevelopmentRuntime {
   constructor({ runtime, source, adapter }) {
     this.runtime = runtime;
@@ -212,11 +214,7 @@ function sameRepairContract(candidate = {}, expected) {
 }
 
 function relevantFailure(item) {
-  const semantic = item.value?.trace;
-  if (item.kind === "trace" && ["checkout", "payment"].includes(item.entity) && (semantic?.status === "error" || semantic?.error)) return true;
-  const text = JSON.stringify(item.payload || {}).toLowerCase();
-  const services = item.value?.services || [];
-  return item.signal === "traces" && services.some((name) => name.includes("checkout") || name.includes("payment")) && /(error|exception|unavailable|refused|"code"\s*:\s*2)/.test(text);
+  return isCheckoutPaymentUnreachableTrace(item);
 }
 
 function matchesChange(item, contract, appliedAt) {

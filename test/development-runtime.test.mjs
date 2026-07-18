@@ -62,6 +62,20 @@ test("development investigation stops when fresh telemetry cannot prove the mech
   assert.equal(development.state(runId).events.find((event) => event.type === "outcome.classified").payload.classification, "insufficient_evidence");
 });
 
+test("development investigation rejects a known checkout database timeout as unrelated to payment reachability", async () => {
+  const runtime = new IncidentRuntime({
+    ledger: new Ledger(join(mkdtempSync(join(tmpdir(), "flowpulse-development-irrelevant-")), "ledger.db")),
+    bundle: loadBundle()
+  });
+  const adapter = { async applyDevelopmentCase() { return { change: change(), before: "off", after: "on", applied_at: "2026-07-17T12:00:00.000Z", source: "test" }; } };
+  const development = new DevelopmentRuntime({ runtime, source: { async project() { return { status: "live", evidence: [databaseTimeoutEvidence()] }; } }, adapter });
+  const runId = await development.start();
+  await assert.rejects(() => development.investigate(runId), /not available/);
+  const events = development.state(runId).events;
+  assert.equal(events.some((event) => event.type === "outcome.classified" && event.payload.classification === "insufficient_evidence"), true);
+  assert.equal(events.some((event) => event.type === "repair.proposed" || event.type === "approval.requested"), false);
+});
+
 test("mismatched approval request cannot execute the checked-in development repair", async () => {
   const runtime = new IncidentRuntime({
     ledger: new Ledger(join(mkdtempSync(join(tmpdir(), "flowpulse-development-mismatch-")), "ledger.db")),
@@ -90,7 +104,7 @@ test("frozen development investigation cites both the captured change and failur
   const runId = await development.start();
   const applied = runtime.ledger.list(runId).find((event) => event.type === "change.applied");
   const changeEvidence = versionedChangeEvidence({ manifest: applied.payload.change, applied: applied.payload, ledgerEvent: applied });
-  const failure = { ...failureEvidence(), kind: "trace", entity: "checkout", value: { services: ["checkout"], trace: { status: "error", error: "ECONNREFUSED" } } };
+  const failure = failureEvidence();
   const frozen = new LiveOtlpEvidenceSource({ status: "live", evidence: [failure] }).freeze({ supplementalRecords: [changeEvidence], executable: true, after: applied.payload.applied_at });
   await development.investigate(runId, frozen);
   const expected = new Set([changeEvidence.id, failure.id]);
@@ -119,9 +133,21 @@ function change() {
 function failureEvidence() {
   return {
     id: "live-tra-failure",
+    kind: "trace",
+    entity: "checkout",
     signal: "traces",
     at: "2026-07-17T12:00:30.000Z",
-    value: { services: ["checkout"] },
+    value: {
+      services: ["checkout"],
+      trace: {
+        service: "checkout",
+        operation: "POST /checkout payment",
+        peer_target: "payment:8080",
+        status: "error",
+        error: "ECONNREFUSED",
+        observed_at: "2026-07-17T12:00:30.000Z"
+      }
+    },
     payload: { resourceSpans: [{ resource: { service: "checkout" }, scopeSpans: [{ spans: [{ name: "payment", status: { code: 2, message: "unavailable" } }] }] }] }
   };
 }
@@ -133,5 +159,27 @@ function healthyEvidence() {
     at: "2026-07-17T12:01:30.000Z",
     value: { services: ["checkout", "payment"] },
     payload: { resourceSpans: [{ scopeSpans: [{ spans: [{ name: "payment", status: { code: 1 } }] }] }] }
+  };
+}
+
+function databaseTimeoutEvidence() {
+  return {
+    id: "live-tra-database-timeout",
+    kind: "trace",
+    entity: "checkout",
+    signal: "traces",
+    at: "2026-07-17T12:00:30.000Z",
+    value: {
+      services: ["checkout"],
+      trace: {
+        service: "checkout",
+        operation: "SELECT orders",
+        peer_target: "postgres:5432",
+        status: "error",
+        error: "timeout",
+        observed_at: "2026-07-17T12:00:30.000Z"
+      }
+    },
+    payload: {}
   };
 }

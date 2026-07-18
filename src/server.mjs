@@ -10,6 +10,7 @@ import { CausalEvidenceError, runLiveInvestigation } from "./openai.mjs";
 import { initializeObservability, shutdownObservability, withAgentControlTrace } from "./observability.mjs";
 import { LiveSource } from "./live-source.mjs";
 import { CapturedBundleEvidenceSource, InsufficientEvidenceError, LiveOtlpEvidenceSource, versionedChangeEvidence } from "./evidence-source.mjs";
+import { recordInvestigationFailure } from "./investigation-failure.mjs";
 import { DevelopmentRuntime } from "./development-runtime.mjs";
 import * as developmentAdapter from "./development-adapter.mjs";
 import { AgentControlService } from "./agent-control-service.mjs";
@@ -120,10 +121,22 @@ const server = createServer(async (request, response) => {
     if (url.pathname === "/api/development/investigate" && request.method === "POST") {
       requireJson(request);
       const runId = runtime.ensureRun();
-      const snapshot = await freezeLiveEvidence(runId);
-      if (process.env.OPENAI_API_KEY) await runLiveInvestigation({ runtime, runId, evidenceSource: snapshot, repairContract: development.repairContract(runId) });
-      else await development.investigate(runId, snapshot);
-      return json(response, 200, await stateWithSource(runId));
+      try {
+        const snapshot = await freezeLiveEvidence(runId);
+        if (process.env.OPENAI_API_KEY) await runLiveInvestigation({ runtime, runId, evidenceSource: snapshot, repairContract: development.repairContract(runId) });
+        else await development.investigate(runId, snapshot);
+        return json(response, 200, await stateWithSource(runId));
+      } catch (error) {
+        if (!(error instanceof CausalEvidenceError || error instanceof InsufficientEvidenceError)) throw error;
+        const classification = recordInvestigationFailure({
+          runtime,
+          runId,
+          error,
+          failedType: "development.investigation.failed",
+          actor: "development-evaluator"
+        });
+        return json(response, 422, { error: error.message, classification, state: await stateWithSource(runId) });
+      }
     }
     if (url.pathname === "/api/development/approve" && request.method === "POST") {
       requireJson(request);
@@ -160,16 +173,7 @@ const server = createServer(async (request, response) => {
         const result = await runLiveInvestigation({ runtime, runId, evidenceSource: snapshot });
         return json(response, 200, { result, state: await stateWithSource(runId) });
       } catch (error) {
-        if (error instanceof CausalEvidenceError) {
-          runtime.append(runId, "outcome.classified", "live-evaluator", {
-            classification: error.classification,
-            explanation: error.message
-          });
-        }
-        runtime.append(runId, "live.run.failed", "runtime", {
-          classification: error instanceof CausalEvidenceError ? error.classification : error instanceof InsufficientEvidenceError ? "insufficient_evidence" : error.message.includes("approved boundary") ? "agent_false_positive" : "tool_data_failure",
-          reason: error.message
-        });
+        recordInvestigationFailure({ runtime, runId, error, failedType: "live.run.failed", actor: "live-evaluator" });
         return json(response, 422, { error: error.message, state: await stateWithSource(runId) });
       }
     }

@@ -94,7 +94,7 @@ async function readSignal(path, signal, root) {
         entity: facts.trace?.service || facts.log?.service || facts.metric?.service || servicesIn(payload)[0] || "telemetry-source",
         source: "OpenTelemetry Collector file exporter",
         hash: digest,
-        at: observedAt(payload) || info.mtime.toISOString(),
+        at: selectedObservedAt(facts) || info.mtime.toISOString(),
         value: { services: servicesIn(payload).map((service) => sanitizeTelemetryText(service, { limit: 120 })), raw_sha256: digest, ...facts },
         captured_at: info.mtime.toISOString(),
         provenance: {
@@ -179,7 +179,7 @@ function signalFacts(payload, signal) {
 
 function traceFact(payload) {
   const candidate = representativeSpan(payload);
-  if (!candidate) return { service: null, operation: null, peer_target: null, status: "missing", error: null, observed_at: observedAt(payload) };
+  if (!candidate) return { service: null, operation: null, peer_target: null, status: "missing", error: null, observed_at: null };
   const { span, service } = candidate;
   const target = targetFor(span);
   const status = span.status?.code === 2 ? "error" : span.status?.code === 1 ? "ok" : span.status?.code === 0 ? "unset" : "missing";
@@ -190,13 +190,13 @@ function traceFact(payload) {
     peer_target: bounded(target, 160),
     status,
     error: bounded(span.status?.message || exception, 240),
-    observed_at: observedAt(payload)
+    observed_at: timestampFor(span, ["endTimeUnixNano", "startTimeUnixNano", "timeUnixNano"])
   };
 }
 
 function logFact(payload) {
   const candidate = representativeLog(payload);
-  if (!candidate) return { service: null, severity: null, message: null, trace_id: null, span_id: null, observed_at: observedAt(payload) };
+  if (!candidate) return { service: null, severity: null, message: null, trace_id: null, span_id: null, observed_at: null };
   const { log, service } = candidate;
   return {
     service: bounded(service, 120),
@@ -204,13 +204,13 @@ function logFact(payload) {
     message: bounded(anyValue(log.body), 240),
     trace_id: bounded(log.traceId, 64),
     span_id: bounded(log.spanId, 32),
-    observed_at: observedAt(payload)
+    observed_at: timestampFor(log, ["timeUnixNano", "observedTimeUnixNano"])
   };
 }
 
 function metricFact(payload) {
   const candidate = representativeMetric(payload);
-  if (!candidate) return { service: null, name: null, value: null, unit: null, aggregation: null, observed_at: observedAt(payload) };
+  if (!candidate) return { service: null, name: null, value: null, unit: null, aggregation: null, observed_at: null };
   const { metric, point, aggregation, service } = candidate;
   return {
     service: bounded(service, 120),
@@ -218,7 +218,7 @@ function metricFact(payload) {
     value: numericValue(point),
     unit: bounded(metric.unit, 40),
     aggregation: aggregation || null,
-    observed_at: observedAt(payload)
+    observed_at: timestampFor(point, ["timeUnixNano", "startTimeUnixNano"])
   };
 }
 
@@ -296,23 +296,14 @@ function bounded(value, length) {
   return sanitizeTelemetryText(value, { limit: length });
 }
 
-function observedAt(payload) {
-  let newest = 0n;
-  visit(payload, (key, value) => {
-    if ((key === "timeUnixNano" || key === "endTimeUnixNano") && /^\d+$/.test(String(value))) {
-      newest = BigInt(value) > newest ? BigInt(value) : newest;
-    }
-  });
-  return newest ? new Date(Number(newest / 1_000_000n)).toISOString() : null;
-}
+function selectedObservedAt(facts) { return facts.trace?.observed_at || facts.log?.observed_at || facts.metric?.observed_at || null; }
 
-function visit(value, callback) {
-  if (Array.isArray(value)) return value.forEach((item) => visit(item, callback));
-  if (!value || typeof value !== "object") return;
-  for (const [key, child] of Object.entries(value)) {
-    callback(key, child);
-    visit(child, callback);
+function timestampFor(value, keys) {
+  for (const key of keys) {
+    const nano = value?.[key];
+    if (/^\d+$/.test(String(nano))) return new Date(Number(BigInt(nano) / 1_000_000n)).toISOString();
   }
+  return null;
 }
 
 function attributeValue(attributes = [], key) {

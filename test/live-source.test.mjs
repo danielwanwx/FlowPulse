@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { LiveSource } from "../src/live-source.mjs";
+import { InsufficientEvidenceError, LiveOtlpEvidenceSource, versionedChangeEvidence } from "../src/evidence-source.mjs";
 
 test("reports a disconnected source without inventing telemetry", async () => {
   const directory = await mkdtemp(join(tmpdir(), "flowpulse-live-empty-"));
@@ -82,9 +83,49 @@ test("selects later failing spans and error logs over earlier healthy batch reco
   assert.equal(source.evidence.find((item) => item.kind === "log").value.log.message, "payment ECONNREFUSED");
 });
 
+test("uses the selected failing span timestamp rather than a later healthy span in the same batch", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "flowpulse-live-selected-time-"));
+  const before = "2026-07-18T09:59:59.000Z";
+  const after = "2026-07-18T10:00:00.000Z";
+  await writeFile(join(directory, "traces.jsonl"), `${JSON.stringify({ resourceSpans: [resourceSpans("checkout", [
+    {
+      name: "POST /checkout payment",
+      endTimeUnixNano: nano(before),
+      status: { code: 2, message: "ECONNREFUSED" },
+      attributes: [{ key: "server.address", value: { stringValue: "payment" } }, { key: "server.port", value: { intValue: "8080" } }]
+    },
+    { name: "GET /health", endTimeUnixNano: nano("2026-07-18T10:01:00.000Z"), status: { code: 1 } }
+  ])] })}\n`);
+  const project = await new LiveSource({ directory }).project();
+  const trace = project.evidence.find((item) => item.kind === "trace");
+  assert.equal(trace.at, before);
+  assert.equal(trace.value.trace.observed_at, before);
+
+  const change = versionedChangeEvidence({
+    manifest: manifest(),
+    applied: { before: "off", after: "on", applied_at: after },
+    ledgerEvent: { id: "evt-change", recorded_at: after }
+  });
+  assert.throws(() => new LiveOtlpEvidenceSource(project).freeze({ supplementalRecords: [change], executable: true, after }), InsufficientEvidenceError);
+});
+
 function resourceSpans(service, spans) {
   return {
     resource: { attributes: [{ key: "service.name", value: { stringValue: service } }] },
     scopeSpans: [{ spans }]
+  };
+}
+
+function nano(iso) { return String(BigInt(Date.parse(iso)) * 1_000_000n); }
+
+function manifest() {
+  return {
+    id: "change-payment-unreachable-v1",
+    target: "checkout",
+    flag: "paymentUnreachable",
+    known_good: "off",
+    after: "on",
+    repair_id: "repair-payment-reachable-v1",
+    repair_command_id: "astronomy.restore-payment-and-recreate-checkout"
   };
 }

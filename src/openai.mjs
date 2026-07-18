@@ -1,4 +1,5 @@
 import { withIncidentTrace } from "./observability.mjs";
+import { isCheckoutPaymentUnreachableTrace } from "./incident-mechanism.mjs";
 
 const MODEL = () => process.env.OPENAI_MODEL || "gpt-5.6";
 const API_URL = "https://api.openai.com/v1/responses";
@@ -329,8 +330,7 @@ export function validateExecutableCausalEvidence(ids, evidenceSource, repairCont
     && item.value.change.repair_command_id === repairContract.command_id
     && repairContract.action === `restore known-good ${item.value.change.flag} flag and recreate checkout`);
   const appliedAt = Date.parse(change?.value?.change?.applied_at || "");
-  const failure = cited.find((item) => item.kind === "trace" && ["checkout", "payment"].includes(item.entity)
-    && (item.value?.trace?.status === "error" || Boolean(item.value?.trace?.error))
+  const failure = cited.find((item) => isCheckoutPaymentUnreachableTrace(item)
     && Number.isFinite(appliedAt) && Date.parse(item.at) >= appliedAt);
   if (!change || !failure) throw new CausalEvidenceError("Diagnosis lacks the exact cited change and post-change failure evidence required for executable repair");
 }

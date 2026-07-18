@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { evidenceById, queryEvidence } from "./bundle.mjs";
+import { isCheckoutPaymentUnreachableTrace } from "./incident-mechanism.mjs";
 import { sanitizeTelemetryText } from "./telemetry-sanitizer.mjs";
 
 export const EVIDENCE_LIST_DEFAULT = 25;
@@ -61,6 +62,10 @@ export class LiveOtlpEvidenceSource {
     const relevant = [...this.records.filter((record) => allowedEntities.has(record.entity) && Date.parse(record.at) >= afterMs), ...supplementalRecords]
       .sort(compareEvidence);
     const reserved = executable ? requiredCausalRecords(relevant, supplementalRecords, after) : [];
+    const reservedBytes = reserved.reduce((total, record) => total + Buffer.byteLength(JSON.stringify(summarizeEvidence(record))), 0);
+    if (executable && (reserved.length > maxRecords || reservedBytes > maxBytes)) {
+      throw new InsufficientEvidenceError("Executable snapshot caps cannot retain the exact applied change and checkout-to-payment failure trace");
+    }
     const included = [];
     let bytes = 0;
     for (const record of [...reserved, ...relevant.filter((record) => !reserved.some((item) => item.id === record.id))]) {
@@ -68,6 +73,9 @@ export class LiveOtlpEvidenceSource {
       if (included.length >= maxRecords || bytes + size > maxBytes) break;
       included.push(record);
       bytes += size;
+    }
+    if (executable && reserved.some((record) => !included.some((item) => item.id === record.id))) {
+      throw new InsufficientEvidenceError("Executable snapshot caps cannot retain the exact applied change and checkout-to-payment failure trace");
     }
     if (!included.length) throw new InsufficientEvidenceError("Fresh OTLP has no relevant bounded evidence for the checkout incident");
     const sourceHash = hash([...this.records, ...supplementalRecords].sort(compareEvidence).map((record) => `${record.id}:${record.provenance?.sha256 || record.hash || ""}`).join("\n"));
@@ -256,10 +264,7 @@ function requiredCausalRecords(records, supplementalRecords, after) {
 }
 
 export function isFailureTrace(record) {
-  const trace = record.value?.trace;
-  return record.kind === "trace"
-    && ["checkout", "payment"].includes(record.entity)
-    && (trace?.status === "error" || Boolean(trace?.error));
+  return isCheckoutPaymentUnreachableTrace(record);
 }
 
 function safeProvenance(provenance = {}) {

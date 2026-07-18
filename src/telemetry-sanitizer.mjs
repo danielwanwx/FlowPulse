@@ -8,11 +8,11 @@ export function sanitizeTelemetryText(value, { limit = LIMIT } = {}) {
   text = stripUrlCredentialsAndQuery(text);
   text = text
     .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED_TOKEN]")
-    .replace(/\b(?:api[_-]?key|token|secret|password)\s*([=:])\s*[^\s,;]+/gi, (_match, separator) => `secret${separator}[REDACTED_SECRET]`)
+    .replace(/\b(?:x[._ -]?api[._ -]?key|api[._ -]?key|access[._-]?token|token|secret|password)\b\s*(?:[=:]|\s+)\s*[^\s,;]+/gi, "secret=[REDACTED_SECRET]")
     .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[REDACTED_JWT]")
     .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[REDACTED_EMAIL]")
-    .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/gi, "[REDACTED_ID]")
-    .replace(/\b(session(?:id)?|user(?:id)?|account(?:id)?)\s*([=:]|\s+)\s*[^\s,;]+/gi, (_match, key) => `${key}=[REDACTED_ID]`)
+    .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, "[REDACTED_ID]")
+    .replace(/\b(session(?:[._-]?id|id)?|user(?:[._-]?id|id)?|account(?:[._-]?id|id)?)\s*(?:[=:]|\s+)\s*[^\s,;]+/gi, (_match, key) => `${key}=[REDACTED_ID]`)
     .replace(/\b\d{8,}\b/g, "[REDACTED_ID]");
   return text.slice(0, limit);
 }

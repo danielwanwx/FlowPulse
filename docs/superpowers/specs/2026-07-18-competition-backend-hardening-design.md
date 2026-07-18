@@ -53,3 +53,13 @@ Each OTLP batch selects a deterministic representative: trace errors/exceptions/
 Executable repair is additionally a code gate, not an evaluator convention. The diagnosis must cite the exact frozen applied-change record matching the allowlisted repair contract and a post-change checkout/payment failure trace with bounded error evidence; the applied timestamp must precede the trace. Evaluator counter-evidence references are checked against the same snapshot. A missing, unrelated, reversed, or unknown reference records an `insufficient_evidence` or `agent_false_positive` outcome and cannot append a repair proposal or approval request.
 
 The change record is constructed from the exact `change.applied` ledger payload and ledger event, never a later disk read of the manifest. Missing contract fields, inconsistent before/after values, or absent applied time fail closed.
+
+## Acceptance repair 3 — mechanism-specific execution and selected-signal time
+
+An executable local recovery is narrower than a generic checkout error. The shared `isCheckoutPaymentUnreachableTrace` predicate now requires checkout involvement, a payment dependency target or operation, and a bounded connection-level failure (`ECONNREFUSED`, connection refused/failed, unavailable, or network unreachable). PostgreSQL timeouts, inventory failures, business/card declines, and generic checkout exceptions remain evidence, but cannot reserve an executable snapshot, validate a GPT diagnosis, or unlock the deterministic development loop.
+
+OTLP batches retain the timestamp of their selected representative signal, not the newest value anywhere in the batch: traces use selected end time then start time; logs use selected event/observed time; and metrics use the selected datapoint time. A pre-change failure in a batch with a later healthy span therefore remains pre-change and cannot pass the causal ordering gate.
+
+The sanitizer recognizes canonical UUIDs including v6/v7, session/user/account identifier keys in camel, dot, underscore, and hyphen forms, and API-key/token/secret/password values separated by `=`, `:`, or whitespace. It runs on every safe evidence projection. Executable snapshot cap selection preflights and verifies both exact reserved causal records; if either cannot fit, snapshot creation fails with `insufficient_evidence` rather than producing a partial executable-looking snapshot.
+
+Development GPT causal failures are caught at the investigation route, append one bounded `outcome.classified` and `development.investigation.failed` ledger record, return a bounded 422, and never append `repair.proposed` or `approval.requested`.

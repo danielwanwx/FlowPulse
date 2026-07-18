@@ -56,7 +56,7 @@ test("frozen development snapshot includes a hashed applied change and bounded f
 test("diagnosis repair must match the real development contract exactly", () => {
   const change = versionedChangeEvidence({ manifest: manifest(), applied: { before: "off", after: "on", applied_at: "2026-07-18T10:00:00.000Z" }, ledgerEvent: { id: "evt-change", recorded_at: "2026-07-18T10:00:00.100Z" } });
   const failure = record("live-only", "2026-07-18T10:00:01.000Z", "checkout", "trace");
-  failure.value.trace = { status: "error", error: "ECONNREFUSED" };
+  failure.value.trace = paymentRefused(failure.at);
   const snapshot = new LiveOtlpEvidenceSource(project("live", [failure])).freeze({ supplementalRecords: [change] });
   const contract = { repair_id: "repair-payment-reachable-v1", action: "restore known-good paymentUnreachable flag and recreate checkout", target: "checkout", command_id: "astronomy.restore-payment-and-recreate-checkout" };
   assert.doesNotThrow(() => validateDiagnosis({ evidence_refs: [change.id, "live-only"], proposed_repair: { ...contract, reason: "Failure follows the applied change." } }, snapshot, contract));
@@ -64,13 +64,13 @@ test("diagnosis repair must match the real development contract exactly", () => 
 });
 
 test("sanitizes secrets and identifiers on list, detail, tool, and source-style projections", () => {
-  const secret = "https://alice:password@payment.example/pay?sessionId=123456789012345678&api_key=topsecret#fragment Bearer eyJhbGciOiJIUzI1NiJ9.abc.def jane@example.com 123e4567-e89b-12d3-a456-426614174000";
+  const secret = "https://alice:password@payment.example/pay?sessionId=123456789012345678&api_key=topsecret#fragment Bearer eyJhbGciOiJIUzI1NiJ9.abc.def jane@example.com 018f63ed-9b24-7330-b0e1-82581d7d4c3a session_id=018f63ed-9b24-7330-b0e1-82581d7d4c3a user.id=alice-42 account-id:acct_123456 X-API-Key topsecret";
   const unsafe = record("unsafe", "2026-07-18T10:00:01.000Z", "checkout", "trace");
   unsafe.fact = secret;
   unsafe.value.trace = { operation: "POST /pay", peer_target: secret, status: "error", error: secret, observed_at: unsafe.at };
   const source = new LiveOtlpEvidenceSource(project("live", [unsafe]));
   const serialized = JSON.stringify({ list: source.list(), detail: source.detail("unsafe"), tool: executeTool(source, "query_traces", { entity: "checkout" }), source: { evidence: source.list().items } });
-  for (const leaked of ["alice", "password", "sessionId=123456789012345678", "topsecret", "eyJhbGciOiJIUzI1NiJ9.abc.def", "jane@example.com", "123e4567-e89b-12d3-a456-426614174000", "123456789012345678"]) assert.equal(serialized.includes(leaked), false);
+  for (const leaked of ["alice", "password", "sessionId=123456789012345678", "topsecret", "eyJhbGciOiJIUzI1NiJ9.abc.def", "jane@example.com", "018f63ed-9b24-7330-b0e1-82581d7d4c3a", "alice-42", "acct_123456", "123456789012345678"]) assert.equal(serialized.includes(leaked), false);
   assert.match(serialized, /payment\.example\/pay/);
   assert.match(serialized, /\[REDACTED_TOKEN\]|\[REDACTED_SECRET\]|\[REDACTED_ID\]/);
 });
@@ -87,19 +87,30 @@ test("executable snapshot reserves the exact change and post-change failure unde
   assert.deepEqual(snapshot.metadata().reserved_causal_ids.sort(), [change.id, "post-change-error"].sort());
 });
 
+test("executable snapshot rejects caps that cannot retain both causal records", () => {
+  const change = versionedChangeEvidence({ manifest: manifest(), applied: { before: "off", after: "on", applied_at: "2026-07-18T10:00:00.000Z" }, ledgerEvent: { id: "evt-change", recorded_at: "2026-07-18T10:00:00.100Z" } });
+  const failure = record("post-change-error", "2026-07-18T11:00:00.000Z", "checkout", "trace");
+  failure.value.trace = paymentRefused(failure.at);
+  const source = new LiveOtlpEvidenceSource(project("live", [failure]));
+  assert.throws(() => source.freeze({ supplementalRecords: [change], executable: true, maxRecords: 2, maxBytes: 1 }), /cannot retain/);
+});
+
 test("executable diagnosis rejects irrelevant, missing, reversed, and unknown evaluator evidence", () => {
   const contract = { repair_id: "repair-payment-reachable-v1", action: "restore known-good paymentUnreachable flag and recreate checkout", target: "checkout", command_id: "astronomy.restore-payment-and-recreate-checkout" };
   const change = versionedChangeEvidence({ manifest: manifest(), applied: { before: "off", after: "on", applied_at: "2026-07-18T10:00:00.000Z" }, ledgerEvent: { id: "evt-change", recorded_at: "2026-07-18T10:00:00.100Z" } });
   const failure = record("failure", "2026-07-18T10:00:01.000Z", "checkout", "trace");
-  failure.value.trace = { operation: "POST /checkout", peer_target: "payment:8080", status: "error", error: "ECONNREFUSED", observed_at: failure.at };
-  const unrelated = record("unrelated", "2026-07-18T10:00:02.000Z", "payment", "trace");
-  const source = new LiveOtlpEvidenceSource(project("live", [change, failure, unrelated])).freeze({ supplementalRecords: [], executable: false });
+  failure.value.trace = paymentRefused(failure.at);
+  const databaseError = record("database-error", "2026-07-18T10:00:02.000Z", "checkout", "trace");
+  databaseError.value.trace = { service: "checkout", operation: "SELECT orders", peer_target: "postgres:5432", status: "error", error: "timeout", observed_at: databaseError.at };
+  const unrelated = record("unrelated", "2026-07-18T10:00:03.000Z", "payment", "trace");
+  const source = new LiveOtlpEvidenceSource(project("live", [change, failure, databaseError, unrelated])).freeze({ supplementalRecords: [], executable: false });
   const diagnosis = (refs) => ({ evidence_refs: refs, proposed_repair: { ...contract, reason: "proof" } });
   assert.doesNotThrow(() => validateDiagnosis(diagnosis([change.id, failure.id]), source, contract));
   assert.throws(() => validateDiagnosis(diagnosis([unrelated.id]), source, contract), /required for executable repair/);
+  assert.throws(() => validateDiagnosis(diagnosis([change.id, databaseError.id]), source, contract), /required for executable repair/);
   assert.throws(() => validateDiagnosis(diagnosis([change.id]), source, contract), /required for executable repair/);
   const reversed = record("reversed", "2026-07-18T09:59:59.000Z", "checkout", "trace");
-  reversed.value.trace = { status: "error", error: "ECONNREFUSED" };
+  reversed.value.trace = paymentRefused(reversed.at);
   const reversedSource = new LiveOtlpEvidenceSource(project("live", [change, reversed])).freeze({ executable: false });
   assert.throws(() => validateDiagnosis(diagnosis([change.id, reversed.id]), reversedSource, contract), /required for executable repair/);
   assert.throws(() => validateEvaluation({ counter_evidence_refs: ["unknown"] }, source), /unknown counter-evidence/);
@@ -153,4 +164,8 @@ function manifest() {
     repair_id: "repair-payment-reachable-v1",
     repair_command_id: "astronomy.restore-payment-and-recreate-checkout"
   };
+}
+
+function paymentRefused(at) {
+  return { service: "checkout", operation: "POST /checkout payment", peer_target: "payment:8080", status: "error", error: "ECONNREFUSED", observed_at: at };
 }
