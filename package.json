@@ -5,9 +5,11 @@
   "type": "module",
   "description": "Evidence-grounded incident investigation, remediation, verification, and learning loop.",
   "scripts": {
-    "demo": "node src/server.mjs",
+    "start": "node src/server.mjs",
+    "demo": "npm run start",
     "test": "node --test test/*.test.mjs",
     "judge": "npm test && node src/server.mjs",
+    "submission:check": "node scripts/submission-check.mjs",
     "live:check": "node scripts/live-demo.mjs check",
     "live:setup": "node scripts/live-demo.mjs setup",
     "live:start": "node scripts/live-demo.mjs start",

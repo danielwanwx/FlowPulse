@@ -37,6 +37,8 @@ Point out that approval is an immutable ledger event and precedes repair executi
 
 FlowPulse classifies both the confirmed system bug and the agent false positive. It creates a regression case, runs six deterministic gates, and leaves promotion at an owner-review boundary.
 
-Close with: "The reliable replay is what you just saw. With credentials and a fresh local OTLP spool, the same product freezes a bounded, hashed evidence snapshot for the GPT-5.6 tool loop and adversarial evaluator. It never sends an unbounded live stream or silently substitutes the fixture. LLM calls, tools, latency, usage, and scores are mirrored to Langfuse; the ledger remains authority."
+Close with: "The reliable replay is what you just saw. With credentials and a fresh local OTLP spool, the same product freezes a bounded, hashed evidence snapshot for the GPT-5.6 tool loop and adversarial evaluator. It never sends an unbounded live stream or silently substitutes the fixture. Langfuse is an optional observation mirror; the ledger remains authority."
 
-If time permits, show the **Run fresh GPT-5.6** control and the Langfuse trace link.
+Do not show a GPT or Langfuse control unless the presenter has intentionally
+configured it. The exact 2:30 recording plan is in
+[`docs/submission/video-script.md`](submission/video-script.md).

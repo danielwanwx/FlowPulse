@@ -1,0 +1,14 @@
+.git
+.env
+.flowpulse
+node_modules
+outputs
+docs
+test
+scripts
+integrations
+*.log
+*.db
+*.sqlite
+*.sqlite3
+.DS_Store

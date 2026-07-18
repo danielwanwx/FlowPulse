@@ -2,6 +2,35 @@
 
 FlowPulse is an evidence-grounded incident control loop for production systems. Its generic Production Workspace unifies real or captured telemetry, change data, adversarial evaluation, owner-approved remediation, recovery verification, and regression learning in one inspectable record.
 
+## In 30 seconds
+
+FlowPulse is not another observability dashboard. It is the decision loop that
+sits on top of evidence: an agent can investigate, but an independent evaluator
+can reject unsupported causal claims; a repair can be proposed, but only a
+human owner can approve it; and recovery only counts when fresh evidence proves
+it. The immutable ledger—not an LLM, UI, or tracing vendor—is runtime
+authority.
+
+## 60-second, no-credential quick start
+
+Requirements: macOS or Linux, Node.js 20+, and `sqlite3` on `PATH`. No Docker,
+OpenAI key, Langfuse account, or collector is required for the judge path.
+
+```bash
+npm ci
+npm run submission:check
+npm start
+```
+
+Open [http://127.0.0.1:4310](http://127.0.0.1:4310), choose **Diagnose**, and
+run **guided replay**. The release check runs tests plus an isolated fresh-port
+health and full deterministic owner-gate smoke, then exits cleanly.
+
+For a containerized sandbox, build the included `Dockerfile`; it runs with
+`HOST=0.0.0.0`, `FLOWPULSE_DEVELOPMENT_ENABLED=0`, and a mounted `/data` SQLite
+ledger. The normal local default is loopback-only (`HOST=127.0.0.1`). Put any
+hosted instance behind an authenticated reverse proxy.
+
 The flagship incident uses captured OpenTelemetry Astronomy Shop evidence. A checkout change makes payment unreachable, retries amplify traffic, Kafka lag grows, and accounting and fraud processing fall behind. The investigator first blames Kafka. The evaluator rejects that unsupported diagnosis, the investigator replans across deploy, commit, trace, log, and metric evidence, then proposes a checkout-only rollback for owner approval.
 
 ## Judge demo
@@ -14,9 +43,9 @@ Supported judge platforms:
 Run the verified judge path:
 
 ```bash
-npm install
-npm test
-npm run demo
+npm ci
+npm run submission:check
+npm start
 ```
 
 Open [http://127.0.0.1:4310](http://127.0.0.1:4310), then:
@@ -27,12 +56,12 @@ Open [http://127.0.0.1:4310](http://127.0.0.1:4310), then:
 4. Click **Recover** at the human gate. The Manager shows the rejected claim, accepted cause, evidence IDs, and bounded proposal; use the separate Owner approval control to authorize it.
 5. Open **Recovery Console** to review the diagnosis, watch execution/verification/Evolve/Test from the same ledger events, assign safe agent work, and prepare ledger-governed PR/Jira drafts. Then open **Compare** to inspect incident versus verified state.
 
-The interactive path takes about 20 seconds. It is deterministic and needs no cloud credentials. `npm run judge` remains a convenience command that runs the same tests and then starts the server.
+The interactive path takes about 20 seconds. It is deterministic and needs no cloud credentials. `npm run judge` remains a convenience command that runs the tests and then starts the server.
 
-To run the server without tests:
+To run the server without checks:
 
 ```bash
-npm run demo
+npm start
 ```
 
 To run all automated checks:
@@ -162,6 +191,9 @@ The runtime is intentionally small:
 - Specialist agents emit proposals; only the coordinator and code-owned executor can request canonical runtime transitions, and the executor remains behind both the owner gate and the repair allowlist.
 
 The original product contract is in [`docs/specs/2026-07-16-flowpulse-design.md`](docs/specs/2026-07-16-flowpulse-design.md). The current Incident Digital Twin contract is in [`docs/specs/2026-07-16-incident-digital-twin-redesign.md`](docs/specs/2026-07-16-incident-digital-twin-redesign.md). The real Production Workspace contract is in [`docs/specs/2026-07-17-live-development-workspace.md`](docs/specs/2026-07-17-live-development-workspace.md).
+
+The submission-ready assets are in [`docs/submission/`](docs/submission/):
+the [Devpost draft](docs/submission/devpost.md), [2:30 video script](docs/submission/video-script.md), and [owner-visible final checklist](docs/submission/submission-checklist.md). The exact local real-OTLP proof—including evidence IDs, ledger order, and the one fail-closed GPT-5.6 run—is in the [runtime QA record](docs/qa/2026-07-18-competition-backend-hardening-qa.md).
 The Manager and synchronized specialist-operations contract is in [`docs/specs/2026-07-17-agent-control-and-transparent-recovery.md`](docs/specs/2026-07-17-agent-control-and-transparent-recovery.md).
 The compact Architecture, routed Live, and harness-linkage refinement is in [`docs/superpowers/specs/2026-07-17-compact-architecture-and-orchestrated-live-design.md`](docs/superpowers/specs/2026-07-17-compact-architecture-and-orchestrated-live-design.md).
 

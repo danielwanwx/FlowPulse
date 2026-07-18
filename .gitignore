@@ -6,3 +6,6 @@ node_modules/
 .DS_Store
 outputs/*
 !outputs/.gitkeep
+*.sqlite
+*.sqlite3
+*.db

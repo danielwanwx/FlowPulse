@@ -19,6 +19,7 @@ const root = fileURLToPath(new URL("..", import.meta.url));
 const publicDir = join(root, "public");
 const dbPath = process.env.FLOWPULSE_DB || join(root, ".flowpulse", "ledger.db");
 const port = Number(process.env.PORT || 4310);
+const host = process.env.HOST || "127.0.0.1";
 const ledger = new Ledger(dbPath);
 const bundle = loadBundle();
 const runtime = new IncidentRuntime({ ledger, bundle });
@@ -188,8 +189,8 @@ const server = createServer(async (request, response) => {
   }
 });
 
-server.listen(port, "127.0.0.1", () => {
-  console.log(`FlowPulse ready at http://127.0.0.1:${port}`);
+server.listen(port, host, () => {
+  console.log(`FlowPulse ready at http://${host}:${port}`);
   console.log(`Mode: deterministic replay${process.env.OPENAI_API_KEY ? " + live GPT-5.6" : ""}${langfuseEnabled ? " + Langfuse" : ""}`);
 });
 
