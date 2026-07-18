@@ -10,8 +10,8 @@ export class Ledger {
     this.path = path;
     mkdirSync(dirname(path), { recursive: true });
     this.exec(`
-      PRAGMA journal_mode=WAL;
       PRAGMA busy_timeout=3000;
+      PRAGMA journal_mode=WAL;
       CREATE TABLE IF NOT EXISTS events (
         sequence INTEGER PRIMARY KEY AUTOINCREMENT,
         id TEXT UNIQUE NOT NULL,
@@ -58,15 +58,54 @@ export class Ledger {
     correlationId = `corr-${randomUUID()}`,
     recordedAt = new Date().toISOString()
   }) {
+    return this.#insert({
+      id, runId, incidentId, offsetMs, type, actor, payload, evidenceRefs, parentId, correlationId, recordedAt
+    }).event;
+  }
+
+  appendIfAbsent({
+    id,
+    runId,
+    incidentId,
+    offsetMs = 0,
+    type,
+    actor,
+    payload = {},
+    evidenceRefs = [],
+    parentId = null,
+    correlationId,
+    recordedAt = new Date().toISOString()
+  }) {
+    if (!id) throw new Error("appendIfAbsent requires a deterministic event id");
+    return this.#insert({
+      id, runId, incidentId, offsetMs, type, actor, payload, evidenceRefs, parentId, correlationId, recordedAt
+    }, true);
+  }
+
+  #insert({
+    id,
+    runId,
+    incidentId,
+    offsetMs = 0,
+    type,
+    actor,
+    payload = {},
+    evidenceRefs = [],
+    parentId = null,
+    correlationId = `corr-${randomUUID()}`,
+    recordedAt = new Date().toISOString()
+  }, ignore = false) {
     if (!runId || !incidentId || !type || !actor) throw new Error("Incomplete ledger event");
     const values = [
       id, runId, incidentId, recordedAt, Number(offsetMs), type, actor,
       JSON.stringify(payload), JSON.stringify(evidenceRefs), parentId, correlationId
     ].map(sqlValue).join(",");
-    this.exec(`INSERT INTO events
+    const output = this.exec(`PRAGMA busy_timeout=3000;
+      ${ignore ? "INSERT OR IGNORE" : "INSERT"} INTO events
       (id, run_id, incident_id, recorded_at, offset_ms, type, actor, payload_json, evidence_refs_json, parent_id, correlation_id)
-      VALUES (${values});`);
-    return this.get(id);
+      VALUES (${values});
+      SELECT changes() AS inserted;`);
+    return { event: this.get(id), inserted: output.trim().split(/\s+/).at(-1) === "1" };
   }
 
   get(id) {
