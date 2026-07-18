@@ -33,8 +33,8 @@ Long names keep ellipsis or a controlled two-line title; increasing text must no
 Architecture remains line-free and keeps the four authoritative semantic tiers. Each tier is a deterministic, centered row of touching cards, but the rows no longer need to form a pyramid. Card width is responsive within a bounded range and the widest tier defines the visual mass.
 
 - Shared borders overlap by one pixel; there is no visible inter-card gap.
-- Cards grow to approximately 144-156px wide and 64-70px tall when space permits.
-- The overall wall occupies roughly 65-75% of the available canvas width and at least 45% of its useful height at target desktop sizes.
+- Cards grow to approximately 106-124px wide and 72-78px tall so the widest authoritative tier remains fully visible.
+- The label rail and cards together occupy roughly 65-90% of the available canvas width and at least 40% of its useful height at target desktop sizes.
 - The wall is vertically centered with limited padding; unused whitespace is distributed around the system rather than concentrated above it.
 - At narrower widths the wall scales down as a unit before horizontal clipping is allowed.
 
@@ -44,12 +44,12 @@ Live uses the existing authoritative dependency set and deterministic pulse-slot
 
 1. `idle`: all paths and components use their quiet state.
 2. `launch`: the source component briefly highlights.
-3. `transit`: the entire selected path lights with its semantic tone while one pulse segment travels from source to target.
-4. `arrival`: the target component acknowledges the pulse while the path remains lit.
+3. `transit`: one bullet-like pulse travels from source to target while a separate trace is progressively revealed behind it; the full route is never pre-lit.
+4. `arrival`: only after the pulse reaches the endpoint does the target component acknowledge it while the completed trace remains visible briefly.
 5. `decay`: source, target, path, and pulse return to quiet state.
 6. Advance to the next edge in deterministic topology order.
 
-No two path activations may overlap. Incident paths use red, verified recovery paths green, and healthy observed traffic blue. Reduced motion removes travel animation but shows one stable route and its endpoints.
+No two path activations may overlap. Live traffic animation is deliberately monochrome: black on the light canvas and bright white on the pure-black canvas. Semantic red, amber, and green remain available for persistent incident, change, and verification state, but they do not color the transient Live pulse. Connectors use rounded collision-safe orthogonal bends, matching the visual clarity of Diagnose without changing authoritative endpoints. Reduced motion removes travel animation but shows one stable route and its endpoints.
 
 ## Default Live framing
 
@@ -69,10 +69,12 @@ The fit must not invent dependencies or change the routing model. All observed c
 - Architecture component title computes to at least 12px at 1440x900 and 1280x800.
 - Architecture uses at least 60% of canvas width and has no horizontal or vertical gaps between cards within a tier boundary.
 - Live entry shows every observed component without user dragging.
+- Live components have a visible gap and no overlap at target viewports.
 - Live signal order is stable across reloads.
 - At most one edge has the active signal class at any instant.
-- Source highlight precedes target highlight; active edge and pulse extinguish before the next edge activates.
-- Active edge color matches observed, impact, or verified semantic state.
+- Source highlight precedes target highlight; the target never highlights before the pulse completes; active trace and pulse extinguish before the next edge activates.
+- The trace dash offset decreases progressively during transit, following the bullet pulse rather than revealing the whole connector at launch.
+- Live pulse, trace, and transient node border compute to black in light mode and bright white in pure-black mode.
 - No component overlap or label clipping at target viewports.
 - Browser console has zero errors and warnings.
 - Existing runtime, ledger, harness, and replay tests remain green.

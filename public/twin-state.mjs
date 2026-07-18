@@ -146,6 +146,41 @@ export function livePositions(nodes = []) {
   });
 }
 
+export function orderedSignalEdges(edges = [], pulseSlots = {}) {
+  const compare = (a, b) => (pulseSlots[a.id] ?? 0) - (pulseSlots[b.id] ?? 0) || a.id.localeCompare(b.id);
+  const outgoing = new Map();
+  const incoming = new Set();
+  for (const edge of edges) {
+    if (!outgoing.has(edge.from)) outgoing.set(edge.from, []);
+    outgoing.get(edge.from).push(edge);
+    incoming.add(edge.to);
+  }
+  for (const group of outgoing.values()) group.sort(compare);
+
+  const remaining = new Set(edges.map((edge) => edge.id));
+  const ordered = [];
+  const visit = (nodeId) => {
+    for (const edge of outgoing.get(nodeId) || []) {
+      if (!remaining.delete(edge.id)) continue;
+      ordered.push(edge);
+      visit(edge.to);
+    }
+  };
+
+  const roots = [...outgoing.keys()].filter((id) => !incoming.has(id)).sort((a, b) => {
+    const firstA = outgoing.get(a)?.[0];
+    const firstB = outgoing.get(b)?.[0];
+    return compare(firstA, firstB);
+  });
+  for (const root of roots) visit(root);
+  for (const edge of [...edges].sort(compare)) {
+    if (!remaining.delete(edge.id)) continue;
+    ordered.push(edge);
+    visit(edge.to);
+  }
+  return ordered;
+}
+
 export function topologyIntegrity(topology = {}) {
   const nodes = [];
   const byId = new Map();
@@ -354,9 +389,31 @@ export function liveEdgePath(from, to, {
   nodeHeight = 58,
   lane = 0
 } = {}) {
-  return liveEdgeRoute(from, to, { canvasWidth, canvasHeight, nodeWidth, nodeHeight, lane })
-    .map((point, index) => `${index ? "L" : "M"} ${round(point.x)} ${round(point.y)}`)
-    .join(" ");
+  const points = liveEdgeRoute(from, to, { canvasWidth, canvasHeight, nodeWidth, nodeHeight, lane });
+  if (points.length < 3) return points.map((point, index) => `${index ? "L" : "M"} ${round(point.x)} ${round(point.y)}`).join(" ");
+  const commands = [`M ${round(points[0].x)} ${round(points[0].y)}`];
+  for (let index = 1; index < points.length - 1; index += 1) {
+    const previous = points[index - 1];
+    const current = points[index];
+    const next = points[index + 1];
+    const incoming = Math.hypot(current.x - previous.x, current.y - previous.y);
+    const outgoing = Math.hypot(next.x - current.x, next.y - current.y);
+    const radius = Math.min(8, incoming / 2, outgoing / 2);
+    const before = pointToward(current, previous, radius, incoming);
+    const after = pointToward(current, next, radius, outgoing);
+    commands.push(`L ${round(before.x)} ${round(before.y)}`, `Q ${round(current.x)} ${round(current.y)} ${round(after.x)} ${round(after.y)}`);
+  }
+  const end = points.at(-1);
+  commands.push(`L ${round(end.x)} ${round(end.y)}`);
+  return commands.join(" ");
+}
+
+function pointToward(from, to, distance, length) {
+  if (!length) return from;
+  return {
+    x: from.x + ((to.x - from.x) * distance) / length,
+    y: from.y + ((to.y - from.y) * distance) / length
+  };
 }
 
 export function liveEdgeRoute(from, to, {
@@ -446,6 +503,6 @@ function spreadCoordinate(index, count) {
 
 function spreadVertical(index, count) {
   if (count <= 1) return 50;
-  const span = Math.min(68, Math.max(32, (count - 1) * 10));
+  const span = Math.min(87.5, Math.max(40, (count - 1) * 12.5));
   return 50 - span / 2 + (span * index) / (count - 1);
 }

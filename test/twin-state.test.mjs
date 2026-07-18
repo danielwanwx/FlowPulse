@@ -19,6 +19,7 @@ import {
   liveIncidentNodeStates,
   livePulseSlots,
   livePositions,
+  orderedSignalEdges,
   topologyIntegrity
 } from "../public/twin-state.mjs";
 
@@ -64,6 +65,8 @@ test("architecture layout is deterministic, layered, and leaves room for complet
   assert.match(stylesCss, /\.architecture-tier-row \{[^}]+gap: 0/s);
   assert.match(stylesCss, /\.architecture-tier \{[^}]+margin-top: -1px/s);
   assert.match(stylesCss, /\.architecture-tier \.source-node \{[\s\S]+position: relative;[\s\S]+margin: 0 0 0 -1px/s);
+  assert.match(stylesCss, /--architecture-card-width: clamp\(106px, 8\.6vw, 124px\)/);
+  assert.match(stylesCss, /\.architecture-tier \.source-node strong \{[^}]+font-size: 12px/s);
 });
 
 test("live layout keeps the same deterministic layers with more room for dependency pulses", () => {
@@ -74,13 +77,17 @@ test("live layout keeps the same deterministic layers with more room for depende
   assert.deepEqual(coordinates(first), coordinates(second));
   assert.deepEqual([...new Set(first.map(({ layer }) => layer))], LIVE_LAYERS.map(({ id }) => id));
   assert.deepEqual([...new Set(first.map(({ x }) => x))], [10, 30, 50, 70]);
-  assert.ok(first.every(({ y }) => y >= 16 && y <= 84));
+  assert.ok(first.every(({ y }) => y >= 6.25 && y <= 93.75));
   assert.doesNotMatch(stylesCss, /\.architecture-guides/);
   assert.match(stylesCss, /\.live-guides span[^}]+top: 10px/s);
   assert.match(appJs, /livePositions\(topology\.nodes\)/);
   assert.match(indexHtml, /id="zoom-out"[^>]+aria-label="Zoom out"/);
   assert.match(indexHtml, /id="zoom-in"[^>]+aria-label="Zoom in"/);
   assert.match(appJs, /minScale: \.6, maxScale: 1\.6/);
+  assert.match(appJs, /function containedLiveView/);
+  assert.match(appJs, /\(rect\.width - inset \* 2\) \/ LIVE_WORLD\.width/);
+  assert.match(appJs, /live-column-\$\{node\.layerIndex\} live-count-\$\{node\.layerSize\} live-index-\$\{node\.layerPosition\}/);
+  assert.match(stylesCss, /\.is-live-source \.live-count-7\.live-index-6 \{ top: 87\.5%; \}/);
 });
 
 test("live topology normalizes endpoints and explains true telemetry islands", () => {
@@ -217,7 +224,7 @@ test("live connector paths terminate at card boundaries for target viewport widt
   assert.ok(Math.abs(crossLayer[0].x - (310 + scaledHalfWidth)) < 0.01);
   assert.ok(Math.abs(crossLayer.at(-1).x - (680 - scaledHalfWidth)) < 0.01);
   assert.ok(crossLayer.some(({ y }) => y < 40 || y > 480));
-  assert.match(liveEdgePath(from, to), /^M .+ L /);
+  assert.match(liveEdgePath(from, to), /^M .+ L .+ Q /);
 });
 
 test("reserved live routes avoid every non-endpoint card", () => {
@@ -269,13 +276,24 @@ test("live pulses follow deterministic topology depth with one segment per edge"
     "checkout->payment": 2,
     "kafka->accounting": 3
   });
+  assert.deepEqual(orderedSignalEdges(topology.edges, livePulseSlots(topology)).map(({ id }) => id), [
+    "frontend->checkout",
+    "checkout->kafka",
+    "kafka->accounting",
+    "checkout->payment"
+  ]);
   assert.match(appJs, /data-live-edge-id/);
+  assert.match(appJs, /data-signal-order/);
   assert.match(appJs, /classList\.toggle\("is-live-source", mode === "live"\)/);
   assert.match(appJs, /classList\.add\("is-signal-active"\)/);
   assert.match(appJs, /is-signal-launch/);
   assert.match(appJs, /is-signal-arrival/);
-  assert.match(stylesCss, /\.edge-group\.is-signal-active \.edge-line[^}]+stroke: var\(--edge-signal\)/s);
+  assert.match(appJs, /class="signal-trace"[^>]+pathLength="1"/);
+  assert.match(stylesCss, /\.edge-group\.is-signal-active \.signal-trace[^}]+live-signal-trace/s);
+  assert.match(stylesCss, /\.is-live-source \.edge-group \{ --edge-signal: var\(--ink\); \}/);
   assert.match(stylesCss, /\.edge-group\.is-signal-active \.pulse-flow[^}]+live-signal-pulse/s);
+  assert.doesNotMatch(stylesCss, /\.edge-group\.is-signal-active \.edge-line[^}]+live-signal-trace/s);
+  assert.doesNotMatch(appJs.match(/function startLiveSignalLoop\(\)[\s\S]+?\n\}/)?.[0] || "", /setInterval/);
   assert.match(stylesCss, /prefers-reduced-motion:[\s\S]+\.edge-group\.is-signal-active \.pulse-flow \{ display: none;/s);
   assert.match(appJs, /data-recovery-command-send/);
   assert.match(appJs, /sendRecoveryCommand\(commandButton\.closest\("form"\)\)/);

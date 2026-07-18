@@ -16,6 +16,7 @@ import {
   liveIncidentNodeStates,
   livePulseSlots,
   livePositions,
+  orderedSignalEdges,
   topologyIntegrity
 } from "./twin-state.mjs";
 
@@ -308,11 +309,12 @@ function renderSourceCanvas(layout) {
   }
   const positions = new Map(positioned.map((node) => [node.id, node]));
   const pulseSlots = livePulseSlots(topology);
+  const signalOrder = new Map(orderedSignalEdges(topology.edges, pulseSlots).map((edge, index) => [edge.id, index]));
   const edgeLayout = {
     canvasWidth: LIVE_WORLD.width,
     canvasHeight: LIVE_WORLD.height,
-    nodeWidth: 144,
-    nodeHeight: 64
+    nodeWidth: 156,
+    nodeHeight: 76
   };
   const edges = topology.edges.filter((edge) => positions.has(edge.from) && positions.has(edge.to)).map((edge, index) => {
     const from = positions.get(edge.from);
@@ -320,7 +322,7 @@ function renderSourceCanvas(layout) {
     const lane = index % 2 ? Math.ceil(index / 2) : -Math.ceil((index + 1) / 2);
     const path = liveEdgePath(from, to, { ...edgeLayout, lane });
     const edgeState = liveSignalTone(edge, nodeStates);
-    return `<g class="edge-group path-runtime signal-${edgeState}" data-live-edge-id="${escapeHtml(edge.id)}" data-signal-from="${escapeHtml(edge.from)}" data-signal-to="${escapeHtml(edge.to)}" data-signal-tone="${edgeState}" data-pulse-slot="${pulseSlots[edge.id] || 0}"><path class="edge-line is-${edgeState}" d="${path}"/><path class="pulse-flow is-${edgeState}" d="${path}" pathLength="1" aria-hidden="true"/><path class="edge-hit" d="${path}" role="button" tabindex="0" aria-label="${escapeHtml(edge.label)} from ${escapeHtml(from.label)} to ${escapeHtml(to.label)}" data-edge-id="${escapeHtml(edge.id)}" data-edge-from="${escapeHtml(edge.from)}" data-edge-to="${escapeHtml(edge.to)}"/></g>`;
+    return `<g class="edge-group path-runtime signal-${edgeState}" data-live-edge-id="${escapeHtml(edge.id)}" data-signal-from="${escapeHtml(edge.from)}" data-signal-to="${escapeHtml(edge.to)}" data-signal-tone="${edgeState}" data-signal-order="${signalOrder.get(edge.id) ?? index}"><path class="edge-line is-${edgeState}" d="${path}" pathLength="1"/><path class="signal-trace" d="${path}" pathLength="1" aria-hidden="true"/><path class="pulse-flow" d="${path}" pathLength="1" aria-hidden="true"/><path class="edge-hit" d="${path}" role="button" tabindex="0" aria-label="${escapeHtml(edge.label)} from ${escapeHtml(from.label)} to ${escapeHtml(to.label)}" data-edge-id="${escapeHtml(edge.id)}" data-edge-from="${escapeHtml(edge.from)}" data-edge-to="${escapeHtml(edge.to)}"/></g>`;
   }).join("");
   const nodes = positioned.map((node) => sourceNodeMarkup(node, { layout, source, nodeStates })).join("");
   const guideLayers = [...LIVE_LAYERS, ...(topology.unlinked_node_ids.length ? [LIVE_UNLINKED_LAYER] : [])];
@@ -335,14 +337,12 @@ function renderSourceCanvas(layout) {
 }
 
 function sourceNodeMarkup(node, { layout, source, nodeStates }) {
-  const positionClass = layout === "architecture"
-    ? `arch-layer-${node.layerIndex} arch-count-${node.layerSize} arch-index-${node.layerPosition}`
-    : `live-column-${node.layerIndex} live-count-${node.layerSize} live-index-${node.layerPosition}`;
   const nodeState = node.connectivity === "unlinked" && layout === "live" ? "unlinked" : nodeStates[node.id] || "observed";
   const nodeStatus = nodeState === "impact" ? "Failure observed" : nodeState === "unlinked" ? "Evidence gap" : source.status === "live" ? "Observed" : "Last known";
   const ariaStatus = nodeState === "unlinked" ? "Insufficient dependency evidence" : nodeStatus;
   const origin = layout === "architecture" ? kindLabel(node.kind) : `RUNTIME · ${sourceOrigin(layout)}`;
-  return `<button class="twin-node source-node plane-runtime kind-${escapeHtml(node.kind)} is-${nodeState} ${positionClass}" type="button" data-node-id="${escapeHtml(node.id)}" data-transition-key="${escapeHtml(transitionKey(node.id))}" aria-label="${escapeHtml(kindLabel(node.kind))} ${escapeHtml(node.label)}, ${escapeHtml(ariaStatus)}">
+  const livePositionClass = layout === "live" ? ` live-column-${node.layerIndex} live-count-${node.layerSize} live-index-${node.layerPosition}` : "";
+  return `<button class="twin-node source-node plane-runtime kind-${escapeHtml(node.kind)} is-${nodeState}${livePositionClass}" type="button" data-node-id="${escapeHtml(node.id)}" data-transition-key="${escapeHtml(transitionKey(node.id))}" aria-label="${escapeHtml(kindLabel(node.kind))} ${escapeHtml(node.label)}, ${escapeHtml(ariaStatus)}">
     <span class="node-icon" aria-hidden="true"><i class="ph ph-${iconForLive(node)}"></i></span>
     <span class="node-copy"><span class="node-origin">${escapeHtml(origin)}</span><strong>${escapeHtml(node.label)}</strong><span class="node-detail">${escapeHtml(node.detail || (nodeState === "unlinked" ? "dependency not observed" : "observed service.name"))}</span><span class="node-status">${escapeHtml(nodeStatus)}</span></span>
     <span class="node-status-dot" aria-hidden="true"></span>
@@ -375,38 +375,45 @@ function renderLiveChange(positioned, edgeLayout) {
 
 function startLiveSignalLoop() {
   const groups = [...els["canvas-layers"].querySelectorAll("[data-live-edge-id]")]
-    .sort((a, b) => Number(a.dataset.pulseSlot) - Number(b.dataset.pulseSlot) || a.dataset.liveEdgeId.localeCompare(b.dataset.liveEdgeId));
+    .sort((a, b) => Number(a.dataset.signalOrder) - Number(b.dataset.signalOrder));
   if (!groups.length) return;
   const nodes = new Map([...els["canvas-layers"].querySelectorAll("[data-node-id]")].map((node) => [node.dataset.nodeId, node]));
   const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
+  const schedule = (callback, delay) => {
+    const timer = setTimeout(() => {
+      liveSignalTimers = liveSignalTimers.filter((candidate) => candidate !== timer);
+      callback();
+    }, delay);
+    liveSignalTimers.push(timer);
+  };
   const activate = (group, persistent = false) => {
     clearLiveSignalClasses();
     const tone = group.dataset.signalTone || "observed";
     const from = nodes.get(group.dataset.signalFrom);
     const to = nodes.get(group.dataset.signalTo);
-    group.classList.add("is-signal-active");
     from?.classList.add("is-signal-launch", `signal-${tone}`);
     if (persistent) {
+      group.classList.add("is-signal-active");
       to?.classList.add("is-signal-arrival", `signal-${tone}`);
       return;
     }
-    liveSignalTimers.push(setTimeout(() => {
+    schedule(() => group.classList.add("is-signal-active"), 140);
+    schedule(() => {
       from?.classList.remove("is-signal-launch", `signal-${tone}`);
       to?.classList.add("is-signal-arrival", `signal-${tone}`);
-    }, 310));
-    liveSignalTimers.push(setTimeout(() => {
+    }, 860);
+    schedule(() => {
       group.classList.remove("is-signal-active");
+    }, 1_060);
+    schedule(() => {
       to?.classList.remove("is-signal-arrival", `signal-${tone}`);
-    }, 760));
+      liveSignalIndex = (liveSignalIndex + 1) % groups.length;
+      activate(groups[liveSignalIndex]);
+    }, 1_240);
   };
 
   liveSignalIndex = Math.min(liveSignalIndex, groups.length - 1);
   activate(groups[liveSignalIndex], reduced);
-  if (reduced) return;
-  liveSignalTimers.push(setInterval(() => {
-    liveSignalIndex = (liveSignalIndex + 1) % groups.length;
-    activate(groups[liveSignalIndex]);
-  }, 860));
 }
 
 function stopLiveSignalLoop() {
@@ -995,13 +1002,19 @@ function setLiveZoom(nextScale) {
 
 function resetLiveView() {
   const rect = els["twin-canvas"].getBoundingClientRect();
-  liveView = {
-    scale: 1,
-    x: (rect.width - LIVE_WORLD.width) / 2,
-    y: (rect.height - LIVE_WORLD.height) / 2,
+  liveView = containedLiveView(rect);
+  applyLiveView();
+}
+
+function containedLiveView(rect = els["twin-canvas"].getBoundingClientRect()) {
+  const inset = 24;
+  const scale = Math.max(LIVE_WORLD.minScale, Math.min(1, (rect.width - inset * 2) / LIVE_WORLD.width, (rect.height - inset * 2) / LIVE_WORLD.height));
+  return {
+    scale,
+    x: (rect.width - LIVE_WORLD.width * scale) / 2,
+    y: (rect.height - LIVE_WORLD.height * scale) / 2,
     initialized: true
   };
-  applyLiveView();
 }
 
 function applyLiveView() {
@@ -1012,10 +1025,11 @@ function applyLiveView() {
 
 function updateZoomControls() {
   if (!els["zoom-level"]) return;
+  const fitted = containedLiveView();
   els["zoom-level"].textContent = `${Math.round(liveView.scale * 100)}%`;
   els["zoom-out"].disabled = mode !== "live" || liveView.scale <= LIVE_WORLD.minScale;
   els["zoom-in"].disabled = mode !== "live" || liveView.scale >= LIVE_WORLD.maxScale;
-  els["zoom-reset"].disabled = mode !== "live" || (liveView.scale === 1 && Math.abs(liveView.x - (els["twin-canvas"].clientWidth - LIVE_WORLD.width) / 2) < 1 && Math.abs(liveView.y - (els["twin-canvas"].clientHeight - LIVE_WORLD.height) / 2) < 1);
+  els["zoom-reset"].disabled = mode !== "live" || (Math.abs(liveView.scale - fitted.scale) < .001 && Math.abs(liveView.x - fitted.x) < 1 && Math.abs(liveView.y - fitted.y) < 1);
 }
 
 function startLivePan(event) {
