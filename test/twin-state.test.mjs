@@ -539,13 +539,32 @@ test("every canvas mode exposes the shared status-dot contract with compact tool
   assert.doesNotMatch(appJs, /This canvas does not synthesize services or telemetry/);
 });
 
-test("component vectors stay transparent and monochrome while status dots carry state", () => {
-  assert.match(stylesCss, /\.node-icon \{[^}]+border: 0;[^}]+color: var\(--ink\);[^}]+background: transparent;/);
-  assert.match(stylesCss, /\.collaborator-icon \{[^}]+border: 0;[^}]+color: var\(--ink\);[^}]+background: transparent;[^}]+box-shadow: none;/);
-  assert.match(stylesCss, /\.collaboration-avatar \{[^}]+border: 0;[^}]+color: var\(--ink\);[^}]+background: transparent;/);
-  assert.match(stylesCss, /:root\[data-theme="dark"\] \.node-icon \{ color: #ffffff; background: transparent; \}/);
+test("component vectors stay transparent, semantically colored, and status-independent", () => {
+  assert.match(stylesCss, /\.node-icon \{[^}]+border: 0;[^}]+color: var\(--icon\);[^}]+background: transparent;/);
+  assert.match(stylesCss, /\.collaborator-icon \{[^}]+border: 0;[^}]+color: var\(--icon\);[^}]+background: transparent;[^}]+box-shadow: none;/);
+  assert.match(stylesCss, /\.collaboration-avatar \{[^}]+border: 0;[^}]+color: var\(--icon\);[^}]+background: transparent;/);
+  assert.match(stylesCss, /\.source-node\.kind-stream \{ --icon: #d97706;/);
+  assert.match(stylesCss, /\.source-node\.kind-database \{ --icon: #059669;/);
+  assert.match(stylesCss, /\.collaborator-node-recovery-engineer, \.icon-role-recovery-engineer \{ --icon: #ea580c;/);
+  assert.match(appJs, /collaborator-icon icon-role-\$\{escapeHtml\(node\.id\)\}/);
+  assert.match(appJs, /collaboration-avatar icon-role-\$\{escapeHtml\(selectedAgent\.id\)\}/);
+  assert.match(stylesCss, /:root\[data-theme="dark"\] \.node-icon \{ color: var\(--icon\); background: transparent; \}/);
   assert.match(stylesCss, /\.twin-node\.is-impact[^}]+--signal: var\(--red\)/);
   assert.match(stylesCss, /\.collaborator-node\.is-verified \.node-status-dot[^}]+background: var\(--green\)/);
+});
+
+test("the contextual drawer and workspace menu use restrained semantic color", () => {
+  assert.match(appJs, /context-drawer"\]\.dataset\.tone = drawerTone\(selected\)/);
+  assert.match(appJs, /function drawerTone\(focus\)/);
+  assert.match(appJs, /\["impact", "root", "rejected"\]\.includes\(source\.status\)/);
+  assert.match(appJs, /source\.status === "verified"/);
+  assert.match(stylesCss, /\.context-drawer\[data-tone="stream"\] \{ --drawer-accent: #d97706;/);
+  assert.match(stylesCss, /\.context-drawer\[data-tone="impact"\] \{ --drawer-accent: var\(--red\); \}/);
+  assert.match(stylesCss, /\.context-drawer\[data-tone="verified"\] \{ --drawer-accent: var\(--green\); \}/);
+  assert.match(stylesCss, /\.drawer-header[^}]+box-shadow: inset 3px 0 0 var\(--drawer-accent\)/s);
+  assert.match(stylesCss, /\.drawer-tab\[aria-selected="true"\][^}]+box-shadow: inset 0 -2px 0 var\(--drawer-accent\)/s);
+  assert.match(stylesCss, /\.nav-button\[data-nav-tab="incidents"\] \{ --menu-accent: var\(--red\); \}/);
+  assert.match(stylesCss, /\.nav-button::before[^}]+background: var\(--menu-accent, var\(--faint\)\)/s);
 });
 
 test("stage projection preserves evaluator, owner, recovery, and evolve ordering", () => {

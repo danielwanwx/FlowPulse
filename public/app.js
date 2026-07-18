@@ -555,7 +555,7 @@ function renderAgentCanvas() {
   const nodes = team.nodes.map((node) => {
     const selectedState = node.id === selectedAgent.id;
     return `<button class="collaborator-node collaborator-node-${escapeHtml(node.id)} is-${agentNodeTone(node.status)} ${selectedState ? "is-selected" : ""}" type="button" data-collaborator-id="${escapeHtml(node.id)}" data-status="${escapeHtml(agentNodeTone(node.status))}" aria-label="${escapeHtml(node.label)}, ${escapeHtml(agentStatusLabel(node.status))}" aria-pressed="${selectedState}">
-      <span class="collaborator-icon" aria-hidden="true"><i class="ph ph-${escapeHtml(node.icon)}"></i><span class="node-status-dot"></span></span>
+      <span class="collaborator-icon icon-role-${escapeHtml(node.id)}" aria-hidden="true"><i class="ph ph-${escapeHtml(node.icon)}"></i><span class="node-status-dot"></span></span>
       <strong>${escapeHtml(node.label)}</strong><small>${escapeHtml(agentStatusLabel(node.status))}</small>
     </button>`;
   }).join("");
@@ -592,7 +592,7 @@ function renderAgentCanvas() {
       <div class="recovery-graph"><svg class="edge-map" viewBox="0 0 1000 520" preserveAspectRatio="none">${edges}</svg>${nodes}<div class="agent-infrastructure-rail"><button type="button" data-collaborator-inspect="ledger"><i class="ph ph-database" aria-hidden="true"></i><span><strong>Evidence ledger</strong><small>Authority · ${escapeHtml(String(control.last_sequence))} events</small></span></button><button type="button" data-collaborator-inspect="langfuse"><i class="ph ph-waveform" aria-hidden="true"></i><span><strong>Langfuse</strong><small>Observability · ${control.langfuse === "observing" ? "connected" : "not configured"}</small></span></button></div></div>
     </section>
     <aside class="recovery-command" aria-label="${escapeHtml(selectedAgent.label)} collaboration panel" aria-live="polite">
-      <header class="collaboration-header"><span class="collaboration-avatar is-${escapeHtml(agentNodeTone(selectedAgent.status))}" aria-hidden="true"><i class="ph ph-${escapeHtml(selectedAgent.icon)}"></i><span class="node-status-dot"></span></span><div><span>${escapeHtml(agentStatusLabel(selectedAgent.status))}</span><strong id="collaboration-panel-title" tabindex="-1">${escapeHtml(selectedAgent.label)}</strong><small>${escapeHtml(selectedAgent.responsibility)}</small></div><button type="button" class="collaboration-inspect" data-collaborator-inspect="${escapeHtml(selectedAgent.currentRole)}">Inspect</button></header>
+      <header class="collaboration-header"><span class="collaboration-avatar icon-role-${escapeHtml(selectedAgent.id)} is-${escapeHtml(agentNodeTone(selectedAgent.status))}" aria-hidden="true"><i class="ph ph-${escapeHtml(selectedAgent.icon)}"></i><span class="node-status-dot"></span></span><div><span>${escapeHtml(agentStatusLabel(selectedAgent.status))}</span><strong id="collaboration-panel-title" tabindex="-1">${escapeHtml(selectedAgent.label)}</strong><small>${escapeHtml(selectedAgent.responsibility)}</small></div><button type="button" class="collaboration-inspect" data-collaborator-inspect="${escapeHtml(selectedAgent.currentRole)}">Inspect</button></header>
       <section class="collaboration-finding"><div class="recovery-section-title"><strong>Latest grounded signal</strong><span>${escapeHtml(selectedAgent.currentRole.replaceAll("_", " "))}</span></div><p>${escapeHtml(finding)}</p><div class="collaboration-citations">${citations.slice(0, 3).map((ref) => `<code>${escapeHtml(ref)}</code>`).join("") || "<span>Evidence not yet cited</span>"}</div></section>
       <section class="collaboration-prompts"><div>${quickPrompts}</div></section>
       <section class="collaboration-thread"><div class="recovery-section-title"><strong>Conversation</strong></div>${conversationMarkup}</section>
@@ -1077,6 +1077,7 @@ function renderDrawer() {
   }
   els["context-drawer"].hidden = false;
   const meta = selectionMeta(selected);
+  els["context-drawer"].dataset.tone = drawerTone(selected);
   els["drawer-kind"].textContent = meta.kind;
   els["drawer-title"].textContent = meta.title;
   els["drawer-subtitle"].textContent = meta.subtitle;
@@ -1131,6 +1132,27 @@ function selectionMeta(focus) {
   if (focus.type === "annotation") return { kind: "Causal annotation", title: annotationTitle(focus.id), subtitle: TWIN_STAGES[cursor].label };
   if (focus.type === "stage") return { kind: "Replay stage", title: TWIN_STAGES[cursor].label, subtitle: `Captured incident time ${TWIN_STAGES[cursor].time}` };
   return { kind: "Incident run", title: state.incident.title, subtitle: `${state.events.length} immutable events in ${state.run_id}` };
+}
+
+function drawerTone(focus) {
+  if (focus?.type === "node") {
+    const source = sourceComponentContext(focus.id);
+    if (source) {
+      if (["impact", "root", "rejected"].includes(source.status)) return "impact";
+      if (["warning", "unlinked"].includes(source.status)) return "warning";
+      if (source.status === "verified") return "verified";
+      return source.node.kind;
+    }
+    if (focus.id === "deployment") return "change";
+    if (focus.id === "ledger") return "database";
+    if (focus.id === "evaluator") return "evaluator";
+    if (focus.id === "agent") return "agent";
+    const collaborator = agentControl().graph.nodes.find((node) => node.id === focus.id);
+    if (collaborator) return collaborator.id === "recovery-engineer" ? "change" : collaborator.id === "verifier" ? "api" : collaborator.id === "observer" ? "client" : "agent";
+  }
+  if (focus?.type === "agent-edge") return "agent";
+  if (focus?.type === "edge") return "stream";
+  return "agent";
 }
 
 function drawerContent(tab) {
