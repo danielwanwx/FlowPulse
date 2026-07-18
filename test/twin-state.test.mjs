@@ -63,6 +63,7 @@ test("architecture layout is deterministic, layered, and leaves room for complet
   const coordinates = (items) => Object.fromEntries(items.map(({ id, layer, x, y }) => [id, { layer, x, y }]));
   assert.deepEqual(coordinates(first), coordinates(second));
   assert.deepEqual([...new Set(first.map(({ layer }) => layer))], ARCHITECTURE_LAYERS.map(({ id }) => id));
+  assert.ok(ARCHITECTURE_LAYERS.every(({ description }) => typeof description === "string" && description.length > 0));
   assert.ok(first.every(({ x, y }) => x >= 6 && x <= 94 && y >= 18 && y <= 82));
   assert.deepEqual([...new Set(first.map(({ layerSize }) => layerSize))], [2, 4, 6, 10]);
   for (const y of new Set(first.map((node) => node.y))) {
@@ -75,14 +76,14 @@ test("architecture layout is deterministic, layered, and leaves room for complet
   assert.match(stylesCss, /\.architecture-tier-row \{[^}]+min-height: 72px;[^}]+grid-template-columns: repeat\(auto-fit, var\(--architecture-card-width\)\)/s);
   assert.match(stylesCss, /\.architecture-tier \{[^}]+width: 100%;[^}]+display: block/s);
   assert.match(stylesCss, /\.architecture-tier \.source-node \{[\s\S]+position: relative;[\s\S]+margin: 0;[\s\S]+border-width: 1px \.5px/s);
-  assert.match(stylesCss, /--architecture-card-width: clamp\(106px, 8\.6vw, 124px\)/);
+  assert.match(stylesCss, /--architecture-card-width: clamp\(116px, 9vw, 140px\)/);
   assert.match(stylesCss, /\.architecture-tier \.source-node strong \{[^}]+font-size: 12px/s);
   assert.match(stylesCss, /\.twin-canvas\.is-architecture-source \{ min-width: 0; \}/);
   assert.match(stylesCss, /\.architecture-tier-label \{[^}]+display: flex;[^}]+border-bottom: 1px solid var\(--line-strong\)/s);
-  assert.match(appJs, /architecture-tier-label[^\n]+members\.length/);
+  assert.match(appJs, /architecture-tier-label[^\n]+layer\.description/);
   assert.match(appJs, /service\.name=\$\{node\.id\}/);
   assert.match(appJs, /telemetry\.sdk\.language/);
-  assert.match(appJs, /layout === "architecture" \? profile\.runtimeSummary/);
+  assert.match(appJs, /layout === "architecture" \? `\$\{kindLabel\(node\.kind\)\}/);
   assert.match(stylesCss, /@media \(max-width: 1080px\)[\s\S]+\.architecture-tier-row \{ grid-template-columns: repeat\(auto-fit, minmax\(96px, 112px\)\); \}/);
 });
 
@@ -438,16 +439,34 @@ test("active incident chrome appears only for unresolved real-development runs",
   assert.match(appJs, /mode !== "live" \|\| !activeIncident/);
 });
 
-test("source component drawers expose scoped topology, raw signal previews, and immutable provenance", () => {
+test("source component drawers expose only data-bearing topology, signals, and immutable provenance", () => {
   assert.match(appJs, /function sourceComponentContext\(id\)/);
-  assert.match(appJs, /Business capability/);
+  assert.match(appJs, /function sourceDrawerTabs\(context\)/);
+  assert.match(appJs, /Overview/);
+  assert.match(appJs, /function renderSourceSignalSummary\(context\)/);
   assert.match(appJs, /Upstream/);
   assert.match(appJs, /Downstream/);
   assert.match(appJs, /function renderTelemetryPreview\(item\)/);
   assert.match(appJs, /item\.provenance\.byte_start/);
   assert.match(appJs, /item\.provenance\.sha256/);
   assert.match(stylesCss, /\.component-context/);
+  assert.match(stylesCss, /\.signal-summary/);
   assert.match(stylesCss, /\.telemetry-preview/);
+});
+
+test("timeline renders only recorded milestones and labels the next evidence requirement", () => {
+  assert.match(appJs, /const visible = stages\.slice\(0, available \+ 1\)/);
+  assert.match(appJs, /function nextTimelineRequirement\(index\)/);
+  assert.match(appJs, /awaiting recovery verification/);
+  assert.match(stylesCss, /\.timeline-next/);
+  assert.match(stylesCss, /--stage-count/);
+});
+
+test("recovery console keeps chat primary while secondary summary chrome stays hidden", () => {
+  assert.match(stylesCss, /\[data-mode="agents"\] \.metric-cluster, \.app-shell\[data-mode="agents"\] \.legend-menu \{ display: none;/);
+  assert.match(appJs, /Latest grounded signal/);
+  assert.match(appJs, /Current ledger owner/);
+  assert.match(appJs, /Evidence, activity &amp; controls/);
 });
 
 test("pure-black mode keeps structural component and connector edges high contrast", () => {

@@ -52,21 +52,25 @@ export const ARCHITECTURE_LAYERS = [
   {
     id: "experience",
     label: "Experience",
+    description: "customer and synthetic entry",
     ids: ["load-generator", "frontend-web"]
   },
   {
     id: "commerce",
-    label: "Entry & commerce",
+    label: "Edge & commerce",
+    description: "requests, cart, and checkout",
     ids: ["frontend-proxy", "frontend", "checkout", "cart"]
   },
   {
     id: "processing",
-    label: "Commerce services",
+    label: "Core services",
+    description: "transactional and supporting services",
     ids: ["payment", "currency", "shipping", "product-catalog", "recommendation", "ad"]
   },
   {
     id: "platform",
-    label: "Processing, platform & data",
+    label: "Async, data & platform",
+    description: "eventing, workers, configuration, and telemetry",
     ids: ["email", "kafka", "accounting", "fraud-detection", "fraud", "quote", "image-provider", "flagd-ui", "flagd", "telemetry-docs", "otelcol-contrib", "astronomy-db"]
   }
 ];
