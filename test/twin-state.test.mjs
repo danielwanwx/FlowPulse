@@ -239,6 +239,20 @@ test("compare uses incident and verified frames without changing layout", () => 
   assert.doesNotMatch(stylesCss, /\.compare-value-\d+/);
 });
 
+test("compare exposes causal, recovery, and learning decisions beside the deterministic split", () => {
+  assert.match(indexHtml, /id="compare-review-rail"/);
+  assert.match(indexHtml, /data-compare-focus="impact"/);
+  assert.match(indexHtml, /data-compare-focus="learning"/);
+  assert.match(appJs, /function compareDecisionModel\(\)/);
+  assert.match(appJs, /evaluation\.rejected/);
+  assert.match(appJs, /repair\.proposed/);
+  assert.match(appJs, /verification\.completed/);
+  assert.match(appJs, /regression\.created/);
+  assert.match(appJs, /function handleCompareReview/);
+  assert.match(stylesCss, /\.compare-review-rail/);
+  assert.match(stylesCss, /data-compare-focus="cause"/);
+});
+
 test("compare is always available and labels captured previews separately from current verification", () => {
   assert.deepEqual(compareProvenance([]), {
     label: "Captured recovery preview",

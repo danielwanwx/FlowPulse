@@ -136,6 +136,8 @@
             </div>
           </div>
 
+          <aside id="compare-review-rail" class="compare-review-rail" aria-labelledby="compare-review-title" hidden></aside>
+
           <section id="incident-strip" class="incident-strip" aria-label="Active incident">
             <div class="incident-severity"><span id="severity">SEV-1</span><small>ACTIVE INCIDENT</small></div>
             <div class="incident-copy"><strong id="incident-title">Loading incident</strong><span id="incident-summary">Reading immutable incident state.</span></div>
@@ -213,6 +215,12 @@
               <button id="compare-incident" type="button">70% incident</button>
               <button id="compare-even" type="button">Even split</button>
               <button id="compare-verified" type="button">70% verified</button>
+            </div>
+            <div class="compare-focus-controls" aria-label="Compare review focus">
+              <button type="button" data-compare-focus="impact" aria-pressed="true">Impact</button>
+              <button type="button" data-compare-focus="cause" aria-pressed="false">Cause</button>
+              <button type="button" data-compare-focus="recovery" aria-pressed="false">Recovery</button>
+              <button type="button" data-compare-focus="learning" aria-pressed="false">Learning</button>
             </div>
           </div>
 

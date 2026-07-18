@@ -72,6 +72,7 @@ let cursor = 0;
 let playing = false;
 let busy = false;
 let comparePercent = 50;
+let compareFocus = "impact";
 let selected = null;
 let activeTab = "evidence";
 let toastTimer;
@@ -126,6 +127,8 @@ els["compare-canvas-range"].addEventListener("input", () => {
 els["compare-incident"].addEventListener("click", () => setComparePercent(70));
 els["compare-even"].addEventListener("click", () => setComparePercent(50));
 els["compare-verified"].addEventListener("click", () => setComparePercent(30));
+els["compare-control"].addEventListener("click", handleCompareFocus);
+els["compare-review-rail"].addEventListener("click", handleCompareReview);
 els["theme-toggle"].addEventListener("click", toggleTheme);
 els["zoom-out"].addEventListener("click", () => setLiveZoom(liveView.scale - LIVE_WORLD.step));
 els["zoom-in"].addEventListener("click", () => setLiveZoom(liveView.scale + LIVE_WORLD.step));
@@ -303,6 +306,7 @@ function renderCanvas() {
     const { incident, recovered } = compareFrames();
     const provenance = compareProvenance(state.events);
     els["canvas-layers"].innerHTML = `${renderTwinLayer(recovered, "after", true)}${renderTwinLayer(incident, "before", false)}`;
+    renderCompareReviewRail();
     els["compare-handle"].hidden = false;
     els["compare-canvas-range"].hidden = false;
     setAnnotations([]);
@@ -312,6 +316,7 @@ function renderCanvas() {
     return;
   }
   const frame = currentFrame();
+  els["compare-review-rail"].hidden = true;
   els["canvas-layers"].innerHTML = renderTwinLayer(frame, "current", true);
   els["compare-handle"].hidden = true;
   els["compare-canvas-range"].hidden = true;
@@ -327,6 +332,7 @@ function renderSourceCanvas(layout) {
   const topology = topologyIntegrity(layout === "architecture" ? architectureTopology() : source.topology);
   els["compare-handle"].hidden = true;
   els["compare-canvas-range"].hidden = true;
+  els["compare-review-rail"].hidden = true;
   setAnnotations([]);
   if (!topology?.nodes?.length) {
     els["canvas-layers"].innerHTML = `<div class="source-empty">
@@ -531,6 +537,7 @@ function clearLiveSignalClasses() {
 }
 
 function renderAgentCanvas() {
+  els["compare-review-rail"].hidden = true;
   const control = agentControl();
   const team = projectAgentCollaborators(control);
   if (!team.nodes.some((node) => node.id === selectedCollaboratorId)) selectedCollaboratorId = "commander";
@@ -674,6 +681,140 @@ function renderComparePosition() {
   els["compare-range"].setAttribute("aria-valuetext", `${Math.round(comparePercent)} percent incident, ${Math.round(100 - comparePercent)} percent verified`);
   els["compare-canvas-range"].value = String(comparePercent);
   els["compare-canvas-range"].setAttribute("aria-valuetext", `${Math.round(comparePercent)} percent incident, ${Math.round(100 - comparePercent)} percent verified`);
+}
+
+function compareDecisionModel() {
+  const events = state?.events || [];
+  const first = (type) => events.find((event) => event.type === type);
+  const last = (type) => [...events].reverse().find((event) => event.type === type);
+  const rejected = first("evaluation.rejected");
+  const replan = first("plan.revised");
+  const accepted = last("evaluation.accepted");
+  const cause = [...events].reverse().find((event) => event.type === "hypothesis.proposed" && event.payload?.id === accepted?.payload?.hypothesis_id);
+  const repair = first("repair.proposed");
+  const approval = last("approval.granted") || first("approval.requested");
+  const executed = last("repair.executed");
+  const verification = last("verification.completed");
+  const regression = last("regression.created");
+  const policy = last("policy.evaluated");
+  const verified = verification?.payload?.passed === true;
+  return {
+    rejected,
+    replan,
+    accepted,
+    cause,
+    repair,
+    approval,
+    executed,
+    verification,
+    regression,
+    policy,
+    verified,
+    rootCause: cause?.payload?.title || "Causal finding is not yet recorded",
+    rootCopy: accepted?.payload?.reason || "Awaiting evaluator-confirmed causal evidence.",
+    recovery: repair?.payload?.action || "No bounded repair proposed",
+    recoveryCopy: repair?.payload?.expected_effect || "The repair boundary will appear after a causal finding is accepted.",
+    nextTime: replan?.payload?.reason || "Capture the initiating change and the first failing request before naming a cause."
+  };
+}
+
+function compareEvidenceChips(event, limit = 3) {
+  const refs = event?.evidence_refs || [];
+  return refs.slice(0, limit).map((id) => `<code>${escapeHtml(id)}</code>`).join("") || "<span>Ledger record pending</span>";
+}
+
+function renderCompareReviewRail() {
+  if (mode !== "compare") return;
+  const decision = compareDecisionModel();
+  const provenance = compareProvenance(state.events);
+  const approvalLabel = decision.approval?.type === "approval.granted" ? "Owner approved" : decision.approval?.type === "approval.requested" ? "Owner gate required" : "Owner gate not reached";
+  const executionLabel = decision.executed ? "Rollback recorded" : "Execution not recorded";
+  const verificationLabel = decision.verified ? "Recovery verified" : "Verification not yet passed";
+  const learningLabel = decision.regression ? "Regression recorded" : "Regression pending";
+  const focusItems = [
+    ["impact", "Impact", "Before → verified operating state"],
+    ["cause", "Cause", "Rejected symptom and confirmed mechanism"],
+    ["recovery", "Recovery", "Bounded change, owner gate, verification"],
+    ["learning", "Learning", "Reusable evidence path and policy record"]
+  ];
+  const focusButtons = focusItems.map(([id, label, copy]) => `<button type="button" data-compare-focus="${id}" aria-pressed="${String(compareFocus === id)}"><strong>${label}</strong><small>${copy}</small></button>`).join("");
+  els["compare-review-rail"].hidden = false;
+  els["compare-review-rail"].innerHTML = `<header class="compare-review-header">
+    <span>DECISION REVIEW</span>
+    <h2 id="compare-review-title">What changed, and why</h2>
+    <p>${escapeHtml(provenance.caption)}</p>
+  </header>
+  <nav class="compare-review-focus" aria-label="Decision review focus">${focusButtons}</nav>
+  <div class="compare-review-list">
+    <section class="compare-review-section is-${compareFocus === "impact" ? "active" : "quiet"}">
+      <button type="button" class="compare-review-item" data-compare-focus="impact" data-compare-tab="verify">
+        <span class="compare-review-kicker">Impact → verified outcome</span>
+        <strong>Checkout 38.4% → 0.8% errors</strong>
+        <small>Payment 61.6% → 99.98% reachable · Kafka 11,842 → 620 lag</small>
+      </button>
+    </section>
+    <section class="compare-review-section is-${compareFocus === "cause" ? "active" : "quiet"}">
+      <button type="button" class="compare-review-item" data-compare-focus="cause" data-compare-tab="eval">
+        <span class="compare-review-kicker">Causal decision</span>
+        <strong>${escapeHtml(decision.rejected ? "Kafka initiation rejected" : "Evaluator record pending")}</strong>
+        <small>${escapeHtml(decision.rejected?.payload?.reason || "No adversarial verdict is recorded for this run.")}</small>
+        <span class="compare-evidence">${compareEvidenceChips(decision.rejected)}</span>
+      </button>
+      <button type="button" class="compare-review-item" data-compare-focus="cause" data-compare-tab="changes">
+        <span class="compare-review-kicker">Confirmed mechanism</span>
+        <strong>${escapeHtml(decision.rootCause)}</strong>
+        <small>${escapeHtml(decision.rootCopy)}</small>
+        <span class="compare-evidence">${compareEvidenceChips(decision.cause || decision.accepted)}</span>
+      </button>
+    </section>
+    <section class="compare-review-section is-${compareFocus === "recovery" ? "active" : "quiet"}">
+      <button type="button" class="compare-review-item" data-compare-focus="recovery" data-compare-tab="repair">
+        <span class="compare-review-kicker">Bounded recovery</span>
+        <strong>${escapeHtml(decision.recovery)}</strong>
+        <small>${escapeHtml(decision.recoveryCopy)}</small>
+        <span class="compare-review-state">${escapeHtml(approvalLabel)} · ${escapeHtml(executionLabel)} · ${escapeHtml(verificationLabel)}</span>
+      </button>
+    </section>
+    <section class="compare-review-section is-${compareFocus === "learning" ? "active" : "quiet"}">
+      <button type="button" class="compare-review-item" data-compare-focus="learning" data-compare-tab="evolve">
+        <span class="compare-review-kicker">Next time</span>
+        <strong>Start with deploy + first failing trace</strong>
+        <small>${escapeHtml(decision.nextTime)}</small>
+        <span class="compare-review-state">${escapeHtml(learningLabel)}${decision.policy ? ` · ${escapeHtml(String(decision.policy.payload?.promotion || "policy evaluated").replaceAll("_", " "))}` : ""}</span>
+      </button>
+    </section>
+  </div>`;
+  applyCompareFocus();
+}
+
+function applyCompareFocus() {
+  els["twin-canvas"].dataset.compareFocus = compareFocus;
+  for (const button of document.querySelectorAll("[data-compare-focus]")) {
+    button.setAttribute("aria-pressed", String(button.dataset.compareFocus === compareFocus));
+  }
+}
+
+function handleCompareFocus(event) {
+  const button = event.target.closest("[data-compare-focus]");
+  if (!button || mode !== "compare") return;
+  compareFocus = button.dataset.compareFocus;
+  renderCompareReviewRail();
+}
+
+function handleCompareReview(event) {
+  const item = event.target.closest("[data-compare-tab]");
+  if (item && mode === "compare") {
+    event.stopPropagation();
+    compareFocus = item.dataset.compareFocus;
+    applyCompareFocus();
+    openDrawer({ type: "run", id: state.run_id }, item.dataset.compareTab);
+    els["context-drawer"].hidden = false;
+    return;
+  }
+  const focus = event.target.closest("[data-compare-focus]");
+  if (!focus || mode !== "compare") return;
+  compareFocus = focus.dataset.compareFocus;
+  renderCompareReviewRail();
 }
 
 function setComparePercent(value) {
