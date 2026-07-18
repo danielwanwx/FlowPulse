@@ -32,11 +32,18 @@ full, API-contract, and relevant UI integration checks pass.
    gates.
 3. Severity, evaluator score, model confidence, or a KB result alone never
    grant execution.
-4. A stale/unknown factor, tool/model failure, missing owner, notification
-   failure, failed action, or failed verification always selects a stricter
+4. A stale/unknown factor, tool/model failure, missing required human owner,
+   notification failure, failed action, or failed verification always selects a stricter
    outcome.
 5. Captured fixture execution is never labeled real local or production
    execution.
+6. An API client, model, or KB item can never select a preauthorization
+   envelope, run, decision, owner identity, or action contract. The server
+   resolves all authority-bearing references from the current ledger and its
+   code-owned registry.
+7. A preauthorization is consumed once, atomically, and is revalidated at the
+   executor boundary. A failure lock is keyed to the incident plus exact action
+   contract and survives a new run for that same incident.
 
 ### Non-goals
 
@@ -58,6 +65,11 @@ full, API-contract, and relevant UI integration checks pass.
 | Model loop | `src/openai.mjs`, `src/investigation-failure.mjs` | No additional model authority; preserve bounded evaluator/causal gates. |
 | UI | `public/index.html`, `public/app.js`, `public/twin-state.mjs` | Reorganize views around server-projected stages; no client risk/state calculation. |
 | Tests | `test/runtime.test.mjs`, `test/development-runtime.test.mjs`, `test/server.test.mjs`, `test/twin-state.test.mjs` | Add pure policy/projection, contract, integration, and browser checks. |
+
+Before any implementation slice, record `git rev-parse HEAD` and a stable
+fingerprint of the pre-existing dirty worktree (for example, the SHA-256 of
+`git status --porcelain=v1` plus its sorted path list). Every slice preserves
+those unrelated paths and reports its own changed-file set.
 
 ### Versioned UI/API contract
 
@@ -81,7 +93,14 @@ and adds:
       "reason_codes": []
     },
     "human_gate": "not_required | preauthorized | owner_required | explicit_decision_required | unavailable",
-    "notification": { "status": "not_required | pending | delivered | failed | unavailable" },
+    "notification": {
+      "status": "not_required | pending | recorded_local | simulated | delivered_external | failed | unavailable",
+      "delivery_mode": "none | local_ledger | captured_simulation | external_receipt | unavailable"
+    },
+    "execution": {
+      "truth_mode": "none | captured_simulation | local_development | unavailable",
+      "receipt_ref": null
+    },
     "failure_lock": { "active": false, "reason_code": null, "event_ref": null },
     "why_stopped": { "boundary": null, "reason_code": null, "next_precondition": null },
     "legacy_detail_status": "available | legacy_detail_unavailable"
@@ -97,20 +116,27 @@ only a clearly labelled stale canvas and the safe error envelope. Existing
 routes remain until UI migration is complete.
 
 Decision-route errors use bounded existing failure envelopes: `400` invalid
-schema, `404` unknown run/decision, `409` stale/mismatched/expired/locked, and
-`422` failed deterministic precondition. No authority event is appended for an
-invalid request.
+schema, `404` unknown current decision, `409` stale/mismatched/expired/
+revoked/consumed/locked, and `422` failed deterministic precondition. No
+authority event is appended for an invalid request. The client may send only a
+bounded current `decision_id` and, for a human decision, a bounded local demo
+actor label. It may not select a run, preauthorization, contract, source, or
+executor. The local label is attribution in this P0, not authenticated
+production RBAC.
 
 ## New event vocabulary
 
 | Event | Required bounded payload | Effect |
 | --- | --- | --- |
 | `autonomy.decision.recorded` | schema/policy hashes, risk/outcome, factor results, evidence refs, action ref, optional preauth ref, notification target refs, reason enums | Records deterministic decision; no execution. |
+| `preauthorization.consumed` | deterministic claim ID, envelope/policy/contract/snapshot hashes, incident/environment refs, consumed-at | Atomic single-use executor claim; only an inserted claim may enter a low-risk executor. |
 | `approval.rejected` | request ref, owner, reason enum | Stops proposal. |
 | `approval.deferred` | request ref, owner, reason enum, evidence-class enums | Returns to bounded evidence work. |
-| `notification.requested` / `.delivered` / `.failed` | decision/request refs and bounded status/receipt enum | Auto path requires delivered receipt; P0 has no external connector claim. |
+| `notification.requested` / `.recorded_local` / `.simulated` / `.failed` | decision/request refs and bounded local receipt enum | P0 has no external delivery claim. `delivered_external` is P1-only and requires a real connector receipt. |
 | `escalation.requested` | decision ref, target-role ref, reason enum | Human workflow record only. |
-| `autonomy.locked` | action/incident lineage, failed event ref, reason enum | Prevents later automatic execution until a separately recorded owner reset. |
+| `autonomy.locked` | action/incident lineage, failed event ref, reason enum | Prevents later automatic execution across that lineage. P0 provides no unlock. |
+| `repair.execution.failed` | approval/request/contract refs, bounded failure classification, lock ref | Preserves the historical approval while preventing any automatic retry. |
+| `action.simulated` | fixed captured scenario ID, decision/contract refs, `truth_mode: captured_simulation` | Non-mutating captured policy demonstration; never a real repair receipt. |
 
 The preauthorization envelope is versioned and strict: policy version/hash,
 active status, issue/expiry time, exact environment, exact repair/command/
@@ -118,6 +144,10 @@ target/before/after contract, `max_components: 1`, `max_attempts: 1`,
 idempotency/rollback/fresh-verification/notification requirements, verification
 check IDs, and notification-target refs. A model, user prompt, or KB item can
 never create, select, broaden, renew, or revoke it.
+
+For P0, the only low path is a captured policy simulation. No live or local
+development action connector is enabled by a P0 preauthorization; a local
+notification record cannot satisfy a live or production auto-execution gate.
 
 ## Slice 0 — test fixtures and contract boundary
 
@@ -136,6 +166,15 @@ Tests first:
   outcomes;
 - the exact checkout repair contract appears only in medium fixtures;
 - low fixture is explicitly `captured_fixture`, never real-local.
+- preauthorization registry selection, post-decision expiry/revocation, atomic
+  first-claim, second-consumption, cross-run replay, and concurrent-claim
+  fixtures;
+- forged client run/decision/owner/preauthorization identifiers, execution
+  failure after approval, cross-run failure locks, and defer-with-zero-provider
+  call fixtures;
+- `recorded_local`/`simulated` notification fixtures that cannot satisfy a
+  `live` or production gate, and `action.simulated` fixtures that are never a
+  `repair.executed` receipt.
 
 Implementation:
 
@@ -162,11 +201,15 @@ runtime or screen.
 Files/functions:
 
 - Add `src/autonomy-policy.mjs` with:
-  - `validatePreauthorizationEnvelope(envelope, contract, now)`;
+  - `resolvePreauthorization({ registry, environment, contract })`;
+  - `validatePreauthorizationEnvelope(envelope, contract, bindings, now)`;
+  - `preauthorizationClaimId({ incidentId, contractSha256, envelopeSha256 })`;
   - `evaluateAutonomyDecision(input)`;
   - `buildAutonomyDecisionEvent(decision)`;
   - bounded factor/outcome/reason enums.
-- Extend `src/ledger.mjs` only if a typed append helper is necessary.
+- Extend `src/ledger.mjs` only with the smallest incident-lineage query and
+  atomic `appendIfAbsent` claim use required for cross-run lock and single-use
+  preauthorization. It must not rewrite historical rows.
 - Extend `src/investigation-failure.mjs` only to project current safe failure
   fields into `why_stopped`.
 - Extend `test/autonomy-policy.test.mjs`, `test/ledger.test.mjs`, and
@@ -180,6 +223,17 @@ Data contract/events:
   confidence alone cannot satisfy evidence completeness.
 - `autonomy.decision.recorded` appends once after deterministic diagnosis
   acceptance and before any action request.
+- A decision binds `envelope_sha256`, `contract_sha256`, `incident_id`,
+  `run_id`, `environment`, and `snapshot_sha256`. The server obtains the
+  envelope only from its code-owned registry; no request, model response, or
+  advisory item can choose it.
+- A real executor revalidates the same bindings, current envelope status,
+  expiry, source freshness, and incident-wide lock immediately before mutation.
+  It may proceed only after its deterministic `preauthorization.consumed`
+  `appendIfAbsent` claim reports `inserted: true`.
+- In P0 the low decision may reach only `action.simulated` with
+  `truth_mode: captured_simulation`; no live executor consumes a
+  preauthorization, and the simulated path does not consume a real envelope.
 - The module has no provider, network, UI, or ledger-write dependency.
 
 Tests first:
@@ -189,9 +243,15 @@ Tests first:
 - severity-only mutation never grants automatic execution;
 - expired/revoked/wrong-version/wrong-hash/wrong-environment/wrong-target/
   multi-component/over-attempt envelope fails closed;
+- registry ambiguity, client-selected envelope refs, binding mismatch,
+  post-decision expiry/revocation, duplicate concurrent claim, second
+  consumption, and cross-run reuse fail closed;
 - stale/missing source, missing owner, failed notification, evaluator
   rejection, false positive, tool/model failure, and repeated failure prevent
   automatic execution;
+- a low captured simulation accepts only `recorded_local` or `simulated`
+  notification state and cannot be projected as `live`, `delivered_external`,
+  `repair.executed`, or promotion evidence;
 - factor evidence refs are current evidence IDs, never advisory refs;
 - payloads are bounded and contain no secret/raw provider/OTLP/free command.
 
@@ -203,6 +263,9 @@ Implementation:
    failed safety factor.
 3. Treat absent data as unknown/failed. Generate stable decision IDs for audit,
    never as credentials.
+4. Bind failure history to `incident_id + contract_sha256 + target`, not only
+   the active run. P0 has no unlock endpoint; an owner reset remains a future,
+   separately-authorized control-plane action.
 
 Verification:
 
@@ -216,6 +279,10 @@ Stop/rollback: a policy that cannot prove exact contract match returns
 Frontend/backend coordination: UI remains unchanged. Slice 1's snapshots and
 pure API are the sole risk rules; browser code must not duplicate them.
 
+**Mandatory authority review:** stop after Slice 1. Sol must approve the
+registry/binding/atomic-claim/incident-lock contract and its tests before Slice
+2 changes any runtime, endpoint, UI, or simulation behavior.
+
 ## Slice 2 — runtime integration, failure lock, and Owner Gate preservation
 
 Purpose: integrate policy after current causal/evaluator boundaries while
@@ -225,7 +292,8 @@ Files/functions:
 
 - `src/development-runtime.mjs`: integrate policy after `diagnosis.gate.passed`
   in `investigate()`, retain `approve()`, append lock after failed repair or
-  `verify()` failure.
+  `verify()` failure, and record `repair.execution.failed` plus the same lock
+  if the allowlisted executor throws after approval.
 - `src/runtime.mjs`: project captured replay decisions through same pure policy
   without changing current deterministic approval ordering.
 - `src/openai.mjs`: call policy only after evaluator acceptance and current
@@ -249,11 +317,16 @@ Tests first:
 
 - checkout is medium and has zero `repair.executed` before approval;
 - a valid envelope cannot lower checkout to low;
-- low captured contract needs every hard factor, delivered notification receipt,
-  and zero failure history;
-- stale, no-owner, no evaluator/gate, tool/model failure, false positive,
+- low captured simulation needs every hard factor, a `recorded_local`/`simulated`
+  notification record, and zero failure history; it is never
+  a live action or real receipt;
+- stale, missing required human owner, no evaluator/gate, tool/model failure, false positive,
   mismatch, expiry, or repeat failure has no automatic execution;
 - failed verification appends a lock and blocks later auto eligibility;
+- execution failure after a historical approval appends `repair.execution.failed`
+  and an incident-wide lock, then permits neither a retry nor a second executor
+  entry;
+- a new run for the same incident/contract/target cannot evade a prior lock;
 - old replay/development rows remain readable and unavailable/legacy, not pass.
 
 Implementation:
@@ -265,6 +338,9 @@ Implementation:
    do not create retries.
 4. Bind new decision data into backtest as an additional consistency gate,
    never a replacement for existing recovery/backtest gates.
+5. Preserve `captured_fixture` as advisory/demo provenance. Only an existing
+   real development artifact with `source=executed_offline_backtest` can meet
+   the current policy eligibility checks; a simulated action never can.
 
 Verification:
 
@@ -287,7 +363,7 @@ Files/functions:
 
 - `src/server.mjs`: add bounded decision approve/reject/request-more-evidence
   endpoints and preserve `/api/approve` and `/api/development/approve` as
-  compatibility wrappers.
+  compatibility wrappers that cannot bypass the new checks.
 - `src/development-runtime.mjs` and `src/runtime.mjs`: add narrow reject/defer
   methods; reuse current exact-contract `approve()` for medium checkout.
 - `src/autonomy-policy.mjs`: validate decision ID, state, contract, owner,
@@ -299,26 +375,41 @@ Files/functions:
 
 | Intent | Endpoint | Success | Failure |
 | --- | --- | --- | --- |
-| Approve medium repair | `POST /api/decision/approve` with bounded run/decision/owner | `approval.granted`, then current executor, `200` state | `409` stale/mismatch/lock; no executor. |
-| Reject repair | `POST /api/decision/reject` | `approval.rejected`, `200` state | `422` invalid enum/no decision; no executor. |
-| Request evidence | `POST /api/decision/request-evidence` | `approval.deferred`, Workbench state | `409` executing/resolved; no executor. |
-| Notification result | internal P0 call only | bounded `notification.*` event | no delivered receipt blocks low auto. |
+| Approve medium repair | `POST /api/decision/approve` with only bounded current `decision_id` and local actor label | atomically claim exact current decision, append `approval.granted`, then code-owned current executor, `200` state | `404/409/422`; no executor. |
+| Reject repair | `POST /api/decision/reject` with current `decision_id` | one `approval.rejected`, `200` state | `404/409/422`; no executor. |
+| Request evidence | `POST /api/decision/request-evidence` with current `decision_id` | one `approval.deferred`, missing classes and next precondition only | `409` executing/resolved; zero provider calls. |
+| Notification result | internal P0 call only | bounded `notification.recorded_local` or `.simulated` event | cannot satisfy live/production auto execution. |
 
 Tests first:
 
 - body/schema/enum/size validation and safe envelopes;
-- unknown decision, stale decision, missing owner, expired policy, mismatch,
-  and lock append no repair/execution;
-- reject/defer append exactly one event and retain refs;
+- arbitrary run, decision, owner, or preauthorization ref supplied by the
+  client append no authority event;
+- unknown/stale decision, missing actor label, expired policy, mismatch, lock,
+  and source freshness failure append no repair/execution;
+- concurrent double approval creates exactly one claim, one approval, and one
+  executor entry; the losing request returns a safe conflict;
+- executor failure preserves approval history, appends exactly one
+  `repair.execution.failed` and `autonomy.locked`, then blocks retry;
+- reject/defer append exactly one terminal event, or an explicit bounded new
+  investigation-generation transition, and retain refs;
+- defer records missing evidence classes and next precondition, performs zero
+  implicit GPT/provider calls, and never resets the original replan budget;
 - notification failure is visible and blocks auto;
 - legacy approval endpoint still requires exact owner-before-repair.
 
 Implementation:
 
-1. Validate current ledger state and pure policy before appending a decision.
-2. Use reason/evidence-class enums; arbitrary human notes are P1.
-3. Record notification request before low captured action; label its local
-   receipt as deterministic/local rather than external delivery.
+1. Resolve the active run and waiting decision server-side. A body run,
+   contract, source, or preauthorization selector is rejected rather than used.
+2. Require exact proposal/request/decision contract binding and an atomic,
+   idempotent decision claim before the executor. The existing synchronous
+   approval-to-executor boundary may remain code-owned, but the UI never calls
+   an executor directly.
+3. Use reason/evidence-class enums; arbitrary human notes are P1. A P0 actor
+   label is explicitly local attribution, not production authentication.
+4. Record local notification state before a captured simulation only. It is
+   never external delivery and cannot unlock a live action.
 
 Verification:
 
@@ -517,9 +608,10 @@ or production claim.
 Files/functions:
 
 - `src/runtime.mjs` or a narrow captured-fixture helper: one deterministic
-  low-risk preauthorized scenario with a captured/test adapter only.
+  low-risk preauthorized **policy simulation** with a captured/test adapter
+  only; it emits `action.simulated`, never `repair.executed`.
 - `src/autonomy-policy.mjs`: exact envelope and deterministic local-notification
-  receipt validation.
+  record validation. A local record cannot satisfy a live or production gate.
 - `src/development-runtime.mjs`: preserve checkout as medium and explicit
   owner-gated; add no live auto executor.
 - `src/server.mjs`: if needed, a fixed no-input replay selector only. It cannot
@@ -530,27 +622,31 @@ Files/functions:
 
 | Demo | Truth label | Allowed execution | Required proof |
 | --- | --- | --- | --- |
-| Low path | `captured_fixture`, deterministic policy demonstration | fixed captured/test adapter only | active exact envelope, all hard factors, local/deterministic notification receipt, one component, fixture verification, no failure history |
+| Low path | `captured_fixture`, deterministic policy simulation | fixed non-mutating captured/test adapter only; `action.simulated` | active exact envelope, all hard factors, `recorded_local`/`simulated` notification state, one component, fixture verification, no failure history |
 | Checkout flagship | real local development when ready; otherwise deterministic replay | existing exact owner-approved local rollback only | medium decision, Owner Gate before execution, fresh verification, regression/backtest |
 
 Tests first:
 
-- low E2E event order: decision -> notification -> captured action -> verify ->
-  learning; source label remains captured;
+- low E2E event order: decision -> notification record -> `action.simulated` ->
+  fixture verification -> learning projection; source and execution truth remain
+  captured;
 - expiry, missing receipt, failed factor, failure lock, and wrong contract deny
-  low action;
+  even the captured simulation;
 - medium path has zero execution before approval, exact contract afterward,
   fresh verification, regression/backtest/policy order;
-- no fixture event can satisfy a real-local or production claim;
+- no fixture event can satisfy a real-local receipt, a production claim, or an
+  `executed_offline_backtest` promotion condition;
 - browser/API smoke follows both paths through backend projections, without
   manual client state injection.
 
 Implementation:
 
 1. Prefer a fixed captured adapter to a new live mutator. This is a policy
-   demonstration, not automatic production recovery.
-2. Label all captured elements in UI/API/docs. Reuse existing checkout contract
-   unchanged for medium path.
+   simulation, not automatic production recovery or a repair receipt.
+2. Render exactly: “Captured policy simulation: FlowPulse automatically advanced a preauthorized low-risk candidate through deterministic gates. No live production resource was changed.”
+3. Label all captured elements in UI/API/docs and distinguish `action.simulated`
+   from an execution receipt and from `executed_offline_backtest`. Reuse the
+   existing checkout contract unchanged for medium path.
 
 Verification:
 
@@ -562,8 +658,8 @@ npm test
 Browser/API smoke:
 
 1. Start a fresh deterministic server and task-owned temporary ledger.
-2. Exercise low captured path through verified Decision & Recovery and assert
-   `captured_fixture` throughout.
+2. Exercise low captured policy simulation through Decision & Recovery and
+   assert `captured_fixture` plus `truth_mode=captured_simulation` throughout.
 3. Reset and exercise medium checkout replay through Owner Gate; assert zero
    pre-approval execution, exact contract, and verified Compare.
 4. Run both at 1440x900 and 1280x800 with zero console errors/warnings.
@@ -621,11 +717,15 @@ also require fresh-port browser smoke; frontend state may not be injected.
 | --- | --- | --- | --- | --- | --- | --- |
 | Open Monitor | `GET /api/state` | none | existing run/source | `stage=monitor`, source freshness | Monitor canvas/label | server contract + browser |
 | Start investigation | existing investigation endpoint | snapshot -> tools/evaluator -> gate -> decision | snapshot/tool/hypothesis/evaluation/gate/decision | `agent_workbench` | Workbench evidence/replan | server/OpenAI + browser |
-| Request evidence | `POST /api/decision/request-evidence` | defer | `approval.deferred` | `agent_workbench` | request/why-stopped | endpoint + browser |
+| Request evidence | `POST /api/decision/request-evidence` | defer only; no provider call or budget reset | `approval.deferred` | `agent_workbench` | request/why-stopped | endpoint + browser + provider-spy |
 | Review medium | `GET /api/state` | none | decision/proposal/request | `decision_recovery`, owner required | factors/options/contract | projection + browser |
-| Approve checkout | `POST /api/decision/approve` | exact contract -> executor | approval/execution | executing/verifying | receipt/wait | ordering + browser |
+| Approve checkout | `POST /api/decision/approve` | exact current decision/contract -> atomic claim -> executor | approval/execution | executing/verifying | receipt/wait | ordering + concurrent endpoint + browser |
 | Reject/defer | decision reject/request endpoint | stop/defer | rejected/deferred | watch/workbench | explicit outcome | no-execution + browser |
-| Low demo | fixed replay endpoint if needed | preauth -> captured adapter -> verify | autonomy/notification/action/verify | captured decision/recovery | captured auto explanation | fixture E2E + browser |
+| Low demo | fixed replay endpoint if needed | preauth -> captured simulation -> fixture verify | autonomy/notification/`action.simulated`/verify | captured decision/recovery | exact captured-policy wording | fixture E2E + browser |
+| Concurrent approval | two identical approve requests | one atomic claim -> at most one executor | one approval/execution or safe conflict | authoritative result | one receipt or conflict | concurrency integration + browser refresh |
+| Local notification | fixed captured simulation | local ledger record only | `notification.recorded_local`/`.simulated` | captured-only label | never “Delivered” | projection + browser copy |
+| Execution failure | approve with failing allowlisted test adapter | preserve approval -> failure -> incident-wide lock | `repair.execution.failed`, `autonomy.locked` | blocked across new run | why stopped/no retry | mutation + cross-run browser/API |
+| Forged identifiers | any decision endpoint | reject before transition | none | unchanged/non-actionable | safe error | endpoint contract |
 | Verification failure | verify endpoint | lock lineage | verification/classification/lock | blocked/escalated | why stopped | mutation + browser |
 | Tool/model failure | investigate endpoint | safe stop | failure events | blocked workbench/decision | safe failure panel | contract + browser |
 
@@ -637,12 +737,17 @@ also require fresh-port browser smoke; frontend state may not be injected.
 | Ledger-derived transitions | projection and server contract snapshots |
 | No severity-only auto action | policy factor mutation |
 | Exact active preauthorization | policy tests and low fixture E2E |
+| Atomic preauthorization lifecycle | concurrent-claim, expiry/revocation, second-consumption, and cross-run replay mutations |
 | Checkout remains Owner Gate | development runtime/server/browser medium path |
 | Stale/insufficient/tool/model stops | policy/failure/server tests |
 | KB cannot authorize | policy/OpenAI/server projection tests |
 | Reject/defer/request visible | server/runtime/browser Decision tests |
 | Failure locks later auto action | runtime/policy/projection mutations |
+| Failure lock crosses runs | ledger lineage/runtime/server mutation with the same incident/contract/target |
 | Notification failure blocks low | policy/runtime/endpoint tests |
+| Local notification truth label | projection/API/browser copy tests; it cannot satisfy a live gate |
+| Exact decision endpoint authority | forged identifier, atomic approval, one-shot reject/defer, and executor-failure tests |
+| Defer is not a hidden replan | endpoint/provider-spy/budget tests and explicit new-generation tests |
 | Owner/contract/recovery/backtest gates | extended current runtime/backtest tests |
 | Fixture cannot claim real action | runtime/server/UI label tests |
 | Safe bounded why-stopped projection | investigation failure/server/drawer tests |
@@ -653,7 +758,7 @@ also require fresh-port browser smoke; frontend state may not be injected.
 Authority-critical work is serial:
 
 ```text
-Slice 0 -> 1 -> 2 -> 3 -> 4 -> 7 -> 8
+Plan patch -> Slice 0 -> Slice 1 -> Sol authority review -> Slice 2 -> Slice 3 -> Slice 4 -> Slice 7 -> Slice 8
 ```
 
 Slice 5 and Slice 6 may run in parallel only after Slice 4's schema/enums and
@@ -661,17 +766,24 @@ contract tests are accepted. They must not both modify `public/app.js` or
 `public/index.html`; otherwise they remain serial. Browser QA runs after both.
 All work stays in this competition session.
 
-Required Sol review before implementation completion:
+Required Sol authority review after Slice 1 and before Slice 2:
 
-1. No existing real low-risk remediation contract exists. Sol must reject any
-   attempt to classify checkout rollback as low or make captured fixture action
-   a live mutator.
-2. P0 notification records are not external delivery. Sol must reject copy
-   that claims page/email/Slack delivery.
-3. The current development approval endpoint couples approval and execution.
-   Sol must verify new wrappers preserve exact contract and owner authority.
-4. New policy/backtest bindings must keep historical replay compatibility and
+1. Registry selection, decision/envelope/snapshot binding, revalidation, atomic
+   single-use consumption, and incident-wide lock cannot be bypassed by a
+   concurrent or cross-run request.
+2. No existing real low-risk remediation contract exists. Sol must reject any
+   attempt to classify checkout rollback as low, make a captured simulation a
+   live mutator, or report `action.simulated` as a repair receipt.
+3. P0 notification records are not external delivery. Sol must reject copy
+   that claims page/email/Slack delivery or lets a local record satisfy a live
+   gate.
+4. The current development approval endpoint couples approval and execution.
+   Sol must verify new wrappers preserve exact contract, atomic one-executor
+   behavior, local-attribution-only owner semantics, and failure lockout.
+5. New policy/backtest bindings must keep historical replay compatibility and
    captured-fixture versus executed-backtest truth labels.
+6. Defer must not make an implicit provider call or reset the bounded replan;
+   a new investigation generation must re-enter readiness/snapshot/budget gates.
 
 Success: every slice has concrete file/function scope, API/event/projection
 contract, test-first work, verification, rollback condition, frontend
@@ -686,5 +798,6 @@ created state.
 The plan implements only approved progressive autonomy. It keeps checkout
 Owner-Gated, blocks automatic action on every missing/unsafe factor, and treats
 KB/model output as non-authoritative. All visible UI state is contractually
-backend/ledger-derived; the captured fixture is explicitly not real execution.
-P1 integrations and production automation remain out of scope.
+backend/ledger-derived; the captured low path is an explicitly non-mutating
+policy simulation, never a real execution or receipt. P1 integrations and
+production automation remain out of scope.
