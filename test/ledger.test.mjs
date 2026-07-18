@@ -4,6 +4,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Ledger } from "../src/ledger.mjs";
+import "./autonomy-policy.mjs";
 
 test("ledger appends ordered JSON events and rejects mutation", () => {
   const ledger = new Ledger(join(mkdtempSync(join(tmpdir(), "flowpulse-ledger-")), "ledger.db"));
