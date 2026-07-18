@@ -131,3 +131,108 @@ steps.
   `curl http://127.0.0.1:4310/api/health` could not connect, so browser/API QA
   is an external runtime gate rather than a pass. The unavailable flag API is
   likewise an external runtime gate, not a code-acceptance pass.
+
+## Competition runtime proof — 2026-07-18
+
+### Provenance and local environment
+
+- Baseline code-accepted commit: `4fb1efc`. During the disposable Astronomy
+  Shop proof, its checked-in bad-change case emitted the bounded, observed
+  resolver failure `name resolver error: produced zero addresses` for
+  `oteldemo.PaymentService/Charge`. This is a connection-level payment
+  dependency failure but was not included in the strictly enumerated predicate.
+  The narrow parser correction is committed separately as `6a88a9f`
+  (`fix: recognize payment resolver failures`) with a regression test; it does
+  not alter repair scope, UI, or evidence authority.
+- `npm test` after the correction: **74 passing, 0 failing**.
+- `env FLOWPULSE_DEVELOPMENT_ENABLED=1 node scripts/live-demo.mjs check`:
+  `docker: true`, pinned Astronomy Shop revision
+  `18b36c73ccc2dbc86759dab2e0ef05175a7a8ca5`, `flag_api: true`, and
+  `ready: true`.
+- The proof server was explicitly launched from `6a88a9f` on fresh port
+  `4317` (PID `45457`) with `FLOWPULSE_DEVELOPMENT_ENABLED=1` and isolated
+  ledger DB `/tmp/flowpulse-runtime-proof-bPG51k/ledger.db`. Its
+  `/api/health` returned `ok: true`, `source: live`, and `langfuse: false`.
+  A pre-existing process on port `4310` was treated as stale and was not used
+  as proof of the accepted code.
+
+### Deterministic real-OTLP loop (fresh port 4317)
+
+- Development run: `run-20ff4c5d-7d43-4222-98d4-c3701f74a7ae`.
+- Applied change ledger event: `evt-e33ae8e0-d929-4571-9c86-aa42fa128f97`,
+  applied `2026-07-18T07:10:23.347Z`. The exact checked-in contract was
+  `repair-payment-reachable-v1`, target `checkout`, flag
+  `paymentUnreachable`, `off → on`, command
+  `astronomy.restore-payment-and-recreate-checkout`.
+- Frozen real snapshot: `snapshot-ba794cf078b12d33`; source hash
+  `6a5b9f0242b1005b13f62a267af776967fe9a065cdf1a0e03fef317ca1ff04fb`;
+  content hash
+  `ba794cf078b12d33c24cbd24bdcd5884df8a75452c7ad7e3c00e5eb40918e404`;
+  27 selected records from 882 source records, 25,209 bytes. Its exact change
+  evidence was `change-f06873478821fbd7`; its cited mechanism traces were
+  `live-tra-a12fb005dc3e`, `live-tra-adc1843800e3`,
+  `live-tra-347c7423e7c4`, and `live-tra-8716036e70c9`.
+- The initial unsupported `hyp-payment-service` attribution was rejected.
+  The revised change-plus-resolver-failure diagnosis was accepted, then created
+  an allowlisted proposal and owner approval request. Before approval,
+  `/api/state` showed `waiting_for_approval: true` and no `repair.executed`.
+- Owner `Runtime proof owner` approved only the exact repair contract. The
+  resulting `repair.executed` event completed at
+  `2026-07-18T07:14:13.178Z`, recorded `on → off`, target `checkout`, command
+  `astronomy.restore-payment-and-recreate-checkout`, and `mode:
+  local-development`.
+- Fresh post-repair OTLP included `live-tra-53ca903f1ab0` at
+  `2026-07-18T07:14:17.522Z`, after execution. Verification completed at
+  `2026-07-18T07:15:34.553Z`; `regression.created` produced capture
+  `capture-9155e754d3a0a62c` with SHA-256
+  `9155e754d3a0a62c499ca5fa98701cf7900bea566a6175d319fd1e133536dce9`; the
+  subsequent policy evaluation passed as `eligible_for_owner_review`.
+- Relevant append-only ledger sequence: `change.applied` (5),
+  `evidence.snapshot.created` (7), `evaluation.rejected` (11),
+  `evaluation.accepted` (18), `repair.proposed` (20),
+  `approval.requested` (21), `approval.granted` (23), `repair.executed` (24),
+  `verification.completed` (26), `regression.created` (28), and
+  `policy.evaluated` (29).
+
+### One bounded GPT-5.6 and observability check
+
+- An existing project/runtime OpenAI credential was detected without printing
+  it. Exactly one bounded `POST /api/development/investigate` was issued to a
+  second fresh `6a88a9f` process on port `4318` (PID `65402`, isolated ledger
+  DB `/tmp/flowpulse-runtime-gpt-proof-sV26uq/ledger.db`).
+- GPT run `run-9fbefd2e-0de3-42a8-8792-b737d8f54835` froze snapshot
+  `snapshot-3f352df63202eaec`. Its tool ledger showed `query_changes` citing
+  `change-1b33493e6137d808` and `query_traces` citing
+  `live-tra-39b7fe57935b`, `live-tra-386152a4ef46`, and
+  `live-tra-55c0b0e14197`. It made one permitted replan, then correctly
+  classified `insufficient_evidence`: the frozen source proved ordering and a
+  checkout-side resolver failure but not a direct flag-consumption or
+  propagation proof. It appended no `repair.proposed`, `approval.requested`,
+  or repair execution.
+- `/api/health` on both fresh processes reported `langfuse: false`. Langfuse
+  tracing code remains integrated, but a trace link, model usage, and latency
+  record are externally credential-gated and were not fabricated.
+
+### Fresh-process browser smoke
+
+- The exact fresh `4317` process was checked at **1440×900** and **1280×800**.
+  Architecture, Live, Diagnose, Recovery Console, and Compare all rendered and
+  switched. The Live checkout drawer showed source `live GPT-5.6 over frozen
+  OTLP snapshot`, 11 cited records, and source age under one second; Diagnose
+  showed the resolver failure and versioned change; Recovery Console showed the
+  verified/regression state and separate owner gate; Compare showed the
+  incident-versus-verified causal, recovery, and learning review.
+- Browser console error/warning filter returned `[]` at both viewports. No
+  visual redesign was performed and no screenshot was needed for this runtime
+  proof.
+
+### Remaining local/runtime gates
+
+- The deterministic real-data owner-gated loop is complete. The one GPT run is
+  intentionally left at `insufficient_evidence`, proving the fail-closed path
+  rather than forcing an approval. It left the disposable local shop in its
+  bad-case state; restoring it requires a new valid owner-gated run or a human
+  local decision, and was not bypassed here.
+- Langfuse credentials are absent, so a hosted trace/usage link remains an
+  external observability gate. No Docker image, local ledger database,
+  `outputs/live` capture, environment file, or secret was staged or committed.

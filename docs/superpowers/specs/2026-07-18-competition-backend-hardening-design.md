@@ -63,3 +63,15 @@ OTLP batches retain the timestamp of their selected representative signal, not t
 The sanitizer recognizes canonical UUIDs including v6/v7, session/user/account identifier keys in camel, dot, underscore, and hyphen forms, and API-key/token/secret/password values separated by `=`, `:`, or whitespace. It runs on every safe evidence projection. Executable snapshot cap selection preflights and verifies both exact reserved causal records; if either cannot fit, snapshot creation fails with `insufficient_evidence` rather than producing a partial executable-looking snapshot.
 
 Development GPT causal failures are caught at the investigation route, append one bounded `outcome.classified` and `development.investigation.failed` ledger record, return a bounded 422, and never append `repair.proposed` or `approval.requested`.
+
+## Runtime proof adjustment — resolver failure vocabulary
+
+The disposable pinned Astronomy Shop proved the checked-in bad change with the
+actual bounded payment dependency error `name resolver error: produced zero
+addresses` on `oteldemo.PaymentService/Charge`. The existing mechanism rule
+already required checkout involvement, payment target/operation, and a
+connection-level failure; its limited failure vocabulary omitted this observed
+resolver form. Commit `6a88a9f` adds only resolver/DNS-unreachable phrases to
+that same predicate and tests the exact trace. It does not permit generic
+checkout errors, database timeouts, inventory failures, card declines, or
+unscoped repairs.
