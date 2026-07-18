@@ -331,7 +331,7 @@ function renderSourceCanvas(layout) {
       const members = positioned.filter((node) => node.layerIndex === layerIndex);
       if (!members.length) return "";
       return `<section class="architecture-tier architecture-tier-${layerIndex}" aria-label="${escapeHtml(layer.label)}">
-        <span class="architecture-tier-label" aria-hidden="true">${escapeHtml(layer.label)}</span>
+        <span class="architecture-tier-label" aria-hidden="true"><b>${String(layerIndex + 1).padStart(2, "0")}</b><strong>${escapeHtml(layer.label)}</strong><small>${members.length} component${members.length === 1 ? "" : "s"}</small></span>
         <div class="architecture-tier-row">${members.map((node) => sourceNodeMarkup(node, { layout, source, nodeStates })).join("")}</div>
       </section>`;
     }).join("");
@@ -380,7 +380,7 @@ function sourceNodeMarkup(node, { layout, source, nodeStates }) {
   const ariaStatus = nodeState === "unlinked" ? "Insufficient dependency evidence" : nodeStatus;
   const profile = sourceComponentProfile(node);
   const origin = layout === "architecture" ? profile.capability : `RUNTIME · ${sourceOrigin(layout)}`;
-  const detail = layout === "architecture" ? profile.runtimeIdentity : node.detail || (nodeState === "unlinked" ? "dependency not observed" : "observed service.name");
+  const detail = layout === "architecture" ? profile.runtimeSummary : node.detail || (nodeState === "unlinked" ? "dependency not observed" : "observed service.name");
   const livePositionClass = layout === "live" ? ` live-column-${node.layerIndex} live-count-${node.layerSize} live-index-${node.layerPosition}` : "";
   return `<button class="twin-node source-node plane-runtime kind-${escapeHtml(node.kind)} is-${nodeState}${livePositionClass}" type="button" data-node-id="${escapeHtml(node.id)}" data-status="${escapeHtml(nodeState)}" data-transition-key="${escapeHtml(transitionKey(node.id))}" aria-label="${escapeHtml(profile.capability)}, ${escapeHtml(kindLabel(node.kind))} ${escapeHtml(node.label)}, ${escapeHtml(profile.runtimeIdentity)}, ${escapeHtml(ariaStatus)}">
     <span class="node-icon" aria-hidden="true"><i class="ph ph-${iconForLive(node)}"></i></span>
@@ -1630,9 +1630,11 @@ function sourceComponentProfile(node) {
   const runtimeParts = [`service.name=${node.id}`];
   if (language) runtimeParts.push(language);
   if (signals.length) runtimeParts.push(signals.join(" + "));
+  const signalSummary = signals.map((signal) => `${signal.charAt(0).toUpperCase()}${signal.slice(1)}`).join(" + ");
   return {
     capability: COMPONENT_CAPABILITIES[node.id] || kindLabel(node.kind),
     runtimeIdentity: runtimeParts.join(" · "),
+    runtimeSummary: [language, signalSummary].filter(Boolean).join(" · "),
     language,
     signals,
     attributes: observed

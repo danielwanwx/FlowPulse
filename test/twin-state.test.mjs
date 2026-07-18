@@ -69,14 +69,18 @@ test("architecture layout is deterministic, layered, and leaves room for complet
   assert.match(appJs, /if \(layout === "architecture"\) \{[\s\S]+architecture-stack/);
   assert.doesNotMatch(appJs.match(/if \(layout === "architecture"\) \{[\s\S]+?return;/)?.[0] || "", /edge-map|pulse-flow/);
   assert.doesNotMatch(appJs, /style="left:\$\{node\.x\}/);
-  assert.match(stylesCss, /\.architecture-tier-row \{[^}]+height: 88px;[^}]+gap: 0/s);
-  assert.match(stylesCss, /\.architecture-tier \{[^}]+margin-top: -1px/s);
-  assert.match(stylesCss, /\.architecture-tier \.source-node \{[\s\S]+position: relative;[\s\S]+margin: 0 0 0 -1px/s);
+  assert.match(stylesCss, /\.architecture-tier-row \{[^}]+min-height: 72px;[^}]+grid-template-columns: repeat\(auto-fit, var\(--architecture-card-width\)\)/s);
+  assert.match(stylesCss, /\.architecture-tier \{[^}]+width: 100%;[^}]+display: block/s);
+  assert.match(stylesCss, /\.architecture-tier \.source-node \{[\s\S]+position: relative;[\s\S]+margin: 0;[\s\S]+border-width: 1px \.5px/s);
   assert.match(stylesCss, /--architecture-card-width: clamp\(106px, 8\.6vw, 124px\)/);
   assert.match(stylesCss, /\.architecture-tier \.source-node strong \{[^}]+font-size: 12px/s);
+  assert.match(stylesCss, /\.twin-canvas\.is-architecture-source \{ min-width: 0; \}/);
+  assert.match(stylesCss, /\.architecture-tier-label \{[^}]+display: flex;[^}]+border-bottom: 1px solid var\(--line-strong\)/s);
+  assert.match(appJs, /architecture-tier-label[^\n]+members\.length/);
   assert.match(appJs, /service\.name=\$\{node\.id\}/);
   assert.match(appJs, /telemetry\.sdk\.language/);
-  assert.match(stylesCss, /\.is-architecture-source \.source-node \.node-detail \{[^}]+display: block/s);
+  assert.match(appJs, /layout === "architecture" \? profile\.runtimeSummary/);
+  assert.match(stylesCss, /@media \(max-width: 1080px\)[\s\S]+\.architecture-tier-row \{ grid-template-columns: repeat\(auto-fit, minmax\(96px, 112px\)\); \}/);
 });
 
 test("live layout keeps the same deterministic layers with more room for dependency pulses", () => {
