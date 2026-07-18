@@ -378,20 +378,23 @@ export function eventsAtStage(events = [], stageIndex) {
 
 export function liveIncidentNodeStates({ mode, events = [], source = {} } = {}) {
   const nodes = source.topology?.nodes || [];
-  const states = Object.fromEntries(nodes.map(({ id }) => [id, "observed"]));
-  const verified = events.some((event) => event.type === "verification.completed" && event.payload?.passed === true);
-  if (mode !== "development" || source.status !== "live" || source.authoritative !== true || verified) return states;
+  const base = source.status === "live" ? "observed" : ["stale", "connecting"].includes(source.status) ? "warning" : "dormant";
+  const states = Object.fromEntries(nodes.map(({ id }) => [id, base]));
+  if (mode !== "development" || source.status !== "live" || source.authoritative !== true) return states;
 
   const referenced = new Set(events.flatMap((event) => event.evidence_refs || []));
   const knownNodes = new Set(nodes.map(({ id }) => id));
+  const affected = new Set();
   for (const item of source.evidence || []) {
     if (!referenced.has(item.id) || item.signal !== "traces" || !hasExplicitFailure(item.payload)) continue;
     const scoped = failedResourceServices(item.payload);
     const declared = Array.isArray(item.value?.services) ? item.value.services : [];
     const services = new Set(scoped);
     if (declared.length <= 2) for (const service of declared) services.add(service);
-    for (const service of services) if (knownNodes.has(service)) states[service] = "impact";
+    for (const service of services) if (knownNodes.has(service)) affected.add(service);
   }
+  const verified = events.some((event) => event.type === "verification.completed" && event.payload?.passed === true);
+  for (const service of affected) states[service] = verified ? "verified" : "impact";
   return states;
 }
 

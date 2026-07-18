@@ -423,7 +423,34 @@ test("live incident state requires referenced explicit development failure evide
       { type: "evidence.queried", evidence_refs: ["live-failure"] },
       { type: "verification.completed", payload: { passed: true }, evidence_refs: [] }
     ]
-  }), { checkout: "observed", payment: "observed", kafka: "observed" });
+  }), { checkout: "verified", payment: "verified", kafka: "observed" });
+  assert.deepEqual(liveIncidentNodeStates({ source: { status: "stale", topology: source.topology } }), {
+    checkout: "warning", payment: "warning", kafka: "warning"
+  });
+  assert.deepEqual(liveIncidentNodeStates({ source: { status: "disconnected", topology: source.topology } }), {
+    checkout: "dormant", payment: "dormant", kafka: "dormant"
+  });
+});
+
+test("every canvas mode exposes the shared status-dot contract with compact toolbar copy", () => {
+  assert.match(appJs, /data-status="\$\{escapeHtml\(nodeState\)\}"/);
+  assert.match(appJs, /data-status="\$\{escapeHtml\(agentNodeTone\(node\.status\)\)\}"/);
+  assert.match(appJs, /data-status="\$\{escapeHtml\(status\)\}" data-transition-key/);
+  assert.match(appJs, /node\.connectivity === "unlinked" \? "unlinked"/);
+  assert.match(stylesCss, /\.twin-node\.is-observed[^}]+var\(--blue\)/);
+  assert.match(stylesCss, /\.twin-node\.is-healthy[^}]+var\(--green\)/);
+  assert.match(stylesCss, /\.twin-node\.is-warning[^}]+var\(--amber\)/);
+  assert.match(stylesCss, /\.twin-node\.is-impact[^}]+var\(--red\)/);
+  assert.match(stylesCss, /\.twin-node\.is-quiet[^}]+var\(--faint\)/);
+  assert.match(indexHtml, />Status<\/strong>/);
+  assert.match(indexHtml, /Live \/ active/);
+  assert.match(indexHtml, /Failure \/ rejected/);
+  assert.match(stylesCss, /\.metric small:empty \{ display: none; \}/);
+  assert.match(appJs, /node\.connectivity === "unlinked" \? "unlinked" : nodeStates\[id\]/);
+  assert.match(appJs, /sourceStatusLabel\(status, source\.status\)/);
+  assert.match(stylesCss, /\.component-context\.is-warning, \.component-context\.is-unlinked/);
+  assert.doesNotMatch(appJs, /observed components arranged by system role/);
+  assert.doesNotMatch(appJs, /This canvas does not synthesize services or telemetry/);
 });
 
 test("stage projection preserves evaluator, owner, recovery, and evolve ordering", () => {
