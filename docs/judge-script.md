@@ -6,7 +6,7 @@ Target time: 2 minutes 20 seconds.
 
 "FlowPulse turns fragmented telemetry into an incident loop that can be challenged, safely repaired, verified, and learned from. The append-only ledger is the runtime authority; every model claim must cite evidence."
 
-Start `npm run judge`. The product opens on the current four-layer Architecture projection; point out that the components come from the selected OTLP source, then open **Diagnose**.
+On macOS or Linux with Node.js 20+ and `sqlite3`, run `npm test && npm run demo`; no Docker, telemetry collector, or OpenAI credential is needed. The product opens on the current Architecture projection. Point out the **deterministic replay** label, then open **Diagnose**.
 
 ## False diagnosis (0:20-0:50)
 
@@ -37,6 +37,6 @@ Point out that approval is an immutable ledger event and precedes repair executi
 
 FlowPulse classifies both the confirmed system bug and the agent false positive. It creates a regression case, runs six deterministic gates, and leaves promotion at an owner-review boundary.
 
-Close with: "The reliable replay is what you just saw. With credentials, the same product runs a fresh GPT-5.6 tool loop and adversarial evaluator, with LLM calls, tools, latency, usage, and scores mirrored to Langfuse."
+Close with: "The reliable replay is what you just saw. With credentials and a fresh local OTLP spool, the same product freezes a bounded, hashed evidence snapshot for the GPT-5.6 tool loop and adversarial evaluator. It never sends an unbounded live stream or silently substitutes the fixture. LLM calls, tools, latency, usage, and scores are mirrored to Langfuse; the ledger remains authority."
 
 If time permits, show the **Run fresh GPT-5.6** control and the Langfuse trace link.

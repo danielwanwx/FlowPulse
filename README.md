@@ -6,16 +6,17 @@ The flagship incident uses captured OpenTelemetry Astronomy Shop evidence. A che
 
 ## Judge demo
 
-Prerequisites:
+Supported judge platforms:
 
-- Node.js 20 or newer
-- `sqlite3` available on `PATH`
+- macOS or Linux with Node.js 20+ and `sqlite3` on `PATH`
+- no Docker, OpenAI key, cloud account, or telemetry collector for the default replay
 
 Run the verified judge path:
 
 ```bash
 npm install
-npm run judge
+npm test
+npm run demo
 ```
 
 Open [http://127.0.0.1:4310](http://127.0.0.1:4310), then:
@@ -26,7 +27,7 @@ Open [http://127.0.0.1:4310](http://127.0.0.1:4310), then:
 4. Click **Recover** at the human gate. The Manager shows the rejected claim, accepted cause, evidence IDs, and bounded proposal; use the separate Owner approval control to authorize it.
 5. Open **Recovery Console** to review the diagnosis, watch execution/verification/Evolve/Test from the same ledger events, assign safe agent work, and prepare ledger-governed PR/Jira drafts. Then open **Compare** to inspect incident versus verified state.
 
-The interactive path takes about 20 seconds. It is deterministic and needs no cloud credentials.
+The interactive path takes about 20 seconds. It is deterministic and needs no cloud credentials. `npm run judge` remains a convenience command that runs the same tests and then starts the server.
 
 To run the server without tests:
 
@@ -81,6 +82,16 @@ npm run live:stop
 
 The local adapter accepts no free-form model command. It resolves a checked-in change manifest and a single command ID, validates the pinned checkout, and refuses mutation unless `FLOWPULSE_DEVELOPMENT_ENABLED=1`.
 
+## Three evidence modes and GPT-5.6
+
+FlowPulse never labels fixture evidence as live. The API and canvas expose one of these modes:
+
+- **Deterministic replay** — the default judge path. It uses the immutable Astronomy Shop incident bundle and has no credentials or Docker dependency.
+- **Captured real evidence** — hashed local OTLP records are available as bounded, provenance-preserving evidence summaries and details.
+- **Live GPT-5.6 over frozen OTLP snapshot** — only a fresh `live` Collector spool can create a capped, immutable snapshot for the investigator and adversarial evaluator. A stale, disconnected, or irrelevant spool becomes `insufficient_evidence`; it never silently falls back to the fixture.
+
+`/api/state` and `/api/source` return bounded projections only. `/api/evidence` supports cursor-paged evidence summaries and `/api/evidence/:id` returns one redacted detail with its hash and file/byte provenance. Raw OTLP payloads are not exposed to the browser or model.
+
 ## Live GPT-5.6 mode
 
 FlowPulse also includes a real investigator, tool, evaluator, and feedback loop built on the OpenAI Responses API. Copy the example environment file and add an API key:
@@ -97,13 +108,13 @@ OPENAI_MODEL=gpt-5.6
 Restart the server. The **Run fresh GPT-5.6** control will:
 
 - Give GPT-5.6 strict, allowlisted metric, trace, log, deploy, and commit tools.
-- Execute model-selected tools against the captured evidence bundle.
+- Execute model-selected tools against the selected frozen OTLP snapshot, never a live unbounded stream or the static judge bundle.
 - Validate every returned evidence ID and repair boundary.
 - Send the candidate diagnosis to a separate GPT-5.6 adversarial evaluator.
 - Replan once with evaluator feedback if the claim is rejected.
 - Record model calls, tool calls, decisions, latency, usage, and scores in the FlowPulse ledger.
 
-GPT-5.6 is used through the Responses API with medium reasoning effort, strict function schemas, structured outputs, explicit token limits, `store: false`, and a stable safety identifier. The official guidance recommends the Responses API for reasoning and tool-calling workflows and documents `gpt-5.6` as the flagship alias: [Using GPT-5.6](https://developers.openai.com/api/docs/guides/latest-model), [Function calling](https://developers.openai.com/api/docs/guides/function-calling), and [Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs).
+GPT-5.6 is used through the Responses API with medium reasoning effort, strict function schemas, structured outputs, explicit token limits, `store: false`, and a stable safety identifier. Tool and evaluator results are recorded in the append-only ledger, while Langfuse is an observability mirror only. The official guidance recommends the Responses API for reasoning and tool-calling workflows and documents `gpt-5.6` as the flagship alias: [Using GPT-5.6](https://developers.openai.com/api/docs/guides/latest-model), [Function calling](https://developers.openai.com/api/docs/guides/function-calling), and [Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs).
 
 ## Langfuse tracing
 
@@ -121,7 +132,7 @@ When configured, the live loop and Agent Control Service mirror parent incident 
 ## Architecture
 
 ```text
-real Collector JSONL or captured evidence bundle
+captured bundle or bounded frozen Collector JSONL
         |
         v
 allowlisted evidence tools <-> GPT-5.6 investigator
@@ -140,7 +151,7 @@ code-owned incident state machine and human gate
 
 The runtime is intentionally small:
 
-- One Node.js process serves the API and browser digital twin.
+- One Node.js process serves the API and browser digital twin. `PORT`, `FLOWPULSE_DB`, and `FLOWPULSE_OTLP_DIR` are configuration variables for a hosted sandbox; bind the process behind an authenticated reverse proxy before exposing it externally.
 - SQLite triggers reject every update and delete to the event table.
 - Starting a new replay appends a new run; it never clears history.
 - UI state is projected from immutable events.
@@ -199,7 +210,7 @@ Candidate policy `evidence-policy-v2` must pass six deterministic gates: false-d
 
 Codex was the primary engineering environment for this repository. It was used to define the bounded product design, implement the ledger and state machine, build the cockpit, author the incident bundle, add the OpenAI and Langfuse adapters, write tests, run browser verification, and keep the repository scoped to the competition demo.
 
-GPT-5.6 is part of the product, not only a development aid. In credentialed model mode it performs evidence acquisition through function tools against the captured bundle, produces a structured causal diagnosis and bounded repair proposal, and independently evaluates that diagnosis against an adversarial rubric. The real local-development path uses the same ledger and evidence/evaluator gates with actual OTLP data and a code-owned allowlisted adapter; it remains usable without model credentials. Deterministic replay exists alongside both paths so judges can evaluate the complete product without network access.
+GPT-5.6 is part of the product, not only a development aid. In credentialed model mode it performs evidence acquisition through function tools against a frozen, provenance-preserving live OTLP snapshot, produces a structured causal diagnosis and bounded repair proposal, and independently evaluates that diagnosis against an adversarial rubric. The real local-development path uses the same ledger and evidence/evaluator gates with actual OTLP data and a code-owned allowlisted adapter; it remains usable without model credentials. Deterministic replay exists alongside both paths so judges can evaluate the complete product without network access.
 
 ## Repository map
 
@@ -212,6 +223,7 @@ integrations/astronomy-shop/    pinned runtime and allowlisted change
 src/ledger.mjs                  append-only SQLite authority
 src/runtime.mjs                 bounded replay state machine
 src/live-source.mjs             OTLP provenance and topology projection
+src/evidence-source.mjs         bounded captured/live source adapters and frozen snapshots
 src/development-runtime.mjs     local agent/evaluator/owner loop
 src/development-adapter.mjs     allowlisted flag and Docker adapter
 src/agent-control-service.mjs   ledger-derived Manager and agent graph projection
@@ -225,7 +237,7 @@ test/                           ledger, runtime, determinism, and API checks
 
 ## Limitations
 
-The competition build ships one real local incident, one local repair type, and one complex captured judge incident. The real path requires a warmed Docker environment and treats Collector JSONL as a bounded append-only spool rather than a general telemetry warehouse. It does not connect to production, Kubernetes, or any external deployment authority. The complex Kafka-causality story remains captured replay because the live path claims only the simpler checkout/payment mechanism supported by observed local telemetry.
+The competition build ships one real local incident, one local repair type, and one complex captured judge incident. The real path requires a warmed Docker environment and treats Collector JSONL as a bounded append-only spool rather than a general telemetry warehouse. It does not connect to production, Kubernetes, or any external deployment authority. The complex Kafka-causality story remains captured replay because the live path claims only the simpler checkout/payment mechanism supported by observed local telemetry. A public hosted URL and demo video remain submission work, not product claims.
 
 ## License
 

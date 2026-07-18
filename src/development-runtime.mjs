@@ -23,11 +23,12 @@ export class DevelopmentRuntime {
     return runId;
   }
 
-  async investigate(runId = this.runtime.ensureRun()) {
+  async investigate(runId = this.runtime.ensureRun(), evidenceSource = null) {
     this.assertMode(runId);
     const source = await this.source.project();
     const appliedAt = this.runtime.ledger.list(runId).find((event) => event.type === "change.applied")?.payload.applied_at;
-    const candidates = source.evidence.filter((item) => relevantFailure(item) && Date.parse(item.at) >= Date.parse(appliedAt));
+    const selected = evidenceSource?.records || source.evidence;
+    const candidates = selected.filter((item) => relevantFailure(item) && Date.parse(item.at) >= Date.parse(appliedAt));
     if (source.status !== "live" || candidates.length === 0) {
       this.runtime.append(runId, "outcome.classified", "evaluator", {
         classification: "insufficient_evidence",
@@ -36,7 +37,11 @@ export class DevelopmentRuntime {
       throw new Error("Fresh checkout/payment failure evidence is not available yet");
     }
     const refs = candidates.map((item) => item.id);
-    this.runtime.append(runId, "evidence.queried", "investigator", { tool: "query_live_otlp", result_count: refs.length }, refs);
+    this.runtime.append(runId, "evidence.queried", "investigator", {
+      tool: "query_live_otlp",
+      result_count: refs.length,
+      evidence_mode: evidenceSource?.metadata?.().mode || "live_otlp"
+    }, refs);
     this.runtime.append(runId, "loop.symptoms_collected", "runtime", { step: "inspect fresh local telemetry" }, refs);
     this.runtime.append(runId, "hypothesis.proposed", "investigator", {
       id: "hyp-payment-service",

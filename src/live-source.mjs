@@ -91,6 +91,7 @@ async function readSignal(path, signal, root) {
         fact: summarize(payload, signal),
         entity: servicesIn(payload)[0] || "telemetry-source",
         source: "OpenTelemetry Collector file exporter",
+        hash: digest,
         at: observedAt(payload) || info.mtime.toISOString(),
         value: { services: servicesIn(payload), raw_sha256: digest },
         captured_at: info.mtime.toISOString(),

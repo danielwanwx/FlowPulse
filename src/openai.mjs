@@ -1,12 +1,14 @@
-import { queryEvidence } from "./bundle.mjs";
 import { withIncidentTrace } from "./observability.mjs";
 
 const MODEL = () => process.env.OPENAI_MODEL || "gpt-5.6";
 const API_URL = "https://api.openai.com/v1/responses";
 const MAX_TOOL_ROUNDS = 6;
 
-export async function runLiveInvestigation({ runtime, runId }) {
+export async function runLiveInvestigation({ runtime, runId, evidenceSource }) {
   if (!process.env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY is required for live mode");
+  if (!evidenceSource?.metadata || !evidenceSource?.query) throw new Error("A selected bounded evidence source is required for live mode");
+  const sourceMetadata = evidenceSource.metadata();
+  if (sourceMetadata.mode !== "live_gpt_5_6_frozen_otlp_snapshot") throw new Error("GPT-5.6 live mode requires a frozen live OTLP snapshot");
   const { bundle } = runtime;
   runtime.append(runId, "live.run.started", "runtime", { model: MODEL(), authority: "flowpulse-ledger" });
 
@@ -25,15 +27,15 @@ export async function runLiveInvestigation({ runtime, runId }) {
           attempt
         });
       }
-      const diagnosis = await investigate({ runtime, runId, observability, feedback });
-      validateDiagnosis(diagnosis, bundle);
+      const diagnosis = await investigate({ runtime, runId, observability, feedback, evidenceSource });
+      validateDiagnosis(diagnosis, evidenceSource);
       runtime.append(runId, "hypothesis.proposed", "live-investigator", {
         ...diagnosis,
         live: true,
         attempt
       }, diagnosis.evidence_refs);
 
-      const evaluation = await evaluate({ diagnosis, bundle, observability, attempt });
+      const evaluation = await evaluate({ diagnosis, evidenceSource, observability, attempt });
       runtime.append(runId, evaluation.accepted ? "evaluation.accepted" : "evaluation.rejected", "live-evaluator", {
         ...evaluation,
         hypothesis_id: diagnosis.id,
@@ -68,9 +70,9 @@ export async function runLiveInvestigation({ runtime, runId }) {
   });
 }
 
-async function investigate({ runtime, runId, observability, feedback }) {
+async function investigate({ runtime, runId, observability, feedback, evidenceSource }) {
   const { bundle } = runtime;
-  const tools = toolDefinitions(bundle);
+  const tools = toolDefinitions(evidenceSource);
   const input = [{
     role: "user",
     content: [
@@ -104,14 +106,15 @@ async function investigate({ runtime, runId, observability, feedback }) {
     for (const call of calls) {
       const args = JSON.parse(call.arguments);
       const observation = observability.tool(call.name, { input: args, metadata: { run_id: runId } });
-      const result = executeTool(bundle, call.name, args);
+      const result = executeTool(evidenceSource, call.name, args);
       observation.update({ output: result });
       observation.end();
       runtime.append(runId, "tool.called", "live-investigator", {
         tool: call.name,
         arguments: args,
         result_count: result.length,
-        live: true
+        live: true,
+        evidence_mode: evidenceSource.metadata().mode
       }, result.map((item) => item.id));
       input.push({ type: "function_call_output", call_id: call.call_id, output: JSON.stringify(result) });
     }
@@ -119,8 +122,8 @@ async function investigate({ runtime, runId, observability, feedback }) {
   throw new Error("Live investigator exceeded the tool-round budget");
 }
 
-async function evaluate({ diagnosis, bundle, observability, attempt }) {
-  const cited = bundle.evidence.filter((item) => diagnosis.evidence_refs.includes(item.id));
+async function evaluate({ diagnosis, evidenceSource, observability, attempt }) {
+  const cited = evidenceSource.summariesById(diagnosis.evidence_refs);
   const body = {
     model: MODEL(),
     instructions: "You are an adversarial incident evaluator. Reject causal claims unless evidence proves initiating change, failure mechanism, temporal ordering, and propagation. Downstream Kafka lag alone is not a root cause.",
@@ -172,7 +175,7 @@ async function callOpenAI(body, observability, name, evaluator = false) {
   }
 }
 
-function executeTool(bundle, name, args) {
+export function executeTool(evidenceSource, name, args) {
   const kindByTool = {
     query_metrics: "metric",
     query_traces: "trace",
@@ -182,13 +185,11 @@ function executeTool(bundle, name, args) {
   };
   const kind = kindByTool[name];
   if (!kind) throw new Error(`Tool is not allowlisted: ${name}`);
-  return queryEvidence(bundle, { kind, entity: args.entity }).filter((item) => !item.id.startsWith("ev-verify-")).map(({ id, kind: itemKind, source, entity, at, title, fact, value }) => ({
-    id, kind: itemKind, source, entity, at, title, fact, value
-  }));
+  return evidenceSource.query({ kind, entity: args.entity }).filter((item) => !item.id.startsWith("ev-verify-"));
 }
 
-function toolDefinitions(bundle) {
-  const entities = bundle.topology.services.map((service) => service.id);
+function toolDefinitions(evidenceSource) {
+  const entities = evidenceSource.entities();
   return ["metrics", "traces", "logs", "deploys", "commits"].map((name) => ({
     type: "function",
     name: `query_${name}`,
@@ -264,9 +265,10 @@ function parseStructuredText(response) {
   throw new Error("OpenAI response did not contain structured output");
 }
 
-function validateDiagnosis(diagnosis, bundle) {
-  const known = new Set(bundle.evidence.map((item) => item.id));
-  if (!diagnosis.evidence_refs.length || diagnosis.evidence_refs.some((id) => !known.has(id))) {
+export function validateDiagnosis(diagnosis, evidenceSource) {
+  const known = new Set(evidenceSource.list({ limit: 50 }).items.map((item) => item.id));
+  const allKnown = diagnosis.evidence_refs.every((id) => evidenceSource.has ? evidenceSource.has(id) : known.has(id));
+  if (!diagnosis.evidence_refs.length || !allKnown) {
     throw new Error("Diagnosis contains missing or unknown evidence references");
   }
   if (diagnosis.proposed_repair.target !== "checkout" || diagnosis.proposed_repair.action !== "rollback_deployment") {

@@ -26,6 +26,18 @@ test("judge API serves state and advances the replay", async (context) => {
   assert.equal(advanced.events.some((event) => event.type === "loop.symptoms_collected"), true);
   assert.equal(advanced.events.some((event) => event.type === "evidence.requested" && event.actor === "agent:evidence"), true);
   assert.equal(advanced.events.some((event) => event.type === "orchestration.step.completed"), true);
+  assert.equal(advanced.evidence.every((item) => !Object.hasOwn(item, "payload")), true);
+  assert.equal(advanced.source.evidence.every((item) => !Object.hasOwn(item, "payload")), true);
+  assert.equal(Buffer.byteLength(JSON.stringify(advanced)) < 200_000, true);
+
+  const evidenceList = await fetch(`http://127.0.0.1:${port}/api/evidence?limit=2`).then((response) => response.json());
+  assert.equal(evidenceList.items.length, 2);
+  assert.equal(evidenceList.items.every((item) => !Object.hasOwn(item, "payload")), true);
+  const evidenceDetail = await fetch(`http://127.0.0.1:${port}/api/evidence/${evidenceList.items[0].id}`).then((response) => response.json());
+  assert.equal(evidenceDetail.evidence.id, evidenceList.items[0].id);
+  assert.ok(evidenceDetail.evidence.provenance);
+  const missingEvidence = await fetch(`http://127.0.0.1:${port}/api/evidence/not-real`);
+  assert.equal(missingEvidence.status, 404);
 
   const control = await fetch(`http://127.0.0.1:${port}/api/agent-control`).then((response) => response.json());
   assert.equal(control.authority, "append-only-ledger");
