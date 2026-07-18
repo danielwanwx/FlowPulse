@@ -46,10 +46,20 @@ test("judge API serves state and advances the replay", async (context) => {
   assert.match(manager.message, /cannot|No owner-gated repair/);
   assert.equal(manager.projection.activity.some((item) => item.type === "approval.granted"), false);
 
+  const taskResponse = await fetch(`http://127.0.0.1:${port}/api/agent-control/action`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ action: "delegate_task", input: { instruction: "Validate the first checkout failure" } })
+  });
+  assert.equal(taskResponse.status, 200);
+  const taskProjection = await taskResponse.json();
+  assert.equal(taskProjection.work_items.some((item) => item.type === "task.delegation.proposed"), true);
+  assert.equal(taskProjection.work_items.every((item) => item.external_mutation === false), true);
+
   const html = await fetch(`http://127.0.0.1:${port}/`).then((response) => response.text());
   assert.match(html, /FlowPulse/);
   assert.match(html, /Run guided replay/);
-  assert.match(html, /Agent Operations/);
+  assert.match(html, /Recovery Console/);
 
   const module = await fetch(`http://127.0.0.1:${port}/twin-state.mjs`);
   assert.equal(module.status, 200);

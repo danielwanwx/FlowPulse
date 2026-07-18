@@ -61,6 +61,9 @@ test("architecture layout is deterministic, layered, and leaves room for complet
   assert.match(appJs, /if \(layout === "architecture"\) \{[\s\S]+architecture-stack/);
   assert.doesNotMatch(appJs.match(/if \(layout === "architecture"\) \{[\s\S]+?return;/)?.[0] || "", /edge-map|pulse-flow/);
   assert.doesNotMatch(appJs, /style="left:\$\{node\.x\}/);
+  assert.match(stylesCss, /\.architecture-tier-row \{[^}]+gap: 0/s);
+  assert.match(stylesCss, /\.architecture-tier \{[^}]+margin-top: -1px/s);
+  assert.match(stylesCss, /\.architecture-tier \.source-node \{[\s\S]+position: relative;[\s\S]+margin: 0 0 0 -1px/s);
 });
 
 test("live layout keeps the same deterministic layers with more room for dependency pulses", () => {
@@ -96,13 +99,16 @@ test("live topology normalizes endpoints and explains true telemetry islands", (
 });
 
 test("manager and agent operations stay separate from chat approval", () => {
-  assert.match(indexHtml, /data-mode="agents">Agents</);
+  assert.match(indexHtml, /data-mode="agents">Recovery Console</);
   assert.match(indexHtml, /id="manager-panel"[^>]+aria-labelledby="manager-title"/);
   assert.match(indexHtml, /id="approve-button"[^>]+hidden>Approve bounded recovery/);
   assert.match(indexHtml, /Chat can explain or delegate safe work\. It cannot approve remediation\./);
   assert.match(appJs, /mode = "agents"/);
   assert.match(appJs, /data-agent-node-id/);
   assert.match(stylesCss, /\.agent-node-evaluator \{ left: 58%; top: 30%; \}/);
+  assert.match(appJs, /class="recovery-console-layout"/);
+  assert.match(appJs, /data-recovery-action/);
+  assert.match(appJs, /Ask or assign the incident team/);
 });
 
 test("every component has a vector icon and causal pulses remain sequential", () => {
@@ -263,8 +269,23 @@ test("live pulses follow deterministic topology depth with one segment per edge"
     "checkout->payment": 2,
     "kafka->accounting": 3
   });
-  assert.match(stylesCss, /\.is-live-source \.pulse-flow[^}]+animation:[^;]+infinite/s);
-  assert.doesNotMatch(stylesCss, /\.is-live-source \.pulse-flow[^}]+stroke-dasharray:[^;]+,[^;]+,/s);
+  assert.match(appJs, /data-live-edge-id/);
+  assert.match(appJs, /classList\.toggle\("is-live-source", mode === "live"\)/);
+  assert.match(appJs, /classList\.add\("is-signal-active"\)/);
+  assert.match(appJs, /is-signal-launch/);
+  assert.match(appJs, /is-signal-arrival/);
+  assert.match(stylesCss, /\.edge-group\.is-signal-active \.edge-line[^}]+stroke: var\(--edge-signal\)/s);
+  assert.match(stylesCss, /\.edge-group\.is-signal-active \.pulse-flow[^}]+live-signal-pulse/s);
+  assert.match(stylesCss, /prefers-reduced-motion:[\s\S]+\.edge-group\.is-signal-active \.pulse-flow \{ display: none;/s);
+  assert.match(appJs, /data-recovery-command-send/);
+  assert.match(appJs, /sendRecoveryCommand\(commandButton\.closest\("form"\)\)/);
+});
+
+test("pure-black mode keeps structural component and connector edges high contrast", () => {
+  assert.match(stylesCss, /:root\[data-theme="dark"\][\s\S]+--line-strong: #f0f0f0;/s);
+  assert.match(stylesCss, /:root\[data-theme="dark"\] \.edge-line \{ stroke: #e7e7e7;/);
+  assert.match(stylesCss, /:root\[data-theme="dark"\] \.twin-node \{[^}]+border-color: rgba\(255, 255, 255, \.78\)/s);
+  assert.match(stylesCss, /\.is-architecture-source \.architecture-tier \.source-node \{ border-color: #f5f5f5; \}/);
 });
 
 test("live incident state requires referenced explicit development failure evidence", () => {

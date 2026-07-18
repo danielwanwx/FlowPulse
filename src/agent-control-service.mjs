@@ -5,8 +5,15 @@ export const AGENT_ACTIONS = Object.freeze({
   advance: { label: "Continue investigation", consequential: false },
   review_recovery: { label: "Review recovery plan", consequential: false },
   verify_recovery: { label: "Monitor verification", consequential: false },
-  review_learning: { label: "Review regression", consequential: false }
+  review_learning: { label: "Review regression", consequential: false },
+  delegate_task: { label: "Assign diagnosis task", consequential: false, kind: "task" },
+  review_pr: { label: "Review PR draft", consequential: false, kind: "pull_request" },
+  approve_pr_review: { label: "Approve PR review", consequential: false, kind: "pull_request" },
+  draft_jira: { label: "Draft Jira ticket", consequential: false, kind: "work_item" },
+  approve_jira_draft: { label: "Approve Jira draft", consequential: false, kind: "work_item" }
 });
+
+const SAFE_WORK_ACTIONS = new Set(["delegate_task", "review_pr", "approve_pr_review", "draft_jira", "approve_jira_draft"]);
 
 export const AGENT_GRAPH_NODES = Object.freeze([
   node("manager", "Manager", "Human interface", "agent", 9, 46),
@@ -71,6 +78,7 @@ export class AgentControlService {
       last_sequence: events.at(-1)?.sequence ?? 0,
       report: managerReport(state),
       actions: allowedActions(state),
+      work_items: recoveryWorkItems(events),
       graph: { nodes, edges },
       activity: agentActivity(events),
       orchestration: orchestrationProjection(events)
@@ -86,6 +94,13 @@ export class AgentControlService {
     const intent = intentFor(message, before);
     const report = managerReport(before);
     const response = responseFor(intent, report, before);
+    if (intent === "task_delegation") {
+      this.recordSafeAction(runId, "delegate_task", {
+        input: { instruction: message },
+        parentId: received.id,
+        idempotencyKey: `${runId}:chat:${received.id}:delegate_task`
+      });
+    }
     this.runtime.append(runId, "manager.response.created", "manager", {
       intent,
       message: response,
@@ -96,13 +111,34 @@ export class AgentControlService {
     return { intent, message: response, projection: this.project(runId) };
   }
 
-  act(runId, actionId) {
+  act(runId, actionId, input = {}) {
     const state = this.runtime.state(runId);
     const allowed = new Set(allowedActions(state).map((item) => item.id));
     if (!allowed.has(actionId)) throw new Error(`Agent action is not available: ${actionId}`);
+    if (SAFE_WORK_ACTIONS.has(actionId)) {
+      this.recordSafeAction(runId, actionId, { input });
+      return this.project(runId);
+    }
     if (!["advance", "verify_recovery"].includes(actionId)) return this.project(runId);
     this.advance(runId, actionId);
     return this.project(runId);
+  }
+
+  recordSafeAction(runId, actionId, { input = {}, parentId = null, idempotencyKey = `${runId}:${actionId}` } = {}) {
+    if (!SAFE_WORK_ACTIONS.has(actionId)) throw new Error(`Safe work action is not supported: ${actionId}`);
+    const state = this.runtime.state(runId);
+    const existing = state.events.find((event) => event.payload?.idempotency_key === idempotencyKey);
+    if (existing) return existing;
+    const report = managerReport(state);
+    const previous = previousWorkItemEvent(state.events, actionId);
+    const definition = safeWorkEvent(actionId, report, input, previous);
+    return this.runtime.append(runId, definition.type, definition.actor, {
+      ...definition.payload,
+      action_id: actionId,
+      idempotency_key: idempotencyKey,
+      integration_state: definition.payload.integration_state || "internal_only",
+      external_mutation: false
+    }, report.citations, 0, parentId || previous?.id || state.events.at(-1)?.id || null);
   }
 
   advance(runId = this.runtime.ensureRun(), action = "advance") {
@@ -234,10 +270,23 @@ function projectStatuses(events, state, langfuseEnabled) {
 }
 
 function allowedActions(state) {
-  if (state.complete) return [action("review_learning")];
-  if (state.waiting_for_approval) return [action("review_recovery", true)];
-  if (state.events.some((item) => item.type === "repair.executed")) return [action("verify_recovery")];
-  return [action("advance")];
+  const events = state.events;
+  const actions = [];
+  if (state.complete) actions.push(action("review_learning"));
+  else if (state.waiting_for_approval) actions.push(action("review_recovery", true));
+  else if (events.some((item) => item.type === "repair.executed")) actions.push(action("verify_recovery"));
+  else actions.push(action("advance"));
+
+  if (!events.some((item) => item.type === "task.delegation.proposed")) actions.push(action("delegate_task"));
+  const prProposed = last(events, "pr.review.proposed");
+  const prRecorded = last(events, "pr.review.recorded");
+  if (events.some((item) => item.type === "repair.proposed") && !prProposed) actions.push(action("review_pr"));
+  else if (prProposed && !prRecorded) actions.push(action("approve_pr_review"));
+  const jiraDraft = last(events, "workitem.draft.proposed");
+  const jiraApproved = last(events, "workitem.draft.approved");
+  if (!jiraDraft) actions.push(action("draft_jira"));
+  else if (!jiraApproved) actions.push(action("approve_jira_draft"));
+  return actions;
 }
 
 function action(id, requiresOwner = false) {
@@ -262,6 +311,7 @@ function reportSummary(state, hypothesis, repair, verification) {
 function intentFor(message, state) {
   const text = message.toLowerCase();
   if (/(approve|accept|批准|接受|执行修复)/.test(text)) return "approval_explanation";
+  if (/(assign|delegate|task|派发|安排|分配任务)/.test(text)) return "task_delegation";
   if (/(recover|repair|rollback|修复|恢复)/.test(text)) return "recovery";
   if (/(agent|team|谁|进度)/.test(text)) return "team_status";
   if (/(evidence|why|root|证据|原因|根因)/.test(text)) return "evidence";
@@ -275,6 +325,7 @@ function responseFor(intent, report, state) {
   if (intent === "recovery") return report.repair
     ? `${report.summary} The current proposal is ${report.repair.action}. It targets only ${report.repair.target}.`
     : "The team has not produced an accepted bounded repair yet. Continue the evidence and evaluator loop first.";
+  if (intent === "task_delegation") return `I recorded an internal diagnosis task with ${report.citations.length} immutable evidence citation${report.citations.length === 1 ? "" : "s"}. It does not authorize remediation or mutate an external system.`;
   if (intent === "team_status") return `The active control stage is ${report.stage}. ${report.human_gate ? "The team is paused at the owner gate." : "Specialists are operating inside their role permissions."}`;
   if (intent === "evidence") return report.root_cause
     ? `${report.root_cause} The report cites ${report.citations.length} immutable evidence record${report.citations.length === 1 ? "" : "s"}.`
@@ -296,13 +347,13 @@ function agentActivity(events) {
 }
 
 function nodeForEvent(type) {
-  if (type.startsWith("manager.")) return "manager";
+  if (type.startsWith("manager.") || type.startsWith("task.delegation") || type.startsWith("workitem.")) return "manager";
   if (type === "orchestration.step.completed") return "manager";
   if (["incident.opened", "change.applied", "deployment.completed"].includes(type)) return "monitor";
   if (["evidence.requested", "evidence.manifest.proposed", "evidence.gap.proposed", "evidence.queried", "tool.called", "plan.revised", "loop.symptoms_collected", "loop.causal_evidence_collected"].includes(type)) return "evidence";
   if (["diagnosis.proposed", "hypothesis.proposed"].includes(type)) return "diagnosis";
   if (type.startsWith("evaluation.") || type === "outcome.classified") return "evaluator";
-  if (type === "repair.proposed") return "planner";
+  if (type === "repair.proposed" || type.startsWith("pr.review")) return "planner";
   if (type.startsWith("approval.")) return "owner";
   if (type === "repair.executed") return "executor";
   if (["verification.proposed", "verification.completed"].includes(type)) return "verification";
@@ -343,6 +394,95 @@ function orchestrationProjection(events) {
     proposal_count: proposals.length,
     proposals: proposals.slice(-12),
     last_step: completed.at(-1)?.payload ?? null
+  };
+}
+
+function recoveryWorkItems(events) {
+  const relevant = events.filter((event) => [
+    "task.delegation.proposed",
+    "pr.review.proposed",
+    "pr.review.recorded",
+    "workitem.draft.proposed",
+    "workitem.draft.approved"
+  ].includes(event.type));
+  return relevant.map((event) => ({
+    id: event.id,
+    sequence: event.sequence,
+    type: event.type,
+    action_id: event.payload.action_id,
+    title: event.payload.title,
+    summary: event.payload.summary,
+    status: event.payload.status,
+    integration_state: event.payload.integration_state,
+    external_mutation: event.payload.external_mutation === true,
+    evidence_refs: event.evidence_refs
+  }));
+}
+
+function previousWorkItemEvent(events, actionId) {
+  const expected = {
+    approve_pr_review: "pr.review.proposed",
+    approve_jira_draft: "workitem.draft.proposed"
+  }[actionId];
+  return expected ? last(events, expected) : null;
+}
+
+function safeWorkEvent(actionId, report, input, previous) {
+  if (actionId === "delegate_task") return {
+    type: "task.delegation.proposed",
+    actor: "manager",
+    payload: {
+      title: "Validate the checkout recovery evidence",
+      summary: input.instruction || report.root_cause || report.summary,
+      target_agent: "diagnosis",
+      status: "recorded",
+      integration_state: "internal_only"
+    }
+  };
+  if (actionId === "review_pr") return {
+    type: "pr.review.proposed",
+    actor: "agent:remediation_planner",
+    payload: {
+      title: "Review checkout rollback PR draft",
+      summary: report.repair ? `${report.repair.action}; ${report.repair.target} only.` : report.summary,
+      status: "awaiting_human_review",
+      integration_state: "not_configured"
+    }
+  };
+  if (actionId === "approve_pr_review") {
+    if (!previous) throw new Error("A PR review draft is required before approval");
+    return {
+      type: "pr.review.recorded",
+      actor: "human",
+      payload: {
+        title: previous.payload.title,
+        summary: "The internal PR review is approved and ready for a configured GitHub integration.",
+        status: "ready_for_integration",
+        review_decision: "approved",
+        integration_state: "not_configured"
+      }
+    };
+  }
+  if (actionId === "draft_jira") return {
+    type: "workitem.draft.proposed",
+    actor: "manager",
+    payload: {
+      title: `${report.stage}: checkout/payment incident follow-up`,
+      summary: report.root_cause || report.summary,
+      status: "awaiting_human_review",
+      integration_state: "not_configured"
+    }
+  };
+  if (!previous) throw new Error("A Jira work-item draft is required before approval");
+  return {
+    type: "workitem.draft.approved",
+    actor: "human",
+    payload: {
+      title: previous.payload.title,
+      summary: "The work-item draft is approved and ready for a configured Jira integration.",
+      status: "ready_for_integration",
+      integration_state: "not_configured"
+    }
   };
 }
 

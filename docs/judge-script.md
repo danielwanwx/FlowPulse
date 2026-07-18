@@ -31,7 +31,7 @@ The evaluator now accepts a complete change, mechanism, timing, and propagation 
 
 The state machine proposes only a checkout rollback. Click **Recover** to open the Manager. Point out the rejected diagnosis, accepted root cause, evidence IDs, and bounded checkout-only action, then use the separate **Approve bounded checkout recovery** control.
 
-Point out that approval is an immutable ledger event and precedes repair execution. FlowPulse switches to **Agents**, where the Owner, Executor, Verification, Evolve, and Test roles update from the same event stream. The verification projection then shows payment reachability at 99.98%, checkout errors at 0.8%, and Kafka lag draining to 620 without a Kafka repair.
+Point out that approval is an immutable ledger event and precedes repair execution. FlowPulse switches to **Recovery Console**, where the accepted diagnosis, Manager command, safe work queue, and Owner/Executor/Verification/Evolve/Test roles update from the same event stream. The verification projection then shows payment reachability at 99.98%, checkout errors at 0.8%, and Kafka lag draining to 620 without a Kafka repair.
 
 ## Learning and live mode (1:50-2:20)
 

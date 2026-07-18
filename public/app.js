@@ -49,6 +49,8 @@ let managerReply = "";
 let liveView = { scale: 1, x: 0, y: 0, initialized: false };
 let livePan = null;
 let compareDrag = null;
+let liveSignalTimers = [];
+let liveSignalIndex = 0;
 
 for (const button of document.querySelectorAll("[data-mode]")) button.addEventListener("click", () => setMode(button.dataset.mode));
 for (const button of document.querySelectorAll("[data-nav-tab]")) button.addEventListener("click", () => handleNavigation(button.dataset.navTab));
@@ -99,6 +101,7 @@ els["twin-canvas"].addEventListener("pointercancel", endCompareDrag);
 els["timeline-current"].addEventListener("click", () => openDrawer({ type: "stage", id: TWIN_STAGES[cursor].id }, tabForStage(cursor)));
 els["canvas-layers"].addEventListener("click", handleCanvasSelection);
 els["canvas-layers"].addEventListener("keydown", handleCanvasKeydown);
+els["canvas-layers"].addEventListener("click", handleRecoveryConsoleAction);
 els["annotation-layer"].addEventListener("click", handleAnnotationSelection);
 els["drawer-tabs"].addEventListener("click", handleDrawerTab);
 
@@ -141,8 +144,8 @@ function render() {
 function renderHeader() {
   const frame = currentFrame();
   const source = sourceState();
-  const titles = { architecture: "System architecture", live: "Runtime activity", replay: "Incident diagnosis", agents: "Agent operations", compare: "Recovery comparison" };
-  const canvasTitles = { architecture: "Observed architecture", live: "Observed runtime", replay: "Incident reconstruction", agents: "Agent control plane", compare: "Incident vs verified" };
+  const titles = { architecture: "System architecture", live: "Runtime activity", replay: "Incident diagnosis", agents: "Recovery Console", compare: "Recovery comparison" };
+  const canvasTitles = { architecture: "Observed architecture", live: "Observed runtime", replay: "Incident reconstruction", agents: "Developer recovery workspace", compare: "Incident vs verified" };
   els["incident-title"].textContent = state.incident.title;
   els["incident-summary"].textContent = state.incident.summary;
   els.severity.textContent = state.incident.severity;
@@ -234,6 +237,7 @@ function setMetric(name, value, note) {
 }
 
 function renderCanvas() {
+  stopLiveSignalLoop();
   els["twin-canvas"].classList.toggle("is-compare-mode", mode === "compare");
   els["twin-canvas"].classList.toggle("is-source-topology", mode === "architecture" || mode === "live");
   els["twin-canvas"].classList.toggle("is-architecture-source", mode === "architecture");
@@ -286,58 +290,70 @@ function renderSourceCanvas(layout) {
     return;
   }
   const positioned = layout === "architecture" ? architecturePositions(topology.nodes) : livePositions(topology.nodes);
-  const positions = new Map(positioned.map((node) => [node.id, node]));
   const nodeStates = layout === "live" ? liveIncidentNodeStates({ mode: state.mode, events: state.events, source }) : {};
-  const pulseSlots = livePulseSlots(topology);
-  const edgeLayout = {
-    canvasWidth: layout === "live" ? LIVE_WORLD.width : els["twin-canvas"].clientWidth || 1100,
-    canvasHeight: layout === "live" ? LIVE_WORLD.height : els["twin-canvas"].clientHeight || 520,
-    nodeWidth: layout === "architecture" ? 116 : 144,
-    nodeHeight: layout === "live" ? 64 : 58
-  };
-  const pulseCycle = Math.max(6.4, topology.edges.length * .42 + 1.4);
-  const edges = topology.edges.filter((edge) => positions.has(edge.from) && positions.has(edge.to)).map((edge, index) => {
-    const from = positions.get(edge.from);
-    const to = positions.get(edge.to);
-    const lane = index % 2 ? Math.ceil(index / 2) : -Math.ceil((index + 1) / 2);
-    const path = liveEdgePath(from, to, { ...edgeLayout, lane });
-    const edgeState = nodeStates[from.id] === "impact" && nodeStates[to.id] === "impact" ? "impact" : "observed";
-    const pulseDelay = (pulseSlots[edge.id] || 0) * .42;
-    return `<g class="edge-group path-runtime"><path class="edge-line is-${edgeState}" d="${path}"/><path class="pulse-flow is-${edgeState}" data-pulse-delay="${pulseDelay}" data-pulse-cycle="${pulseCycle}" d="${path}" pathLength="1" aria-hidden="true"/><path class="edge-hit" d="${path}" role="button" tabindex="0" aria-label="${escapeHtml(edge.label)} from ${escapeHtml(from.label)} to ${escapeHtml(to.label)}" data-edge-id="${escapeHtml(edge.id)}" data-edge-from="${escapeHtml(edge.from)}" data-edge-to="${escapeHtml(edge.to)}"/></g>`;
-  }).join("");
-  const nodes = positioned.map((node) => {
-    const positionClass = layout === "architecture"
-      ? `arch-layer-${node.layerIndex} arch-count-${node.layerSize} arch-index-${node.layerPosition}`
-      : `live-column-${node.layerIndex} live-count-${node.layerSize} live-index-${node.layerPosition}`;
-    const nodeState = node.connectivity === "unlinked" && layout === "live" ? "unlinked" : nodeStates[node.id] || "observed";
-    const nodeStatus = nodeState === "impact" ? "Failure observed" : nodeState === "unlinked" ? "Evidence gap" : source.status === "live" ? "Observed" : "Last known";
-    const ariaStatus = nodeState === "unlinked" ? "Insufficient dependency evidence" : nodeStatus;
-    const origin = layout === "architecture" ? node.layerLabel : `RUNTIME · ${sourceOrigin(layout)}`;
-    return `<button class="twin-node source-node plane-runtime kind-${escapeHtml(node.kind)} is-${nodeState} ${positionClass}" type="button" data-node-id="${escapeHtml(node.id)}" data-transition-key="${escapeHtml(transitionKey(node.id))}" aria-label="${escapeHtml(kindLabel(node.kind))} ${escapeHtml(node.label)}, ${escapeHtml(ariaStatus)}">
-    <span class="node-icon" aria-hidden="true"><i class="ph ph-${iconForLive(node)}"></i></span>
-    <span class="node-copy"><span class="node-origin">${escapeHtml(origin)}</span><strong>${escapeHtml(node.label)}</strong><span class="node-detail">${escapeHtml(node.detail || (nodeState === "unlinked" ? "dependency not observed" : "observed service.name"))}</span><span class="node-status">${escapeHtml(nodeStatus)}</span></span>
-    <span class="node-status-dot" aria-hidden="true"></span>
-  </button>`;
-  }).join("");
   if (layout === "architecture") {
-    els["canvas-layers"].innerHTML = `<div class="twin-layer layer-current architecture-stack">${nodes}</div>`;
+    const tiers = ARCHITECTURE_LAYERS.map((layer, layerIndex) => {
+      const members = positioned.filter((node) => node.layerIndex === layerIndex);
+      if (!members.length) return "";
+      return `<section class="architecture-tier architecture-tier-${layerIndex}" aria-label="${escapeHtml(layer.label)}">
+        <span class="architecture-tier-label" aria-hidden="true">${escapeHtml(layer.label)}</span>
+        <div class="architecture-tier-row">${members.map((node) => sourceNodeMarkup(node, { layout, source, nodeStates })).join("")}</div>
+      </section>`;
+    }).join("");
+    els["canvas-layers"].innerHTML = `<div class="twin-layer layer-current architecture-stack">${tiers}</div>`;
     els["twin-canvas"].dataset.invalidEdges = String(topology.invalid_edges.length);
     els["twin-canvas"].dataset.unlinkedNodes = "0";
     els["twin-canvas"].setAttribute("aria-label", `Architecture block stack with ${positioned.length} observed services from ${sourceOrigin(layout)}. Dependency lines are intentionally hidden.`);
     return;
   }
+  const positions = new Map(positioned.map((node) => [node.id, node]));
+  const pulseSlots = livePulseSlots(topology);
+  const edgeLayout = {
+    canvasWidth: LIVE_WORLD.width,
+    canvasHeight: LIVE_WORLD.height,
+    nodeWidth: 144,
+    nodeHeight: 64
+  };
+  const edges = topology.edges.filter((edge) => positions.has(edge.from) && positions.has(edge.to)).map((edge, index) => {
+    const from = positions.get(edge.from);
+    const to = positions.get(edge.to);
+    const lane = index % 2 ? Math.ceil(index / 2) : -Math.ceil((index + 1) / 2);
+    const path = liveEdgePath(from, to, { ...edgeLayout, lane });
+    const edgeState = liveSignalTone(edge, nodeStates);
+    return `<g class="edge-group path-runtime signal-${edgeState}" data-live-edge-id="${escapeHtml(edge.id)}" data-signal-from="${escapeHtml(edge.from)}" data-signal-to="${escapeHtml(edge.to)}" data-signal-tone="${edgeState}" data-pulse-slot="${pulseSlots[edge.id] || 0}"><path class="edge-line is-${edgeState}" d="${path}"/><path class="pulse-flow is-${edgeState}" d="${path}" pathLength="1" aria-hidden="true"/><path class="edge-hit" d="${path}" role="button" tabindex="0" aria-label="${escapeHtml(edge.label)} from ${escapeHtml(from.label)} to ${escapeHtml(to.label)}" data-edge-id="${escapeHtml(edge.id)}" data-edge-from="${escapeHtml(edge.from)}" data-edge-to="${escapeHtml(edge.to)}"/></g>`;
+  }).join("");
+  const nodes = positioned.map((node) => sourceNodeMarkup(node, { layout, source, nodeStates })).join("");
   const guideLayers = [...LIVE_LAYERS, ...(topology.unlinked_node_ids.length ? [LIVE_UNLINKED_LAYER] : [])];
   const guides = `<div class="live-guides" aria-hidden="true">${guideLayers.map((layer, index) => `<span class="live-guide-${index}">${escapeHtml(layer.label)}</span>`).join("")}</div>${topology.invalid_edges.length ? `<div class="topology-warning"><i class="ph ph-warning" aria-hidden="true"></i>${topology.invalid_edges.length} invalid dependency endpoint${topology.invalid_edges.length === 1 ? "" : "s"} omitted</div>` : ""}`;
   const change = layout === "live" ? renderLiveChange(positioned, edgeLayout) : { edge: "", node: "" };
   els["canvas-layers"].innerHTML = `${guides}<div class="twin-layer layer-current"><svg class="edge-map" viewBox="0 0 1000 520" preserveAspectRatio="none">${edges}${change.edge}</svg>${nodes}${change.node}</div>`;
-  for (const pulse of els["canvas-layers"].querySelectorAll("[data-pulse-delay]")) {
-    pulse.style.setProperty("--pulse-delay", `${pulse.dataset.pulseDelay}s`);
-    pulse.style.setProperty("--pulse-cycle", `${pulse.dataset.pulseCycle}s`);
-  }
+  startLiveSignalLoop();
   els["twin-canvas"].dataset.invalidEdges = String(topology.invalid_edges.length);
   els["twin-canvas"].dataset.unlinkedNodes = String(topology.unlinked_node_ids.length);
   setAnnotations(mode === "replay" ? developmentAnnotations(cursor) : []);
   els["twin-canvas"].setAttribute("aria-label", `Runtime topology with ${positioned.length} observed services, ${topology.edges.length} authoritative dependencies, and ${topology.unlinked_node_ids.length} components with insufficient dependency evidence from ${sourceOrigin(layout)}`);
+}
+
+function sourceNodeMarkup(node, { layout, source, nodeStates }) {
+  const positionClass = layout === "architecture"
+    ? `arch-layer-${node.layerIndex} arch-count-${node.layerSize} arch-index-${node.layerPosition}`
+    : `live-column-${node.layerIndex} live-count-${node.layerSize} live-index-${node.layerPosition}`;
+  const nodeState = node.connectivity === "unlinked" && layout === "live" ? "unlinked" : nodeStates[node.id] || "observed";
+  const nodeStatus = nodeState === "impact" ? "Failure observed" : nodeState === "unlinked" ? "Evidence gap" : source.status === "live" ? "Observed" : "Last known";
+  const ariaStatus = nodeState === "unlinked" ? "Insufficient dependency evidence" : nodeStatus;
+  const origin = layout === "architecture" ? kindLabel(node.kind) : `RUNTIME · ${sourceOrigin(layout)}`;
+  return `<button class="twin-node source-node plane-runtime kind-${escapeHtml(node.kind)} is-${nodeState} ${positionClass}" type="button" data-node-id="${escapeHtml(node.id)}" data-transition-key="${escapeHtml(transitionKey(node.id))}" aria-label="${escapeHtml(kindLabel(node.kind))} ${escapeHtml(node.label)}, ${escapeHtml(ariaStatus)}">
+    <span class="node-icon" aria-hidden="true"><i class="ph ph-${iconForLive(node)}"></i></span>
+    <span class="node-copy"><span class="node-origin">${escapeHtml(origin)}</span><strong>${escapeHtml(node.label)}</strong><span class="node-detail">${escapeHtml(node.detail || (nodeState === "unlinked" ? "dependency not observed" : "observed service.name"))}</span><span class="node-status">${escapeHtml(nodeStatus)}</span></span>
+    <span class="node-status-dot" aria-hidden="true"></span>
+  </button>`;
+}
+
+function liveSignalTone(edge, nodeStates) {
+  if (nodeStates[edge.from] === "impact" || nodeStates[edge.to] === "impact") return "impact";
+  const verified = state.events.some((event) => event.type === "verification.completed" && event.payload?.passed === true);
+  if (verified && ["checkout", "payment", "kafka", "accounting", "fraud-detection", "fraud"].some((id) => id === edge.from || id === edge.to)) return "verified";
+  return "observed";
 }
 
 function renderLiveChange(positioned, edgeLayout) {
@@ -357,14 +373,63 @@ function renderLiveChange(positioned, edgeLayout) {
   };
 }
 
+function startLiveSignalLoop() {
+  const groups = [...els["canvas-layers"].querySelectorAll("[data-live-edge-id]")]
+    .sort((a, b) => Number(a.dataset.pulseSlot) - Number(b.dataset.pulseSlot) || a.dataset.liveEdgeId.localeCompare(b.dataset.liveEdgeId));
+  if (!groups.length) return;
+  const nodes = new Map([...els["canvas-layers"].querySelectorAll("[data-node-id]")].map((node) => [node.dataset.nodeId, node]));
+  const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
+  const activate = (group, persistent = false) => {
+    clearLiveSignalClasses();
+    const tone = group.dataset.signalTone || "observed";
+    const from = nodes.get(group.dataset.signalFrom);
+    const to = nodes.get(group.dataset.signalTo);
+    group.classList.add("is-signal-active");
+    from?.classList.add("is-signal-launch", `signal-${tone}`);
+    if (persistent) {
+      to?.classList.add("is-signal-arrival", `signal-${tone}`);
+      return;
+    }
+    liveSignalTimers.push(setTimeout(() => {
+      from?.classList.remove("is-signal-launch", `signal-${tone}`);
+      to?.classList.add("is-signal-arrival", `signal-${tone}`);
+    }, 310));
+    liveSignalTimers.push(setTimeout(() => {
+      group.classList.remove("is-signal-active");
+      to?.classList.remove("is-signal-arrival", `signal-${tone}`);
+    }, 760));
+  };
+
+  liveSignalIndex = Math.min(liveSignalIndex, groups.length - 1);
+  activate(groups[liveSignalIndex], reduced);
+  if (reduced) return;
+  liveSignalTimers.push(setInterval(() => {
+    liveSignalIndex = (liveSignalIndex + 1) % groups.length;
+    activate(groups[liveSignalIndex]);
+  }, 860));
+}
+
+function stopLiveSignalLoop() {
+  for (const timer of liveSignalTimers) clearTimeout(timer);
+  liveSignalTimers = [];
+  clearLiveSignalClasses();
+}
+
+function clearLiveSignalClasses() {
+  for (const group of els["canvas-layers"].querySelectorAll(".edge-group.is-signal-active")) group.classList.remove("is-signal-active");
+  for (const node of els["canvas-layers"].querySelectorAll(".is-signal-launch, .is-signal-arrival")) {
+    node.classList.remove("is-signal-launch", "is-signal-arrival", "signal-observed", "signal-impact", "signal-verified", "signal-change", "signal-approval");
+  }
+}
+
 function renderAgentCanvas() {
   const control = agentControl();
   const positions = new Map(control.graph.nodes.map((node) => [node.id, node]));
   const edgeLayout = {
-    canvasWidth: els["twin-canvas"].clientWidth || 1100,
-    canvasHeight: els["twin-canvas"].clientHeight || 520,
-    nodeWidth: 148,
-    nodeHeight: 60
+    canvasWidth: 820,
+    canvasHeight: 360,
+    nodeWidth: 132,
+    nodeHeight: 54
   };
   const edges = control.graph.edges.map((edge, index) => {
     const from = positions.get(edge.from);
@@ -377,12 +442,40 @@ function renderAgentCanvas() {
   }).join("");
   const nodes = control.graph.nodes.map((node) => `<button class="twin-node agent-operation-node agent-node-${escapeHtml(node.id)} kind-${agentNodeKind(node)} is-${agentNodeTone(node.status)}" type="button" data-node-id="${escapeHtml(node.id)}" data-agent-node-id="${escapeHtml(node.id)}" data-transition-key="agent-${escapeHtml(node.id)}" aria-label="${escapeHtml(node.label)}, ${escapeHtml(agentStatusLabel(node.status))}"><span class="node-icon" aria-hidden="true"><i class="ph ph-${agentIcon(node.id)}"></i></span><span class="node-copy"><span class="node-origin">${node.manifest ? escapeHtml(node.manifest.plane.toUpperCase()) : "CONTROL SYSTEM"}</span><strong>${escapeHtml(node.label)}</strong><span class="node-detail">${escapeHtml(node.detail)}</span><span class="node-status">${escapeHtml(agentStatusLabel(node.status))}</span></span><span class="node-status-dot" aria-hidden="true"></span></button>`).join("");
   const current = positions.get(control.current_agent_id);
-  const annotation = current ? [{ id: "agent-current", tone: current.status === "rejected" ? "rejected" : current.status === "waiting" ? "gate" : current.status === "complete" ? "verified" : "change", title: `${current.label}: ${agentStatusLabel(current.status)}`, copy: control.report.title }] : [];
-  els["canvas-layers"].innerHTML = `<div class="agent-guides" aria-hidden="true"><span>Online incident team</span><span>Offline learning team</span></div><div class="twin-layer layer-current"><svg class="edge-map" viewBox="0 0 1000 520" preserveAspectRatio="none">${edges}</svg>${nodes}</div>`;
-  setAnnotations(annotation);
+  const report = control.report;
+  const actionButtons = control.actions.map((action) => {
+    const needsOwner = action.requires_owner === true;
+    const externalDraft = ["pull_request", "work_item"].includes(action.kind);
+    const note = needsOwner ? "Opens the separate human gate" : externalDraft ? "Ledger draft · connector not configured" : action.kind === "task" ? "Internal agent assignment" : "Ledger-governed control";
+    return `<button class="recovery-action ${needsOwner ? "is-owner" : ""}" type="button" data-recovery-action="${escapeHtml(action.id)}" ${busy ? "disabled" : ""}><span><i class="ph ph-${recoveryActionIcon(action.id)}" aria-hidden="true"></i><strong>${escapeHtml(action.label)}</strong></span><small>${escapeHtml(note)}</small></button>`;
+  }).join("");
+  const workItems = (control.work_items || []).slice(-4).reverse().map((item) => `<button class="recovery-work-item" type="button" data-recovery-work-item="${escapeHtml(item.id)}"><span class="work-item-state is-${escapeHtml(workItemTone(item.status))}" aria-hidden="true"></span><span><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(workItemStatus(item))}</small></span><code>${escapeHtml(String(item.sequence))}</code></button>`).join("") || `<p class="recovery-empty">No recovery work items have been recorded yet.</p>`;
+  els["canvas-layers"].innerHTML = `<div class="recovery-console-layout">
+    <section class="recovery-diagnosis" aria-label="Current diagnosis">
+      <div class="diagnosis-state"><span>${report.human_gate ? "OWNER GATE" : report.verification ? "VERIFIED" : "DIAGNOSIS"}</span><strong>${escapeHtml(report.title)}</strong></div>
+      <p>${escapeHtml(report.root_cause || report.summary)}</p>
+      ${report.rejected_diagnosis ? `<div class="diagnosis-rejection"><span>Rejected ${escapeHtml(report.rejected_diagnosis.hypothesis_id)}</span><strong>${Math.round(report.rejected_diagnosis.score * 100)}%</strong></div>` : ""}
+      <div class="diagnosis-score"><span>Evaluator</span><strong>${report.confidence == null ? "—" : `${Math.round(report.confidence * 100)}%`}</strong></div>
+    </section>
+    <section class="recovery-graph-panel" aria-label="Agent execution graph">
+      <header><div><span>AGENT EXECUTION</span><strong>${escapeHtml(current?.label || "Manager")} · ${escapeHtml(agentStatusLabel(current?.status || "standby"))}</strong></div><small>Incident timeline synchronized</small></header>
+      <div class="recovery-graph"><div class="agent-guides" aria-hidden="true"><span>Online incident team</span><span>Offline learning team</span></div><svg class="edge-map" viewBox="0 0 1000 520" preserveAspectRatio="none">${edges}</svg>${nodes}</div>
+    </section>
+    <aside class="recovery-command" aria-label="Manager command and recovery actions">
+      <header><span>MANAGER COMMAND</span><strong>Human-in-the-loop recovery</strong><small>${escapeHtml(managerReply || report.summary)}</small></header>
+      <section class="recovery-work-queue"><div class="recovery-section-title"><strong>Work queue</strong><span>${control.work_items?.length || 0} recorded</span></div>${workItems}</section>
+      <section class="recovery-actions"><div class="recovery-section-title"><strong>Available actions</strong><span>Ledger governed</span></div>${actionButtons}</section>
+      <form class="recovery-command-form">
+        <label for="recovery-command-input">Ask or assign the incident team</label>
+        <div><input id="recovery-command-input" name="message" type="text" maxlength="2000" autocomplete="off" placeholder="Assign Diagnosis to verify the first failing trace"><button class="button approve" type="button" data-recovery-command-send ${busy ? "disabled" : ""}>Send</button></div>
+        <small>Chat may assign safe work. Owner approval remains separate.</small>
+      </form>
+    </aside>
+  </div>`;
+  setAnnotations([]);
   els["compare-handle"].hidden = true;
   els["compare-canvas-range"].hidden = true;
-  els["twin-canvas"].setAttribute("aria-label", `Agent operations graph. ${control.report.title}. Current role ${current?.label || "Manager"}.`);
+  els["twin-canvas"].setAttribute("aria-label", `Recovery Console. ${control.report.title}. Current role ${current?.label || "Manager"}.`);
 }
 
 function renderTwinLayer(frame, layerName, interactive) {
@@ -572,6 +665,7 @@ async function runManagerPrimaryAction() {
     showToast(error.message, true);
   } finally {
     setBusy(false);
+    if (mode === "agents") render();
   }
 }
 
@@ -590,6 +684,67 @@ async function sendManagerMessage(event) {
     showToast(error.message, true);
   } finally {
     setBusy(false);
+    if (mode === "agents") render();
+  }
+}
+
+async function handleRecoveryConsoleAction(event) {
+  const commandButton = event.target.closest("[data-recovery-command-send]");
+  if (commandButton) {
+    event.stopPropagation();
+    await sendRecoveryCommand(commandButton.closest("form"));
+    return;
+  }
+  const workItem = event.target.closest("[data-recovery-work-item]");
+  if (workItem) {
+    openDrawer({ type: "run", id: state.run_id }, "agent");
+    return;
+  }
+  const button = event.target.closest("[data-recovery-action]");
+  if (!button || mode !== "agents") return;
+  event.stopPropagation();
+  const action = button.dataset.recoveryAction;
+  if (action === "review_recovery") {
+    managerReply = "Review the bounded checkout scope and immutable citations before using the separate owner approval control.";
+    openManager();
+    return;
+  }
+  if (action === "review_learning") {
+    openDrawer({ type: "run", id: state.run_id }, "evolve");
+    return;
+  }
+  setBusy(true);
+  try {
+    await request("/api/agent-control/action", { method: "POST", body: JSON.stringify({ action }) });
+    state = await request("/api/state");
+    cursor = availableStage(state.events);
+    managerReply = recoveryActionReply(action);
+    showToast(managerReply);
+    render();
+  } catch (error) {
+    showToast(error.message, true);
+  } finally {
+    setBusy(false);
+    if (mode === "agents") render();
+  }
+}
+
+async function sendRecoveryCommand(form) {
+  const input = form.elements.message;
+  const message = input.value.trim();
+  if (!message) return;
+  setBusy(true);
+  try {
+    const result = await request("/api/agent-control/message", { method: "POST", body: JSON.stringify({ message }) });
+    managerReply = result.message;
+    state = await request("/api/state");
+    cursor = availableStage(state.events);
+    render();
+  } catch (error) {
+    showToast(error.message, true);
+  } finally {
+    setBusy(false);
+    if (mode === "agents") render();
   }
 }
 
@@ -1395,12 +1550,16 @@ function statusLabel(status) {
 
 function labelFor(id) { return NODE_BY_ID.get(id)?.label || id || "unknown"; }
 function agentLabel(id) { return agentControl().graph.nodes.find((node) => node.id === id)?.label || id || "unknown"; }
-function agentControl() { return state?.agent_control || { authority: "append-only-ledger", langfuse: "not_configured", current_agent_id: "manager", last_sequence: 0, report: { title: "Agent control unavailable", summary: "No agent projection is available.", stage: state?.stage || "Unknown", data_mode: "captured_deterministic_replay", citations: [] }, actions: [], graph: { nodes: [], edges: [] }, activity: [], orchestration: { mode: "unavailable", proposal_count: 0, proposals: [], last_step: null } }; }
+function agentControl() { return state?.agent_control || { authority: "append-only-ledger", langfuse: "not_configured", current_agent_id: "manager", last_sequence: 0, report: { title: "Agent control unavailable", summary: "No agent projection is available.", stage: state?.stage || "Unknown", data_mode: "captured_deterministic_replay", citations: [] }, actions: [], work_items: [], graph: { nodes: [], edges: [] }, activity: [], orchestration: { mode: "unavailable", proposal_count: 0, proposals: [], last_step: null } }; }
 function agentIcon(id) { return ({ manager: "chats-circle", monitor: "activity", evidence: "magnifying-glass", diagnosis: "brain", evaluator: "scales", planner: "clipboard-text", owner: "user-focus", executor: "wrench", verification: "shield-check", evolve: "git-branch", test: "flask", ledger: "database", langfuse: "waveform" })[id] || "robot"; }
 function agentNodeKind(node) { return ({ ledger: "database", langfuse: "database", executor: "change", owner: "evaluator", evaluator: "evaluator" })[node.id] || "agent"; }
 function agentNodeTone(status) { return ({ running: "active", waiting: "approval", rejected: "rejected", complete: "verified", recording: "recording", observing: "learned", unconfigured: "quiet", standby: "quiet" })[status] || "quiet"; }
 function agentEdgeTone(status) { return ({ active: "active", waiting: "approval", rejected: "rejected", complete: "verified", observing: "learned", quiet: "quiet" })[status] || "quiet"; }
 function agentStatusLabel(status) { return ({ running: "Running", waiting: "Waiting for owner", rejected: "Rejected and replanning", complete: "Completed", recording: "Recording", observing: "Observing", unconfigured: "Not configured", standby: "Standby" })[status] || status; }
+function recoveryActionIcon(id) { return ({ advance: "play", verify_recovery: "shield-check", review_recovery: "user-focus", review_learning: "flask", delegate_task: "paper-plane-tilt", review_pr: "git-pull-request", approve_pr_review: "check-circle", draft_jira: "ticket", approve_jira_draft: "check-square" })[id] || "arrow-right"; }
+function recoveryActionReply(id) { return ({ advance: "The Manager delegated the next evidence-grounded step.", verify_recovery: "Verification monitoring is active.", delegate_task: "The diagnosis task was recorded in the immutable ledger.", review_pr: "A cited PR review draft is ready for human review; GitHub was not mutated.", approve_pr_review: "The internal PR review is approved and ready for a configured integration.", draft_jira: "A cited Jira ticket draft is ready for human review; Jira was not mutated.", approve_jira_draft: "The Jira draft is approved and ready for a configured integration." })[id] || "The recovery control state was updated."; }
+function workItemTone(status) { return ({ recorded: "active", awaiting_human_review: "approval", ready_for_integration: "verified" })[status] || "quiet"; }
+function workItemStatus(item) { const status = String(item.status || "recorded").replaceAll("_", " "); return item.integration_state === "not_configured" ? `${status} · draft only` : status; }
 function emptyDetail(message) { return `<div class="drawer-empty">${escapeHtml(message)}</div>`; }
 function closeDrawerWithoutFocus() { selected = null; els["context-drawer"].hidden = true; }
 function playDelay() { return 820 / Number(els["speed-select"].value || 1); }

@@ -75,10 +75,10 @@ const server = createServer(async (request, response) => {
         runId,
         incidentId: runtime.bundle.incident.id,
         action: String(body.action || ""),
-        input: { action: body.action }
+        input: { action: body.action, parameters: body.input || {} }
       }, async (trace) => {
-        const tool = trace.tool("flowpulse.agent-action", { input: { action: body.action }, metadata: { run_id: runId } });
-        const projection = agentControl.act(runId, body.action);
+        const tool = trace.tool("flowpulse.agent-action", { input: { action: body.action, parameters: body.input || {} }, metadata: { run_id: runId } });
+        const projection = agentControl.act(runId, body.action, body.input || {});
         tool.update({ output: { current_agent_id: projection.current_agent_id, last_event_id: projection.last_event_id } });
         tool.end();
         return projection;

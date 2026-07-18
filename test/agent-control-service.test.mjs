@@ -104,3 +104,42 @@ test("verification, evolve, and test become visible after owner-approved recover
   assert.equal(statuses.test, "complete");
   assert.equal(projection.actions[0].id, "review_learning");
 });
+
+test("recovery-console work proposals are idempotent, cited, and never mutate external systems", () => {
+  const { runtime, runId, service } = setup();
+  for (let step = 0; step < 7; step++) service.advance(runId);
+
+  service.act(runId, "delegate_task", { instruction: "Recheck the checkout endpoint evidence" });
+  service.act(runId, "review_pr");
+  service.act(runId, "approve_pr_review");
+  service.act(runId, "draft_jira");
+  service.act(runId, "approve_jira_draft");
+  const beforeRepeat = runtime.ledger.list(runId).length;
+  assert.throws(() => service.act(runId, "approve_jira_draft"), /not available/);
+
+  const events = runtime.ledger.list(runId);
+  const workEvents = events.filter((event) => ["task.delegation.proposed", "pr.review.proposed", "pr.review.recorded", "workitem.draft.proposed", "workitem.draft.approved"].includes(event.type));
+  assert.equal(events.length, beforeRepeat);
+  assert.equal(workEvents.length, 5);
+  assert.equal(workEvents.every((event) => event.payload.external_mutation === false), true);
+  assert.equal(workEvents.every((event) => event.evidence_refs.length > 0), true);
+  assert.equal(workEvents.every((event) => event.payload.idempotency_key.startsWith(runId)), true);
+  assert.equal(events.some((event) => event.type === "approval.granted"), false);
+
+  const projection = service.project(runId);
+  assert.equal(projection.work_items.length, 5);
+  assert.equal(projection.work_items.at(-1).status, "ready_for_integration");
+  assert.equal(projection.work_items.at(-1).integration_state, "not_configured");
+});
+
+test("manager chat can dispatch a safe internal task without crossing the owner gate", () => {
+  const { runtime, runId, service } = setup();
+  service.message(runId, "Assign the diagnosis agent to validate the first failing trace");
+  const events = runtime.ledger.list(runId);
+  const task = events.find((event) => event.type === "task.delegation.proposed");
+
+  assert.ok(task);
+  assert.equal(task.payload.target_agent, "diagnosis");
+  assert.equal(task.payload.external_mutation, false);
+  assert.equal(events.some((event) => event.type === "approval.granted"), false);
+});

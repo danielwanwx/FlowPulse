@@ -24,7 +24,7 @@ Open [http://127.0.0.1:4310](http://127.0.0.1:4310), then:
 2. Watch the shared system canvas replay propagation and the evaluator reject the Kafka diagnosis.
 3. Select nodes or causal annotations to inspect the deploy, trace, log, and commit evidence used in the replan.
 4. Click **Recover** at the human gate. The Manager shows the rejected claim, accepted cause, evidence IDs, and bounded proposal; use the separate Owner approval control to authorize it.
-5. Watch **Agents** show execution, verification, Evolve, and Test from the same ledger events, then open **Compare** to inspect incident versus verified state.
+5. Open **Recovery Console** to review the diagnosis, watch execution/verification/Evolve/Test from the same ledger events, assign safe agent work, and prepare ledger-governed PR/Jira drafts. Then open **Compare** to inspect incident versus verified state.
 
 The interactive path takes about 20 seconds. It is deterministic and needs no cloud credentials.
 
@@ -47,7 +47,7 @@ The primary interface is one deterministic system canvas with five views of the 
 - **Architecture** opens by default as a compact, line-free block stack. It arranges only observed components into stable semantic layers so the current system shape is readable before runtime traffic is introduced.
 - **Live** shows only services and dependencies observed in a connected OTLP source on a wider zoomable and pannable canvas. Orthogonal routes stay outside component plaques; services without an observed dependency are isolated in an explicit `Evidence gap` column rather than given invented edges. With no source it displays an honest `Disconnected` state rather than fixture topology.
 - **Diagnose** reconstructs any incident milestone from immutable events. Play, pause, step, restart, seek, and speed controls all use the same projection function.
-- **Agents** reconstructs the isolated Monitor, Evidence, Diagnosis, Evaluator, Planner, Owner, Executor, Verification, Evolve, and Test roles from attributed ledger events. Every deterministic judge step crosses the typed `AgentTeamHarness`, which enforces role permissions, evidence references, budgets, parent events, idempotency, and sealed content hashes before the canonical runtime transition.
+- **Recovery Console** reconstructs the isolated Monitor, Evidence, Diagnosis, Evaluator, Planner, Owner, Executor, Verification, Evolve, and Test roles from attributed ledger events. It combines the diagnosis brief, synchronized agent graph, Manager command, and safe action queue. Internal task, PR-review, and Jira-draft actions are append-only ledger records; they never imply an external mutation when a connector is not configured. Every deterministic judge step crosses the typed `AgentTeamHarness`, which enforces role permissions, evidence references, budgets, parent events, idempotency, and sealed content hashes before the canonical runtime transition.
 - **Compare** places the impact and verified recovery projections on the same geometry with an interactive split.
 
 The canvas keeps the architecture visible while moving dense telemetry and reasoning into a contextual drawer. **Recover** opens a dedicated Manager report and activity feed; Manager chat can explain evidence or delegate a safe catalog action, but it cannot approve remediation. Metrics, logs, traces, deploys, evidence citations, agent reasoning, adversarial evaluation, repair, verification, and evolve gates remain reachable by selecting a node, edge, or event.
@@ -151,6 +151,8 @@ The runtime is intentionally small:
 The original product contract is in [`docs/specs/2026-07-16-flowpulse-design.md`](docs/specs/2026-07-16-flowpulse-design.md). The current Incident Digital Twin contract is in [`docs/specs/2026-07-16-incident-digital-twin-redesign.md`](docs/specs/2026-07-16-incident-digital-twin-redesign.md). The real Production Workspace contract is in [`docs/specs/2026-07-17-live-development-workspace.md`](docs/specs/2026-07-17-live-development-workspace.md).
 The Manager and synchronized specialist-operations contract is in [`docs/specs/2026-07-17-agent-control-and-transparent-recovery.md`](docs/specs/2026-07-17-agent-control-and-transparent-recovery.md).
 The compact Architecture, routed Live, and harness-linkage refinement is in [`docs/superpowers/specs/2026-07-17-compact-architecture-and-orchestrated-live-design.md`](docs/superpowers/specs/2026-07-17-compact-architecture-and-orchestrated-live-design.md).
+
+The shared-border Architecture, semantic Live signal path, Recovery Console, and pure-black contrast refinement is in [`docs/superpowers/specs/2026-07-17-recovery-console-and-signal-path-design.md`](docs/superpowers/specs/2026-07-17-recovery-console-and-signal-path-design.md).
 
 ## Evidence bundle
 
