@@ -96,6 +96,126 @@ export const LIVE_LAYERS = [
 
 export const LIVE_UNLINKED_LAYER = Object.freeze({ id: "unlinked", label: "Unlinked telemetry" });
 
+export const AGENT_COLLABORATORS = Object.freeze([
+  {
+    id: "commander",
+    label: "Commander",
+    icon: "chats-circle",
+    responsibility: "Coordinates the incident, routes bounded work, and identifies the next human decision.",
+    roleIds: ["manager"],
+    activityIds: ["manager"],
+    x: 10,
+    y: 49,
+    prompts: ["Summarize the incident", "Recommend the next safe step", "Explain the pending owner decision"]
+  },
+  {
+    id: "observer",
+    label: "Observer",
+    icon: "binoculars",
+    responsibility: "Collects runtime telemetry and assembles cited traces, logs, metrics, and change evidence.",
+    roleIds: ["monitor", "evidence"],
+    activityIds: ["monitor", "evidence"],
+    x: 28,
+    y: 27,
+    prompts: ["Show the first failing trace", "Compare the checkout deployment", "Show related log clusters"]
+  },
+  {
+    id: "investigator",
+    label: "Investigator",
+    icon: "brain",
+    responsibility: "Builds and revises causal hypotheses from the immutable evidence ledger.",
+    roleIds: ["diagnosis"],
+    activityIds: ["diagnosis"],
+    x: 47,
+    y: 27,
+    prompts: ["Explain the root cause", "Show counter-evidence", "Request missing evidence"]
+  },
+  {
+    id: "critic",
+    label: "Critic",
+    icon: "scales",
+    responsibility: "Challenges unsupported diagnoses and records adversarial evaluation results.",
+    roleIds: ["evaluator"],
+    activityIds: ["evaluator"],
+    x: 66,
+    y: 27,
+    prompts: ["Explain the rejected Kafka hypothesis", "Challenge the current diagnosis", "Explain the evaluator score"]
+  },
+  {
+    id: "recovery-engineer",
+    label: "Recovery Engineer",
+    icon: "wrench",
+    responsibility: "Drafts a bounded repair and reports execution only after owner approval.",
+    roleIds: ["planner", "executor"],
+    activityIds: ["planner", "executor", "owner"],
+    x: 66,
+    y: 72,
+    prompts: ["Draft a bounded repair plan", "Prepare a PR review draft", "Prepare the owner approval request"]
+  },
+  {
+    id: "verifier",
+    label: "Verifier",
+    icon: "shield-check",
+    responsibility: "Checks recovery and exposes regression, backtest, and learning outcomes.",
+    roleIds: ["verification", "evolve", "test"],
+    activityIds: ["verification", "evolve", "test"],
+    x: 86,
+    y: 72,
+    prompts: ["Show recovery checks", "Inspect the regression record", "Summarize the offline backtest"]
+  }
+]);
+
+export const AGENT_COLLABORATOR_EDGES = Object.freeze([
+  { id: "commander-observer", from: "commander", to: "observer", label: "observe" },
+  { id: "observer-investigator", from: "observer", to: "investigator", label: "ground" },
+  { id: "investigator-critic", from: "investigator", to: "critic", label: "challenge" },
+  { id: "critic-recovery", from: "critic", to: "recovery-engineer", label: "plan" },
+  { id: "recovery-verifier", from: "recovery-engineer", to: "verifier", label: "verify" }
+]);
+
+export function projectAgentCollaborators(control = {}) {
+  const backendNodes = new Map((control.graph?.nodes || []).map((node) => [node.id, node]));
+  const currentId = collaboratorForRole(control.current_agent_id);
+  const report = control.report || {};
+  const nodes = AGENT_COLLABORATORS.map((definition) => {
+    const members = definition.roleIds.map((id) => backendNodes.get(id)).filter(Boolean);
+    const status = definition.id === "recovery-engineer" && report.human_gate
+      ? "waiting"
+      : aggregateAgentStatus(members.map((node) => node.status));
+    const currentRole = definition.roleIds.find((id) => id === control.current_agent_id)
+      || (control.current_agent_id === "owner" && definition.id === "recovery-engineer" ? "owner" : null)
+      || members.find((node) => node.status === status)?.id
+      || definition.roleIds[0];
+    const latestActivity = [...(control.activity || [])].reverse().find((item) => definition.activityIds.includes(item.agent_id)) || null;
+    return { ...definition, status, currentRole, latestActivity, selectedByRuntime: definition.id === currentId };
+  });
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const edges = AGENT_COLLABORATOR_EDGES.map((edge) => ({
+    ...edge,
+    status: collaboratorEdgeStatus(byId.get(edge.from)?.status, byId.get(edge.to)?.status)
+  }));
+  return { nodes, edges, currentId };
+}
+
+function collaboratorForRole(roleId) {
+  return AGENT_COLLABORATORS.find((item) => item.roleIds.includes(roleId))?.id
+    || (roleId === "owner" ? "recovery-engineer" : "commander");
+}
+
+function aggregateAgentStatus(statuses) {
+  if (!statuses.length) return "standby";
+  if (statuses.every((status) => status === "complete")) return "complete";
+  return ["waiting", "rejected", "running", "observing", "recording"].find((status) => statuses.includes(status)) || "standby";
+}
+
+function collaboratorEdgeStatus(fromStatus, toStatus) {
+  if (toStatus === "rejected") return "rejected";
+  if (toStatus === "waiting") return "waiting";
+  if (toStatus === "running") return "active";
+  if (toStatus === "complete") return "complete";
+  return fromStatus === "running" ? "active" : "quiet";
+}
+
 export function architecturePositions(nodes = []) {
   const knownLayer = new Map(ARCHITECTURE_LAYERS.flatMap((layer, index) => layer.ids.map((id, order) => [id, { index, order }])));
   const buckets = ARCHITECTURE_LAYERS.map(() => []);

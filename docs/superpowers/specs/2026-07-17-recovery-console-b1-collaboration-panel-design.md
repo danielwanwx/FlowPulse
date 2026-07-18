@@ -1,7 +1,7 @@
 # Recovery Console B1 Agent Collaboration Panel
 
 **Date:** 2026-07-17  
-**Status:** Proposed for user review  
+**Status:** Implemented and verified 2026-07-18
 **Scope:** Recovery Console information architecture and interaction only; existing runtime, incident ledger, agent harness, permissions, and owner gate remain authoritative.
 
 ## Goal
@@ -42,8 +42,8 @@ Ledger and Langfuse sit on a thin infrastructure rail under the graph with clear
 ## Graph and Visual Grammar
 
 - Default selection is Commander.
-- Each collaborator has a distinct, unboxed Phosphor icon, role name, one-line responsibility, status word, and status dot.
-- Selected state uses a crisp outline, subtle elevation, and `aria-pressed`; it does not recolor the entire card.
+- Each collaborator has a distinct, unboxed Phosphor icon, role name, one-line responsibility, status word, and status dot. Component vectors are transparent and monochrome in both themes; no icon receives a colored fill, tile, or border.
+- Selected state uses underline/scale plus `aria-pressed`; it does not recolor the entire card. The semantic status dot is the only colored node accent.
 - Status is never communicated by color alone. Text distinguishes Standby, Working, Needs review, Waiting for owner, Verified, and Blocked.
 - Connections show the current handoff sequence, with one restrained pulse moving from source to destination. The receiving node lifts briefly after the pulse arrives.
 - Infrastructure links use a different dashed treatment and never compete with the collaborator handoff path.
@@ -60,7 +60,7 @@ Selecting a collaborator updates the right panel without hiding, replacing, or r
 4. Recent activity, proposals, work items, and pending human gate relevant to the selected role.
 5. A continuing conversation thread and input addressed to that collaborator.
 
-Selection is local UI state and does not append a ledger event. A quick task either prefills the input or submits an explicitly scoped request through the existing agent-control boundary. The Manager routes that request to the mapped backend specialist while preserving that specialist's permissions and evidence requirements.
+Selection is local UI state and does not append a ledger event. A quick task prefills the input with an explicitly scoped request through the existing agent-control boundary. Draft text survives any ledger-stream rerender until the user sends or changes it. The Manager routes that request to the mapped backend specialist while preserving that specialist's permissions and evidence requirements.
 
 ## Quick Task Catalog
 
@@ -123,7 +123,7 @@ If multiple backend specialists map to one visible collaborator, the panel label
 - Chat cannot approve or execute owner-gated remediation.
 - Existing wrong-Kafka-rejection → evidence replan → checkout/payment root cause → owner rollback gate → recovery verification → regression/evolve story remains intact.
 - Existing runtime, ledger, and agent-harness tests remain green; focused deterministic projection and selection tests are added.
-- Browser QA passes at 1440×900 and 1280×800 in light and dark themes with zero console errors or warnings.
+- Browser QA passes at 1440×900 and 1280×800 in light and dark themes with zero console errors or warnings; QA captures are recorded in `docs/qa/`.
 - Keyboard selection, focus management, contrast, and reduced-motion behavior are verified.
 
 ## Non-goals

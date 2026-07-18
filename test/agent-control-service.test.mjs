@@ -50,6 +50,35 @@ test("manager chat records attributed responses and cannot create approval", () 
   assert.ok(events.find((event) => event.type === "manager.response.created").evidence_refs.length > 0);
 });
 
+test("B1 collaboration messages stay role-scoped without changing specialist authority", () => {
+  const { runtime, runId, service } = setup();
+  for (let step = 0; step < 7; step++) runtime.next(runId);
+
+  const result = service.message(runId, "Explain the rejected Kafka hypothesis", "critic");
+  const messages = runtime.ledger.list(runId).filter((event) => ["manager.message.received", "manager.response.created"].includes(event.type));
+
+  assert.equal(result.collaborator_id, "critic");
+  assert.match(result.message, /Critic: hyp-kafka scored 22%/);
+  assert.equal(messages.every((event) => event.payload.collaborator_id === "critic"), true);
+  assert.equal(result.projection.activity.filter((item) => item.collaborator_id === "critic").length, 2);
+  assert.equal(runtime.state(runId).waiting_for_approval, true);
+  assert.equal(runtime.ledger.list(runId).some((event) => event.type === "approval.granted"), false);
+
+  assert.equal(service.message(runId, "Summarize", "unknown-role").collaborator_id, "commander");
+});
+
+test("Observer chat cites its collected evidence before a root cause is accepted", () => {
+  const { runtime, runId, service } = setup();
+  service.advance(runId);
+
+  const result = service.message(runId, "Show the first failing trace", "observer");
+  const response = runtime.ledger.list(runId).findLast((event) => event.type === "manager.response.created");
+
+  assert.match(result.message, /Observer: 3 immutable evidence records are currently cited/);
+  assert.deepEqual(response.evidence_refs, ["ev-metric-checkout-errors", "ev-metric-kafka-lag", "ev-log-consumer-delay"]);
+  assert.equal(runtime.ledger.list(runId).some((event) => event.type === "approval.granted"), false);
+});
+
 test("safe advance delegates one deterministic step while owner-gated actions remain separate", () => {
   const { runtime, runId, service } = setup();
   const before = runtime.ledger.list(runId).length;

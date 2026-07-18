@@ -22,6 +22,7 @@ import {
   livePositions,
   orderedSignalEdges,
   primaryLiveEdges,
+  projectAgentCollaborators,
   topologyIntegrity
 } from "./twin-state.mjs";
 
@@ -59,6 +60,14 @@ const COMPONENT_CAPABILITIES = Object.freeze({
   "otelcol-contrib": "Observability pipeline",
   "astronomy-db": "Operational data"
 });
+const COLLABORATOR_ACTIONS = Object.freeze({
+  commander: ["advance", "delegate_task", "draft_jira", "approve_jira_draft"],
+  observer: ["advance", "delegate_task"],
+  investigator: ["delegate_task"],
+  critic: ["advance"],
+  "recovery-engineer": ["review_recovery", "review_pr", "approve_pr_review"],
+  verifier: ["verify_recovery", "review_learning"]
+});
 
 let state;
 let developmentStatus;
@@ -85,6 +94,8 @@ let liveSignalFrame = null;
 let liveSignalGeneration = 0;
 let componentCatalogSource = null;
 let componentCatalogCache = new Map();
+let selectedCollaboratorId = "commander";
+const recoveryDrafts = new Map();
 
 for (const button of document.querySelectorAll("[data-mode]")) button.addEventListener("click", () => setMode(button.dataset.mode));
 for (const button of document.querySelectorAll("[data-nav-tab]")) button.addEventListener("click", () => handleNavigation(button.dataset.navTab));
@@ -233,12 +244,13 @@ function renderThemeToggle() {
 function renderMetrics() {
   if (mode === "agents") {
     const control = agentControl();
-    const active = control.graph.nodes.filter((node) => ["running", "waiting", "rejected"].includes(node.status)).length;
-    els["metric-checkout-label"].textContent = "Agent roles";
-    els["metric-payment-label"].textContent = "Active";
+    const team = projectAgentCollaborators(control);
+    const active = team.nodes.filter((node) => ["running", "waiting", "rejected"].includes(node.status)).length;
+    els["metric-checkout-label"].textContent = "Collaborators";
+    els["metric-payment-label"].textContent = "Working";
     els["metric-kafka-label"].textContent = "Control events";
-    setMetric("checkout", String(control.graph.nodes.length), "isolated roles and systems");
-    setMetric("payment", String(active), control.current_agent_id.replaceAll("_", " "));
+    setMetric("checkout", String(team.nodes.length), "specialists remain isolated");
+    setMetric("payment", String(active), team.nodes.find((node) => node.id === team.currentId)?.label || "Commander");
     setMetric("kafka", String(control.orchestration?.proposal_count || 0), control.langfuse === "observing" ? "harness + Langfuse" : "harness validated");
     return;
   }
@@ -522,32 +534,44 @@ function clearLiveSignalClasses() {
 
 function renderAgentCanvas() {
   const control = agentControl();
-  const positions = new Map(control.graph.nodes.map((node) => [node.id, node]));
-  const edgeLayout = {
-    canvasWidth: 820,
-    canvasHeight: 360,
-    nodeWidth: 132,
-    nodeHeight: 54
-  };
-  const edges = control.graph.edges.map((edge, index) => {
+  const team = projectAgentCollaborators(control);
+  if (!team.nodes.some((node) => node.id === selectedCollaboratorId)) selectedCollaboratorId = "commander";
+  const positions = new Map(team.nodes.map((node) => [node.id, node]));
+  const selectedAgent = positions.get(selectedCollaboratorId) || team.nodes[0];
+  const edges = team.edges.map((edge, index) => {
     const from = positions.get(edge.from);
     const to = positions.get(edge.to);
-    const path = liveEdgePath(from, to, { ...edgeLayout, lane: index % 5 - 2 });
+    const path = collaboratorEdgePath(from, to);
     const pulse = ["active", "waiting", "rejected", "observing"].includes(edge.status)
       ? `<path class="pulse-flow is-${agentEdgeTone(edge.status)}" d="${path}" pathLength="1" aria-hidden="true"/>`
       : "";
-    return `<g class="edge-group path-${edge.id.includes("langfuse") ? "evidence" : "control"}"><path class="edge-line is-${agentEdgeTone(edge.status)}" d="${path}"/>${pulse}<path class="edge-hit" d="${path}" role="button" tabindex="0" aria-label="${escapeHtml(edge.label)} from ${escapeHtml(from.label)} to ${escapeHtml(to.label)}" data-agent-edge-id="${escapeHtml(edge.id)}"/></g>`;
+    return `<g class="edge-group path-control collaborator-edge collaborator-edge-${index}"><path class="edge-line is-${agentEdgeTone(edge.status)}" d="${path}"/>${pulse}<path class="edge-hit" d="${path}" role="button" tabindex="0" aria-label="${escapeHtml(edge.label)} from ${escapeHtml(from.label)} to ${escapeHtml(to.label)}" data-agent-edge-id="${escapeHtml(edge.id)}"/></g>`;
   }).join("");
-  const nodes = control.graph.nodes.map((node) => `<button class="twin-node agent-operation-node agent-node-${escapeHtml(node.id)} kind-${agentNodeKind(node)} is-${agentNodeTone(node.status)}" type="button" data-node-id="${escapeHtml(node.id)}" data-agent-node-id="${escapeHtml(node.id)}" data-status="${escapeHtml(agentNodeTone(node.status))}" data-transition-key="agent-${escapeHtml(node.id)}" aria-label="${escapeHtml(node.label)}, ${escapeHtml(agentStatusLabel(node.status))}"><span class="node-icon" aria-hidden="true"><i class="ph ph-${agentIcon(node.id)}"></i></span><span class="node-copy"><span class="node-origin">${node.manifest ? escapeHtml(node.manifest.plane.toUpperCase()) : "CONTROL SYSTEM"}</span><strong>${escapeHtml(node.label)}</strong><span class="node-detail">${escapeHtml(node.detail)}</span><span class="node-status">${escapeHtml(agentStatusLabel(node.status))}</span></span><span class="node-status-dot" aria-hidden="true"></span></button>`).join("");
-  const current = positions.get(control.current_agent_id);
+  const nodes = team.nodes.map((node) => {
+    const selectedState = node.id === selectedAgent.id;
+    return `<button class="collaborator-node collaborator-node-${escapeHtml(node.id)} is-${agentNodeTone(node.status)} ${selectedState ? "is-selected" : ""}" type="button" data-collaborator-id="${escapeHtml(node.id)}" data-status="${escapeHtml(agentNodeTone(node.status))}" aria-label="${escapeHtml(node.label)}, ${escapeHtml(agentStatusLabel(node.status))}" aria-pressed="${selectedState}">
+      <span class="collaborator-icon" aria-hidden="true"><i class="ph ph-${escapeHtml(node.icon)}"></i><span class="node-status-dot"></span></span>
+      <strong>${escapeHtml(node.label)}</strong><small>${escapeHtml(agentStatusLabel(node.status))}</small>
+    </button>`;
+  }).join("");
   const report = control.report;
-  const actionButtons = control.actions.map((action) => {
+  const allowedActionIds = new Set(COLLABORATOR_ACTIONS[selectedAgent.id] || []);
+  const actionButtons = control.actions.filter((action) => allowedActionIds.has(action.id)).map((action) => {
     const needsOwner = action.requires_owner === true;
     const externalDraft = ["pull_request", "work_item"].includes(action.kind);
     const note = needsOwner ? "Opens the separate human gate" : externalDraft ? "Ledger draft · connector not configured" : action.kind === "task" ? "Internal agent assignment" : "Ledger-governed control";
     return `<button class="recovery-action ${needsOwner ? "is-owner" : ""}" type="button" data-recovery-action="${escapeHtml(action.id)}" ${busy ? "disabled" : ""}><span><i class="ph ph-${recoveryActionIcon(action.id)}" aria-hidden="true"></i><strong>${escapeHtml(action.label)}</strong></span><small>${escapeHtml(note)}</small></button>`;
-  }).join("");
-  const workItems = (control.work_items || []).slice(-4).reverse().map((item) => `<button class="recovery-work-item" type="button" data-recovery-work-item="${escapeHtml(item.id)}"><span class="work-item-state is-${escapeHtml(workItemTone(item.status))}" aria-hidden="true"></span><span><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(workItemStatus(item))}</small></span><code>${escapeHtml(String(item.sequence))}</code></button>`).join("") || `<p class="recovery-empty">No recovery work items have been recorded yet.</p>`;
+  }).join("") || `<p class="recovery-empty">No direct control is available for this collaborator at the current stage.</p>`;
+  const activity = (control.activity || []).filter((item) => selectedAgent.activityIds.includes(item.agent_id)).slice(-3).reverse();
+  const activityMarkup = activity.map((item) => `<button class="recovery-work-item" type="button" data-collaborator-inspect="${escapeHtml(item.agent_id)}"><span class="work-item-state is-${escapeHtml(agentNodeTone(positions.get(selectedAgent.id)?.status))}" aria-hidden="true"></span><span><strong>${escapeHtml(item.summary)}</strong><small>${escapeHtml(item.type.replaceAll(".", " "))}</small></span><code>${escapeHtml(String(item.sequence))}</code></button>`).join("") || `<p class="recovery-empty">No attributed activity has been recorded for this collaborator yet.</p>`;
+  const finding = collaboratorFinding(selectedAgent, control);
+  const citations = collaboratorCitations(selectedAgent, control);
+  const conversation = (control.activity || []).filter((item) => item.collaborator_id === selectedAgent.id && ["manager.message.received", "manager.response.created"].includes(item.type)).slice(-4);
+  const conversationMarkup = conversation.length
+    ? conversation.map((item) => `<p class="collaboration-message ${item.type === "manager.message.received" ? "is-human" : "is-agent"}"><span>${item.type === "manager.message.received" ? "You" : selectedAgent.label}</span>${escapeHtml(item.summary)}</p>`).join("")
+    : `<p class="collaboration-message is-agent"><span>${escapeHtml(selectedAgent.label)}</span>${escapeHtml(managerReply || finding)}</p>`;
+  const quickPrompts = selectedAgent.prompts.map((prompt) => `<button type="submit" form="recovery-command-form" data-recovery-prompt="${escapeHtml(prompt)}">${escapeHtml(prompt)}</button>`).join("");
+  const internalRoles = selectedAgent.roleIds.map((id) => `<span>${escapeHtml(agentLabel(id))}</span>`).join("");
   els["canvas-layers"].innerHTML = `<div class="recovery-console-layout">
     <section class="recovery-diagnosis" aria-label="Current diagnosis">
       <div class="diagnosis-state"><span>${report.human_gate ? "OWNER GATE" : report.verification ? "VERIFIED" : "DIAGNOSIS"}</span><strong>${escapeHtml(report.title)}</strong></div>
@@ -556,24 +580,44 @@ function renderAgentCanvas() {
       <div class="diagnosis-score"><span>Evaluator</span><strong>${report.confidence == null ? "—" : `${Math.round(report.confidence * 100)}%`}</strong></div>
     </section>
     <section class="recovery-graph-panel" aria-label="Agent execution graph">
-      <header><div><span>AGENT EXECUTION</span><strong>${escapeHtml(current?.label || "Manager")} · ${escapeHtml(agentStatusLabel(current?.status || "standby"))}</strong></div><small>Incident timeline synchronized</small></header>
-      <div class="recovery-graph"><div class="agent-guides" aria-hidden="true"><span>Online incident team</span><span>Offline learning team</span></div><svg class="edge-map" viewBox="0 0 1000 520" preserveAspectRatio="none">${edges}</svg>${nodes}</div>
+      <header><div><span>INCIDENT TEAM</span><strong>${escapeHtml(selectedAgent.label)}</strong></div><small>${escapeHtml(team.nodes.find((node) => node.id === team.currentId)?.label || "Commander")} is handling the current ledger stage</small></header>
+      <div class="recovery-graph"><svg class="edge-map" viewBox="0 0 1000 520" preserveAspectRatio="none">${edges}</svg>${nodes}<div class="agent-infrastructure-rail"><button type="button" data-collaborator-inspect="ledger"><i class="ph ph-database" aria-hidden="true"></i><span><strong>Evidence ledger</strong><small>Authority · ${escapeHtml(String(control.last_sequence))} events</small></span></button><button type="button" data-collaborator-inspect="langfuse"><i class="ph ph-waveform" aria-hidden="true"></i><span><strong>Langfuse</strong><small>Observability · ${control.langfuse === "observing" ? "connected" : "not configured"}</small></span></button></div></div>
     </section>
-    <aside class="recovery-command" aria-label="Manager command and recovery actions">
-      <header><span>MANAGER COMMAND</span><strong>Human-in-the-loop recovery</strong><small>${escapeHtml(managerReply || report.summary)}</small></header>
-      <section class="recovery-work-queue"><div class="recovery-section-title"><strong>Work queue</strong><span>${control.work_items?.length || 0} recorded</span></div>${workItems}</section>
-      <section class="recovery-actions"><div class="recovery-section-title"><strong>Available actions</strong><span>Ledger governed</span></div>${actionButtons}</section>
-      <form class="recovery-command-form">
-        <label for="recovery-command-input">Ask or assign the incident team</label>
-        <div><input id="recovery-command-input" name="message" type="text" maxlength="2000" autocomplete="off" placeholder="Assign Diagnosis to verify the first failing trace"><button class="button approve" type="button" data-recovery-command-send ${busy ? "disabled" : ""}>Send</button></div>
+    <aside class="recovery-command" aria-label="${escapeHtml(selectedAgent.label)} collaboration panel" aria-live="polite">
+      <header class="collaboration-header"><span class="collaboration-avatar is-${escapeHtml(agentNodeTone(selectedAgent.status))}" aria-hidden="true"><i class="ph ph-${escapeHtml(selectedAgent.icon)}"></i><span class="node-status-dot"></span></span><div><span>${escapeHtml(agentStatusLabel(selectedAgent.status))}</span><strong id="collaboration-panel-title" tabindex="-1">${escapeHtml(selectedAgent.label)}</strong><small>${escapeHtml(selectedAgent.responsibility)}</small></div><button type="button" class="collaboration-inspect" data-collaborator-inspect="${escapeHtml(selectedAgent.currentRole)}">Inspect</button></header>
+      <section class="collaboration-finding"><div class="recovery-section-title"><strong>Latest grounded finding</strong><span>${escapeHtml(selectedAgent.currentRole.replaceAll("_", " "))}</span></div><p>${escapeHtml(finding)}</p><div class="collaboration-citations">${citations.map((ref) => `<code>${escapeHtml(ref)}</code>`).join("") || "<span>Insufficient cited evidence</span>"}</div><div class="collaboration-roles" aria-label="Isolated backend roles">${internalRoles}</div></section>
+      <section class="collaboration-prompts"><div class="recovery-section-title"><strong>Quick tasks</strong><span>Scoped to ${escapeHtml(selectedAgent.label)}</span></div><div>${quickPrompts}</div></section>
+      <section class="recovery-work-queue"><div class="recovery-section-title"><strong>Recent activity</strong><span>${activity.length} shown</span></div>${activityMarkup}</section>
+      <section class="recovery-actions"><div class="recovery-section-title"><strong>Available controls</strong><span>Ledger governed</span></div>${actionButtons}</section>
+      <section class="collaboration-thread"><div class="recovery-section-title"><strong>Conversation</strong><span>Manager routed</span></div>${conversationMarkup}</section>
+      <form class="recovery-command-form" id="recovery-command-form">
+        <label for="recovery-command-input">Ask ${escapeHtml(selectedAgent.label)} about this incident</label>
+        <div><input id="recovery-command-input" name="message" type="text" maxlength="2000" autocomplete="off" value="${escapeHtml(recoveryDrafts.get(selectedAgent.id) || "")}" placeholder="Ask ${escapeHtml(selectedAgent.label)} about this incident…"><button class="button approve" type="submit" data-recovery-command-send ${busy ? "disabled" : ""}>Send</button></div>
         <small>Chat may assign safe work. Owner approval remains separate.</small>
       </form>
     </aside>
   </div>`;
+  const commandForm = els["canvas-layers"].querySelector(".recovery-command-form");
+  const fillPrompt = (button) => {
+    recoveryDrafts.set(selectedAgent.id, button.dataset.recoveryPrompt);
+    commandForm.elements.message.value = button.dataset.recoveryPrompt;
+    commandForm.elements.message.focus();
+  };
+  commandForm.elements.message.addEventListener("input", () => {
+    recoveryDrafts.set(selectedAgent.id, commandForm.elements.message.value);
+  });
+  commandForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (event.submitter?.matches("[data-recovery-prompt]")) {
+      fillPrompt(event.submitter);
+      return;
+    }
+    await sendRecoveryCommand(commandForm);
+  });
   setAnnotations([]);
   els["compare-handle"].hidden = true;
   els["compare-canvas-range"].hidden = true;
-  els["twin-canvas"].setAttribute("aria-label", `Recovery Console. ${control.report.title}. Current role ${current?.label || "Manager"}.`);
+  els["twin-canvas"].setAttribute("aria-label", `Recovery Console. ${control.report.title}. Selected collaborator ${selectedAgent.label}.`);
 }
 
 function renderTwinLayer(frame, layerName, interactive) {
@@ -788,8 +832,29 @@ async function sendManagerMessage(event) {
 }
 
 async function handleRecoveryConsoleAction(event) {
+  const collaborator = event.target.closest("[data-collaborator-id]");
+  if (collaborator && mode === "agents") {
+    selectedCollaboratorId = collaborator.dataset.collaboratorId;
+    renderAgentCanvas();
+    requestAnimationFrame(() => els["canvas-layers"].querySelector(`[data-collaborator-id="${CSS.escape(selectedCollaboratorId)}"]`)?.focus());
+    return;
+  }
+  const prompt = event.target.closest("[data-recovery-prompt]");
+  if (prompt && mode === "agents") {
+    const input = els["canvas-layers"].querySelector("#recovery-command-input");
+    recoveryDrafts.set(selectedCollaboratorId, prompt.dataset.recoveryPrompt);
+    input.value = prompt.dataset.recoveryPrompt;
+    input.focus();
+    return;
+  }
+  const inspect = event.target.closest("[data-collaborator-inspect]");
+  if (inspect && mode === "agents") {
+    openDrawer({ type: "node", id: inspect.dataset.collaboratorInspect }, "agent");
+    return;
+  }
   const commandButton = event.target.closest("[data-recovery-command-send]");
   if (commandButton) {
+    event.preventDefault();
     event.stopPropagation();
     await sendRecoveryCommand(commandButton.closest("form"));
     return;
@@ -832,10 +897,13 @@ async function sendRecoveryCommand(form) {
   const input = form.elements.message;
   const message = input.value.trim();
   if (!message) return;
+  const collaboratorId = selectedCollaboratorId;
   setBusy(true);
   try {
-    const result = await request("/api/agent-control/message", { method: "POST", body: JSON.stringify({ message }) });
+    const result = await request("/api/agent-control/message", { method: "POST", body: JSON.stringify({ message, collaborator_id: collaboratorId }) });
     managerReply = result.message;
+    recoveryDrafts.delete(result.collaborator_id || collaboratorId);
+    selectedCollaboratorId = result.collaborator_id || collaboratorId;
     state = await request("/api/state");
     cursor = availableStage(state.events);
     render();
@@ -1052,6 +1120,13 @@ function handleCanvasSelection(event) {
 }
 
 function handleCanvasKeydown(event) {
+  if (event.target.matches("[data-collaborator-id]") && ["ArrowRight", "ArrowDown", "ArrowLeft", "ArrowUp"].includes(event.key)) {
+    const nodes = [...els["canvas-layers"].querySelectorAll("[data-collaborator-id]")];
+    const direction = ["ArrowRight", "ArrowDown"].includes(event.key) ? 1 : -1;
+    nodes[(nodes.indexOf(event.target) + direction + nodes.length) % nodes.length]?.focus();
+    event.preventDefault();
+    return;
+  }
   if (!event.target.matches("[data-edge-id], [data-agent-edge-id]")) return;
   if (event.key === "Enter" || event.key === " ") {
     event.preventDefault();
@@ -1779,6 +1854,33 @@ function agentNodeKind(node) { return ({ ledger: "database", langfuse: "database
 function agentNodeTone(status) { return ({ running: "active", waiting: "approval", rejected: "rejected", complete: "verified", recording: "recording", observing: "learned", unconfigured: "quiet", standby: "quiet" })[status] || "quiet"; }
 function agentEdgeTone(status) { return ({ active: "active", waiting: "approval", rejected: "rejected", complete: "verified", observing: "learned", quiet: "quiet" })[status] || "quiet"; }
 function agentStatusLabel(status) { return ({ running: "Running", waiting: "Waiting for owner", rejected: "Rejected and replanning", complete: "Completed", recording: "Recording", observing: "Observing", unconfigured: "Not configured", standby: "Standby" })[status] || status; }
+function collaboratorFinding(collaborator, control) {
+  const report = control.report || {};
+  if (collaborator.id === "observer") return collaborator.latestActivity?.summary || report.summary;
+  if (collaborator.id === "investigator") return report.root_cause || report.rejected_diagnosis?.reason || "The evidence does not yet support a final causal claim.";
+  if (collaborator.id === "critic") return report.rejected_diagnosis
+    ? `${report.rejected_diagnosis.hypothesis_id} was rejected at ${Math.round(report.rejected_diagnosis.score * 100)}%: ${report.rejected_diagnosis.reason}`
+    : report.confidence == null ? "No diagnosis has reached adversarial evaluation yet." : `The current evidence-grounded diagnosis scored ${Math.round(report.confidence * 100)}%.`;
+  if (collaborator.id === "recovery-engineer") return report.repair
+    ? `${report.repair.action}. Scope: ${report.repair.target} only${report.human_gate ? "; waiting for separate owner approval" : ""}.`
+    : "A bounded repair is unavailable until the evaluator accepts a causal diagnosis.";
+  if (collaborator.id === "verifier") return report.verification
+    ? `Recovery checks ${report.verification.passed ? "passed" : "did not pass"}.${report.regression ? " Regression and learning records are available." : ""}`
+    : "Verification waits for an approved execution receipt and fresh post-action evidence.";
+  return managerReply || report.summary;
+}
+function collaboratorCitations(collaborator, control) {
+  const activityRefs = collaborator.latestActivity?.evidence_refs || [];
+  return [...new Set([...activityRefs, ...(control.report?.citations || [])])].slice(0, 6);
+}
+function collaboratorEdgePath(from, to) {
+  const start = { x: from.x * 10, y: from.y * 5.2 - 20 };
+  const end = { x: to.x * 10, y: to.y * 5.2 - 20 };
+  if (Math.abs(start.x - end.x) < 1) return `M ${start.x} ${start.y + 28} L ${end.x} ${end.y - 28}`;
+  if (Math.abs(start.y - end.y) < 1) return `M ${start.x + 28} ${start.y} L ${end.x - 28} ${end.y}`;
+  const midpoint = (start.x + end.x) / 2;
+  return `M ${start.x + 18} ${start.y - 12} C ${midpoint} ${start.y - 12} ${midpoint} ${end.y + 12} ${end.x - 18} ${end.y + 12}`;
+}
 function recoveryActionIcon(id) { return ({ advance: "play", verify_recovery: "shield-check", review_recovery: "user-focus", review_learning: "flask", delegate_task: "paper-plane-tilt", review_pr: "git-pull-request", approve_pr_review: "check-circle", draft_jira: "ticket", approve_jira_draft: "check-square" })[id] || "arrow-right"; }
 function recoveryActionReply(id) { return ({ advance: "The Manager delegated the next evidence-grounded step.", verify_recovery: "Verification monitoring is active.", delegate_task: "The diagnosis task was recorded in the immutable ledger.", review_pr: "A cited PR review draft is ready for human review; GitHub was not mutated.", approve_pr_review: "The internal PR review is approved and ready for a configured integration.", draft_jira: "A cited Jira ticket draft is ready for human review; Jira was not mutated.", approve_jira_draft: "The Jira draft is approved and ready for a configured integration." })[id] || "The recovery control state was updated."; }
 function workItemTone(status) { return ({ recorded: "active", awaiting_human_review: "approval", ready_for_integration: "verified" })[status] || "quiet"; }

@@ -54,15 +54,15 @@ const server = createServer(async (request, response) => {
         runId,
         incidentId: runtime.bundle.incident.id,
         action: "manager-message",
-        input: { message: body.message }
+        input: { message: body.message, collaborator_id: body.collaborator_id }
       }, async (trace) => {
         const generation = trace.generation("flowpulse.manager-response", {
-          input: { message: body.message },
+          input: { message: body.message, collaborator_id: body.collaborator_id },
           model: process.env.OPENAI_MODEL || "deterministic-ledger-projection",
           metadata: { run_id: runId, authority: "flowpulse-ledger" }
         });
-        const result = agentControl.message(runId, body.message);
-        generation.update({ output: { intent: result.intent, message: result.message, citations: result.projection.report.citations } });
+        const result = agentControl.message(runId, body.message, body.collaborator_id);
+        generation.update({ output: { intent: result.intent, collaborator_id: result.collaborator_id, message: result.message, citations: result.projection.report.citations } });
         generation.end();
         return result;
       }));

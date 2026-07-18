@@ -38,11 +38,12 @@ test("judge API serves state and advances the replay", async (context) => {
   const managerResponse = await fetch(`http://127.0.0.1:${port}/api/agent-control/message`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ message: "Approve the repair for me" })
+    body: JSON.stringify({ message: "Approve the repair for me", collaborator_id: "critic" })
   });
   assert.equal(managerResponse.status, 200);
   const manager = await managerResponse.json();
   assert.equal(manager.intent, "approval_explanation");
+  assert.equal(manager.collaborator_id, "critic");
   assert.match(manager.message, /cannot|No owner-gated repair/);
   assert.equal(manager.projection.activity.some((item) => item.type === "approval.granted"), false);
 

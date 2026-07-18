@@ -14,6 +14,7 @@ export const AGENT_ACTIONS = Object.freeze({
 });
 
 const SAFE_WORK_ACTIONS = new Set(["delegate_task", "review_pr", "approve_pr_review", "draft_jira", "approve_jira_draft"]);
+const COLLABORATOR_IDS = new Set(["commander", "observer", "investigator", "critic", "recovery-engineer", "verifier"]);
 
 export const AGENT_GRAPH_NODES = Object.freeze([
   node("manager", "Manager", "Human interface", "agent", 9, 46),
@@ -85,15 +86,17 @@ export class AgentControlService {
     };
   }
 
-  message(runId, rawMessage) {
+  message(runId, rawMessage, rawCollaboratorId = "commander") {
     const message = String(rawMessage || "").trim();
     if (!message) throw new Error("Manager message is required");
     if (message.length > 2_000) throw new Error("Manager message is too long");
+    const collaboratorId = COLLABORATOR_IDS.has(rawCollaboratorId) ? rawCollaboratorId : "commander";
     const before = this.runtime.state(runId);
-    const received = this.runtime.append(runId, "manager.message.received", "human", { message });
+    const received = this.runtime.append(runId, "manager.message.received", "human", { message, collaborator_id: collaboratorId });
     const intent = intentFor(message, before);
     const report = managerReport(before);
-    const response = responseFor(intent, report, before);
+    const citations = collaboratorEvidenceRefs(collaboratorId, before, report.citations);
+    const response = collaboratorResponseFor(collaboratorId, intent, report, before, citations);
     if (intent === "task_delegation") {
       this.recordSafeAction(runId, "delegate_task", {
         input: { instruction: message },
@@ -104,11 +107,12 @@ export class AgentControlService {
     this.runtime.append(runId, "manager.response.created", "manager", {
       intent,
       message: response,
-      citations: report.citations,
+      collaborator_id: collaboratorId,
+      citations,
       safe_actions: allowedActions(before).map((item) => item.id),
       deterministic: true
-    }, report.citations, 0, received.id);
-    return { intent, message: response, projection: this.project(runId) };
+    }, citations, 0, received.id);
+    return { intent, message: response, collaborator_id: collaboratorId, projection: this.project(runId) };
   }
 
   act(runId, actionId, input = {}) {
@@ -318,6 +322,45 @@ function intentFor(message, state) {
   return state.waiting_for_approval ? "recovery" : "summary";
 }
 
+function collaboratorResponseFor(collaboratorId, intent, report, state, citations) {
+  if (intent === "approval_explanation") return responseFor(intent, report, state);
+  if (collaboratorId === "observer") return report.root_cause
+    ? `Observer: ${citations.length} cited records connect the checkout change to the payment failure. ${report.root_cause}`
+    : `Observer: ${citations.length} immutable evidence record${citations.length === 1 ? " is" : "s are"} currently cited. ${report.summary}`;
+  if (collaboratorId === "investigator") return report.root_cause
+    ? `Investigator: ${report.root_cause}`
+    : report.rejected_diagnosis
+      ? `Investigator: the ${report.rejected_diagnosis.hypothesis_id} claim was rejected. I need upstream change and first-failing-span evidence before asserting root cause.`
+      : "Investigator: the current evidence does not yet support a final causal claim.";
+  if (collaboratorId === "critic") return report.rejected_diagnosis
+    ? `Critic: ${report.rejected_diagnosis.hypothesis_id} scored ${Math.round(report.rejected_diagnosis.score * 100)}% and was rejected because ${report.rejected_diagnosis.reason}`
+    : report.confidence == null ? "Critic: no diagnosis is ready for adversarial evaluation." : `Critic: the accepted diagnosis scored ${Math.round(report.confidence * 100)}% against the cited evidence.`;
+  if (collaboratorId === "recovery-engineer") return report.repair
+    ? `Recovery Engineer: ${report.repair.action}. The allowlisted scope is ${report.repair.target} only.${report.human_gate ? " Execution remains paused at the separate owner gate." : ""}`
+    : "Recovery Engineer: I will not draft a repair until the evaluator accepts a causal diagnosis.";
+  if (collaboratorId === "verifier") return report.verification
+    ? `Verifier: recovery checks ${report.verification.passed ? "passed" : "failed"}.${report.regression ? " The regression record is available for offline replay." : ""}`
+    : "Verifier: verification waits for an approved execution receipt and fresh post-action evidence.";
+  return responseFor(intent, report, state);
+}
+
+function collaboratorEvidenceRefs(collaboratorId, state, reportCitations) {
+  const roleIds = ({
+    commander: ["manager"],
+    observer: ["monitor", "evidence"],
+    investigator: ["diagnosis"],
+    critic: ["evaluator"],
+    "recovery-engineer": ["planner", "executor"],
+    verifier: ["verification", "evolve", "test"]
+  })[collaboratorId] || ["manager"];
+  return unique([
+    ...reportCitations,
+    ...state.events
+      .filter((event) => roleIds.includes(nodeForEvent(event.type)))
+      .flatMap((event) => event.evidence_refs || [])
+  ]);
+}
+
 function responseFor(intent, report, state) {
   if (intent === "approval_explanation") return state.waiting_for_approval
     ? "I cannot approve the repair for you. Review the cited scope and use the separate Owner approval control if you accept the bounded action."
@@ -340,6 +383,7 @@ function agentActivity(events) {
     at: event.recorded_at,
     type: event.type,
     agent_id: nodeForEvent(event.type),
+    collaborator_id: event.payload.collaborator_id || null,
     actor: event.actor,
     evidence_refs: event.evidence_refs,
     summary: activitySummary(event)
@@ -363,7 +407,7 @@ function nodeForEvent(type) {
 }
 
 function activitySummary(event) {
-  return event.payload.title || event.payload.reason || event.payload.step || event.payload.action || event.type.replaceAll(".", " ");
+  return event.payload.message || event.payload.title || event.payload.reason || event.payload.step || event.payload.action || event.type.replaceAll(".", " ");
 }
 
 function nextRole(events) {

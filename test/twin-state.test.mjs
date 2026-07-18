@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
   ARCHITECTURE_LAYERS,
+  AGENT_COLLABORATORS,
   LIVE_LAYERS,
   PULSE_SLOTS,
   TWIN_EDGES,
@@ -25,6 +26,7 @@ import {
   livePositions,
   orderedSignalEdges,
   primaryLiveEdges,
+  projectAgentCollaborators,
   topologyIntegrity
 } from "../public/twin-state.mjs";
 
@@ -120,17 +122,40 @@ test("live topology normalizes endpoints and explains true telemetry islands", (
   assert.match(appJs, /Insufficient dependency evidence/);
 });
 
-test("manager and agent operations stay separate from chat approval", () => {
+test("B1 recovery console keeps six collaborators visible while owner approval stays separate", () => {
   assert.match(indexHtml, /data-mode="agents">Recovery Console</);
   assert.match(indexHtml, /id="manager-panel"[^>]+aria-labelledby="manager-title"/);
   assert.match(indexHtml, /id="approve-button"[^>]+hidden>Approve bounded recovery/);
   assert.match(indexHtml, /Chat can explain or delegate safe work\. It cannot approve remediation\./);
   assert.match(appJs, /mode = "agents"/);
-  assert.match(appJs, /data-agent-node-id/);
-  assert.match(stylesCss, /\.agent-node-evaluator \{ left: 58%; top: 30%; \}/);
+  assert.equal(AGENT_COLLABORATORS.length, 6);
+  assert.deepEqual(AGENT_COLLABORATORS.map(({ id }) => id), ["commander", "observer", "investigator", "critic", "recovery-engineer", "verifier"]);
+  assert.match(appJs, /data-collaborator-id/);
+  assert.match(stylesCss, /\.collaborator-node\.is-selected \.collaborator-icon/);
   assert.match(appJs, /class="recovery-console-layout"/);
   assert.match(appJs, /data-recovery-action/);
-  assert.match(appJs, /Ask or assign the incident team/);
+  assert.match(appJs, /Ask \$\{escapeHtml\(selectedAgent\.label\)\} about this incident/);
+  assert.match(appJs, /Owner approval remains separate/);
+});
+
+test("collaborator projection deterministically aggregates isolated backend roles", () => {
+  const control = {
+    current_agent_id: "owner",
+    report: { human_gate: "owner_approval_required" },
+    graph: { nodes: [
+      { id: "manager", status: "running" }, { id: "monitor", status: "complete" }, { id: "evidence", status: "complete" },
+      { id: "diagnosis", status: "complete" }, { id: "evaluator", status: "complete" }, { id: "planner", status: "complete" },
+      { id: "executor", status: "standby" }, { id: "verification", status: "standby" }, { id: "evolve", status: "standby" }, { id: "test", status: "standby" }
+    ] },
+    activity: [{ id: "ev-1", agent_id: "evidence", summary: "Cited deployment evidence", evidence_refs: ["ev-deploy-checkout"] }]
+  };
+  const team = projectAgentCollaborators(control);
+  assert.equal(team.nodes.length, 6);
+  assert.equal(team.currentId, "recovery-engineer");
+  assert.equal(team.nodes.find(({ id }) => id === "observer").latestActivity.id, "ev-1");
+  assert.equal(team.nodes.find(({ id }) => id === "recovery-engineer").status, "waiting");
+  assert.equal(team.edges.find(({ id }) => id === "critic-recovery").status, "waiting");
+  assert.equal(team.nodes.some(({ id }) => ["owner", "ledger", "langfuse"].includes(id)), false);
 });
 
 test("every component has a vector icon and causal pulses remain sequential", () => {
@@ -479,6 +504,15 @@ test("every canvas mode exposes the shared status-dot contract with compact tool
   assert.match(stylesCss, /\.component-context\.is-warning, \.component-context\.is-unlinked/);
   assert.doesNotMatch(appJs, /observed components arranged by system role/);
   assert.doesNotMatch(appJs, /This canvas does not synthesize services or telemetry/);
+});
+
+test("component vectors stay transparent and monochrome while status dots carry state", () => {
+  assert.match(stylesCss, /\.node-icon \{[^}]+border: 0;[^}]+color: var\(--ink\);[^}]+background: transparent;/);
+  assert.match(stylesCss, /\.collaborator-icon \{[^}]+border: 0;[^}]+color: var\(--ink\);[^}]+background: transparent;[^}]+box-shadow: none;/);
+  assert.match(stylesCss, /\.collaboration-avatar \{[^}]+border: 0;[^}]+color: var\(--ink\);[^}]+background: transparent;/);
+  assert.match(stylesCss, /:root\[data-theme="dark"\] \.node-icon \{ color: #ffffff; background: transparent; \}/);
+  assert.match(stylesCss, /\.twin-node\.is-impact[^}]+--signal: var\(--red\)/);
+  assert.match(stylesCss, /\.collaborator-node\.is-verified \.node-status-dot[^}]+background: var\(--green\)/);
 });
 
 test("stage projection preserves evaluator, owner, recovery, and evolve ordering", () => {
