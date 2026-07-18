@@ -43,6 +43,9 @@ test("the product opens on architecture and keeps advanced actions in an accessi
   assert.match(indexHtml, /id="live-button"[^>]*>Run GPT-5\.6</);
   assert.match(indexHtml, /id="details-button"[^>]*>Inspect run</);
   assert.match(appJs, /let mode = "architecture"/);
+  assert.match(stylesCss, /\.mission-bar \{[^}]+display: flex;[^}]+justify-content: center;/s);
+  assert.match(stylesCss, /\.mission-summary \{[^}]+clip-path: inset\(50%\)/s);
+  assert.match(stylesCss, /\.stage-readout \{ display: none;/);
 });
 
 test("architecture layout is deterministic, layered, and leaves room for complete cards", () => {
@@ -288,13 +291,19 @@ test("live pulses follow deterministic topology depth with one segment per edge"
   assert.match(appJs, /classList\.add\("is-signal-active"\)/);
   assert.match(appJs, /is-signal-launch/);
   assert.match(appJs, /is-signal-arrival/);
-  assert.match(appJs, /class="signal-trace"[^>]+pathLength="1"/);
-  assert.match(stylesCss, /\.edge-group\.is-signal-active \.signal-trace[^}]+live-signal-trace/s);
+  assert.match(appJs, /class="signal-droplet"/);
+  assert.match(appJs, /signal-droplet-tail-far/);
+  assert.match(appJs, /path\.getPointAtLength\(path\.getTotalLength\(\) \* Math\.max/);
+  assert.match(appJs, /place\(body, bodyPoint\)/);
+  assert.match(appJs, /group\.dataset\.signalProgress = progress\.toFixed\(3\)/);
   assert.match(stylesCss, /\.is-live-source \.edge-group \{ --edge-signal: var\(--ink\); \}/);
-  assert.match(stylesCss, /\.edge-group\.is-signal-active \.pulse-flow[^}]+live-signal-pulse/s);
-  assert.doesNotMatch(stylesCss, /\.edge-group\.is-signal-active \.edge-line[^}]+live-signal-trace/s);
+  assert.match(stylesCss, /\.edge-group\.is-signal-active \.signal-droplet \{ display: block; \}/);
+  assert.doesNotMatch(stylesCss, /\.edge-group\.is-signal-active \.edge-line[^}]+animation/s);
+  assert.doesNotMatch(appJs, /class="signal-trace"/);
   assert.doesNotMatch(appJs.match(/function startLiveSignalLoop\(\)[\s\S]+?\n\}/)?.[0] || "", /setInterval/);
-  assert.match(stylesCss, /prefers-reduced-motion:[\s\S]+\.edge-group\.is-signal-active \.pulse-flow \{ display: none;/s);
+  assert.match(appJs, /candidate\.dataset\.signalFrom === group\.dataset\.signalTo/);
+  assert.doesNotMatch(stylesCss.match(/@keyframes signal-node-arrival \{[\s\S]+?\n\}/)?.[0] || "", /border-color/);
+  assert.match(stylesCss, /prefers-reduced-motion:[\s\S]+\.edge-group\.is-signal-active \.signal-droplet \{ display: none;/s);
   assert.match(appJs, /data-recovery-command-send/);
   assert.match(appJs, /sendRecoveryCommand\(commandButton\.closest\("form"\)\)/);
 });

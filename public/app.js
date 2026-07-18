@@ -52,6 +52,8 @@ let livePan = null;
 let compareDrag = null;
 let liveSignalTimers = [];
 let liveSignalIndex = 0;
+let liveSignalFrame = null;
+let liveSignalGeneration = 0;
 
 for (const button of document.querySelectorAll("[data-mode]")) button.addEventListener("click", () => setMode(button.dataset.mode));
 for (const button of document.querySelectorAll("[data-nav-tab]")) button.addEventListener("click", () => handleNavigation(button.dataset.navTab));
@@ -322,7 +324,7 @@ function renderSourceCanvas(layout) {
     const lane = index % 2 ? Math.ceil(index / 2) : -Math.ceil((index + 1) / 2);
     const path = liveEdgePath(from, to, { ...edgeLayout, lane });
     const edgeState = liveSignalTone(edge, nodeStates);
-    return `<g class="edge-group path-runtime signal-${edgeState}" data-live-edge-id="${escapeHtml(edge.id)}" data-signal-from="${escapeHtml(edge.from)}" data-signal-to="${escapeHtml(edge.to)}" data-signal-tone="${edgeState}" data-signal-order="${signalOrder.get(edge.id) ?? index}"><path class="edge-line is-${edgeState}" d="${path}" pathLength="1"/><path class="signal-trace" d="${path}" pathLength="1" aria-hidden="true"/><path class="pulse-flow" d="${path}" pathLength="1" aria-hidden="true"/><path class="edge-hit" d="${path}" role="button" tabindex="0" aria-label="${escapeHtml(edge.label)} from ${escapeHtml(from.label)} to ${escapeHtml(to.label)}" data-edge-id="${escapeHtml(edge.id)}" data-edge-from="${escapeHtml(edge.from)}" data-edge-to="${escapeHtml(edge.to)}"/></g>`;
+    return `<g class="edge-group path-runtime signal-${edgeState}" data-live-edge-id="${escapeHtml(edge.id)}" data-signal-from="${escapeHtml(edge.from)}" data-signal-to="${escapeHtml(edge.to)}" data-signal-order="${signalOrder.get(edge.id) ?? index}"><path class="edge-line is-${edgeState}" d="${path}"/><g class="signal-droplet" aria-hidden="true"><circle class="signal-droplet-tail signal-droplet-tail-far" r="1.8"/><circle class="signal-droplet-tail signal-droplet-tail-near" r="2.7"/><circle class="signal-droplet-body" r="4.5"/><circle class="signal-droplet-specular" r="1.15"/></g><path class="edge-hit" d="${path}" role="button" tabindex="0" aria-label="${escapeHtml(edge.label)} from ${escapeHtml(from.label)} to ${escapeHtml(to.label)}" data-edge-id="${escapeHtml(edge.id)}" data-edge-from="${escapeHtml(edge.from)}" data-edge-to="${escapeHtml(edge.to)}"/></g>`;
   }).join("");
   const nodes = positioned.map((node) => sourceNodeMarkup(node, { layout, source, nodeStates })).join("");
   const guideLayers = [...LIVE_LAYERS, ...(topology.unlinked_node_ids.length ? [LIVE_UNLINKED_LAYER] : [])];
@@ -379,44 +381,85 @@ function startLiveSignalLoop() {
   if (!groups.length) return;
   const nodes = new Map([...els["canvas-layers"].querySelectorAll("[data-node-id]")].map((node) => [node.dataset.nodeId, node]));
   const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
+  const generation = liveSignalGeneration;
+  const remaining = new Set(groups.map((group) => group.dataset.liveEdgeId));
   const schedule = (callback, delay) => {
     const timer = setTimeout(() => {
       liveSignalTimers = liveSignalTimers.filter((candidate) => candidate !== timer);
-      callback();
+      if (generation === liveSignalGeneration) callback();
     }, delay);
     liveSignalTimers.push(timer);
   };
-  const activate = (group, persistent = false) => {
+  const pointAt = (path, progress) => path.getPointAtLength(path.getTotalLength() * Math.max(0, Math.min(1, progress)));
+  const place = (circle, point) => {
+    circle?.setAttribute("cx", point.x);
+    circle?.setAttribute("cy", point.y);
+  };
+  const nextGroup = (group) => {
+    remaining.delete(group.dataset.liveEdgeId);
+    let next = groups.find((candidate) => remaining.has(candidate.dataset.liveEdgeId) && candidate.dataset.signalFrom === group.dataset.signalTo);
+    next ||= groups.find((candidate) => remaining.has(candidate.dataset.liveEdgeId));
+    if (!next) {
+      for (const candidate of groups) remaining.add(candidate.dataset.liveEdgeId);
+      next = groups[0];
+    }
+    liveSignalIndex = groups.indexOf(next);
+    return next;
+  };
+  const activate = (group) => {
+    if (generation !== liveSignalGeneration) return;
     clearLiveSignalClasses();
-    const tone = group.dataset.signalTone || "observed";
     const from = nodes.get(group.dataset.signalFrom);
     const to = nodes.get(group.dataset.signalTo);
-    from?.classList.add("is-signal-launch", `signal-${tone}`);
-    if (persistent) {
-      group.classList.add("is-signal-active");
-      to?.classList.add("is-signal-arrival", `signal-${tone}`);
+    from?.classList.add("is-signal-launch");
+    if (reduced) {
+      from?.classList.remove("is-signal-launch");
+      to?.classList.add("is-signal-arrival");
       return;
     }
-    schedule(() => group.classList.add("is-signal-active"), 140);
-    schedule(() => {
-      from?.classList.remove("is-signal-launch", `signal-${tone}`);
-      to?.classList.add("is-signal-arrival", `signal-${tone}`);
-    }, 860);
-    schedule(() => {
-      group.classList.remove("is-signal-active");
-    }, 1_060);
-    schedule(() => {
-      to?.classList.remove("is-signal-arrival", `signal-${tone}`);
-      liveSignalIndex = (liveSignalIndex + 1) % groups.length;
-      activate(groups[liveSignalIndex]);
-    }, 1_240);
+    const path = group.querySelector(".edge-line");
+    const body = group.querySelector(".signal-droplet-body");
+    const specular = group.querySelector(".signal-droplet-specular");
+    const nearTail = group.querySelector(".signal-droplet-tail-near");
+    const farTail = group.querySelector(".signal-droplet-tail-far");
+    if (!path || !body) return;
+    group.dataset.signalProgress = "0";
+    group.classList.add("is-signal-active");
+    const duration = 620;
+    let startedAt = null;
+    const travel = (timestamp) => {
+      if (generation !== liveSignalGeneration) return;
+      startedAt ??= timestamp;
+      const progress = Math.min(1, (timestamp - startedAt) / duration);
+      group.dataset.signalProgress = progress.toFixed(3);
+      const bodyPoint = pointAt(path, progress);
+      place(body, bodyPoint);
+      place(specular, { x: bodyPoint.x - 1.25, y: bodyPoint.y - 1.25 });
+      place(nearTail, pointAt(path, progress - .016));
+      place(farTail, pointAt(path, progress - .034));
+      if (progress < 1) {
+        liveSignalFrame = requestAnimationFrame(travel);
+        return;
+      }
+      liveSignalFrame = requestAnimationFrame(() => {
+        if (generation !== liveSignalGeneration) return;
+        group.classList.remove("is-signal-active");
+        from?.classList.remove("is-signal-launch");
+        to?.classList.add("is-signal-arrival");
+        schedule(() => activate(nextGroup(group)), 120);
+      });
+    };
+    liveSignalFrame = requestAnimationFrame(travel);
   };
 
   liveSignalIndex = Math.min(liveSignalIndex, groups.length - 1);
-  activate(groups[liveSignalIndex], reduced);
+  activate(groups[liveSignalIndex]);
 }
 
 function stopLiveSignalLoop() {
+  liveSignalGeneration += 1;
+  if (liveSignalFrame !== null) cancelAnimationFrame(liveSignalFrame);
+  liveSignalFrame = null;
   for (const timer of liveSignalTimers) clearTimeout(timer);
   liveSignalTimers = [];
   clearLiveSignalClasses();

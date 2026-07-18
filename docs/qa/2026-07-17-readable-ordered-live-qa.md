@@ -6,7 +6,7 @@ Date: 2026-07-17
 
 - `npm test`: 41/41 passing.
 - Deterministic signal order is covered by `orderedSignalEdges` tests.
-- Rounded connector output, boundary termination, non-endpoint card avoidance, contain fit, theme contrast, and sequential timing hooks are covered by focused state/UI tests.
+- Rounded connector output, boundary termination, non-endpoint card avoidance, contain fit, theme contrast, exact SVG path sampling, and causal handoff hooks are covered by focused state/UI tests.
 
 ## Visible browser checks
 
@@ -20,13 +20,16 @@ The latest standalone FlowPulse app was verified at `http://127.0.0.1:4310/` aga
 | Component title size | 12px | 12px |
 | Concurrent active Live edges | Maximum 1 | Maximum 1 |
 
-Sequential sampling across a complete route confirmed: source launch, progressive trace dash offset from approximately `0.95` to `0`, target arrival only after completion, decay, then the next route. Light mode computed both pulse and trace as `rgb(11, 11, 12)`; pure-black mode computed both as `rgb(245, 245, 245)`. Browser diagnostic logs returned zero errors and zero warnings.
+Sequential sampling across complete routes confirmed the droplet advancing through `0.995` progress before target arrival, then handing off directly from `cart` to `cart → flagd`. The animation now positions its final frame with `getPointAtLength(totalLength)` and paints it once before arrival state is applied. The selected connector stays at its quiet `0.35` opacity and `1.45px` width; only the compact signal body and two short tail particles move.
+
+Light mode computed the droplet as `rgb(11, 11, 12)`; pure-black mode computed it as `rgb(245, 245, 245)`. During arrival the component border remained the unchanged `rgba(11, 11, 12, 0.11)` while elevation changed to a stronger shadow and approximately `1.011` scale. The duplicate mission title and stage/source readout are visually suppressed while remaining accessible; the mode switch is the only visible content in that row. Browser diagnostic logs returned zero errors and zero warnings.
 
 ## Captures
 
 - `readable-architecture-1280.png`: compact line-free authoritative architecture wall.
 - `ordered-live-pulse-light.png`: fitted light Live topology with black active route.
 - `ordered-live-pulse-dark.png`: fitted pure-black Live topology with white active route and high-contrast component edges.
+- `live-water-drop-1440.png`: simplified header and compact monochrome water-drop signal without a retained active route.
 
 ## Runtime truth
 

@@ -26,6 +26,8 @@
   --overlay-surface: rgba(255, 255, 255, .96);
   --outcome-ring: #ffffff;
   --strong-copy: #34363a;
+  --signal-lift: rgba(11, 11, 12, .18);
+  --signal-ring: rgba(11, 11, 12, .12);
   --radius: 6px;
   --font: "Avenir Next", Avenir, "Helvetica Neue", Arial, sans-serif;
   --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
@@ -55,6 +57,8 @@
   --overlay-surface: rgba(0, 0, 0, .96);
   --outcome-ring: #000000;
   --strong-copy: #d2d2d2;
+  --signal-lift: rgba(255, 255, 255, .2);
+  --signal-ring: rgba(255, 255, 255, .7);
 }
 
 * { box-sizing: border-box; }
@@ -147,16 +151,16 @@ main { flex: 1; min-height: 0; display: grid; grid-template-rows: 64px minmax(0,
 .app-shell[data-mode="architecture"] main, .app-shell[data-mode="live"] main { grid-template-rows: 64px minmax(0, 1fr); }
 
 .mission-bar {
-  display: grid;
-  grid-template-columns: minmax(260px, 1fr) auto minmax(260px, 1fr);
+  position: relative;
+  display: flex;
   align-items: center;
-  gap: 18px;
+  justify-content: center;
   padding: 8px 22px;
   border-bottom: 1px solid var(--line);
   background: var(--surface);
 }
 
-.mission-summary { min-width: 0; }
+.mission-summary { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 h1, h2, h3, p { margin-top: 0; }
 h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spacing: -.03em; text-overflow: ellipsis; white-space: nowrap; }
 
@@ -166,8 +170,8 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .mode-button:hover { color: var(--ink); background: var(--surface-2); }
 .mode-button.is-active { color: var(--on-inverse); background: var(--inverse); }
 
-.mission-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; min-width: 0; }
-.stage-readout { min-width: 145px; padding-right: 12px; border-right: 1px solid var(--line); }
+.mission-actions { position: absolute; right: 22px; display: flex; align-items: center; justify-content: flex-end; gap: 8px; min-width: 0; }
+.stage-readout { display: none; min-width: 145px; padding-right: 12px; border-right: 1px solid var(--line); }
 .stage-readout small { display: block; color: var(--muted); font-size: 10px; }
 .stage-readout strong { display: block; overflow: hidden; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
 .stage-readout small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -273,7 +277,6 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
   pointer-events: none;
   animation: causal-pulse 5.6s linear infinite;
 }
-.signal-trace { fill: none; pointer-events: none; vector-effect: non-scaling-stroke; }
 .pulse-flow.is-change { stroke: var(--amber); }
 .pulse-flow.is-impact, .pulse-flow.is-root, .pulse-flow.is-rejected { stroke: var(--red); }
 .pulse-flow.is-verified, .pulse-flow.is-learned { stroke: var(--green); }
@@ -485,13 +488,15 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 
 .is-live-source .edge-group { --edge-signal: var(--ink); }
 .is-live-source .edge-group .edge-line { opacity: .35; }
-.is-live-source .signal-trace { display: none; stroke: var(--edge-signal); stroke-width: 2.8; }
-.is-live-source .edge-group.is-signal-active .signal-trace { display: block; animation: live-signal-trace .72s cubic-bezier(.2,.75,.25,1) both; }
-.is-live-source .pulse-flow { display: none; stroke: var(--edge-signal); animation: none; }
-.is-live-source .edge-group.is-signal-active .pulse-flow { display: block; stroke-width: 5.2; stroke-dasharray: .018 .982; animation: live-signal-pulse .72s cubic-bezier(.2,.75,.25,1) both; }
+.is-live-source .signal-droplet { display: none; pointer-events: none; }
+.is-live-source .edge-group.is-signal-active .signal-droplet { display: block; }
+.is-live-source .signal-droplet-body, .is-live-source .signal-droplet-tail { fill: var(--edge-signal); }
+.is-live-source .signal-droplet-tail-near { opacity: .34; }
+.is-live-source .signal-droplet-tail-far { opacity: .13; }
+.is-live-source .signal-droplet-specular { fill: var(--surface); opacity: .78; }
 .is-live-source .source-node { --active-signal: var(--ink); }
-.is-live-source .source-node.is-signal-launch { animation: signal-node-launch .28s ease-out both; }
-.is-live-source .source-node.is-signal-arrival { animation: signal-node-arrival .38s ease-out both; }
+.is-live-source .source-node.is-signal-launch { animation: signal-node-launch .16s ease-out both; }
+.is-live-source .source-node.is-signal-arrival { animation: signal-node-arrival .16s ease-out both; }
 
 .agent-operation-node { width: 148px; min-height: 60px; grid-template-columns: 27px minmax(0, 1fr); gap: 8px; padding: 8px 17px 8px 9px; border-radius: 5px; }
 .agent-operation-node .node-icon { width: 27px; height: 27px; border-radius: 6px; font-size: 16px; }
@@ -808,25 +813,15 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
   3.2% { opacity: 1; stroke-dashoffset: 0; }
   3.5%, 100% { opacity: 0; stroke-dashoffset: 0; }
 }
-@keyframes live-signal-pulse {
-  0% { opacity: 0; stroke-dashoffset: 1; }
-  4% { opacity: 1; }
-  96% { opacity: 1; stroke-dashoffset: 0; }
-  100% { opacity: 0; stroke-dashoffset: 0; }
-}
-@keyframes live-signal-trace {
-  0% { stroke-dasharray: 1; stroke-dashoffset: 1; opacity: 1; }
-  100% { stroke-dasharray: 1; stroke-dashoffset: 0; opacity: 1; }
-}
 @keyframes signal-node-launch {
-  0% { box-shadow: 0 0 0 0 var(--active-signal); }
-  55% { border-color: var(--active-signal); box-shadow: 0 0 0 3px var(--active-signal); }
-  100% { box-shadow: 0 0 0 1px transparent; }
+  0% { transform: translate(-50%, -50%); box-shadow: 0 12px 30px rgba(11, 11, 12, .07); }
+  58% { transform: translate(-50%, -50%) translateY(-2px) scale(1.012); box-shadow: 0 13px 26px var(--signal-lift), 0 0 0 1px var(--signal-ring); }
+  100% { transform: translate(-50%, -50%); box-shadow: 0 12px 30px rgba(11, 11, 12, .07); }
 }
 @keyframes signal-node-arrival {
-  0% { box-shadow: 0 0 0 0 var(--active-signal); }
-  45% { border-color: var(--active-signal); box-shadow: 0 0 0 4px var(--active-signal); }
-  100% { box-shadow: 0 0 0 1px transparent; }
+  0% { transform: translate(-50%, -50%); box-shadow: 0 12px 30px rgba(11, 11, 12, .07); }
+  48% { transform: translate(-50%, -50%) translateY(-3px) scale(1.018); box-shadow: 0 16px 32px var(--signal-lift), 0 0 0 1px var(--signal-ring); }
+  100% { transform: translate(-50%, -50%); box-shadow: 0 12px 30px rgba(11, 11, 12, .07); }
 }
 @keyframes status-arrive { 0% { opacity: .2; transform: scale(.65); } 100% { opacity: 1; transform: scale(1); } }
 @keyframes fault-arrive {
@@ -862,7 +857,7 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
   .app-shell { min-height: 100dvh; height: auto; }
   .topbar { padding-inline: 12px; }
   main { display: block; }
-  .mission-bar { min-height: 154px; padding: 12px; }
+  .mission-bar { min-height: 64px; padding: 12px; }
   .mission-actions { align-items: end; }
   .stage-readout { display: none; }
   .twin-workspace { height: 610px; }
@@ -902,7 +897,6 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; }
   .pulse-flow { animation: none !important; opacity: .68; stroke-dasharray: .025 .975; stroke-dashoffset: .4; }
   .node-status-dot, .twin-node.is-entering { animation: none !important; }
-  .is-live-source .edge-group.is-signal-active .pulse-flow { display: none; }
-  .is-live-source .edge-group.is-signal-active .signal-trace { display: block; stroke-dasharray: none; stroke-dashoffset: 0; opacity: 1; }
-  .is-live-source .source-node.is-signal-launch, .is-live-source .source-node.is-signal-arrival { border-color: var(--active-signal); box-shadow: 0 0 0 2px var(--active-signal); }
+  .is-live-source .edge-group.is-signal-active .signal-droplet { display: none; }
+  .is-live-source .source-node.is-signal-launch, .is-live-source .source-node.is-signal-arrival { box-shadow: 0 10px 24px var(--signal-lift), 0 0 0 1px var(--signal-ring); }
 }

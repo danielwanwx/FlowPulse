@@ -44,12 +44,16 @@ Live uses the existing authoritative dependency set and deterministic pulse-slot
 
 1. `idle`: all paths and components use their quiet state.
 2. `launch`: the source component briefly highlights.
-3. `transit`: one bullet-like pulse travels from source to target while a separate trace is progressively revealed behind it; the full route is never pre-lit.
-4. `arrival`: only after the pulse reaches the endpoint does the target component acknowledge it while the completed trace remains visible briefly.
+3. `transit`: one compact, water-drop-like monochrome signal with a short fading tail travels from source port to target port; no full-route trace is revealed or retained.
+4. `arrival`: the animation samples the SVG path through its exact final point before the target component acknowledges it with a brief elevation shadow rather than a border flash.
 5. `decay`: source, target, path, and pulse return to quiet state.
 6. Advance to the next edge in deterministic topology order.
 
-No two path activations may overlap. Live traffic animation is deliberately monochrome: black on the light canvas and bright white on the pure-black canvas. Semantic red, amber, and green remain available for persistent incident, change, and verification state, but they do not color the transient Live pulse. Connectors use rounded collision-safe orthogonal bends, matching the visual clarity of Diagnose without changing authoritative endpoints. Reduced motion removes travel animation but shows one stable route and its endpoints.
+No two path activations may overlap. When the target has an unvisited outgoing dependency, it becomes the next source so the signal visibly hands off through a causal chain; only after a branch ends does traversal resume at the next deterministic root/branch. Live traffic animation is deliberately monochrome: black on the light canvas and bright white on the pure-black canvas. Semantic red, amber, and green remain available for persistent incident, change, and verification state, but they do not color the transient Live pulse. Connectors use rounded collision-safe orthogonal bends, matching the visual clarity of Diagnose without changing authoritative endpoints. Reduced motion removes travel animation and shows a stable endpoint acknowledgement.
+
+## Header hierarchy
+
+The global header owns product, workspace, source, and theme status. The mode row exposes only the five Digital Twin modes; its duplicate left page title and right source/stage readout remain available to assistive technology but are not presented as competing visual headings. The canvas toolbar owns the current view title, caption, metrics, zoom, and legend.
 
 ## Default Live framing
 
@@ -73,8 +77,9 @@ The fit must not invent dependencies or change the routing model. All observed c
 - Live signal order is stable across reloads.
 - At most one edge has the active signal class at any instant.
 - Source highlight precedes target highlight; the target never highlights before the pulse completes; active trace and pulse extinguish before the next edge activates.
-- The trace dash offset decreases progressively during transit, following the bullet pulse rather than revealing the whole connector at launch.
-- Live pulse, trace, and transient node border compute to black in light mode and bright white in pure-black mode.
+- The signal body reaches `getPointAtLength(totalLength)` before arrival state is applied; a short local tail may follow it, but no full connector receives an active highlight.
+- Live signal body and short tail compute to black in light mode and bright white in pure-black mode.
+- Node acknowledgement changes elevation/shadow without changing the complete card border color.
 - No component overlap or label clipping at target viewports.
 - Browser console has zero errors and warnings.
 - Existing runtime, ledger, harness, and replay tests remain green.
