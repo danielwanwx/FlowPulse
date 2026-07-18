@@ -41,7 +41,7 @@ async function smokeFreshServer() {
   const directory = await mkdtemp(join(tmpdir(), "flowpulse-submission-"));
   const child = spawn(process.execPath, ["src/server.mjs"], {
     cwd: root,
-    env: { ...process.env, PORT: String(port), HOST: "127.0.0.1", FLOWPULSE_DB: join(directory, "ledger.db"), FLOWPULSE_DEVELOPMENT_ENABLED: "0" },
+    env: { ...process.env, PORT: String(port), HOST: "127.0.0.1", FLOWPULSE_DB: join(directory, "ledger.db"), FLOWPULSE_OTLP_DIR: join(directory, "otel"), FLOWPULSE_DEVELOPMENT_ENABLED: "0" },
     stdio: ["ignore", "pipe", "pipe"]
   });
   try {
@@ -70,7 +70,7 @@ async function smokeFreshServer() {
 
 function run(command, args) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { cwd: root, stdio: "inherit" });
+    const child = spawn(command, args, { cwd: root, stdio: "inherit", env: { ...process.env, HOST: "127.0.0.1" } });
     child.once("exit", (code) => code === 0 ? resolve() : reject(new Error(`${command} ${args.join(" ")} exited ${code}`)));
     child.once("error", reject);
   });
@@ -96,22 +96,18 @@ function freePort() {
 }
 
 function waitForServer(child, port) {
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error("Fresh judge server did not start")), 8_000);
-    child.stdout.on("data", (chunk) => {
-      if (chunk.toString().includes(`127.0.0.1:${port}`)) {
-        clearTimeout(timeout);
-        resolve();
-      }
-    });
-    child.stderr.on("data", (chunk) => {
-      if (/Error|EADDRINUSE/.test(chunk.toString())) {
-        clearTimeout(timeout);
-        reject(new Error(chunk.toString()));
-      }
-    });
-    child.once("exit", (code) => {
-      if (code) reject(new Error(`Fresh judge server exited ${code}`));
-    });
+  return new Promise(async (resolve, reject) => {
+    let output = "";
+    child.stdout.on("data", (chunk) => { output += chunk; });
+    child.stderr.on("data", (chunk) => { output += chunk; });
+    const deadline = Date.now() + 8_000;
+    while (Date.now() < deadline) {
+      if (child.exitCode !== null || child.signalCode !== null) return reject(new Error(`Fresh judge server exited ${child.exitCode ?? child.signalCode}: ${output.trim()}`));
+      try {
+        if ((await fetch(`http://127.0.0.1:${port}/api/health`)).ok) return resolve();
+      } catch { /* poll the isolated server until its bounded deadline */ }
+      await new Promise((done) => setTimeout(done, 100));
+    }
+    reject(new Error(`Fresh judge server did not become healthy: ${output.trim()}`));
   });
 }
