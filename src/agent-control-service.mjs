@@ -68,7 +68,7 @@ export class AgentControlService {
       manifest: manifestFor(item.role)
     }));
     const edges = AGENT_GRAPH_EDGES.map((item) => ({ ...item, status: edgeStatus(item, statuses) }));
-    return {
+    const projection = {
       schema_version: "flowpulse.agent_control.v1",
       run_id: runId,
       incident_id: state.incident.id,
@@ -99,6 +99,7 @@ export class AgentControlService {
         why_stopped: canonicalProjection.why_stopped
       } : null
     };
+    return canonicalProjection ? browserSafeProjection(projection, canonicalProjection) : projection;
   }
 
   message(runId, rawMessage, rawCollaboratorId = "commander") {
@@ -272,6 +273,87 @@ function validIncidentProjection(value, runId) {
     && typeof value.source_health === "string"
     && typeof value.evidence_mode === "string"
     && typeof value.execution_mode === "string");
+}
+
+// The browser-facing route supplies this already-validated, ledger-derived
+// projection. Keep the legacy rich manager view available to internal tests and
+// local harness code, but never let it become a second browser authority or a
+// raw-payload transport.
+function browserSafeProjection(value, incident) {
+  const statuses = statusesForIncident(incident);
+  const nodes = AGENT_GRAPH_NODES.map((node) => ({ ...node, status: statuses[node.id], manifest: manifestFor(node.role) }));
+  const edges = AGENT_GRAPH_EDGES.map((edge) => ({ ...edge, status: edgeStatus(edge, statuses) }));
+  const stage = incident.stage?.label || "Unavailable";
+  const safeActions = incident.stage_status === "non_actionable" ? [] : [
+    action("summarize"),
+    ...(incident.stage?.id === "decision_recovery" ? [action("review_recovery")] : [])
+  ];
+  return {
+    schema_version: value.schema_version,
+    run_id: value.run_id,
+    incident_id: value.incident_id,
+    authority: "append-only-ledger",
+    streaming: "ledger-derived-sse",
+    langfuse: value.langfuse,
+    current_agent_id: currentAgent(statuses),
+    last_event_id: safeId(value.last_event_id),
+    last_sequence: Number.isSafeInteger(value.last_sequence) ? value.last_sequence : 0,
+    report: {
+      title: safeText(`${stage} incident state`),
+      summary: safeText(incident.why_stopped?.code || "Ledger-derived incident projection."),
+      stage,
+      confidence: null,
+      root_cause: null,
+      rejected_diagnosis: null,
+      repair: null,
+      verification: incident.verification?.status === "passed" ? { passed: true } : null,
+      regression: null,
+      backtest: null,
+      citations: [...new Set(incident.decision?.evidence_refs || [])].filter((item) => typeof item === "string").slice(0, 32),
+      human_gate: incident.human_gate?.status === "requested" ? "owner_approval_required" : null,
+      data_mode: incident.execution_mode
+    },
+    actions: safeActions,
+    work_items: [],
+    graph: { nodes, edges },
+    activity: (value.activity || []).slice(-32).map((item) => ({
+      id: safeId(item.id), sequence: Number.isSafeInteger(item.sequence) ? item.sequence : 0,
+      type: safeText(item.type || "ledger.recorded"), actor: safeText(item.actor || "ledger"), agent_id: safeText(item.agent_id || "manager"), collaborator_id: safeText(item.collaborator_id || "commander"), summary: "Recorded ledger activity"
+    })),
+    orchestration: { mode: "ledger-governed-agent-team-harness", proposal_count: 0, proposals: [], last_step: null },
+    incident_projection: value.incident_projection
+  };
+}
+
+function statusesForIncident(incident) {
+  const evaluator = incident.investigation?.evaluator?.verdict;
+  const recovery = incident.stage?.id === "decision_recovery";
+  const human = incident.human_gate?.status;
+  const actionState = incident.action?.status;
+  const verification = incident.verification?.status;
+  return {
+    manager: incident.stage_status === "verified" ? "complete" : recovery ? "waiting" : "running",
+    monitor: incident.stage?.id === "monitor" ? "running" : "complete",
+    evidence: evaluator === "accepted" ? "complete" : "running",
+    diagnosis: evaluator === "accepted" ? "complete" : evaluator === "rejected" ? "rejected" : "running",
+    evaluator: evaluator === "accepted" ? "complete" : evaluator === "rejected" ? "rejected" : "standby",
+    planner: recovery ? "complete" : "standby",
+    owner: human === "granted" ? "complete" : human === "requested" ? "waiting" : "standby",
+    executor: actionState === "executed" ? "complete" : actionState === "attempted" ? "running" : "standby",
+    verification: verification === "passed" ? "complete" : actionState === "executed" ? "running" : "standby",
+    evolve: verification === "passed" ? "running" : "standby",
+    test: "standby",
+    ledger: "recording",
+    langfuse: "unconfigured"
+  };
+}
+
+function safeText(value, limit = 160) {
+  return typeof value === "string" ? value.replace(/[\u0000-\u001f\u007f<>&"']/g, " ").slice(0, limit) : "unknown";
+}
+
+function safeId(value) {
+  return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/.test(value) ? value : null;
 }
 
 function projectStatuses(events, state, langfuseEnabled) {

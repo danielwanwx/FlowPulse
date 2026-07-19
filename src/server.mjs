@@ -20,7 +20,7 @@ import { AUTONOMY_POLICY_ARTIFACT, validateAutonomyPolicyArtifact } from "./auto
 import { failureLockKey, sha256Canonical } from "./autonomy-policy.mjs";
 import { FRESHNESS_MAX_AGE_MS, FRESHNESS_RECEIPT_SCHEMA_VERSION, verifySnapshotFreshnessReceipt } from "./autonomy-freshness.mjs";
 import { sha256 as hashBoundEvidence } from "./regression-backtest.mjs";
-import { buildIncidentProjection } from "./incident-projection.mjs";
+import { buildIncidentProjection, INCIDENT_PROJECTION_LIMITS } from "./incident-projection.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const publicDir = join(root, "public");
@@ -40,6 +40,7 @@ const developmentInvestigations = new Map();
 const authorityReceiptSecret = randomBytes(32);
 const authorityReceiptBindings = new Map();
 const CAPTURE_CLOCK_SKEW_MS = 1_000;
+const BROWSER_RESPONSE_MAX_BYTES = 512 * 1024;
 runtime.ensureRun();
 validateAutonomyPolicyArtifact(AUTONOMY_POLICY_ARTIFACT);
 const langfuseEnabled = await initializeObservability().catch(() => {
@@ -57,21 +58,21 @@ const server = createServer(async (request, response) => {
       return json(response, 200, await stateWithSource(runtime.ensureRun(), { cursor: url.searchParams.get("projection_cursor") }));
     }
     if (url.pathname === "/api/source" && request.method === "GET") {
-      return json(response, 200, await sourceProjection(runtime.ensureRun()));
+      return json(response, 200, redactedSource(await sourceProjection(runtime.ensureRun())));
     }
     if (url.pathname === "/api/evidence" && request.method === "GET") {
       const source = await selectedEvidenceSource(url.searchParams.get("run_id") || runtime.ensureRun());
-      return json(response, 200, { source: source.metadata(), ...source.list({
+      return json(response, 200, { source: redactedSource(source.metadata()), ...redactedEvidencePage(source.list({
         cursor: url.searchParams.get("cursor") || undefined,
         limit: url.searchParams.get("limit") || undefined,
         kind: url.searchParams.get("kind") || undefined,
         entity: url.searchParams.get("entity") || undefined
-      }) });
+      })) });
     }
     if (url.pathname.startsWith("/api/evidence/") && request.method === "GET") {
       const id = decodeURIComponent(url.pathname.slice("/api/evidence/".length));
       const source = await selectedEvidenceSource(url.searchParams.get("run_id") || runtime.ensureRun());
-      return json(response, 200, { source: source.metadata(), evidence: source.detail(id) });
+      return json(response, 200, { source: redactedSource(source.metadata()), evidence: redactedEvidenceDetail(source.detail(id)) });
     }
     if (url.pathname === "/api/agent-control" && request.method === "GET") {
       return json(response, 200, (await stateWithSource()).agent_control);
@@ -95,9 +96,11 @@ const server = createServer(async (request, response) => {
           metadata: { run_id: runId, authority: "flowpulse-ledger" }
         });
         const result = agentControl.message(runId, body.message, body.collaborator_id);
-        generation.update({ output: { intent: result.intent, collaborator_id: result.collaborator_id, message: result.message, citations: result.projection.report.citations } });
+        const browser = await stateWithSource(runId);
+        const safeResult = { intent: safeBrowserText(result.intent, 80), collaborator_id: safeBrowserText(result.collaborator_id, 80), message: safeBrowserText(result.message, 512), projection: browser.agent_control };
+        generation.update({ output: { intent: safeResult.intent, collaborator_id: safeResult.collaborator_id, message: safeResult.message, citations: safeResult.projection.report.citations } });
         generation.end();
-        return result;
+        return safeResult;
       }));
     }
     if (url.pathname === "/api/agent-control/action" && request.method === "POST") {
@@ -111,7 +114,8 @@ const server = createServer(async (request, response) => {
         input: { action: body.action, parameters: body.input || {} }
       }, async (trace) => {
         const tool = trace.tool("flowpulse.agent-action", { input: { action: body.action, parameters: body.input || {} }, metadata: { run_id: runId } });
-        const projection = agentControl.act(runId, body.action, body.input || {});
+        agentControl.act(runId, body.action, body.input || {});
+        const projection = (await stateWithSource(runId)).agent_control;
         tool.update({ output: { current_agent_id: projection.current_agent_id, last_event_id: projection.last_event_id } });
         tool.end();
         return projection;
@@ -759,22 +763,167 @@ async function stateWithSource(runId = runtime.ensureRun(), { cursor = null } = 
   const source = await selectedEvidenceSource(runId);
   const evidence = source.summariesById(referenced);
   const sourceState = await sourceProjection(runId, source);
+  const authority_chain = projectionAuthorityChain({ runId, projected });
   const incident_projection = buildIncidentProjection({
     run: projected,
     events: projected.events,
     evidence,
     source: sourceState,
-    cursor
+    cursor,
+    authority_chain
   });
-  return {
-    ...projected,
-    evidence,
-    source: sourceState,
+  const state = {
+    schema_version: "flowpulse.browser-state.v1",
+    run_id: incident_projection.run_id || safeBrowserId(projected.run_id),
+    mode: safeBrowserEnum(projected.mode, ["replay", "live", "development"], "unavailable"),
+    status: safeBrowserText(projected.status || incident_projection.stage_status, 80),
+    complete: projected.complete === true,
+    waiting_for_approval: incident_projection.human_gate?.status === "requested",
+    incident: incident_projection.incident,
+    events: projected.events.slice(-INCIDENT_PROJECTION_LIMITS.max_frames).map(redactedLedgerEvent),
+    evidence: incident_projection.evidence,
+    source: redactedSource(sourceState, incident_projection),
     incident_projection,
     agent_control: agentControl.project(runId, { incidentProjection: incident_projection }),
-    harness: harnessProjection(projected.events)
+    harness: redactedHarness(harnessProjection(projected.events))
+  };
+  return enforceBrowserResponseCap(state);
+}
+
+// This read-only verifier deliberately stays in the server composition root so
+// the module-private freshness binding remains unavailable to HTTP, fixtures,
+// model output, and browser code. A restart that cannot re-establish the
+// binding projects non-actionable rather than trusting historical shapes.
+function projectionAuthorityChain({ runId, projected }) {
+  const events = projected.events;
+  const decisions = events.filter((event) => event.type === "autonomy.decision.recorded");
+  if (!decisions.length) return { schema_version: "flowpulse.projection-authority.v1", status: "legacy", reason: "legacy_detail_unavailable" };
+  if (decisions.length !== 1 || projected.mode !== "development") return projectionAuthorityInvalid("decision_count_or_mode_invalid");
+  try {
+    const decision = decisions[0];
+    const intent = intentForDecision(decision);
+    const manifest = captureAuthoritySnapshot({ run_id: runId, incident_id: decision.incident_id, intent_id: intent.id });
+    const now = trustedNow();
+    const validated = validateAuthorityPrerequisites({ events, manifest, intent, now, incident_id: decision.incident_id, run_id: runId });
+    const receipt_sha256 = decision.payload?.receipt_sha256;
+    const binding = authorityReceiptBindings.get(receipt_sha256);
+    const expectedBinding = authorityBinding({ run_id: decision.run_id, incident_id: decision.incident_id, intent_id: intent.id, manifest: stripManifest(manifest), validated, artifact: artifactBinding(intent.id), receipt_sha256 });
+    if (!validHash(receipt_sha256) || !safeEqual(binding, expectedBinding)) throw autonomyFailure("projection_receipt_binding_invalid", "receipt_sha256");
+    const locks = readAuthorityLocks({ incident_id: decision.incident_id, run_id: runId, contract_sha256: validated.contract_sha256, target: intent.contract.target });
+    const expectedDecision = buildAuthorityDecision({ run_id: runId, incident_id: decision.incident_id, intent, manifest, validated, receipt: { receipt_sha256 }, locks });
+    if (expectedDecision.outcome !== "human_review_required" || !sameCanonicalDecisionEvent(decision, expectedDecision, validated.evidence_refs)) throw autonomyFailure("projection_decision_invalid", "autonomy.decision.recorded");
+    const ownerGate = canonicalOwnerGate({ decision: expectedDecision, intent, evidenceRefs: validated.evidence_refs });
+    const proposal = exactlyOne(events, "repair.proposed");
+    const request = exactlyOne(events, "approval.requested");
+    if (!proposal || !request || !sameCanonicalOwnerGateEvent(proposal, ownerGate.proposal, decision) || !sameCanonicalOwnerGateEvent(request, ownerGate.request, proposal) || !(decision.sequence < proposal.sequence && proposal.sequence < request.sequence)) throw autonomyFailure("projection_owner_gate_invalid", "approval.requested");
+    const approval = optionalOne(events, "approval.granted");
+    if (approval && !projectionCanonicalApproval(approval, decision, request)) throw autonomyFailure("projection_approval_invalid", "approval.granted");
+    const attempt = optionalOne(events, "repair.execution.attempted");
+    if (attempt && (!approval || !projectionCanonicalAttempt(attempt, decision, approval))) throw autonomyFailure("projection_attempt_invalid", "repair.execution.attempted");
+    const execution = optionalOne(events, "repair.executed");
+    if (execution && (!attempt || !projectionCanonicalExecution(execution, decision, attempt))) throw autonomyFailure("projection_execution_invalid", "repair.executed");
+    const verification = optionalOne(events, "verification.completed");
+    if (verification && (!execution || !projectionCanonicalVerification(verification, execution))) throw autonomyFailure("projection_verification_invalid", "verification.completed");
+    return {
+      schema_version: "flowpulse.projection-authority.v1", status: "canonical",
+      decision: projectionEventIdentity(decision), proposal: projectionEventIdentity(proposal), request: projectionEventIdentity(request),
+      approval: approval ? projectionEventIdentity(approval) : null, attempt: attempt ? projectionEventIdentity(attempt) : null,
+      execution: execution ? projectionEventIdentity(execution) : null, verification: verification ? projectionEventIdentity(verification) : null
+    };
+  } catch (error) {
+    return projectionAuthorityInvalid(error?.code || "authority_chain_invalid");
+  }
+}
+
+function projectionAuthorityInvalid(reason) { return { schema_version: "flowpulse.projection-authority.v1", status: "invalid", reason: safeBrowserText(reason, 120) }; }
+function exactlyOne(events, type) { const matches = events.filter((event) => event.type === type); return matches.length === 1 ? matches[0] : null; }
+function optionalOne(events, type) { const matches = events.filter((event) => event.type === type); if (matches.length > 1) throw autonomyFailure("projection_event_count_invalid", type); return matches[0] || null; }
+function projectionEventIdentity(event) { return { event_id: event.id, sequence: event.sequence, payload_sha256: event.payload_sha256 }; }
+function projectionCanonicalApproval(event, decision, request) {
+  const expectedId = `approval-granted-${decision.payload.decision_sha256.slice(0, 32)}`;
+  const payload = event?.payload;
+  const allowed = ["owner", "repair_id", "action", "target", "command_id", "expected_before", "expected_after", "scope", "decision_id", "contract_sha256"];
+  return Boolean(event && event.id === expectedId && event.run_id === decision.run_id && event.incident_id === decision.incident_id && event.type === "approval.granted" && event.actor === "owner" && event.parent_id == null && event.correlation_id === decision.id && event.offset_ms === 0 && timestamp(event.recorded_at) && sameOrderedRefs(event.evidence_refs, decision.evidence_refs) && payload && Object.keys(payload).sort().join(",") === allowed.sort().join(",") && boundedText(payload.owner, 160) && exactFullContract(payload, decision.payload.contract) && payload.scope === "local checkout container only" && payload.decision_id === decision.id && payload.contract_sha256 === decision.payload.contract_sha256 && request.sequence < event.sequence);
+}
+function projectionCanonicalAttempt(event, decision, approval) {
+  const expectedId = `repair-execution-attempt-${decision.payload.decision_sha256.slice(0, 32)}`;
+  const expected = { approval_id: approval.id, decision_id: decision.id, contract_sha256: decision.payload.contract_sha256, contract: decision.payload.contract, execution_mode: decision.payload.execution_mode };
+  return Boolean(event && event.id === expectedId && event.run_id === decision.run_id && event.incident_id === decision.incident_id && event.type === "repair.execution.attempted" && event.actor === "authority-composition" && event.parent_id === approval.id && event.correlation_id === decision.id && event.offset_ms === 0 && timestamp(event.recorded_at) && sameOrderedRefs(event.evidence_refs, decision.evidence_refs) && sha256Canonical(event.payload) === sha256Canonical(expected) && approval.sequence < event.sequence);
+}
+function projectionCanonicalExecution(event, decision, attempt) {
+  const expectedId = `repair-executed-${decision.payload.decision_sha256.slice(0, 32)}`;
+  const payload = event?.payload;
+  const expectedKeys = ["repair_id", "action", "target", "from", "to", "mode", "command_id", "completed_at", "decision_id", "approval_id", "contract_sha256"];
+  return Boolean(event && event.id === expectedId && event.run_id === decision.run_id && event.incident_id === decision.incident_id && event.type === "repair.executed" && event.actor === "remediation" && event.parent_id === attempt.id && event.correlation_id === decision.id && event.offset_ms === 0 && timestamp(event.recorded_at) && sameOrderedRefs(event.evidence_refs, decision.evidence_refs) && payload && Object.keys(payload).sort().join(",") === expectedKeys.sort().join(",") && payload.repair_id === decision.payload.contract.repair_id && payload.action === decision.payload.contract.action && payload.target === decision.payload.contract.target && payload.command_id === decision.payload.contract.command_id && payload.mode === "local-development" && timestamp(payload.completed_at) && payload.decision_id === decision.id && payload.approval_id === attempt.payload.approval_id && payload.contract_sha256 === decision.payload.contract_sha256 && attempt.sequence < event.sequence);
+}
+function projectionCanonicalVerification(event, execution) {
+  const payload = event?.payload;
+  return Boolean(event && event.type === "verification.completed" && event.actor === "verifier" && event.sequence > execution.sequence && payload && payload.passed === true && payload.repair_completed_at === execution.payload.completed_at && Array.isArray(payload.checks) && payload.checks.length > 0 && Array.isArray(event.evidence_refs) && event.evidence_refs.length > 0);
+}
+
+function redactedLedgerEvent(event) {
+  return {
+    id: safeBrowserId(event.id), sequence: Number.isSafeInteger(event.sequence) ? event.sequence : 0,
+    run_id: safeBrowserId(event.run_id), incident_id: safeBrowserId(event.incident_id), at: safeBrowserText(event.recorded_at, 40),
+    type: safeBrowserText(event.type, 120), actor: safeBrowserText(event.actor, 80), evidence_refs: Array.isArray(event.evidence_refs) ? event.evidence_refs.filter(safeBrowserId).slice(0, 32) : [],
+    payload: redactedEventPayload(event)
   };
 }
+
+function redactedEventPayload(event) {
+  const payload = event?.payload && typeof event.payload === "object" && !Array.isArray(event.payload) ? event.payload : {};
+  const result = {};
+  for (const key of ["id", "title", "hypothesis_id", "reason", "claim", "action", "target", "expected_effect", "candidate", "promotion", "classification", "decision_id", "contract_sha256"]) if (typeof payload[key] === "string") result[key] = safeBrowserText(payload[key], 240);
+  if (typeof payload.passed === "boolean") result.passed = payload.passed;
+  if (typeof payload.score === "number" && Number.isFinite(payload.score)) result.score = Math.max(0, Math.min(1, payload.score));
+  if (Array.isArray(payload.checks)) result.checks = payload.checks.slice(0, 16).map((check) => ({ id: safeBrowserText(check?.id || "check", 120), metric: safeBrowserText(check?.metric || "metric", 120), passed: check?.passed === true }));
+  if (Array.isArray(payload.gates)) result.gates = payload.gates.slice(0, 16).map((gate) => ({ id: safeBrowserText(gate?.id || "gate", 120), label: safeBrowserText(gate?.label || "gate", 120), passed: gate?.passed === true }));
+  return result;
+}
+
+function redactedSource(source, projection = null) {
+  const graph = projection?.graph || { nodes: [], edges: [] };
+  return {
+    mode: safeBrowserText(source?.mode || "unavailable", 80), status: safeBrowserEnum(source?.status, ["captured", "frozen", "live", "stale", "disconnected", "connecting", "unavailable"], "unavailable"),
+    label: safeBrowserText(source?.label || "FlowPulse evidence source", 160), raw_records_excluded: true,
+    topology: { services: graph.nodes.map((node) => ({ id: node.id, label: node.label, kind: node.kind })), dependencies: graph.edges.map((edge) => ({ id: edge.id, from: edge.from, to: edge.to, kind: edge.kind })) },
+    evidence: projection?.evidence || [],
+    counts: safeCounts(source?.counts)
+  };
+}
+function redactedEvidencePage(page) {
+  const items = Array.isArray(page?.items) ? page.items.slice(0, INCIDENT_PROJECTION_LIMITS.max_evidence_summaries).map(redactedEvidenceDetail) : [];
+  return {
+    items,
+    next_cursor: safeBrowserId(page?.next_cursor),
+    truncated: page?.truncated === true,
+    limits: { records: items.length, bytes: Math.min(Number(page?.limits?.bytes) || 0, 48 * 1024) },
+    total_matching: Math.min(Math.max(Number(page?.total_matching) || 0, 0), INCIDENT_PROJECTION_LIMITS.max_input_evidence)
+  };
+}
+function redactedEvidenceDetail(record) {
+  const recordHash = record?.hash || record?.provenance?.sha256 || null;
+  return {
+    id: safeBrowserId(record?.id),
+    kind: safeBrowserText(record?.kind || "unknown", 80),
+    signal: safeBrowserText(record?.signal || "unknown", 80),
+    title: safeBrowserText(record?.title || "Evidence", 180),
+    entity: safeBrowserText(record?.entity || "unknown", 120),
+    source: safeBrowserText(record?.source || "unknown", 160),
+    observed_at: safeBrowserText(record?.at || record?.observed_at || "unknown", 40),
+    captured_at: safeBrowserText(record?.captured_at || "unknown", 40),
+    record_sha256: safeBrowserHash(recordHash),
+    provenance: { status: safeBrowserHash(recordHash) ? "record_bound" : "legacy_detail_unavailable", sha256: safeBrowserHash(recordHash) },
+    raw_payload_excluded: true
+  };
+}
+function safeCounts(value) { const result = {}; if (!value || typeof value !== "object" || Array.isArray(value)) return result; for (const [key, count] of Object.entries(value).slice(0, 16)) if (/^[a-z_]+$/i.test(key) && Number.isSafeInteger(count) && count >= 0 && count <= 1_000_000) result[key] = count; return result; }
+function redactedHarness(value) { return { manifest: value?.manifest?.sha256 ? { version: safeBrowserText(value.manifest.version, 80), sha256: safeBrowserHash(value.manifest.sha256) } : { legacy_detail_status: "legacy_detail_unavailable" }, current_stage: safeBrowserText(value?.current_stage || "unavailable", 120), attempt: Number.isSafeInteger(value?.attempt) ? value.attempt : null, last_context_sha256: safeBrowserHash(value?.last_context_sha256), failure: { legacy_detail_status: safeBrowserText(value?.failure?.legacy_detail_status || "legacy_detail_unavailable", 80), boundary: safeBrowserText(value?.failure?.boundary || "unavailable", 120), validator_id: safeBrowserText(value?.failure?.validator_id || "unavailable", 160), reason_code: safeBrowserText(value?.failure?.reason_code || "unavailable", 160), tool_coverage: Array.isArray(value?.failure?.tool_coverage) ? value.failure.tool_coverage.slice(0, 24).map((item) => safeBrowserText(String(item), 160)) : [], missing_evidence_classes: Array.isArray(value?.failure?.missing_evidence_classes) ? value.failure.missing_evidence_classes.slice(0, 8).map((item) => safeBrowserText(String(item), 120)) : [], next_precondition: safeBrowserText(value?.failure?.next_precondition || "unavailable", 160) } }; }
+function enforceBrowserResponseCap(value) { if (Buffer.byteLength(JSON.stringify(value), "utf8") <= BROWSER_RESPONSE_MAX_BYTES) return value; const reduced = { ...value, events: [], evidence: [], source: { ...value.source, topology: { services: [], dependencies: [] }, evidence: [] }, agent_control: { ...value.agent_control, activity: [], graph: { nodes: [], edges: [] } } }; if (Buffer.byteLength(JSON.stringify(reduced), "utf8") <= BROWSER_RESPONSE_MAX_BYTES) return reduced; return { schema_version: "flowpulse.browser-state.v1", run_id: null, mode: "unavailable", status: "non_actionable", complete: false, waiting_for_approval: false, incident: reduced.incident_projection.incident, events: [], evidence: [], source: redactedSource({}, reduced.incident_projection), incident_projection: reduced.incident_projection, agent_control: { schema_version: "flowpulse.agent_control.v1", authority: "append-only-ledger", actions: [], activity: [], graph: { nodes: [], edges: [] }, incident_projection: reduced.incident_projection }, harness: { manifest: { legacy_detail_status: "legacy_detail_unavailable" } } }; }
+function safeBrowserText(value, limit = 160) { return typeof value === "string" ? value.replace(/[\u0000-\u001f\u007f<>&"']/g, " ").slice(0, limit) : "unknown"; }
+function safeBrowserId(value) { return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/.test(value) ? value : null; }
+function safeBrowserHash(value) { return validHash(value) ? value : null; }
+function safeBrowserEnum(value, allowed, fallback) { return allowed.includes(value) ? value : fallback; }
 
 async function selectedEvidenceSource(runId = runtime.ensureRun()) {
   if (snapshots.has(runId)) return snapshots.get(runId);
@@ -899,16 +1048,16 @@ function streamAgentEvents(request, response, url) {
     "cache-control": "no-cache, no-transform",
     connection: "keep-alive"
   });
-  const sendProjection = () => {
-    const projection = agentControl.project(runId);
+  const sendProjection = async () => {
+    const projection = (await stateWithSource(runId)).agent_control;
     if (projection.last_sequence <= lastSequence) return;
     lastSequence = projection.last_sequence;
     response.write(`id: ${lastSequence}\nevent: agent-control\ndata: ${JSON.stringify(projection)}\n\n`);
   };
-  sendProjection();
+  void sendProjection();
   const interval = setInterval(() => {
     if (response.destroyed) return;
-    sendProjection();
+    void sendProjection();
     response.write(": heartbeat\n\n");
   }, 1_000);
   request.on("close", () => clearInterval(interval));

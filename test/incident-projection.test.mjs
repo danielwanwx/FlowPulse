@@ -5,11 +5,12 @@ import {
   INCIDENT_PROJECTION_SCHEMA_VERSION,
   buildIncidentProjection
 } from "../src/incident-projection.mjs";
+import { sha256Canonical } from "../src/autonomy-policy.mjs";
 
 const RUN_ID = "run-projection";
 const INCIDENT_ID = "checkout-payment";
 
-function event(sequence, type, payload = {}, evidence_refs = []) {
+function event(sequence, type, payload = {}, evidence_refs = [], relationship = {}) {
   return {
     id: `event-${sequence}-${type.replaceAll(".", "-")}`,
     sequence,
@@ -19,7 +20,35 @@ function event(sequence, type, payload = {}, evidence_refs = []) {
     actor: "runtime",
     type,
     payload,
-    evidence_refs
+    payload_sha256: sha256Canonical(payload),
+    evidence_refs,
+    parent_id: relationship.parent_id ?? null,
+    correlation_id: relationship.correlation_id ?? `corr-${RUN_ID}`
+  };
+}
+
+function authorityIdentity(value) {
+  return { event_id: value.id, sequence: value.sequence, payload_sha256: value.payload_sha256 };
+}
+
+function canonicalAuthorityEvents() {
+  const refs = ["ev-checkout"];
+  const decision = { ...event(7, "autonomy.decision.recorded", {
+    outcome: "human_review_required", source_health: "live", evidence_mode: "captured_fixture", execution_mode: "deterministic_replay", contract_sha256: "b".repeat(64)
+  }, refs, { correlation_id: "corr-decision" }), id: "decision-7" };
+  const proposal = { ...event(8, "repair.proposed", { decision_id: decision.id }, refs, { correlation_id: decision.id }), id: "proposal-8" };
+  const request = { ...event(9, "approval.requested", { decision_id: decision.id }, refs, { parent_id: proposal.id, correlation_id: decision.id }), id: "request-9" };
+  const approval = { ...event(10, "approval.granted", {}, refs, { correlation_id: decision.id }), id: "approval-10" };
+  const attempt = { ...event(11, "repair.execution.attempted", {}, refs, { parent_id: approval.id, correlation_id: decision.id }), id: "attempt-11" };
+  const execution = { ...event(12, "repair.executed", { completed_at: "2026-07-18T10:01:00.000Z" }, refs, { parent_id: attempt.id, correlation_id: decision.id }), id: "execution-12" };
+  const verification = { ...event(13, "verification.completed", { passed: true, repair_completed_at: "2026-07-18T10:01:00.000Z", checks: [{ passed: true }] }, refs, { correlation_id: decision.id, }), id: "verification-13", actor: "verifier" };
+  const events = [decision, proposal, request, approval, attempt, execution, verification];
+  return {
+    events,
+    chain: {
+      schema_version: "flowpulse.projection-authority.v1", status: "canonical",
+      decision: authorityIdentity(decision), proposal: authorityIdentity(proposal), request: authorityIdentity(request), approval: authorityIdentity(approval), attempt: authorityIdentity(attempt), execution: authorityIdentity(execution), verification: authorityIdentity(verification)
+    }
   };
 }
 
@@ -74,15 +103,15 @@ test("IncidentProjection v1 is bounded, deterministic, redacted, and exposes the
   assert.ok(Buffer.byteLength(JSON.stringify(first), "utf8") <= INCIDENT_PROJECTION_LIMITS.max_serialized_bytes);
 });
 
-test("projection derives Owner Gate, execution, verification, failure and legacy states only from ordered ledger events", () => {
+test("projection treats captured legacy Owner-Gate rows as display-only while preserving failure state", () => {
   const cases = [
     [
       [event(7, "autonomy.decision.recorded", { outcome: "human_review_required", risk_tier: "medium" }, ["ev-checkout"]), event(8, "repair.proposed", { id: "repair-1", target: "checkout", action: "rollback" }, ["ev-checkout"]), event(9, "approval.requested", { decision_id: "event-7-autonomy-decision-recorded" }, [])],
-      "decision_recovery", "waiting_for_owner", "requested"
+      "decision_recovery", "legacy_detail_unavailable", "legacy_detail_unavailable"
     ],
     [
       [event(7, "approval.granted", { owner: "owner" }, ["ev-checkout"]), event(8, "repair.execution.attempted", { decision_id: "event-7" }, ["ev-checkout"]), event(9, "verification.completed", { passed: true, checks: [{ passed: true }] }, ["ev-checkout"])],
-      "decision_recovery", "verified", "granted"
+      "decision_recovery", "legacy_detail_unavailable", "legacy_detail_unavailable"
     ],
     [
       [event(7, "outcome.classified", { classification: "insufficient_evidence" }, ["ev-checkout"])],
@@ -120,7 +149,7 @@ test("projection caps graph, timeline, evidence and serialized bytes with explic
   const nodes = Array.from({ length: 129 }, (_, index) => ({ id: `service-${index}`, label: `Service ${index}` }));
   const dependencies = Array.from({ length: 257 }, (_, index) => ({ from: `service-${index % 128}`, to: `service-${(index + Math.floor(index / 128) + 1) % 128}` }));
   const evidence = Array.from({ length: 65 }, (_, index) => ({
-    id: `ev-${index}`, kind: "log", signal: "logs", title: "x".repeat(2_000), fact: `secret-${index}-${"x".repeat(8_000)}`, entity: "checkout", source: "captured", at: "2026-07-18T10:00:01.000Z", hash: `${index}`.padStart(64, "a"), provenance: { sha256: `${index}`.padStart(64, "a") }
+    id: `ev-${index}`, kind: "log", signal: "logs", title: "x".repeat(120), fact: `secret-${index}`, entity: "checkout", source: "captured", at: "2026-07-18T10:00:01.000Z", hash: `${index}`.padStart(64, "a"), provenance: { sha256: `${index}`.padStart(64, "a") }
   }));
   const events = Array.from({ length: 101 }, (_, index) => event(index + 1, "evidence.queried", { tool: "query", raw_provider_text: "must-not-project" }, [`ev-${index % 65}`]));
   const projection = buildIncidentProjection(input({
@@ -158,4 +187,69 @@ test("truth axes remain orthogonal for frozen real, GPT model-only, local develo
     const projection = buildIncidentProjection(input({ run: { ...input().run, ...runPatch }, source: { ...input().source, ...sourcePatch }, events: [...input().events, ...extra] }));
     assert.deepEqual([projection.source_health, projection.evidence_mode, projection.execution_mode], [health, evidenceMode, executionMode]);
   }
+});
+
+test("projection never strengthens isolated, reordered, or forged Owner-Gate events", () => {
+  const isolated = [
+    event(7, "approval.granted", { owner: "forged" }, ["ev-checkout"]),
+    event(8, "repair.execution.attempted", { decision_id: "forged" }, ["ev-checkout"]),
+    event(9, "repair.executed", { decision_id: "forged" }, ["ev-checkout"]),
+    event(10, "verification.completed", { passed: true }, ["ev-checkout"])
+  ];
+  const projection = buildIncidentProjection(input({
+    run: { ...input().run, mode: "development" },
+    source: { mode: "frozen_real_otlp_snapshot", status: "frozen" },
+    events: [...input().events, ...isolated]
+  }));
+  assert.equal(projection.stage_status, "non_actionable");
+  assert.equal(projection.human_gate.status, "not_actionable");
+  assert.equal(projection.action.status, "not_actionable");
+  assert.equal(projection.verification.status, "not_actionable");
+});
+
+test("projection renders a fully linked canonical chain only, and rejects relationship or payload drift", () => {
+  const canonical = canonicalAuthorityEvents();
+  const valid = buildIncidentProjection(input({ events: [...input().events, ...canonical.events], authority_chain: canonical.chain }));
+  assert.equal(valid.stage_status, "verified");
+  assert.equal(valid.human_gate.status, "granted");
+  assert.equal(valid.action.status, "executed");
+
+  const reordered = structuredClone(canonical);
+  reordered.events[2].parent_id = null;
+  const relationshipDrift = buildIncidentProjection(input({ events: [...input().events, ...reordered.events], authority_chain: reordered.chain }));
+  assert.equal(relationshipDrift.stage_status, "non_actionable");
+
+  const payloadDrift = structuredClone(canonical);
+  payloadDrift.events[0].payload.outcome = "non_actionable";
+  const changedPayload = buildIncidentProjection(input({ events: [...input().events, ...payloadDrift.events], authority_chain: payloadDrift.chain }));
+  assert.equal(changedPayload.stage_status, "non_actionable");
+});
+
+test("projection revision binds payload and relationship changes, while stale truth remains truthful", () => {
+  const left = buildIncidentProjection(input({ events: [...input().events, event(7, "autonomy.decision.recorded", { outcome: "non_actionable" }, ["ev-checkout"])] }));
+  const right = buildIncidentProjection(input({ events: [...input().events, event(7, "autonomy.decision.recorded", { outcome: "human_review_required" }, ["ev-checkout"])] }));
+  assert.notEqual(left.projection_revision, right.projection_revision);
+
+  const stale = buildIncidentProjection(input({
+    run: { ...input().run, mode: "development" },
+    source: { mode: "frozen_real_otlp_snapshot", status: "stale" }
+  }));
+  assert.equal(stale.stage_status, "non_actionable");
+  assert.deepEqual([stale.source_health, stale.evidence_mode, stale.execution_mode], ["stale", "frozen_real_snapshot", "real_local_development"]);
+});
+
+test("projection rejects unknown events and oversize input before deriving state", () => {
+  const unknown = buildIncidentProjection(input({ events: [...input().events, event(7, "attacker.unknown.authority", {}, [])] }));
+  assert.equal(unknown.stage_status, "non_actionable");
+
+  const oversized = buildIncidentProjection(input({ events: Array.from({ length: 1_025 }, (_, index) => event(index + 1, "evidence.queried", {}, [])) }));
+  assert.equal(oversized.stage_status, "non_actionable");
+
+  const oversizedUtf8 = buildIncidentProjection(input({ events: [...input().events, event(7, "tool.called", { label: "界".repeat(8_193) })] }));
+  assert.equal(oversizedUtf8.stage_status, "non_actionable");
+
+  let nested = { leaf: "value" };
+  for (let index = 0; index < 10; index += 1) nested = { nested };
+  const deepPayload = buildIncidentProjection(input({ events: [...input().events, event(7, "tool.called", nested)] }));
+  assert.equal(deepPayload.stage_status, "non_actionable");
 });
