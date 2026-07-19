@@ -18,8 +18,8 @@
     "redaction": { "required": true, "version": "v1", "states": ["redacted", "synthetic"] },
     "limits": { "max_envelope_bytes": 49152, "max_entities": 64, "max_relations": 128, "max_evidence": 64 },
     "provenance": { "required": true, "hash_algorithm": "sha256" },
-    "health": { "accepted": ["live"], "max_age_ms": 300000 },
-    "contract_sha256": "9da6978fb9257650792a414c4d2814108d58566edc307b3667c7757246a19af4"
+    "health": { "accepted": ["unavailable"], "max_age_ms": 300000 },
+    "contract_sha256": "32a14c56b9b01edec5cb846bf3be9ed5c738c2fe8f0224cd0962027724d95f14"
   },
   "envelope": {
     "schema_version": "flowpulse.evidence-envelope.v1",
@@ -34,7 +34,7 @@
     "frozen_at": "2026-07-18T10:00:30.000Z",
     "source_kind": "workflow_lineage",
     "capture_mode": "captured_fixture",
-    "source_health": "live",
+    "source_health": "unavailable",
     "provenance": {
       "connector_id": "connector-lineage-fixture",
       "connector_version": "v1",
@@ -42,7 +42,7 @@
       "content_type": "application/json",
       "encoding": "utf-8",
       "redaction_state": "synthetic",
-      "content_sha256": "d5fd7b3c8df67f4e85bca6db1cbac5b45d54eda6e1c3d709df611c9f28332b86"
+      "content_sha256": "d6b553547f230808aaddf9b48bd0b4c5636c3c4de65feaf57c9462abb58eafac"
     },
     "entities": [
       { "id": "dag-payments", "kind": "dag", "label": "Payments refresh", "namespace": "analytics", "provider_label": "Airflow", "provenance_ref": "capture://lineage-v1#dag-payments", "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
@@ -66,16 +66,20 @@
     "receipt_id": "receipt-lineage-v1",
     "connector_id": "connector-lineage-fixture",
     "connector_version": "v1",
-    "manifest_contract_sha256": "9da6978fb9257650792a414c4d2814108d58566edc307b3667c7757246a19af4",
+    "manifest_contract_sha256": "32a14c56b9b01edec5cb846bf3be9ed5c738c2fe8f0224cd0962027724d95f14",
     "envelope_schema_version": "flowpulse.evidence-envelope.v1",
     "envelope_id": "env-lineage-v1",
     "event_id": "event-lineage-v1",
     "incident_id": "incident-payment-data-delay",
     "run_id": "run-payment-data-delay-v1",
     "correlation_id": "corr-payment-data-delay-v1",
-    "content_sha256": "d5fd7b3c8df67f4e85bca6db1cbac5b45d54eda6e1c3d709df611c9f28332b86",
+    "content_sha256": "d6b553547f230808aaddf9b48bd0b4c5636c3c4de65feaf57c9462abb58eafac",
     "capture_mode": "captured_fixture",
-    "source_health": "live",
+    "source_health": "unavailable",
+    "redaction_state": "synthetic",
+    "observed_at": "2026-07-18T10:00:00.000Z",
+    "received_at": "2026-07-18T10:00:30.000Z",
+    "frozen_at": "2026-07-18T10:00:30.000Z",
     "issued_at": "2026-07-18T10:00:31.000Z",
     "expires_at": "2026-07-18T10:05:00.000Z"
   }

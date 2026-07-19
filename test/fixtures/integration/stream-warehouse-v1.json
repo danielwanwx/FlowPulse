@@ -18,8 +18,8 @@
     "redaction": { "required": true, "version": "v1", "states": ["redacted", "synthetic"] },
     "limits": { "max_envelope_bytes": 49152, "max_entities": 64, "max_relations": 128, "max_evidence": 64 },
     "provenance": { "required": true, "hash_algorithm": "sha256" },
-    "health": { "accepted": ["live"], "max_age_ms": 300000 },
-    "contract_sha256": "56d5f13065d1200788b5a6b5861d8aeaf8077ac6b636533ffafbd7e84b59acff"
+    "health": { "accepted": ["unavailable"], "max_age_ms": 300000 },
+    "contract_sha256": "c1a16e3897ff65d4fb19649a800ac110d4a16af536db40293d7b7e0aab4014f6"
   },
   "envelope": {
     "schema_version": "flowpulse.evidence-envelope.v1",
@@ -34,7 +34,7 @@
     "frozen_at": "2026-07-18T10:01:20.000Z",
     "source_kind": "stream_warehouse",
     "capture_mode": "captured_fixture",
-    "source_health": "live",
+    "source_health": "unavailable",
     "provenance": {
       "connector_id": "connector-stream-warehouse-fixture",
       "connector_version": "v1",
@@ -42,7 +42,7 @@
       "content_type": "application/json",
       "encoding": "utf-8",
       "redaction_state": "synthetic",
-      "content_sha256": "7b94370094f218fc1ac03c2176c436018f50e1064575293d834be6f0ff5ad5f4"
+      "content_sha256": "0cd08d44f42e0038f3fa192a36f74147b794937b6c16e9ab7f88444efced9655"
     },
     "entities": [
       { "id": "topic-payment-events", "kind": "topic", "label": "payment events", "namespace": "payments", "provider_label": "Kafka", "provenance_ref": "capture://stream-warehouse-v1#topic-payment-events", "sha256": "1111111111111111111111111111111111111111111111111111111111111111" },
@@ -69,16 +69,20 @@
     "receipt_id": "receipt-stream-warehouse-v1",
     "connector_id": "connector-stream-warehouse-fixture",
     "connector_version": "v1",
-    "manifest_contract_sha256": "56d5f13065d1200788b5a6b5861d8aeaf8077ac6b636533ffafbd7e84b59acff",
+    "manifest_contract_sha256": "c1a16e3897ff65d4fb19649a800ac110d4a16af536db40293d7b7e0aab4014f6",
     "envelope_schema_version": "flowpulse.evidence-envelope.v1",
     "envelope_id": "env-stream-warehouse-v1",
     "event_id": "event-stream-warehouse-v1",
     "incident_id": "incident-payment-data-delay",
     "run_id": "run-payment-data-delay-v1",
     "correlation_id": "corr-payment-data-delay-v1",
-    "content_sha256": "7b94370094f218fc1ac03c2176c436018f50e1064575293d834be6f0ff5ad5f4",
+    "content_sha256": "0cd08d44f42e0038f3fa192a36f74147b794937b6c16e9ab7f88444efced9655",
     "capture_mode": "captured_fixture",
-    "source_health": "live",
+    "source_health": "unavailable",
+    "redaction_state": "synthetic",
+    "observed_at": "2026-07-18T10:01:00.000Z",
+    "received_at": "2026-07-18T10:01:20.000Z",
+    "frozen_at": "2026-07-18T10:01:20.000Z",
     "issued_at": "2026-07-18T10:01:21.000Z",
     "expires_at": "2026-07-18T10:05:20.000Z"
   }
