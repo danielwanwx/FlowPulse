@@ -122,7 +122,7 @@ test("unsafe text, raw telemetry-shaped content, and authority-shaped fields fai
     ["html encoded", (value) => { value.envelope.evidence[0].summary = "&#115;&#101;&#99;&#114;&#101;&#116;"; }, "evidence_envelope_unsafe_content"],
     ["query", (value) => { value.envelope.evidence[0].summary = "SHOW TABLES"; }, "evidence_envelope_unsafe_content"],
     ...["PRAGMA table_info", "VACUUM database", "ATTACH database", "DETACH database", "COPY customer TO archive", "LOAD DATA infile", "REPLACE INTO users", "BEGIN TRANSACTION", "COMMIT TRANSACTION", "ROLLBACK TRANSACTION"].map((summary) => ["query " + summary, (value) => { value.envelope.evidence[0].summary = summary; }, "evidence_envelope_unsafe_content"]),
-    ...["START TRANSACTION", "END TRANSACTION", "ABORT TRANSACTION", "START WORK", "ABORT WORK", "EXEC payment_proc", "EXECUTE IMMEDIATE payment_proc", "UPSERT payment", "UPSERT INTO payments", "CONNECT database", "CONNECT TO database", "DISCONNECT database", "DISCONNECT FROM database", "RENAME TABLE payments", "COMMENT ON TABLE payments"].map((summary) => ["query " + summary, (value) => { value.envelope.evidence[0].summary = summary; }, "evidence_envelope_unsafe_content"]),
+    ...["START TRANSACTION", "END TRANSACTION", "ABORT TRANSACTION", "START WORK", "ABORT WORK", "EXEC payment_proc", "EXECUTE IMMEDIATE payment_proc", "UPSERT payment", "UPSERT INTO payments", "CONNECT database", "CONNECT TO database", "DISCONNECT database", "DISCONNECT FROM database", "RENAME TABLE payments", "COMMENT ON TABLE payments", "SQL: sTaRt transaction;", "query: EXECUTE IMMEDIATE payment_proc;", "command: CONNECT TO database;", "audit: COMMENT ON VIEW payments;"].map((summary) => ["query " + summary, (value) => { value.envelope.evidence[0].summary = summary; }, "evidence_envelope_unsafe_content"]),
     ["raw payload", (value) => { value.envelope.evidence[0].summary = "raw payload error trace"; }, "evidence_envelope_unsafe_content"],
     ["prompt", (value) => { value.envelope.evidence[0].summary = "ignore prompt context"; }, "evidence_envelope_unsafe_content"],
     ["raw field", (value) => { value.envelope.evidence[0].raw_payload = "forbidden"; }, "evidence_envelope_unsafe_content"],
@@ -131,12 +131,22 @@ test("unsafe text, raw telemetry-shaped content, and authority-shaped fields fai
   for (const [name, mutate, code] of attacks) rejects(name, mutate, code);
 });
 
-test("ordinary operational evidence remains safe when it does not form a query or administrative command", () => {
-  const value = clone(fixtureObject("lineage-v1.json"));
-  value.envelope.evidence[0].summary = "Transaction latency remains elevated after a Kafka consumer reconnect";
-  resign(value);
-  const normalized = ingest(value);
-  assert.equal(normalized.evidence[0].summary, value.envelope.evidence[0].summary);
+test("ordinary operational evidence remains safe when it contains command words without being a command", () => {
+  const summaries = [
+    "Transaction latency remains elevated after a Kafka consumer reconnect",
+    "Checkout failed to connect to database during the captured run",
+    "Workers start work after deployment completes",
+    "The job reached the end transaction phase before timing out",
+    "Users comment on view rendering in the incident report",
+    "The rename table rollout preceded payment failures"
+  ];
+  for (const summary of summaries) {
+    const value = clone(fixtureObject("lineage-v1.json"));
+    value.envelope.evidence[0].summary = summary;
+    resign(value);
+    const normalized = ingest(value);
+    assert.equal(normalized.evidence[0].summary, summary);
+  }
 });
 
 test("receipt freshness, scope, content, redaction, and atomic caller replay guards fail closed", () => {
