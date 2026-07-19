@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import { Ledger } from "./ledger.mjs";
 import { FrozenEvidenceSnapshot } from "./evidence-source.mjs";
+import { AUTONOMY_POLICY_ARTIFACT } from "./autonomy-policy-artifacts.mjs";
+import { FreshnessReceiptError, createSnapshotFreshnessReceipt, verifySnapshotFreshnessReceipt } from "./autonomy-freshness.mjs";
 
 export const AUTONOMY_SCHEMA_VERSION = "flowpulse.autonomy.v1";
 export const PREAUTHORIZATION_SCHEMA_VERSION = "flowpulse-preauthorization.v1";
@@ -33,14 +35,20 @@ function canonicalDecisionHash(decision) {
 }
 
 function deriveAuthorityEvidenceFromTrustedRows(input) {
-  // This helper is deliberately private.  Only TrustedAuthorityProvider can
-  // give it a Ledger-owned decoded stream and a FrozenEvidenceSnapshot-owned
-  // manifest; request/model/UI JSON never reaches this authority boundary.
-  assertExactObject(input, ["ledger_events", "snapshot_manifest", "incident_id", "run_id", "contract"], "authority_context", "authority_evidence_invalid");
+  // This helper is deliberately private. Only the server-composition
+  // capability can give it a Ledger-owned decoded stream and a
+  // FrozenEvidenceSnapshot-owned manifest; request/model/UI JSON never
+  // reaches this authority boundary.
+  assertExactObject(input, ["ledger_events", "snapshot_manifest", "incident_id", "run_id", "contract", "freshness", "decided_at"], "authority_context", "authority_evidence_invalid");
   const incidentId = requireText(input.incident_id, "authority_context.incident_id", 160, "authority_evidence_invalid");
   const runId = requireText(input.run_id, "authority_context.run_id", 160, "authority_evidence_invalid");
   const snapshot = normalizeSnapshotManifest(input.snapshot_manifest);
   const contractHash = sha256Canonical(assertContractClone(input.contract, "authority_context.contract"));
+  const freshness = normalizeSource(input.freshness);
+  const decidedAt = parseTimestamp(input.decided_at, "authority_context.decided_at");
+  const observedAt = parseTimestamp(freshness.observed_at, "authority_context.freshness.observed_at");
+  const expiresAt = parseTimestamp(freshness.expires_at, "authority_context.freshness.expires_at");
+  if (!freshness.fresh || decidedAt >= expiresAt || decidedAt < observedAt) fail("freshness_receipt_invalid", "authority_context.freshness");
   const events = normalizeDecodedLedgerStream(input.ledger_events, incidentId, runId);
   const evaluatorEvents = events.filter((event) => event.type === "evaluation.accepted");
   const diagnosisEvents = events.filter((event) => event.type === "diagnosis.gate.passed");
@@ -49,6 +57,11 @@ function deriveAuthorityEvidenceFromTrustedRows(input) {
   const evaluator = evaluatorEvents[0];
   const diagnosis = diagnosisEvents[0];
   if (evaluator.sequence >= diagnosis.sequence) fail("authority_gate_order_invalid", "authority_context.ledger_events");
+  const evaluatorAt = parseTimestamp(evaluator.recorded_at, "authority_context.evaluator.recorded_at");
+  const diagnosisAt = parseTimestamp(diagnosis.recorded_at, "authority_context.diagnosis.recorded_at");
+  if (evaluatorAt < observedAt || diagnosisAt < observedAt || evaluatorAt >= diagnosisAt || diagnosisAt > decidedAt || evaluatorAt > decidedAt || evaluatorAt >= expiresAt || diagnosisAt >= expiresAt) {
+    fail("authority_gate_temporal_invalid", "authority_context.ledger_events");
+  }
   const diagnosisPayload = normalizeDiagnosisGatePayload(diagnosis.payload, snapshot, contractHash);
   const evaluatorPayload = normalizeEvaluatorGatePayload(evaluator.payload);
   if (evaluatorPayload.hypothesis_id !== diagnosisPayload.hypothesis_id) fail("authority_gate_hypothesis_mismatch", "authority_context.ledger_events");
@@ -78,7 +91,7 @@ function deriveAuthorityEvidenceFromTrustedRows(input) {
 // Server composition registers only actual FrozenEvidenceSnapshot instances.
 // The store is intentionally not a request-facing cache: later routes receive
 // only a server-resolved run/incident selector and cannot supply a manifest.
-export class FrozenAuthoritySnapshotStore {
+class AuthoritySnapshotStore {
   #entries = new Map();
 
   register({ run_id, incident_id, snapshot }) {
@@ -87,9 +100,10 @@ export class FrozenAuthoritySnapshotStore {
     const incidentId = requireText(incident_id, "snapshot_store.registration.incident_id", 160, "trusted_snapshot_invalid");
     if (!(snapshot instanceof FrozenEvidenceSnapshot)) fail("trusted_snapshot_invalid", "snapshot_store.registration.snapshot");
     const manifest = frozenSnapshotManifest(snapshot);
+    const receipt = createSnapshotFreshnessReceipt({ manifest, frozen_at: snapshot.metadata().frozen_at });
     const key = snapshotStoreKey(runId, incidentId);
     if (this.#entries.has(key)) fail("trusted_snapshot_duplicate", "snapshot_store.registration");
-    this.#entries.set(key, Object.freeze({ snapshot, manifest: freezeClone(manifest) }));
+    this.#entries.set(key, Object.freeze({ snapshot, manifest: freezeClone(manifest), receipt }));
   }
 
   get({ run_id, incident_id }) {
@@ -99,30 +113,23 @@ export class FrozenAuthoritySnapshotStore {
   }
 }
 
-export class TrustedAuthorityProvider {
+class ServerAutonomyAuthority {
   #ledger;
   #snapshots;
   #registry;
   #intents;
-  #sourceState;
-  #clock;
 
   constructor(options) {
-    assertExactObject(options, ["ledger", "snapshots", "registry", "intents", "source_state", "clock"], "trusted_authority_provider", "trusted_authority_provider_invalid");
+    assertExactObject(options, ["ledger"], "trusted_authority_provider", "trusted_authority_provider_invalid");
     if (!(options.ledger instanceof Ledger)) fail("trusted_authority_provider_invalid", "trusted_authority_provider.ledger");
-    if (!(options.snapshots instanceof FrozenAuthoritySnapshotStore)) fail("trusted_authority_provider_invalid", "trusted_authority_provider.snapshots");
-    if (typeof options.source_state !== "function" || typeof options.clock !== "function") fail("trusted_authority_provider_invalid", "trusted_authority_provider");
-    // Validate and clone composition-time policy once.  The public decide()
-    // method never accepts registry, envelope, evidence, source, lock, or
-    // authority objects.
-    assertRegistry(options.registry);
+    assertArtifact(AUTONOMY_POLICY_ARTIFACT);
     this.#ledger = options.ledger;
-    this.#snapshots = options.snapshots;
-    this.#registry = freezeClone(options.registry);
-    this.#intents = normalizeIntentRegistry(options.intents);
-    this.#sourceState = options.source_state;
-    this.#clock = options.clock;
+    this.#snapshots = new AuthoritySnapshotStore();
+    this.#registry = freezeClone(AUTONOMY_POLICY_ARTIFACT.registry);
+    this.#intents = normalizeIntentRegistry(AUTONOMY_POLICY_ARTIFACT.intents);
   }
+
+  registerFrozenSnapshot(input) { this.#snapshots.register(input); }
 
   decide(selector) {
     assertExactObject(selector, ["run_id", "incident_id", "intent_id"], "authority_selector", "authority_selector_invalid");
@@ -137,15 +144,25 @@ export class TrustedAuthorityProvider {
       fail("trusted_snapshot_drift", "authority_selector");
     }
     const manifest = storedSnapshot.manifest;
-    const source = normalizeSource(this.#sourceState({ run_id: runId, incident_id: incidentId, snapshot_id: manifest.id }));
-    const now = requireText(this.#clock(), "trusted_clock", 40, "trusted_authority_provider_invalid");
+    const now = new Date().toISOString();
+    let freshness;
+    try {
+      freshness = verifySnapshotFreshnessReceipt({ receipt: storedSnapshot.receipt, manifest, now });
+    } catch (error) {
+      if (error instanceof FreshnessReceiptError) fail(error.code, error.field_path);
+      throw error;
+    }
     const authority = deriveAuthorityEvidenceFromTrustedRows({
       ledger_events: this.#ledger.list(runId),
       snapshot_manifest: manifest,
       incident_id: incidentId,
       run_id: runId,
-      contract: intent.contract
+      contract: intent.contract,
+      freshness,
+      decided_at: now
     });
+    let locks = null;
+    try { locks = this.#ledger.listAutonomyLocks(); } catch { locks = null; }
     const decision = evaluateAutonomyDecision({
       registry: this.#registry,
       contract: intent.contract,
@@ -156,20 +173,27 @@ export class TrustedAuthorityProvider {
       target: intent.contract.target,
       now,
       impact: intent.impact,
-      source,
+      source: freshness,
       derived_authority: authority,
       advisory: { kb_refs: [], model_confidence: null },
       action: intent.action,
       notification: intent.notification,
       truth_mode: intent.truth_mode,
-      failure_lock_events: this.#ledger.listIncident(incidentId)
+      failure_lock_events: locks
     });
     return freezeClone({ decision, event: buildAutonomyDecisionEvent({ decision, derived_authority: authority }) });
   }
 }
 
-export function createTrustedAuthorityProvider(options) {
-  return new TrustedAuthorityProvider(options);
+// Server composition is the only authority entry point. It accepts a real
+// Ledger handle, but never policy, intent, receipt, clock, store, or raw
+// evidence configuration. Routes/UI/model tools must not import this module.
+export function createServerAutonomyAuthority(options) {
+  const authority = new ServerAutonomyAuthority(options);
+  return Object.freeze({
+    registerServerFrozenSnapshot: (input) => authority.registerFrozenSnapshot(input),
+    decide: (selector) => authority.decide(selector)
+  });
 }
 
 function resolvePreauthorization({ registry, environment, contract, selected_ref = null }) {
@@ -640,6 +664,14 @@ function assertRegistry(value) {
   for (const envelope of value.envelopes) assertEnvelope(envelope);
 }
 
+function assertArtifact(value) {
+  assertExactObject(value, ["schema_version", "version", "registry", "intents"], "autonomy_artifact", "autonomy_artifact_invalid");
+  if (value.schema_version !== "flowpulse.autonomy-artifacts.v1") fail("autonomy_artifact_invalid", "autonomy_artifact.schema_version");
+  requireText(value.version, "autonomy_artifact.version", 80, "autonomy_artifact_invalid");
+  assertRegistry(value.registry);
+  normalizeIntentRegistry(value.intents);
+}
+
 function normalizeIntentRegistry(value) {
   if (!Array.isArray(value) || value.length === 0 || value.length > 32) fail("authority_intents_invalid", "trusted_authority_provider.intents");
   const intents = new Map();
@@ -680,7 +712,8 @@ function frozenSnapshotManifest(snapshot) {
     };
   }).sort(compareById);
   if (new Set(records.map((record) => record.id)).size !== records.length) fail("trusted_snapshot_invalid", "snapshot.records");
-  return freezeClone({ id, content_sha256: sha256Canonical(records), mode, records });
+  const unsigned = { id, content_sha256: sha256Canonical(records), mode, records };
+  return freezeClone({ ...unsigned, manifest_sha256: sha256Canonical(unsigned) });
 }
 
 function snapshotStoreKey(runId, incidentId) {
@@ -693,7 +726,7 @@ function assertContractClone(value, path) {
 }
 
 function normalizeSnapshotManifest(value) {
-  assertExactObject(value, ["id", "content_sha256", "mode", "records"], "snapshot_manifest", "authority_evidence_invalid");
+  assertExactObject(value, ["id", "content_sha256", "mode", "records", "manifest_sha256"], "snapshot_manifest", "authority_evidence_invalid");
   const id = requireText(value.id, "snapshot_manifest.id", 160, "authority_evidence_invalid");
   const contentSha256 = requireHash(value.content_sha256, "snapshot_manifest.content_sha256", "authority_evidence_invalid");
   const mode = requireText(value.mode, "snapshot_manifest.mode", 80, "authority_evidence_invalid");
@@ -712,7 +745,10 @@ function normalizeSnapshotManifest(value) {
   const computedContentHash = sha256Canonical(records);
   if (computedContentHash !== contentSha256) fail("snapshot_manifest_content_hash_mismatch", "snapshot_manifest.content_sha256");
   const snapshot = { id, content_sha256: contentSha256, mode, records };
-  return freezeClone({ ...snapshot, manifest_sha256: sha256Canonical(snapshot) });
+  if (requireHash(value.manifest_sha256, "snapshot_manifest.manifest_sha256", "authority_evidence_invalid") !== sha256Canonical(snapshot)) {
+    fail("snapshot_manifest_hash_mismatch", "snapshot_manifest.manifest_sha256");
+  }
+  return freezeClone({ ...snapshot, manifest_sha256: value.manifest_sha256 });
 }
 
 function normalizeDecodedLedgerStream(value, incidentId, runId) {
@@ -880,8 +916,12 @@ function normalizeAction(value) {
 }
 
 function normalizeSource(value) {
-  assertExactObject(value, ["status", "fresh"], "source", "source_invalid");
+  assertExactObject(value, ["status", "fresh", "truth_mode", "observed_at", "expires_at", "receipt_sha256"], "source", "source_invalid");
   if (!["live", "captured_fixture", "stale", "disconnected", "unavailable"].includes(value.status) || typeof value.fresh !== "boolean") fail("source_invalid", "source");
+  if (!["captured_simulation", "live"].includes(value.truth_mode)) fail("source_invalid", "source.truth_mode");
+  parseTimestamp(value.observed_at, "source.observed_at");
+  parseTimestamp(value.expires_at, "source.expires_at");
+  requireHash(value.receipt_sha256, "source.receipt_sha256", "source_invalid");
   return freezeClone(value);
 }
 

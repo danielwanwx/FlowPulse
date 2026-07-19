@@ -200,16 +200,18 @@ runtime or screen.
 
 Files/functions:
 
-- Add `src/autonomy-policy.mjs` with a `TrustedAuthorityProvider` and
-  `FrozenAuthoritySnapshotStore`. Its only public decision selector is the
-  server-resolved `{ run_id, incident_id, intent_id }`; the provider itself
-  reads the actual ledger, frozen snapshot, code-owned registry, freshness,
-  and incident locks. Raw ledger rows, manifests, envelopes, authority objects,
-  risk, source state, and preauthorization references are not request/model/UI
-  inputs. The provider returns the v1 decision plus canonical decision event.
-- Extend `src/ledger.mjs` only with the smallest incident-lineage query and
-  atomic `appendIfAbsent` claim use required for cross-run lock and single-use
-  preauthorization. It must not rewrite historical rows.
+- Add `src/autonomy-policy.mjs` with a server-composition-only authority
+  capability. Its only decision selector is the server-resolved
+  `{ run_id, incident_id, intent_id }`; the capability itself reads the actual
+  ledger, frozen snapshot, checked-in versioned registry, snapshot-bound
+  freshness receipt, and bounded type-scoped lock query. Raw ledger rows,
+  manifests, envelopes, authority objects, risk, source state, freshness, and
+  preauthorization references are not request/model/UI inputs. The provider
+  returns the v1 decision plus canonical decision event.
+- Extend `src/ledger.mjs` only with the bounded, globally ordered
+  `autonomy.locked` type query and atomic `appendIfAbsent` claim use required
+  for cross-run lock and single-use preauthorization. It must not rewrite
+  historical rows.
 - Extend `src/investigation-failure.mjs` only to project current safe failure
   fields into `why_stopped`.
 - Extend `test/autonomy-policy.test.mjs`, `test/ledger.test.mjs`, and
@@ -232,9 +234,11 @@ Data contract/events:
 - `autonomy.decision.recorded` appends once after deterministic diagnosis
   acceptance and before any action request.
 - A decision binds `envelope_sha256`, `contract_sha256`, `incident_id`,
-  `run_id`, `environment`, and `snapshot_sha256`. The server obtains the
-  envelope only from its code-owned registry; no request, model response, or
-  advisory item can choose it.
+  `run_id`, `environment`, `snapshot_sha256`, and the exact snapshot manifest
+  hash/freshness receipt. The server obtains the envelope only from its
+  checked-in registry; no request, model response, or advisory item can choose
+  it. Future/freshness-expired or receipt-mismatched gate events are
+  non-actionable.
 - A real executor revalidates the same bindings, current envelope status,
   expiry, source freshness, and incident-wide lock immediately before mutation.
   It may proceed only after its deterministic `preauthorization.consumed`

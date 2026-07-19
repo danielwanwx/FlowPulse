@@ -51,3 +51,13 @@ test("starting a new run preserves prior run history", () => {
   assert.equal(ledger.latestRun("inc-test"), "run-b");
   assert.equal(ledger.list("run-a").length, 1);
 });
+
+test("autonomy lock query is type-scoped, globally ordered, and bounded", () => {
+  const ledger = new Ledger(join(mkdtempSync(join(tmpdir(), "flowpulse-lock-query-")), "ledger.db"));
+  ledger.append({ runId: "run-a", incidentId: "other", type: "run.started", actor: "test" });
+  const first = ledger.append({ runId: "run-a", incidentId: "other", type: "autonomy.locked", actor: "test", payload: { marker: "first" } });
+  const second = ledger.append({ runId: "run-b", incidentId: "inc-test", type: "autonomy.locked", actor: "test", payload: { marker: "second" } });
+  assert.deepEqual(ledger.listAutonomyLocks().map((event) => event.id), [first.id, second.id]);
+  assert.throws(() => ledger.listAutonomyLocks(1), /bounded limit/);
+  assert.throws(() => ledger.listAutonomyLocks(513), /Invalid autonomy lock limit/);
+});

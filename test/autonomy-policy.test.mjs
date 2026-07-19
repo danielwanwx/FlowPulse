@@ -1,88 +1,29 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { Worker } from "node:worker_threads";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FrozenEvidenceSnapshot } from "../src/evidence-source.mjs";
 import { Ledger } from "../src/ledger.mjs";
 import {
   AutonomyPolicyError,
-  FrozenAuthoritySnapshotStore,
-  createTrustedAuthorityProvider,
+  createServerAutonomyAuthority,
   failureLockKey,
   sha256Canonical
 } from "../src/autonomy-policy.mjs";
+import { AUTONOMY_POLICY_ARTIFACT } from "../src/autonomy-policy-artifacts.mjs";
+import { FRESHNESS_MAX_AGE_MS, FreshnessReceiptError, createSnapshotFreshnessReceipt, verifySnapshotFreshnessReceipt } from "../src/autonomy-freshness.mjs";
 
-const NOW = "2026-07-18T12:00:00.000Z";
 const HASH = (character) => character.repeat(64);
 const RUN = "run-cache-1";
 const INCIDENT = "inc-cache-1";
 const INTENT = "captured-cache-flush";
 
-function contract(overrides = {}) {
-  return {
-    repair_id: "repair-low-cache-flush-v1",
-    command_id: "flowpulse.simulate-cache-flush",
-    target: "edge-cache",
-    expected_before: "stale",
-    expected_after: "fresh",
-    ...overrides
-  };
-}
+const intent = (id = INTENT) => AUTONOMY_POLICY_ARTIFACT.intents.find((candidate) => candidate.id === id);
+const contract = (id = INTENT, overrides = {}) => ({ ...intent(id).contract, ...overrides });
 
-function envelope(overrides = {}) {
-  return {
-    schema_version: "flowpulse-preauthorization.v1",
-    id: "preauth-edge-cache-v1",
-    policy_version: "2026-07-18",
-    policy_sha256: `sha256:${HASH("c")}`,
-    status: "active",
-    issued_by: "authorized-owner",
-    issued_at: "2026-07-18T11:00:00.000Z",
-    expires_at: "2026-07-18T13:00:00.000Z",
-    environment: "captured_demo",
-    action_contract: contract(),
-    limits: {
-      max_components: 1,
-      max_attempts: 1,
-      require_idempotency: true,
-      require_rollback: true,
-      require_fresh_verification: true,
-      require_notification_receipt: true
-    },
-    required_verification_check_ids: ["fresh-cache-read"],
-    notification_targets: ["owner-demo"],
-    ...overrides
-  };
-}
-
-function registry(overrides = {}) {
-  return { schema_version: "flowpulse-preauthorization-registry.v1", envelopes: [envelope()], ...overrides };
-}
-
-function intent(overrides = {}) {
-  return {
-    id: INTENT,
-    environment: "captured_demo",
-    contract: contract(),
-    impact: { level: "low" },
-    action: {
-      risk: "low",
-      reversible: true,
-      idempotent: true,
-      blast_radius_components: 1,
-      rollback_ready: true,
-      verification_ready: true,
-      attempt_count: 1
-    },
-    notification: { status: "recorded_local", delivery_mode: "captured_simulation", target_refs: ["owner-demo"] },
-    truth_mode: "captured_simulation",
-    ...overrides
-  };
-}
-
-function snapshot({ refs = ["ev-change", "ev-trace"], mode = "deterministic_replay" } = {}) {
+function snapshot({ refs = ["ev-change", "ev-trace"], mode = "deterministic_replay", frozenAt = new Date(Date.now() - 3000).toISOString() } = {}) {
   const records = refs.map((id, index) => ({
     id,
     kind: "trace",
@@ -93,7 +34,7 @@ function snapshot({ refs = ["ev-change", "ev-trace"], mode = "deterministic_repl
   return new FrozenEvidenceSnapshot({
     id: "snapshot-cache-1",
     records,
-    metadata: { mode, evidence_ids: refs, caps: { max_records: 120, max_bytes: 131072 } }
+    metadata: { mode, frozen_at: frozenAt, evidence_ids: refs, caps: { max_records: 120, max_bytes: 131072 } }
   });
 }
 
@@ -104,7 +45,8 @@ function snapshotManifest(value) {
     source: record.source,
     mode: record.mode ?? value.metadata().mode
   })).sort((left, right) => left.id.localeCompare(right.id));
-  return { id: value.id, mode: value.metadata().mode, content_sha256: sha256Canonical(records), records };
+  const unsigned = { id: value.id, mode: value.metadata().mode, content_sha256: sha256Canonical(records), records };
+  return { ...unsigned, manifest_sha256: sha256Canonical(unsigned) };
 }
 
 function evaluation(refs, overrides = {}) {
@@ -121,7 +63,7 @@ function evaluation(refs, overrides = {}) {
   };
 }
 
-function appendGateEvents(ledger, { runId = RUN, incidentId = INCIDENT, frozen = snapshot(), actionContract = contract(), refs = frozen.records.map((record) => record.id), evaluationOverrides = {}, diagnosisOverrides = {}, reverse = false } = {}) {
+function appendGateEvents(ledger, { runId = RUN, incidentId = INCIDENT, frozen = snapshot(), actionContract = contract(), refs = frozen.records.map((record) => record.id), evaluationOverrides = {}, diagnosisOverrides = {}, reverse = false, timestamps = null } = {}) {
   const manifest = snapshotManifest(frozen);
   const acceptedEvaluation = evaluation(refs, evaluationOverrides);
   const evaluatorPayload = { ...acceptedEvaluation, hypothesis_id: "hyp-cache-1" };
@@ -135,28 +77,21 @@ function appendGateEvents(ledger, { runId = RUN, incidentId = INCIDENT, frozen =
       ...diagnosisOverrides
     }
   };
-  const evaluatorEvent = { id: `eval-${runId}`, runId, incidentId, recordedAt: "2026-07-18T12:01:00.000Z", type: "evaluation.accepted", actor: "evaluator", payload: evaluatorPayload, evidenceRefs: refs, correlationId: `corr-eval-${runId}` };
-  const diagnosisEvent = { id: `gate-${runId}`, runId, incidentId, recordedAt: "2026-07-18T12:02:00.000Z", type: "diagnosis.gate.passed", actor: "runtime", payload: diagnosisPayload, evidenceRefs: refs, correlationId: `corr-gate-${runId}` };
+  const now = Date.now();
+  const evaluatorEvent = { id: `eval-${runId}`, runId, incidentId, recordedAt: timestamps?.evaluator ?? new Date(now - 1500).toISOString(), type: "evaluation.accepted", actor: "evaluator", payload: evaluatorPayload, evidenceRefs: refs, correlationId: `corr-eval-${runId}` };
+  const diagnosisEvent = { id: `gate-${runId}`, runId, incidentId, recordedAt: timestamps?.diagnosis ?? new Date(now - 750).toISOString(), type: "diagnosis.gate.passed", actor: "runtime", payload: diagnosisPayload, evidenceRefs: refs, correlationId: `corr-gate-${runId}` };
   for (const event of reverse ? [diagnosisEvent, evaluatorEvent] : [evaluatorEvent, diagnosisEvent]) ledger.append(event);
   return manifest;
 }
 
-function fixture({ intentOverrides = {}, registryOverrides = {}, evaluationOverrides = {}, diagnosisOverrides = {}, locks = [], frozen = snapshot(), gateRefs = null, reverse = false, source = { status: "captured_fixture", fresh: true } } = {}) {
+function fixture({ intentId = INTENT, evaluationOverrides = {}, diagnosisOverrides = {}, locks = [], frozen = snapshot(), gateRefs = null, reverse = false, timestamps = null } = {}) {
   const directory = mkdtempSync(join(tmpdir(), "flowpulse-authority-provider-"));
   const ledger = new Ledger(join(directory, "ledger.sqlite"));
-  appendGateEvents(ledger, { frozen, actionContract: intent(intentOverrides).contract, refs: gateRefs ?? frozen.records.map((record) => record.id), evaluationOverrides, diagnosisOverrides, reverse });
+  appendGateEvents(ledger, { frozen, actionContract: intent(intentId).contract, refs: gateRefs ?? frozen.records.map((record) => record.id), evaluationOverrides, diagnosisOverrides, reverse, timestamps });
   for (const lock of locks) ledger.append(lock);
-  const snapshots = new FrozenAuthoritySnapshotStore();
-  snapshots.register({ run_id: RUN, incident_id: INCIDENT, snapshot: frozen });
-  const provider = createTrustedAuthorityProvider({
-    ledger,
-    snapshots,
-    registry: registry(registryOverrides),
-    intents: [intent(intentOverrides)],
-    source_state: () => source,
-    clock: () => NOW
-  });
-  return { directory, ledger, snapshots, provider, frozen };
+  const authority = createServerAutonomyAuthority({ ledger });
+  authority.registerServerFrozenSnapshot({ run_id: RUN, incident_id: INCIDENT, snapshot: frozen });
+  return { directory, ledger, authority, frozen };
 }
 
 function selector(overrides = {}) {
@@ -167,18 +102,21 @@ function expectPolicyError(fn, code) {
   assert.throws(fn, (error) => error instanceof AutonomyPolicyError && error.code === code);
 }
 
-test("public exports expose a trusted provider but no raw authority minting boundary", async () => {
+test("policy has no provider/store constructor and its only composition factory rejects configuration", async () => {
   const policy = await import("../src/autonomy-policy.mjs");
-  assert.equal(typeof policy.createTrustedAuthorityProvider, "function");
-  assert.equal(typeof policy.FrozenAuthoritySnapshotStore, "function");
-  for (const key of ["deriveAuthorityEvidenceFromLedger", "evaluateAutonomyDecision", "resolvePreauthorization", "buildAutonomyDecisionEvent", "buildPreauthorizationConsumptionEvent"]) {
+  assert.equal(typeof policy.createServerAutonomyAuthority, "function");
+  for (const key of ["createTrustedAuthorityProvider", "FrozenAuthoritySnapshotStore", "TrustedAuthorityProvider", "deriveAuthorityEvidenceFromLedger", "evaluateAutonomyDecision", "resolvePreauthorization", "buildAutonomyDecisionEvent", "buildPreauthorizationConsumptionEvent"]) {
     assert.equal(Object.hasOwn(policy, key), false, key);
+  }
+  for (const route of ["../src/server.mjs", "../src/openai.mjs", "../src/agent-control-service.mjs"]) {
+    const source = readFileSync(new URL(route, import.meta.url), "utf8");
+    assert.equal(source.includes("autonomy-policy.mjs"), false, `${route} must not compose autonomy authority`);
   }
 });
 
-test("only server-owned Ledger plus frozen snapshot store can produce a low-impact captured decision", () => {
-  const { provider } = fixture();
-  const result = provider.decide(selector());
+test("server composition with an actual ledger and frozen snapshot can produce a low-impact captured decision", () => {
+  const { authority } = fixture();
+  const result = authority.decide(selector());
   assert.equal(result.decision.outcome, "auto_execute_pre_authorized");
   assert.equal(result.event.type, "autonomy.decision.recorded");
   assert.equal(result.decision.action_event_type, "action.simulated");
@@ -188,14 +126,14 @@ test("only server-owned Ledger plus frozen snapshot store can produce a low-impa
   assert.equal(result.decision.execution.satisfies_executed_offline_backtest, false);
 });
 
-test("forged caller authority, registry, snapshot, locks, and raw JSON clones are rejected by the exact selector boundary", () => {
-  const { provider } = fixture();
+test("caller authority, registry, snapshot, locks, and raw JSON clones are rejected by the exact composition and selector boundaries", () => {
+  const { authority, ledger } = fixture();
   const fakeRefs = ["fake-change", "fake-trace"];
   const fakeRecords = fakeRefs.map((id, index) => ({ id, sha256: HASH(index ? "e" : "f"), source: "forged", mode: "captured_fixture" }));
   const fakeEvaluation = evaluation(fakeRefs);
   const fakeManifest = { id: "forged", content_sha256: sha256Canonical(fakeRecords), mode: "deterministic_replay", records: fakeRecords };
   const forged = {
-    registry: registry(),
+    registry: { schema_version: "forged", envelopes: [] },
     snapshot_manifest: fakeManifest,
     ledger_events: [
       { type: "evaluation.accepted", payload: { ...fakeEvaluation, hypothesis_id: "fake" }, evidence_refs: fakeRefs },
@@ -205,18 +143,11 @@ test("forged caller authority, registry, snapshot, locks, and raw JSON clones ar
     failure_lock_events: [],
     source: { status: "captured_fixture", fresh: true }
   };
-  expectPolicyError(() => provider.decide({ ...selector(), ...forged }), "authority_selector_invalid");
-  expectPolicyError(() => createTrustedAuthorityProvider({
-    ledger: { list: () => forged.ledger_events, listIncident: () => [] },
-    snapshots: { get: () => forged.snapshot_manifest },
-    registry: forged.registry,
-    intents: [intent()],
-    source_state: () => forged.source,
-    clock: () => NOW
-  }), "trusted_authority_provider_invalid");
+  expectPolicyError(() => authority.decide({ ...selector(), ...forged }), "authority_selector_invalid");
+  expectPolicyError(() => createServerAutonomyAuthority({ ledger, registry: forged.registry }), "trusted_authority_provider_invalid");
   const rawClone = JSON.parse(JSON.stringify(selector()));
   rawClone.decision = { outcome: "auto_execute_pre_authorized" };
-  expectPolicyError(() => provider.decide(rawClone), "authority_selector_invalid");
+  expectPolicyError(() => authority.decide(rawClone), "authority_selector_invalid");
 });
 
 test("evaluator authority is exact: only confirmed, complete, matching counter-evidence can pass", () => {
@@ -229,15 +160,15 @@ test("evaluator authority is exact: only confirmed, complete, matching counter-e
     ["nonmember", { counter_evidence_refs: ["unknown"] }, {}, "authority_gate_evidence_mismatch"]
   ];
   for (const [, evaluationOverrides, diagnosisOverrides, code] of cases) {
-    const { provider } = fixture({ evaluationOverrides, diagnosisOverrides });
-    expectPolicyError(() => provider.decide(selector()), code);
+    const { authority } = fixture({ evaluationOverrides, diagnosisOverrides });
+    expectPolicyError(() => authority.decide(selector()), code);
   }
 });
 
 test("the diagnosis gate binds the exact selected action contract", () => {
-  const badContract = contract({ expected_after: "different" });
-  const { provider } = fixture({ diagnosisOverrides: { proposed_action_contract_sha256: sha256Canonical(badContract) } });
-  expectPolicyError(() => provider.decide(selector()), "authority_gate_contract_mismatch");
+  const badContract = contract(INTENT, { expected_after: "different" });
+  const { authority } = fixture({ diagnosisOverrides: { proposed_action_contract_sha256: sha256Canonical(badContract) } });
+  expectPolicyError(() => authority.decide(selector()), "authority_gate_contract_mismatch");
 });
 
 test("wrong-scope, duplicate, reversed, and duplicate-reference gate streams fail closed", () => {
@@ -253,7 +184,7 @@ test("wrong-scope, duplicate, reversed, and duplicate-reference gate streams fai
     evidenceRefs: ["ev-change", "ev-trace"],
     correlationId: "cross-incident"
   });
-  expectPolicyError(() => wrongScope.provider.decide(selector()), "authority_ledger_scope_mismatch");
+  expectPolicyError(() => wrongScope.authority.decide(selector()), "authority_ledger_scope_mismatch");
 
   const duplicate = fixture();
   duplicate.ledger.append({
@@ -267,9 +198,9 @@ test("wrong-scope, duplicate, reversed, and duplicate-reference gate streams fai
     evidenceRefs: ["ev-change", "ev-trace"],
     correlationId: "duplicate-evaluator"
   });
-  expectPolicyError(() => duplicate.provider.decide(selector()), "authority_gate_event_conflict");
-  expectPolicyError(() => fixture({ reverse: true }).provider.decide(selector()), "authority_gate_order_invalid");
-  expectPolicyError(() => fixture({ gateRefs: ["ev-change", "ev-change"] }).provider.decide(selector()), "authority_evidence_invalid");
+  expectPolicyError(() => duplicate.authority.decide(selector()), "authority_gate_event_conflict");
+  expectPolicyError(() => fixture({ reverse: true }).authority.decide(selector()), "authority_gate_order_invalid");
+  expectPolicyError(() => fixture({ gateRefs: ["ev-change", "ev-change"] }).authority.decide(selector()), "authority_evidence_invalid");
 });
 
 test("provider reads malformed and valid locks from the actual incident ledger, while unrelated target locks remain clear", () => {
@@ -296,7 +227,7 @@ test("provider reads malformed and valid locks from the actual incident ledger, 
     evidenceRefs: [],
     correlationId: "lock-exact"
   };
-  const locked = fixture({ locks: [validExact] }).provider.decide(selector());
+  const locked = fixture({ locks: [validExact] }).authority.decide(selector());
   assert.equal(locked.decision.failure_lock_state.status, "locked");
   assert.equal(locked.decision.outcome, "blocked");
 
@@ -304,8 +235,7 @@ test("provider reads malformed and valid locks from the actual incident ledger, 
   malformed.id = "lock-malformed";
   malformed.payload.incident_id = "other-incident";
   malformed.correlationId = "lock-malformed";
-  const malformedProvider = fixture({ locks: [malformed] }).provider;
-  const unavailable = malformedProvider.decide(selector()).decision;
+  const unavailable = fixture({ locks: [malformed] }).authority.decide(selector()).decision;
   assert.equal(unavailable.failure_lock_state.status, "unavailable");
   assert.equal(unavailable.outcome, "blocked");
 
@@ -313,7 +243,7 @@ test("provider reads malformed and valid locks from the actual incident ledger, 
   missing.id = "lock-missing";
   delete missing.payload.target;
   missing.correlationId = "lock-missing";
-  const missingDecision = fixture({ locks: [missing] }).provider.decide(selector()).decision;
+  const missingDecision = fixture({ locks: [missing] }).authority.decide(selector()).decision;
   assert.equal(missingDecision.failure_lock_state.status, "unavailable");
   assert.equal(missingDecision.outcome, "blocked");
 
@@ -323,58 +253,113 @@ test("provider reads malformed and valid locks from the actual incident ledger, 
   other.payload.lock_key = failureLockKey({ incident_id: INCIDENT, contract_sha256: HASH("f"), target: "other-component" });
   other.id = other.payload.lock_key;
   other.correlationId = "lock-other";
-  const unrelated = fixture({ locks: [other] }).provider.decide(selector());
+  const unrelated = fixture({ locks: [other] }).authority.decide(selector());
   assert.equal(unrelated.decision.failure_lock_state.status, "clear");
 });
 
-test("high, medium, and flagship checkout intents remain human-gated", () => {
-  for (const [level, expected] of [["medium", "human_review_required"], ["high", "explicit_human_decision_required"], ["sev1", "explicit_human_decision_required"]]) {
-    const { provider } = fixture({ intentOverrides: { impact: { level } } });
-    assert.equal(provider.decide(selector()).decision.outcome, expected);
+test("sev1, high, medium, and flagship checkout intents remain human-gated", () => {
+  for (const [intentId, expected] of [["captured-medium-maintenance", "human_review_required"], ["captured-high-maintenance", "explicit_human_decision_required"], ["captured-sev1-maintenance", "explicit_human_decision_required"]]) {
+    const { authority } = fixture({ intentId });
+    assert.equal(authority.decide(selector({ intent_id: intentId })).decision.outcome, expected);
   }
-  const { provider } = fixture({ intentOverrides: { id: "checkout-payment", contract: contract({ target: "checkout" }), impact: { level: "medium" } } });
-  assert.equal(provider.decide(selector({ intent_id: "checkout-payment" })).decision.human_gate, "owner_required");
+  const { authority } = fixture({ intentId: "checkout-payment" });
+  assert.equal(authority.decide(selector({ intent_id: "checkout-payment" })).decision.human_gate, "owner_required");
 });
 
-test("source freshness, unknown snapshot membership, and changed authority payloads fail closed", () => {
-  const stale = fixture({ source: { status: "stale", fresh: false } }).provider.decide(selector()).decision;
-  assert.equal(stale.outcome, "blocked");
-  assert.ok(stale.reason_codes.includes("source_stale"));
+test("unknown snapshot membership and changed authority payloads fail closed", () => {
   const frozen = snapshot({ refs: ["ev-change"] });
-  expectPolicyError(() => fixture({ frozen, gateRefs: ["ev-change", "unknown"] }).provider.decide(selector()), "authority_evidence_nonmember");
-  const { provider, ledger } = fixture();
+  expectPolicyError(() => fixture({ frozen, gateRefs: ["ev-change", "unknown"] }).authority.decide(selector()), "authority_evidence_nonmember");
+  const { authority, ledger } = fixture();
   const event = ledger.get(`eval-${RUN}`);
   event.payload.reason = "altered";
   // Ledger owns the stored payload, so a caller-side decoded clone cannot alter
   // the provider's authority input.
-  assert.equal(provider.decide(selector()).decision.outcome, "auto_execute_pre_authorized");
+  assert.equal(authority.decide(selector()).decision.outcome, "auto_execute_pre_authorized");
 });
 
 test("snapshot registration binds the exact frozen manifest and detects later record drift", () => {
-  const { provider, frozen } = fixture();
+  const { authority, frozen } = fixture();
   assert.equal(Object.isFrozen(frozen.records), false);
   frozen.records[0].source = "altered-source";
-  expectPolicyError(() => provider.decide(selector()), "trusted_snapshot_drift");
+  expectPolicyError(() => authority.decide(selector()), "trusted_snapshot_drift");
 });
 
-test("provider construction and decision do not freeze or mutate caller-owned configuration", () => {
-  const inputRegistry = registry();
-  const inputIntents = [intent()];
-  const beforeRegistry = structuredClone(inputRegistry);
-  const beforeIntents = structuredClone(inputIntents);
-  const directory = mkdtempSync(join(tmpdir(), "flowpulse-authority-purity-"));
-  const ledger = new Ledger(join(directory, "ledger.sqlite"));
+test("snapshot-bound freshness receipts reject expired, unknown, hash/mode mismatches, and clock rollback", () => {
+  const frozenAt = new Date(Date.now() - 1000).toISOString();
+  const frozen = snapshot({ frozenAt });
+  const manifest = snapshotManifest(frozen);
+  const receipt = createSnapshotFreshnessReceipt({ manifest, frozen_at: frozenAt });
+  assert.equal(verifySnapshotFreshnessReceipt({ receipt, manifest, now: new Date(Date.now()).toISOString() }).status, "captured_fixture");
+  const expired = { ...receipt, expires_at: new Date(Date.parse(receipt.observed_at) + FRESHNESS_MAX_AGE_MS + 1).toISOString() };
+  expired.receipt_sha256 = sha256Canonical(Object.fromEntries(Object.entries(expired).filter(([key]) => key !== "receipt_sha256")));
+  assert.throws(() => verifySnapshotFreshnessReceipt({ receipt: expired, manifest, now: new Date(Date.parse(expired.expires_at) + 1).toISOString() }), FreshnessReceiptError);
+  const mismatched = { ...receipt, snapshot_content_sha256: HASH("f") };
+  mismatched.receipt_sha256 = sha256Canonical(Object.fromEntries(Object.entries(mismatched).filter(([key]) => key !== "receipt_sha256")));
+  assert.throws(() => verifySnapshotFreshnessReceipt({ receipt: mismatched, manifest, now: new Date(Date.now()).toISOString() }), (error) => error instanceof FreshnessReceiptError && error.code === "freshness_receipt_snapshot_mismatch");
+  const modeMismatched = { ...receipt, snapshot_mode: "frozen_real_otlp_snapshot", source_mode: "live", truth_mode: "live" };
+  modeMismatched.receipt_sha256 = sha256Canonical(Object.fromEntries(Object.entries(modeMismatched).filter(([key]) => key !== "receipt_sha256")));
+  assert.throws(() => verifySnapshotFreshnessReceipt({ receipt: modeMismatched, manifest, now: new Date(Date.now()).toISOString() }), (error) => error instanceof FreshnessReceiptError && error.code === "freshness_receipt_snapshot_mismatch");
+  const unknown = { ...receipt, schema_version: "unknown.v1" };
+  unknown.receipt_sha256 = sha256Canonical(Object.fromEntries(Object.entries(unknown).filter(([key]) => key !== "receipt_sha256")));
+  assert.throws(() => verifySnapshotFreshnessReceipt({ receipt: unknown, manifest, now: new Date(Date.now()).toISOString() }), (error) => error instanceof FreshnessReceiptError && error.code === "freshness_receipt_unknown");
+  assert.throws(() => verifySnapshotFreshnessReceipt({ receipt, manifest, now: new Date(Date.parse(receipt.observed_at) - 1).toISOString() }), (error) => error instanceof FreshnessReceiptError && error.code === "freshness_clock_rollback");
+});
+
+test("future, stale, and temporally reordered authority gates fail closed", () => {
+  const now = Date.now();
+  const future = fixture({
+    frozen: snapshot({ frozenAt: new Date(now - 3000).toISOString() }),
+    timestamps: { evaluator: new Date(now - 1000).toISOString(), diagnosis: new Date(now + 60_000).toISOString() }
+  });
+  expectPolicyError(() => future.authority.decide(selector()), "authority_gate_temporal_invalid");
+  const stale = fixture({
+    frozen: snapshot({ frozenAt: new Date(now - FRESHNESS_MAX_AGE_MS - 1000).toISOString() })
+  });
+  expectPolicyError(() => stale.authority.decide(selector()), "freshness_receipt_expired");
+  const reordered = fixture({
+    frozen: snapshot({ frozenAt: new Date(now - 3000).toISOString() }),
+    timestamps: { evaluator: new Date(now - 500).toISOString(), diagnosis: new Date(now - 1000).toISOString() }
+  });
+  expectPolicyError(() => reordered.authority.decide(selector()), "authority_gate_temporal_invalid");
+});
+
+test("reverse cross-run lock mismatches cannot hide outside the incident-header query", () => {
+  const current = contract();
+  const contractHash = sha256Canonical(current);
+  const lockKey = failureLockKey({ incident_id: INCIDENT, contract_sha256: contractHash, target: current.target });
+  const reverse = {
+    id: lockKey,
+    runId: "run-prior-other-header",
+    incidentId: "other-incident",
+    recordedAt: new Date(Date.now() - 1000).toISOString(),
+    type: "autonomy.locked",
+    actor: "runtime",
+    payload: {
+      schema_version: "flowpulse.autonomy.v1",
+      lock_key: lockKey,
+      incident_id: INCIDENT,
+      contract_sha256: contractHash,
+      target: current.target,
+      binding_sha256: HASH("b"),
+      decision_sha256: HASH("d"),
+      failed_event_ref: "verification-failed",
+      reason_code: "verification_failed"
+    },
+    evidenceRefs: [],
+    correlationId: "reverse-cross-run-lock"
+  };
+  const decision = fixture({ locks: [reverse] }).authority.decide(selector()).decision;
+  assert.equal(decision.failure_lock_state.status, "unavailable");
+  assert.equal(decision.outcome, "blocked");
+});
+
+test("composition does not freeze or mutate caller-owned snapshot input", () => {
   const frozen = snapshot();
-  appendGateEvents(ledger, { frozen });
-  const snapshots = new FrozenAuthoritySnapshotStore();
-  snapshots.register({ run_id: RUN, incident_id: INCIDENT, snapshot: frozen });
-  const provider = createTrustedAuthorityProvider({ ledger, snapshots, registry: inputRegistry, intents: inputIntents, source_state: () => ({ status: "captured_fixture", fresh: true }), clock: () => NOW });
-  provider.decide(selector());
-  assert.deepEqual(inputRegistry, beforeRegistry);
-  assert.deepEqual(inputIntents, beforeIntents);
-  assert.equal(Object.isFrozen(inputRegistry.envelopes[0]), false);
-  inputRegistry.envelopes[0].status = "revoked";
-  assert.equal(provider.decide(selector()).decision.outcome, "auto_execute_pre_authorized");
+  const before = structuredClone(frozen.records);
+  const { authority } = fixture({ frozen });
+  authority.decide(selector());
+  assert.deepEqual(frozen.records, before);
+  assert.equal(Object.isFrozen(frozen.records), false);
 });
 
 test("independent workers preserve one immutable deterministic appendIfAbsent winner", async () => {

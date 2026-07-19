@@ -28,6 +28,7 @@ export class Ledger {
       );
       CREATE INDEX IF NOT EXISTS events_run_sequence ON events(run_id, sequence);
       CREATE INDEX IF NOT EXISTS events_incident_sequence ON events(incident_id, sequence);
+      CREATE INDEX IF NOT EXISTS events_type_sequence ON events(type, sequence);
       CREATE TRIGGER IF NOT EXISTS events_no_update
       BEFORE UPDATE ON events BEGIN SELECT RAISE(ABORT, 'FlowPulse ledger is append-only'); END;
       CREATE TRIGGER IF NOT EXISTS events_no_delete
@@ -42,7 +43,7 @@ export class Ledger {
   }
 
   query(sql) {
-    const output = execFileSync("sqlite3", ["-batch", "-json", this.path, sql], { encoding: "utf8" }).trim();
+    const output = execFileSync("sqlite3", ["-batch", "-json", "-cmd", ".timeout 3000", this.path, sql], { encoding: "utf8" }).trim();
     return output ? JSON.parse(output) : [];
   }
 
@@ -119,6 +120,15 @@ export class Ledger {
 
   listIncident(incidentId) {
     return this.query(`SELECT * FROM events WHERE incident_id=${sqlValue(incidentId)} ORDER BY sequence;`).map(decode);
+  }
+
+  // Type-scoped and bounded so policy can validate malformed cross-run locks
+  // whose payload claims a different incident than their immutable row header.
+  listAutonomyLocks(limit = 512) {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 512) throw new Error("Invalid autonomy lock limit");
+    const rows = this.query(`SELECT * FROM events WHERE type='autonomy.locked' ORDER BY sequence LIMIT ${limit + 1};`);
+    if (rows.length > limit) throw new Error("Autonomy lock query exceeds bounded limit");
+    return rows.map(decode);
   }
 
   latestRun(incidentId) {
