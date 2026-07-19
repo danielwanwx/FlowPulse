@@ -59,6 +59,7 @@ does not reclassify uncommitted files as committed.
 | --- | --- | --- | --- |
 | Deterministic captured judge replay | complete and verified | src/runtime.mjs, src/bundle.mjs, test/runtime.test.mjs, submission check | Preserve as default and relabel through later projection/UI only. |
 | Ledger authority primitives and public-mint hardening | complete and verified | commits through d0b3f85; src/ledger.mjs, src/autonomy-policy.mjs, src/autonomy-freshness.mjs, policy/ledger tests | Slice 2 composes them privately; it must not re-export factory, issuer, store, or registration seams. |
+| Authority artifact orthogonal-mode migration | partial | checked-in artifact still uses legacy intent `truth_mode` | Slice B migrates only the checked-in artifact to `execution_mode`; receipt/source state remains independent. |
 | GPT response boundary, harness manifest, context compiler, offline backtest | present but uncommitted | dirty openai, openai-response, context-compiler, harness-manifest, regression-backtest files and harness directory | Re-run, isolate, and commit this user-owned work before an overlapping Slice 2 edit. Do not recreate it. |
 | Real local OTLP development proof | partial | dirty development adapter/runtime, code-evidence files, QA record | Runtime readiness and fresh evidence are external conditions; do not call it currently ready. |
 | Successful real GPT-5.6 investigator/evaluator proof | blocked by runtime and credential gate | one preserved paid run failed closed; no accepted model recovery proof | One separately authorized, no-retry workflow only after preflight and fresh evidence. |
@@ -68,7 +69,7 @@ does not reclassify uncommitted files as committed.
 | Three-stage UI and projection clients | partial | public app has five fixed modes, local cursor/timers, and Astronomy topology; no strict backend/demo client pair | Render-only UI slice consumes projection only; D.1 enables no controls until server contract passes. |
 | Generic integration proof | missing | captured bundle and OTLP JSONL are product sources; no connector manifest | P0 contract plus two offline fixtures only. |
 | OpenLineage and vendor ingestion | intentionally deferred | none | P1; no pre-deadline adapter. |
-| Captured low-risk policy simulation | missing | checked-in low-risk artifact exists, but no ledger-derived action.simulated runtime path | Slice E.0 before browser E2E; no live action/receipt/backtest. |
+| Captured low-risk policy simulation | missing | checked-in low-risk artifact exists, but no edge-cache captured evidence fixture or ledger-derived action.simulated path | Slice E.0 uses exactly `data/incidents/captured-edge-cache-low-risk.json`; no live action/receipt/backtest. |
 | Automated browser E2E | missing | package has no Playwright dependency or script | P0 fresh-server Playwright paths after UI contract stabilizes. |
 | Submission assets | partial / human-external | README, Devpost draft, video script, screenshots, checklist exist; hosted URL/video/confirmed Session ID pending | Parallel human track; update only after represented proof exists. |
 
@@ -233,6 +234,42 @@ The existing routes may call the private closure only as an internal continuatio
 of their current investigation handler. Slice B adds no endpoint, request field,
 or executor behavior. Model-only investigations remain non-executable.
 
+`src/server.mjs` owns the following non-exported local functions; none is
+returned from `createServer`, exported, imported by a route/model/client, or
+accepts caller-supplied authority data:
+
+- `advanceAutonomyAfterDiagnosis({ run_id, incident_id, intent_id })`: the only
+  authority entry point; coordinates the remaining helpers and returns a bounded
+  non-authority status to its existing handler.
+- `captureAuthoritySnapshot({ run_id, incident_id, intent_id })`: reads the
+  server-owned frozen capture and ledger, creates the exact immutable manifest
+  `{ id, content_sha256, manifest_sha256, mode, records }`, and rejects run,
+  incident, evidence, or manifest drift.
+- `issueAuthorityFreshnessReceipt({ run_id, incident_id, intent_id, manifest,
+  now })`: uses server-owned time plus a module-private receipt
+  secret/capability to bind run, incident, intent,
+  snapshot/registry/evaluator/contract hashes. The secret/capability is never
+  serialized. It produces the existing bounded receipt fields and a private
+  binding entry.
+- `verifyAuthorityReceipt({ receipt, manifest, now, binding })`: first calls
+  `verifySnapshotFreshnessReceipt`, then verifies the private binding and exact
+  run/incident/intent/registry/evaluator/contract hashes before any decision.
+- `validateAuthorityPrerequisites({ events, manifest, receipt, intent, now })`:
+  validates source availability; evaluator acceptance; diagnosis-gate ordering;
+  evidence membership, uniqueness, and hash/source/mode bindings; exact contract;
+  duplicate/conflicting evidence; the bounded lock query; and malformed or
+  relevant failure locks. Every mismatch returns a bounded non-actionable reason.
+- `buildAuthorityDecision({ validated, intent, now })` and
+  `appendDecisionAndPendingOwnerContract({ decision, validated })`: build the
+  one canonical decision, insert `autonomy.decision.recorded` with
+  `appendIfAbsent`, and only for `human_review_required` append the exact
+  `repair.proposed` then `approval.requested` contract.
+
+The receipt's existing verifier remains an unkeyed structural verifier. The
+additional module-private binding is what prevents receipt replay across
+run/incident/intent/snapshot/registry/evaluator/contract contexts; it has no
+public API, payload field, or persistence path.
+
 Allowed files, and no others:
 
 - `src/server.mjs`: define the non-exported closure and wire the internal,
@@ -241,15 +278,23 @@ Allowed files, and no others:
   proposal/approval append.
 - `src/development-runtime.mjs`: stop at the verified diagnosis gate; remove any
   pre-decision proposal/approval append.
+- `src/autonomy-policy-artifacts.mjs`: one checked-in schema migration only:
+  replace every intent's legacy `truth_mode` with exact `execution_mode`.
+  Captured intents use `captured_simulation`; `checkout-payment` uses
+  `real_local_development`.
 - `test/server.test.mjs`, `test/openai-contract.test.mjs`,
   `test/gpt-development-integration.test.mjs`,
   `test/development-runtime.test.mjs`, `test/ledger.test.mjs`, and
   `test/autonomy-policy.test.mjs`.
 
-Slice B reuses the already-accepted `src/ledger.mjs`, `src/autonomy-policy.mjs`,
-`src/autonomy-freshness.mjs`, and `src/autonomy-policy-artifacts.mjs` unchanged.
-If those primitives are insufficient, stop and return to plan review; do not
-expand the Slice B file set. Forbidden exports and seams: an authority
+Slice B reuses `src/ledger.mjs`, `src/autonomy-policy.mjs`, and
+`src/autonomy-freshness.mjs` unchanged. The artifact migration above is the only
+exception. `source_health` and `evidence_mode` are derived independently from
+the server-owned source/receipt and snapshot; `execution_mode` comes only from
+the migrated checked-in intent. Artifact inputs with legacy `truth_mode`, both
+truth fields, an unknown execution mode, or a source/evidence truth assertion
+fail closed. If this migration needs any other file, stop and return to plan
+review. Forbidden exports and seams: an authority
 provider/factory, frozen-snapshot registration, freshness issuer, injected
 clock, injected registry, policy callback/capability, or a
 request/body/model/UI supplied authority field.
@@ -271,6 +316,18 @@ Write these red tests first:
    lock are non-actionable.
 5. `authority claim conflict never grants execution`: an `appendIfAbsent`
    conflict creates no second decision/claim and cannot grant permission.
+6. `trusted receipt issuer verifier round trip`: a server-issued, unexpired
+   receipt verifies against the same server-owned manifest and private binding.
+7. `receipt binding mismatch fails closed`: changing run, incident, intent,
+   snapshot, registry, evaluator, contract, source mode, or expiry leaves no
+   decision event.
+8. `orthogonal truth axes reject legacy or mixed truth mode`: artifact data with
+   `truth_mode`, both fields, or an unknown execution mode is non-actionable.
+9. `checkout artifact uses real local execution mode and keeps Owner Gate`: the
+   migrated checkout intent produces `human_review_required`, never auto action.
+10. `server private decision builder is not externally callable`: export/import
+    inspection and an external module attempt cannot import or invoke any local
+    authority helper.
 
 Focused verification:
 
@@ -291,9 +348,10 @@ isolated staged-file list.
 
 Stop/rollback: a public issuer/provider/snapshot-registration seam, decision
 before valid gate events, changed Owner-Gate order, or an overlapping dirty file
-that cannot be safely isolated blocks the slice. Stop without staging or
-committing in the overlap case. Otherwise revert only this slice's commit; never
-reset user work.
+that cannot be safely isolated blocks the slice. Receipt binding drift, a legacy
+or mixed truth artifact, or any need to change the three fixed primitive files
+also blocks the slice. Stop without staging or committing in those cases.
+Otherwise revert only this slice's commit; never reset user work.
 
 ## 6. Mandatory Sol review gate
 
@@ -523,6 +581,10 @@ Purpose: add the low-risk captured-policy path required by the approved design
 before browser automation. It is a ledger-derived simulation, not an executor,
 receipt issuer, or production action.
 
+Dependency: start this slice only after Slice B is committed and its mandatory
+post-Slice-B Sol review approves the same private server closure. E.0 does not
+create a second authority path; it consumes that reviewed closure unchanged.
+
 Allowed files, and no others:
 
 - `src/runtime.mjs`: define the code-owned fixed captured replay transition.
@@ -530,15 +592,56 @@ Allowed files, and no others:
   command after server-side run resolution; it accepts no risk, authority,
   contract, source, receipt, registry, or preauthorization fields.
 - `test/runtime.test.mjs` and `test/server.test.mjs`.
+- `data/incidents/captured-edge-cache-low-risk.json`: the one new immutable
+  product fixture described below.
+- `test/captured-low-risk-fixture.test.mjs`: validates that exact fixture before
+  runtime/server tests use it.
+
+The fixture follows the existing `data/incidents/` bundle layout and is
+credential-free, read-only, and deterministic. Its bounded contents are:
+
+- incident `inc-captured-edge-cache-low-001`, run
+  `run-captured-edge-cache-low-v1`, and intent `captured-cache-flush`;
+- one `edge-cache` entity plus exactly three safe evidence records: a bounded
+  stale-cache cause fact, a bounded cache-read effect fact, and a versioned
+  captured policy/change fact; each includes stable ID, captured source ID,
+  RFC3339 observation time, entity, mode `captured_fixture`, and SHA-256
+  provenance;
+- a fixture content hash and manifest hash calculated from the sorted
+  `{ id, hash, source, mode }` records, with the incident/run/intent identities
+  bound in the server-private receipt;
+- `source_health=live` (fixture availability only),
+  `evidence_mode=captured_fixture`, and
+  `execution_mode=captured_simulation`; none means a live stream or repair;
+- exact `evaluation.accepted` and `diagnosis.gate.passed` precursor payloads,
+  with unique membership refs to all three records and the exact checked-in
+  low-risk edge-cache contract hash.
+
+The fixture cannot declare `repair.executed`, a receipt, a notification delivery,
+an action result, an executed backtest, promotion, a selector override, or any
+authority field. Its validation test rejects raw payloads, unknown fields,
+duplicate/nonmember refs, changed provenance/hash/source/mode, contract mismatch,
+and any live/executed truth label.
 
 The sole successful low-risk ledger sequence is:
 
-    autonomy.decision.recorded(auto_execute_pre_authorized,
-      evidence_mode=captured_fixture, execution_mode=captured_simulation)
+    fixed fixture evidence + evaluation.accepted + diagnosis.gate.passed
+    -> private Slice B closure appends
+       autonomy.decision.recorded(auto_execute_pre_authorized,
+         evidence_mode=captured_fixture, execution_mode=captured_simulation)
     -> notification.recorded(status=recorded_local,
       delivery_mode=captured_simulation)
     -> action.simulated
     -> captured verification/learning events
+
+Event ownership is fixed. `src/runtime.mjs` may append only the fixture's fixed
+evidence/gate precursor events; it cannot append, accept, carry, or derive an
+`autonomy.decision.recorded` event or caller-supplied decision/risk/truth field.
+`src/server.mjs` resolves the fixed code-owned selector, invokes
+`advanceAutonomyAfterDiagnosis`, re-reads and verifies its canonical inserted
+decision, and only then appends `notification.recorded` and `action.simulated`.
+Neither the fixture nor runtime can mint authority; both remain evidence subjects
+to the same private closure validation used by every decision.
 
 It must never append `repair.executed`, `approval.granted`, a live receipt,
 `backtest.completed(source=executed_offline_backtest)`, promotion, or an
@@ -554,10 +657,19 @@ Write these red tests first:
    events and receipt/promotion modes are absent.
 3. `unknown or stale captured decision is non-actionable`: malformed decision,
    missing evidence, or unavailable source appends no `action.simulated`.
+4. `immutable low-risk fixture provenance and membership validate`: all bounded
+   fixture records, hashes, source/mode fields, and exact low contract match.
+5. `missing or nonmember fixture evidence blocks canonical decision`: the private
+   closure appends no decision or action.
+6. `runtime cannot mint or accept caller-supplied autonomy decision`: attempts
+   produce no authority or action event.
+7. `server requires canonical decision before action simulated`: a missing,
+   conflicting, or non-auto decision leaves notification/action absent.
 
 Focused verification:
 
-    node --test test/runtime.test.mjs test/server.test.mjs
+    node --test test/captured-low-risk-fixture.test.mjs test/runtime.test.mjs \
+      test/server.test.mjs
     npm test
     git diff --check
 
@@ -565,8 +677,9 @@ Acceptance: the low path is reproducible with no Docker or credentials, and its
 only action label is `action.simulated`.
 
 Stop/rollback: any need for a live action connector, writable source, model call,
-external notification, or executed-backtest claim blocks the slice. Revert only
-this isolated simulation commit.
+external notification, executed-backtest claim, missing immutable fixture, or
+runtime-created decision blocks the slice. Revert only this isolated simulation
+commit.
 
 ## 12. Slice E — deterministic demos and automated browser E2E
 
@@ -704,7 +817,7 @@ is absent from the final QA record. Leave the field pending rather than infer it
 | Jul 19 first half | Slice B tests and implementation | none that changes product claims | Sol approval before projection |
 | Jul 19 second half | Slice C projection, then C.1 fixture validation serially | video outline only from captured path | no projection-schema edits in C.1; no vendor ingestion |
 | Jul 20 first half | Slice D render-only migration, then D.1 decision hardening | screenshots only after fresh state is stable | controls stay disabled until D.1 passes |
-| Jul 20 second half | Slice E.0 captured simulation, then Slice E Playwright/release smoke | host/video preparation using verified captured demo | no live action or mock-only E2E state |
+| Jul 20 second half | validate immutable edge-cache fixture, then Slice E.0 captured simulation and Slice E Playwright/release smoke | host/video preparation using verified captured demo | no live action, fixture invention, or mock-only E2E state |
 | Jul 21 before 10:00 PDT | final tests, submission check, deterministic rehearsal | human prepares public assets | no late scope increase |
 | Jul 21 before 17:00 PDT | human verifies links, /feedback, Devpost fields, final submit | one GPT proof only if all preconditions and explicit authorization exist | no retry or publication by agent |
 
@@ -726,7 +839,7 @@ acceptance remains failed and release-complete copy is prohibited.
 | No connector authority | integration contract fixture tests | provider glyph visual-only |
 | Kafka rejection and replan | runtime/openai fixtures | captured replay E2E and video rehearsal |
 | Before/after verification/learning | runtime/development/backtest tests | Compare/Decision & Recovery E2E |
-| Low simulation truth | E.0 runtime/server exact event and forbidden-event tests | low captured-simulation E2E |
+| Low simulation truth | immutable edge-cache fixture + E.0 runtime/server exact event, canonical-decision, and forbidden-event tests | low captured-simulation E2E |
 | Successful real GPT proof | GPT development integration fixture, then one authorized QA run | docs update only after actual run |
 | Release reliability | full suite, audit, submission check, diff check | fresh-port rehearsal at both viewports |
 
@@ -750,7 +863,9 @@ controls, captured simulation, and browser work. It keeps all ingestion in P1,
 makes deterministic captured replay the default demo, and treats successful
 real GPT proof as a separate release-acceptance gate. It inventories rather than
 overwrites dirty harness work. It includes no provider or Astronomy action in a
-coding slice.
+coding slice. Slice B has one private server-local authority implementation and
+one artifact-mode migration; Slice E.0 consumes a separate immutable low-risk
+fixture through that same closure and never manufactures authority.
 
 Before each slice, record HEAD, status, affected-file hashes, and intended
 staged files. After each slice run focused tests, npm test, npm audit
