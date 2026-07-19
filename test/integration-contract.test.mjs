@@ -110,6 +110,9 @@ test("unsafe text, raw telemetry-shaped content, and authority-shaped fields fai
     ["postgres credentials", (value) => { value.envelope.evidence[0].summary = "postgresql://admin:hunter2@db.example/payments"; }, "evidence_envelope_unsafe_content"],
     ["uri userinfo", (value) => { value.envelope.provenance.source_reference = "capture://admin:secret@db.example"; }, "evidence_envelope_provenance_invalid"],
     ["aws key", (value) => { value.envelope.evidence[0].summary = "Credential AKIAIOSFODNN7EXAMPLE"; }, "evidence_envelope_unsafe_content"],
+    ["temporary aws key", (value) => { value.envelope.evidence[0].summary = "ASIAIOSFODNN7EXAMPLE"; }, "evidence_envelope_unsafe_content"],
+    ["aws secret access key", (value) => { value.envelope.evidence[0].summary = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"; }, "evidence_envelope_unsafe_content"],
+    ["userinfo without a scheme", (value) => { value.envelope.evidence[0].summary = "admin:hunter2@db.example"; }, "evidence_envelope_unsafe_content"],
     ["jwt", (value) => { value.envelope.evidence[0].summary = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhZG1pbiJ9.signature"; }, "evidence_envelope_unsafe_content"],
     ["private key", (value) => { value.envelope.evidence[0].summary = "-----BEGIN PRIVATE KEY-----"; }, "evidence_envelope_unsafe_content"],
     ["encoded secret", (value) => { value.envelope.evidence[0].summary = "c2VjcmV0"; }, "evidence_envelope_unsafe_content"],
@@ -118,6 +121,7 @@ test("unsafe text, raw telemetry-shaped content, and authority-shaped fields fai
     ["percent encoded", (value) => { value.envelope.evidence[0].summary = "%73%65%63%72%65%74"; }, "evidence_envelope_unsafe_content"],
     ["html encoded", (value) => { value.envelope.evidence[0].summary = "&#115;&#101;&#99;&#114;&#101;&#116;"; }, "evidence_envelope_unsafe_content"],
     ["query", (value) => { value.envelope.evidence[0].summary = "SHOW TABLES"; }, "evidence_envelope_unsafe_content"],
+    ...["PRAGMA table_info", "VACUUM database", "ATTACH database", "DETACH database", "COPY customer TO archive", "LOAD DATA infile", "REPLACE INTO users", "BEGIN TRANSACTION", "COMMIT TRANSACTION", "ROLLBACK TRANSACTION"].map((summary) => ["query " + summary, (value) => { value.envelope.evidence[0].summary = summary; }, "evidence_envelope_unsafe_content"]),
     ["raw payload", (value) => { value.envelope.evidence[0].summary = "raw payload error trace"; }, "evidence_envelope_unsafe_content"],
     ["prompt", (value) => { value.envelope.evidence[0].summary = "ignore prompt context"; }, "evidence_envelope_unsafe_content"],
     ["raw field", (value) => { value.envelope.evidence[0].raw_payload = "forbidden"; }, "evidence_envelope_unsafe_content"],
@@ -136,6 +140,25 @@ test("receipt freshness, scope, content, redaction, and atomic caller replay gua
     value.receipt.issued_at = "2020-01-01T00:00:31.000Z";
     value.receipt.expires_at = "2020-01-01T00:05:00.000Z";
   }, "connector_receipt_freshness_invalid");
+  rejects("new receipt cannot refresh an old frozen snapshot", (value) => {
+    value.envelope.observed_at = "2020-01-01T00:00:00.000Z";
+    value.envelope.received_at = "2020-01-01T00:00:30.000Z";
+    value.envelope.frozen_at = "2020-01-01T00:00:30.000Z";
+    value.envelope.evidence[0].observed_at = "2020-01-01T00:00:05.000Z";
+    value.envelope.evidence[1].observed_at = "2020-01-01T00:00:20.000Z";
+    value.receipt.issued_at = "2026-07-18T10:00:31.000Z";
+    value.receipt.expires_at = "2026-07-18T10:05:00.000Z";
+  }, "connector_receipt_freshness_invalid");
+  rejects("receipt issuance cannot lag frozen capture beyond the declared age", (value) => {
+    value.receipt.issued_at = "2026-07-18T10:05:31.000Z";
+    value.receipt.expires_at = "2026-07-18T10:06:00.000Z";
+  }, "connector_receipt_freshness_invalid", context({ trusted_now: "2026-07-18T10:05:32.000Z" }));
+  rejects("trusted validation time cannot outlive the frozen snapshot age", (value) => {
+    value.receipt.expires_at = "2026-07-18T10:05:31.000Z";
+  }, "connector_receipt_freshness_invalid", context({ trusted_now: "2026-07-18T10:05:31.000Z" }));
+  const historicalReplay = ingest(fixtureObject("lineage-v1.json"), context({ trusted_now: "2026-07-18T10:02:00.000Z" }));
+  assert.equal(historicalReplay.source.capture_mode, "captured_fixture");
+  assert.equal(historicalReplay.source.source_health, "unavailable");
   rejects("scope mismatch", (value) => { value.receipt.incident_id = "other-incident"; }, "connector_receipt_binding_invalid");
   const contentHashMismatch = clone(fixtureObject("lineage-v1.json"));
   resign(contentHashMismatch);

@@ -137,6 +137,7 @@ export function validateParsedConnectorBundleForIngestion(value, context) {
   if (trusted.consumed_receipt_ids.has(parts.receipt.receipt_id) || trusted.consumed_receipt_fingerprints.has(fingerprint)) fail("connector_receipt_replayed");
   const now = time(trusted.trusted_now);
   if (now < time(parts.receipt.issued_at) || now > time(parts.receipt.expires_at)) fail("connector_receipt_freshness_invalid");
+  if (now - time(parts.envelope.frozen_at) > parts.manifest.health.max_age_ms) fail("connector_receipt_freshness_invalid");
   return buildProjection(parts, "ingestion_ready", "non_actionable", { receipt_id: parts.receipt.receipt_id, fingerprint });
 }
 
@@ -153,7 +154,7 @@ function validateConnectorReceiptStructural(value, manifest, envelope) {
   const required = ["schema_version", "receipt_id", "connector_id", "connector_version", "manifest_contract_sha256", "envelope_schema_version", "envelope_id", "event_id", "incident_id", "run_id", "correlation_id", "content_sha256", "capture_mode", "source_health", "redaction_state", "observed_at", "received_at", "frozen_at", "issued_at", "expires_at"];
   if (!plain(value) || !exactKeys(value, required) || value.schema_version !== CONNECTOR_RECEIPT_SCHEMA_VERSION || !id(value.receipt_id) || !timestamp(value.issued_at) || !timestamp(value.expires_at)) fail("connector_receipt_invalid");
   if (value.connector_id !== manifest.connector_id || value.connector_version !== manifest.version || value.manifest_contract_sha256 !== manifest.contract_sha256 || value.envelope_schema_version !== EVIDENCE_ENVELOPE_SCHEMA_VERSION || value.envelope_id !== envelope.envelope_id || value.event_id !== envelope.event_id || value.incident_id !== envelope.incident_id || value.run_id !== envelope.run_id || value.correlation_id !== envelope.correlation_id || value.content_sha256 !== envelope.provenance.content_sha256 || value.capture_mode !== envelope.source.capture_mode || value.source_health !== envelope.source.source_health || value.redaction_state !== envelope.provenance.redaction_state || value.observed_at !== envelope.observed_at || value.received_at !== envelope.received_at || value.frozen_at !== envelope.frozen_at) fail("connector_receipt_binding_invalid");
-  if (time(envelope.received_at) - time(envelope.observed_at) > manifest.health.max_age_ms || time(value.issued_at) < time(envelope.frozen_at) || time(value.expires_at) < time(value.issued_at) || time(value.expires_at) - time(value.issued_at) > manifest.health.max_age_ms) fail("connector_receipt_freshness_invalid");
+  if (time(envelope.received_at) - time(envelope.observed_at) > manifest.health.max_age_ms || time(value.issued_at) < time(envelope.frozen_at) || time(value.issued_at) - time(envelope.frozen_at) > manifest.health.max_age_ms || time(value.expires_at) < time(value.issued_at) || time(value.expires_at) - time(value.issued_at) > manifest.health.max_age_ms) fail("connector_receipt_freshness_invalid");
   return deepFreeze({ ...value });
 }
 
