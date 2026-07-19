@@ -57,9 +57,10 @@ export class AgentControlService {
     this.langfuseEnabled = Boolean(langfuseEnabled);
   }
 
-  project(runId = this.runtime.ensureRun()) {
+  project(runId = this.runtime.ensureRun(), { incidentProjection = null } = {}) {
     const state = this.runtime.state(runId);
     const events = state.events;
+    const canonicalProjection = validIncidentProjection(incidentProjection, runId) ? incidentProjection : null;
     const statuses = projectStatuses(events, state, this.langfuseEnabled);
     const nodes = AGENT_GRAPH_NODES.map((item) => ({
       ...item,
@@ -77,12 +78,26 @@ export class AgentControlService {
       current_agent_id: currentAgent(statuses),
       last_event_id: events.at(-1)?.id ?? null,
       last_sequence: events.at(-1)?.sequence ?? 0,
-      report: managerReport(state),
+      report: managerReport(state, canonicalProjection),
       actions: allowedActions(state),
       work_items: recoveryWorkItems(events),
       graph: { nodes, edges },
       activity: agentActivity(events),
-      orchestration: orchestrationProjection(events)
+      orchestration: orchestrationProjection(events),
+      incident_projection: canonicalProjection ? {
+        schema_version: canonicalProjection.schema_version,
+        projection_revision: canonicalProjection.projection_revision,
+        stage: canonicalProjection.stage,
+        stage_status: canonicalProjection.stage_status,
+        source_health: canonicalProjection.source_health,
+        evidence_mode: canonicalProjection.evidence_mode,
+        execution_mode: canonicalProjection.execution_mode,
+        decision: canonicalProjection.decision,
+        human_gate: canonicalProjection.human_gate,
+        action: canonicalProjection.action,
+        verification: canonicalProjection.verification,
+        why_stopped: canonicalProjection.why_stopped
+      } : null
     };
   }
 
@@ -202,7 +217,7 @@ export class AgentControlService {
   }
 }
 
-function managerReport(state) {
+function managerReport(state, incidentProjection = null) {
   const events = state.events;
   const accepted = last(events, "evaluation.accepted");
   const rejected = last(events, "evaluation.rejected");
@@ -221,7 +236,7 @@ function managerReport(state) {
   return {
     title: reportTitle(state),
     summary: reportSummary(state, hypothesis, repair, verification),
-    stage: state.stage,
+    stage: incidentProjection?.stage?.label || state.stage,
     confidence: accepted?.payload.score ?? hypothesis?.payload.confidence ?? null,
     root_cause: hypothesis?.payload.claim ?? null,
     rejected_diagnosis: rejected ? {
@@ -242,9 +257,21 @@ function managerReport(state) {
     regression: regression?.payload ?? null,
     backtest: backtest?.payload ?? null,
     citations,
-    human_gate: state.waiting_for_approval ? "owner_approval_required" : null,
-    data_mode: state.mode === "development" ? "real_local_runtime" : "captured_deterministic_replay"
+    human_gate: incidentProjection?.human_gate?.status === "requested" ? "owner_approval_required" : state.waiting_for_approval ? "owner_approval_required" : null,
+    data_mode: incidentProjection?.execution_mode || (state.mode === "development" ? "real_local_runtime" : "captured_deterministic_replay")
   };
+}
+
+function validIncidentProjection(value, runId) {
+  return Boolean(value
+    && value.schema_version === "flowpulse.incident-projection.v1"
+    && typeof runId === "string"
+    && (value.run_id === runId || value.stage_status === "non_actionable")
+    && typeof value.stage?.id === "string"
+    && typeof value.stage_status === "string"
+    && typeof value.source_health === "string"
+    && typeof value.evidence_mode === "string"
+    && typeof value.execution_mode === "string");
 }
 
 function projectStatuses(events, state, langfuseEnabled) {

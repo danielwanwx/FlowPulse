@@ -35,6 +35,33 @@ test("agent control projects the canonical team from immutable events", () => {
   assert.equal(statuses.executor, "standby");
 });
 
+test("agent control consumes the bounded incident projection instead of deriving a second stage or truth mode", () => {
+  const { runtime, runId, service } = setup();
+  const state = runtime.state(runId);
+  const incidentProjection = {
+    schema_version: "flowpulse.incident-projection.v1",
+    projection_revision: "a".repeat(64),
+    run_id: runId,
+    incident: { id: state.incident.id },
+    stage: { id: "decision_recovery", label: "Decision & Recovery" },
+    stage_status: "waiting_for_owner",
+    source_health: "live",
+    evidence_mode: "frozen_real_snapshot",
+    execution_mode: "real_local_development",
+    decision: { status: "human_review_required" },
+    human_gate: { status: "requested" },
+    action: { status: "not_started" },
+    verification: { status: "not_recorded" },
+    why_stopped: { code: "owner_decision_required" }
+  };
+  const projection = service.project(runId, { incidentProjection });
+  assert.equal(projection.report.stage, "Decision & Recovery");
+  assert.equal(projection.report.data_mode, "real_local_development");
+  assert.equal(projection.report.human_gate, "owner_approval_required");
+  assert.equal(projection.incident_projection.projection_revision, "a".repeat(64));
+  assert.equal(projection.actions.some((action) => action.consequential), false);
+});
+
 test("manager chat records attributed responses and cannot create approval", () => {
   const { runtime, runId, service } = setup();
   for (let step = 0; step < 7; step++) runtime.next(runId);

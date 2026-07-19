@@ -18,6 +18,12 @@ test("server-owned development path appends one canonical owner-gated authority 
   const fixture = await startAuthorityFixture(context);
   const response = await postJson(fixture.port, "/api/development/investigate");
   assert.equal(response.status, 200, JSON.stringify(response.body));
+  assert.equal(response.body.incident_projection.decision.status, "human_review_required");
+  assert.equal(response.body.incident_projection.human_gate.status, "requested");
+  assert.deepEqual(
+    [response.body.incident_projection.source_health, response.body.incident_projection.evidence_mode, response.body.incident_projection.execution_mode],
+    ["live", "frozen_real_snapshot", "real_local_development"]
+  );
   const events = new Ledger(fixture.dbPath).list(fixture.runId);
   const decisions = events.filter((event) => event.type === "autonomy.decision.recorded");
   assert.equal(decisions.length, 1);
@@ -327,6 +333,10 @@ test("judge API serves state and advances the replay", async (context) => {
   assert.equal(initial.status, "investigating");
   assert.equal(initial.events[0].type, "run.started");
   assert.equal(initial.harness.manifest.legacy_detail_status, "legacy_detail_unavailable");
+  assert.equal(initial.incident_projection.schema_version, "flowpulse.incident-projection.v1");
+  assert.equal(initial.incident_projection.stage_status, "collecting");
+  assert.equal(initial.incident_projection.execution_mode, "deterministic_replay");
+  assert.equal(initial.incident_projection.action.status, "not_started");
 
   const advancedResponse = await fetch(`http://127.0.0.1:${port}/api/next`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
   assert.equal(advancedResponse.status, 200);
@@ -338,6 +348,14 @@ test("judge API serves state and advances the replay", async (context) => {
   assert.equal(advanced.evidence.every((item) => !Object.hasOwn(item, "payload")), true);
   assert.equal(advanced.source.evidence.every((item) => !Object.hasOwn(item, "payload")), true);
   assert.equal(Buffer.byteLength(JSON.stringify(advanced)) < 200_000, true);
+  assert.equal(advanced.incident_projection.stage.id, "monitor");
+  assert.equal(advanced.incident_projection.timeline.frames.every((frame) => !Object.hasOwn(frame, "payload")), true);
+  assert.equal(advanced.incident_projection.evidence.every((item) => !Object.hasOwn(item, "fact")), true);
+  assert.equal(advanced.agent_control.incident_projection.projection_revision, advanced.incident_projection.projection_revision);
+
+  const invalidCursor = await fetch(`http://127.0.0.1:${port}/api/state?projection_cursor=caller-controlled`).then((response) => response.json());
+  assert.equal(invalidCursor.incident_projection.stage_status, "non_actionable");
+  assert.equal(invalidCursor.incident_projection.action.status, "not_actionable");
 
   const evidenceList = await fetch(`http://127.0.0.1:${port}/api/evidence?limit=2`).then((response) => response.json());
   assert.equal(evidenceList.items.length, 2);
@@ -377,6 +395,27 @@ test("judge API serves state and advances the replay", async (context) => {
   const taskProjection = await taskResponse.json();
   assert.equal(taskProjection.work_items.some((item) => item.type === "task.delegation.proposed"), true);
   assert.equal(taskProjection.work_items.every((item) => item.external_mutation === false), true);
+
+  for (let step = 0; step < 6; step++) {
+    const response = await fetch(`http://127.0.0.1:${port}/api/next`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+    assert.equal(response.status, 200);
+  }
+  const waiting = await fetch(`http://127.0.0.1:${port}/api/state`).then((response) => response.json());
+  assert.equal(waiting.incident_projection.stage_status, "waiting_for_owner");
+  assert.equal(waiting.incident_projection.human_gate.status, "requested");
+  assert.equal(waiting.incident_projection.decision.status, "not_recorded");
+
+  const approvedResponse = await fetch(`http://127.0.0.1:${port}/api/approve`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ owner: "Replay owner" }) });
+  assert.equal(approvedResponse.status, 200);
+  const approved = await approvedResponse.json();
+  assert.equal(approved.incident_projection.human_gate.status, "granted");
+  assert.equal(approved.incident_projection.action.status, "not_started");
+  await fetch(`http://127.0.0.1:${port}/api/next`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+  await fetch(`http://127.0.0.1:${port}/api/next`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+  const verified = await fetch(`http://127.0.0.1:${port}/api/state`).then((response) => response.json());
+  assert.equal(verified.incident_projection.stage_status, "verified");
+  assert.equal(verified.incident_projection.verification.status, "passed");
+  assert.equal(verified.incident_projection.action.status, "executed");
 
   const html = await fetch(`http://127.0.0.1:${port}/`).then((response) => response.text());
   assert.match(html, /FlowPulse/);

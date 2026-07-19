@@ -20,6 +20,7 @@ import { AUTONOMY_POLICY_ARTIFACT, validateAutonomyPolicyArtifact } from "./auto
 import { failureLockKey, sha256Canonical } from "./autonomy-policy.mjs";
 import { FRESHNESS_MAX_AGE_MS, FRESHNESS_RECEIPT_SCHEMA_VERSION, verifySnapshotFreshnessReceipt } from "./autonomy-freshness.mjs";
 import { sha256 as hashBoundEvidence } from "./regression-backtest.mjs";
+import { buildIncidentProjection } from "./incident-projection.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const publicDir = join(root, "public");
@@ -53,7 +54,7 @@ const server = createServer(async (request, response) => {
   try {
     const url = new URL(request.url, `http://${request.headers.host || "localhost"}`);
     if (url.pathname === "/api/state" && request.method === "GET") {
-      return json(response, 200, await stateWithSource());
+      return json(response, 200, await stateWithSource(runtime.ensureRun(), { cursor: url.searchParams.get("projection_cursor") }));
     }
     if (url.pathname === "/api/source" && request.method === "GET") {
       return json(response, 200, await sourceProjection(runtime.ensureRun()));
@@ -73,7 +74,7 @@ const server = createServer(async (request, response) => {
       return json(response, 200, { source: source.metadata(), evidence: source.detail(id) });
     }
     if (url.pathname === "/api/agent-control" && request.method === "GET") {
-      return json(response, 200, agentControl.project(runtime.ensureRun()));
+      return json(response, 200, (await stateWithSource()).agent_control);
     }
     if (url.pathname === "/api/agent-control/events" && request.method === "GET") {
       return streamAgentEvents(request, response, url);
@@ -752,15 +753,25 @@ function mime(extension) {
   return ({ ".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".mjs": "text/javascript; charset=utf-8", ".svg": "image/svg+xml" })[extension] || "application/octet-stream";
 }
 
-async function stateWithSource(runId = runtime.ensureRun()) {
+async function stateWithSource(runId = runtime.ensureRun(), { cursor = null } = {}) {
   const projected = runtime.state(runId);
   const referenced = new Set(projected.events.flatMap((event) => event.evidence_refs));
   const source = await selectedEvidenceSource(runId);
+  const evidence = source.summariesById(referenced);
+  const sourceState = await sourceProjection(runId, source);
+  const incident_projection = buildIncidentProjection({
+    run: projected,
+    events: projected.events,
+    evidence,
+    source: sourceState,
+    cursor
+  });
   return {
     ...projected,
-    evidence: source.summariesById(referenced),
-    source: await sourceProjection(runId, source),
-    agent_control: agentControl.project(runId),
+    evidence,
+    source: sourceState,
+    incident_projection,
+    agent_control: agentControl.project(runId, { incidentProjection: incident_projection }),
     harness: harnessProjection(projected.events)
   };
 }
