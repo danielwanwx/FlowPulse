@@ -1,392 +1,258 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { Worker } from "node:worker_threads";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { FrozenEvidenceSnapshot } from "../src/evidence-source.mjs";
+import { join, relative, resolve } from "node:path";
 import { Ledger } from "../src/ledger.mjs";
-import {
-  AutonomyPolicyError,
-  createServerAutonomyAuthority,
-  failureLockKey,
-  sha256Canonical
-} from "../src/autonomy-policy.mjs";
+import { FrozenEvidenceSnapshot } from "../src/evidence-source.mjs";
+import * as policy from "../src/autonomy-policy.mjs";
+import * as freshness from "../src/autonomy-freshness.mjs";
 import { AUTONOMY_POLICY_ARTIFACT } from "../src/autonomy-policy-artifacts.mjs";
-import { FRESHNESS_MAX_AGE_MS, FreshnessReceiptError, createSnapshotFreshnessReceipt, verifySnapshotFreshnessReceipt } from "../src/autonomy-freshness.mjs";
 
 const HASH = (character) => character.repeat(64);
-const RUN = "run-cache-1";
-const INCIDENT = "inc-cache-1";
-const INTENT = "captured-cache-flush";
+const TEST_ISSUER = "flowpulse.authority-composition.v1";
 
-const intent = (id = INTENT) => AUTONOMY_POLICY_ARTIFACT.intents.find((candidate) => candidate.id === id);
-const contract = (id = INTENT, overrides = {}) => ({ ...intent(id).contract, ...overrides });
+test("the exact public real-type composition forgery is unavailable after Slice 1.5", async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "flowpulse-autonomy-public-forgery-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
 
-function snapshot({ refs = ["ev-change", "ev-trace"], mode = "deterministic_replay", frozenAt = new Date(Date.now() - 3000).toISOString() } = {}) {
-  const records = refs.map((id, index) => ({
-    id,
-    kind: "trace",
-    source: index === 0 ? "captured-ledger" : "captured-otlp",
-    mode: "captured_fixture",
-    provenance: { sha256: HASH(index === 0 ? "c" : "d") }
-  }));
-  return new FrozenEvidenceSnapshot({
-    id: "snapshot-cache-1",
-    records,
-    metadata: { mode, frozen_at: frozenAt, evidence_ids: refs, caps: { max_records: 120, max_bytes: 131072 } }
-  });
-}
-
-function snapshotManifest(value) {
-  const records = value.records.map((record) => ({
-    id: record.id,
-    sha256: record.provenance.sha256,
-    source: record.source,
-    mode: record.mode ?? value.metadata().mode
-  })).sort((left, right) => left.id.localeCompare(right.id));
-  const unsigned = { id: value.id, mode: value.metadata().mode, content_sha256: sha256Canonical(records), records };
-  return { ...unsigned, manifest_sha256: sha256Canonical(unsigned) };
-}
-
-function evaluation(refs, overrides = {}) {
-  return {
-    accepted: true,
-    score: 0.93,
-    classification: "confirmed_system_bug",
-    phase: "diagnosis_pre_approval",
-    gate_checks: { initiating_change: true, temporal_order: true, implementation_semantics: true, controlled_off_on_contrast: true, repeated_direct_failures: true },
-    reason: "Independent evaluator accepted the bounded evidence.",
-    missing_evidence: [],
-    counter_evidence_refs: refs,
-    ...overrides
-  };
-}
-
-function appendGateEvents(ledger, { runId = RUN, incidentId = INCIDENT, frozen = snapshot(), actionContract = contract(), refs = frozen.records.map((record) => record.id), evaluationOverrides = {}, diagnosisOverrides = {}, reverse = false, timestamps = null } = {}) {
-  const manifest = snapshotManifest(frozen);
-  const acceptedEvaluation = evaluation(refs, evaluationOverrides);
-  const evaluatorPayload = { ...acceptedEvaluation, hypothesis_id: "hyp-cache-1" };
-  const diagnosisPayload = {
-    snapshot: { id: manifest.id, content_sha256: manifest.content_sha256, mode: manifest.mode },
-    accepted: {
-      diagnosis: { id: "hyp-cache-1", evidence_refs: refs },
-      evaluation: acceptedEvaluation,
-      evidence_ids: refs,
-      proposed_action_contract_sha256: sha256Canonical(actionContract),
-      ...diagnosisOverrides
-    }
-  };
-  const now = Date.now();
-  const evaluatorEvent = { id: `eval-${runId}`, runId, incidentId, recordedAt: timestamps?.evaluator ?? new Date(now - 1500).toISOString(), type: "evaluation.accepted", actor: "evaluator", payload: evaluatorPayload, evidenceRefs: refs, correlationId: `corr-eval-${runId}` };
-  const diagnosisEvent = { id: `gate-${runId}`, runId, incidentId, recordedAt: timestamps?.diagnosis ?? new Date(now - 750).toISOString(), type: "diagnosis.gate.passed", actor: "runtime", payload: diagnosisPayload, evidenceRefs: refs, correlationId: `corr-gate-${runId}` };
-  for (const event of reverse ? [diagnosisEvent, evaluatorEvent] : [evaluatorEvent, diagnosisEvent]) ledger.append(event);
-  return manifest;
-}
-
-function fixture({ intentId = INTENT, evaluationOverrides = {}, diagnosisOverrides = {}, locks = [], frozen = snapshot(), gateRefs = null, reverse = false, timestamps = null } = {}) {
-  const directory = mkdtempSync(join(tmpdir(), "flowpulse-authority-provider-"));
   const ledger = new Ledger(join(directory, "ledger.sqlite"));
-  appendGateEvents(ledger, { frozen, actionContract: intent(intentId).contract, refs: gateRefs ?? frozen.records.map((record) => record.id), evaluationOverrides, diagnosisOverrides, reverse, timestamps });
-  for (const lock of locks) ledger.append(lock);
-  const authority = createServerAutonomyAuthority({ ledger });
-  authority.registerServerFrozenSnapshot({ run_id: RUN, incident_id: INCIDENT, snapshot: frozen });
-  return { directory, ledger, authority, frozen };
-}
+  const snapshot = forgedSnapshot();
+  appendForgedGateRows(ledger, snapshot);
 
-function selector(overrides = {}) {
-  return { run_id: RUN, incident_id: INCIDENT, intent_id: INTENT, ...overrides };
-}
+  const publicMint = policy.createServerAutonomyAuthority;
+  const attackOutcome = typeof publicMint === "function"
+    ? invokeFormerPublicMint({ publicMint, ledger, snapshot })
+    : "no_public_mint_path";
 
-function expectPolicyError(fn, code) {
-  assert.throws(fn, (error) => error instanceof AutonomyPolicyError && error.code === code);
-}
-
-test("policy has no provider/store constructor and its only composition factory rejects configuration", async () => {
-  const policy = await import("../src/autonomy-policy.mjs");
-  assert.equal(typeof policy.createServerAutonomyAuthority, "function");
-  for (const key of ["createTrustedAuthorityProvider", "FrozenAuthoritySnapshotStore", "TrustedAuthorityProvider", "deriveAuthorityEvidenceFromLedger", "evaluateAutonomyDecision", "resolvePreauthorization", "buildAutonomyDecisionEvent", "buildPreauthorizationConsumptionEvent"]) {
-    assert.equal(Object.hasOwn(policy, key), false, key);
-  }
-  for (const route of ["../src/server.mjs", "../src/openai.mjs", "../src/agent-control-service.mjs"]) {
-    const source = readFileSync(new URL(route, import.meta.url), "utf8");
-    assert.equal(source.includes("autonomy-policy.mjs"), false, `${route} must not compose autonomy authority`);
-  }
+  assert.equal(attackOutcome, "no_public_mint_path");
+  assert.equal(Object.hasOwn(policy, "createServerAutonomyAuthority"), false);
+  assert.equal(Object.hasOwn(freshness, "createSnapshotFreshnessReceipt"), false);
+  await assertFormerNamedImportUnavailable("../src/autonomy-policy.mjs", "createServerAutonomyAuthority");
+  await assertFormerNamedImportUnavailable("../src/autonomy-freshness.mjs", "createSnapshotFreshnessReceipt");
 });
 
-test("server composition with an actual ledger and frozen snapshot can produce a low-impact captured decision", () => {
-  const { authority } = fixture();
-  const result = authority.decide(selector());
-  assert.equal(result.decision.outcome, "auto_execute_pre_authorized");
-  assert.equal(result.event.type, "autonomy.decision.recorded");
-  assert.equal(result.decision.action_event_type, "action.simulated");
-  assert.equal(result.decision.authority_evidence.contract_sha256, result.decision.contract_sha256);
-  assert.equal(result.decision.authority_evidence.snapshot_manifest_sha256.length, 64);
-  assert.equal(result.decision.execution.satisfies_live_production_gate, false);
-  assert.equal(result.decision.execution.satisfies_executed_offline_backtest, false);
+test("production exports contain only non-authority utilities and immutable checked-in artifacts", () => {
+  assert.deepEqual(Object.keys(policy).sort(), [
+    "AUTONOMY_SCHEMA_VERSION",
+    "AutonomyPolicyError",
+    "LEGACY_DETAIL_UNAVAILABLE",
+    "PREAUTHORIZATION_REGISTRY_VERSION",
+    "PREAUTHORIZATION_SCHEMA_VERSION",
+    "failureLockKey",
+    "preauthorizationClaimId",
+    "sha256Canonical"
+  ]);
+  assert.deepEqual(Object.keys(freshness).sort(), [
+    "FRESHNESS_MAX_AGE_MS",
+    "FRESHNESS_RECEIPT_SCHEMA_VERSION",
+    "FreshnessReceiptError",
+    "verifySnapshotFreshnessReceipt"
+  ]);
+  assert.deepEqual(Object.keys(AUTONOMY_POLICY_ARTIFACT), ["schema_version", "version", "registry", "intents"]);
+  assert.equal(Object.isFrozen(AUTONOMY_POLICY_ARTIFACT), true);
+  assert.equal(Object.isFrozen(AUTONOMY_POLICY_ARTIFACT.registry.envelopes[0]), true);
+  assert.equal(AUTONOMY_POLICY_ARTIFACT.intents.find((intent) => intent.id === "captured-cache-flush").truth_mode, "captured_simulation");
+  assert.equal(AUTONOMY_POLICY_ARTIFACT.intents.find((intent) => intent.id === "checkout-payment").impact.level, "medium");
 });
 
-test("caller authority, registry, snapshot, locks, and raw JSON clones are rejected by the exact composition and selector boundaries", () => {
-  const { authority, ledger } = fixture();
-  const fakeRefs = ["fake-change", "fake-trace"];
-  const fakeRecords = fakeRefs.map((id, index) => ({ id, sha256: HASH(index ? "e" : "f"), source: "forged", mode: "captured_fixture" }));
-  const fakeEvaluation = evaluation(fakeRefs);
-  const fakeManifest = { id: "forged", content_sha256: sha256Canonical(fakeRecords), mode: "deterministic_replay", records: fakeRecords };
-  const forged = {
-    registry: { schema_version: "forged", envelopes: [] },
-    snapshot_manifest: fakeManifest,
-    ledger_events: [
-      { type: "evaluation.accepted", payload: { ...fakeEvaluation, hypothesis_id: "fake" }, evidence_refs: fakeRefs },
-      { type: "diagnosis.gate.passed", payload: { snapshot: fakeManifest, accepted: { diagnosis: { id: "fake", evidence_refs: fakeRefs }, evaluation: fakeEvaluation, evidence_ids: fakeRefs, proposed_action_contract_sha256: sha256Canonical(contract()) } }, evidence_refs: fakeRefs }
-    ],
-    derived_authority: { schema_version: "flowpulse.authority-evidence.v1", payload_sha256: sha256Canonical(fakeEvaluation) },
-    failure_lock_events: [],
-    source: { status: "captured_fixture", fresh: true }
-  };
-  expectPolicyError(() => authority.decide({ ...selector(), ...forged }), "authority_selector_invalid");
-  expectPolicyError(() => createServerAutonomyAuthority({ ledger, registry: forged.registry }), "trusted_authority_provider_invalid");
-  const rawClone = JSON.parse(JSON.stringify(selector()));
-  rawClone.decision = { outcome: "auto_execute_pre_authorized" };
-  expectPolicyError(() => authority.decide(rawClone), "authority_selector_invalid");
-});
-
-test("evaluator authority is exact: only confirmed, complete, matching counter-evidence can pass", () => {
-  const cases = [
-    ["legacy-compact", { classification: undefined }, {}, "authority_evidence_invalid"],
-    ["insufficient", { classification: "insufficient_evidence" }, {}, "authority_evidence_invalid"],
-    ["missing", { missing_evidence: ["implementation_semantics"] }, {}, "authority_evidence_invalid"],
-    ["counter", { counter_evidence_refs: ["ev-change"] }, {}, "authority_gate_evidence_mismatch"],
-    ["gate-refs", {}, { evidence_ids: ["ev-change"] }, "authority_gate_evidence_mismatch"],
-    ["nonmember", { counter_evidence_refs: ["unknown"] }, {}, "authority_gate_evidence_mismatch"]
-  ];
-  for (const [, evaluationOverrides, diagnosisOverrides, code] of cases) {
-    const { authority } = fixture({ evaluationOverrides, diagnosisOverrides });
-    expectPolicyError(() => authority.decide(selector()), code);
-  }
-});
-
-test("the diagnosis gate binds the exact selected action contract", () => {
-  const badContract = contract(INTENT, { expected_after: "different" });
-  const { authority } = fixture({ diagnosisOverrides: { proposed_action_contract_sha256: sha256Canonical(badContract) } });
-  expectPolicyError(() => authority.decide(selector()), "authority_gate_contract_mismatch");
-});
-
-test("wrong-scope, duplicate, reversed, and duplicate-reference gate streams fail closed", () => {
-  const wrongScope = fixture();
-  wrongScope.ledger.append({
-    id: "cross-incident-evaluator",
-    runId: RUN,
-    incidentId: "other-incident",
-    recordedAt: "2026-07-18T12:03:00.000Z",
-    type: "evaluation.accepted",
-    actor: "evaluator",
-    payload: evaluation(["ev-change", "ev-trace"]),
-    evidenceRefs: ["ev-change", "ev-trace"],
-    correlationId: "cross-incident"
-  });
-  expectPolicyError(() => wrongScope.authority.decide(selector()), "authority_ledger_scope_mismatch");
-
-  const duplicate = fixture();
-  duplicate.ledger.append({
-    id: "duplicate-evaluator",
-    runId: RUN,
-    incidentId: INCIDENT,
-    recordedAt: "2026-07-18T12:03:00.000Z",
-    type: "evaluation.accepted",
-    actor: "evaluator",
-    payload: { ...evaluation(["ev-change", "ev-trace"]), hypothesis_id: "hyp-cache-1" },
-    evidenceRefs: ["ev-change", "ev-trace"],
-    correlationId: "duplicate-evaluator"
-  });
-  expectPolicyError(() => duplicate.authority.decide(selector()), "authority_gate_event_conflict");
-  expectPolicyError(() => fixture({ reverse: true }).authority.decide(selector()), "authority_gate_order_invalid");
-  expectPolicyError(() => fixture({ gateRefs: ["ev-change", "ev-change"] }).authority.decide(selector()), "authority_evidence_invalid");
-});
-
-test("provider reads malformed and valid locks from the actual incident ledger, while unrelated target locks remain clear", () => {
-  const current = contract();
-  const exactKey = failureLockKey({ incident_id: INCIDENT, contract_sha256: sha256Canonical(current), target: current.target });
-  const validExact = {
-    id: exactKey,
-    runId: "run-prior",
-    incidentId: INCIDENT,
-    recordedAt: "2026-07-18T11:55:00.000Z",
-    type: "autonomy.locked",
-    actor: "runtime",
-    payload: {
-      schema_version: "flowpulse.autonomy.v1",
-      lock_key: exactKey,
-      incident_id: INCIDENT,
-      contract_sha256: sha256Canonical(current),
-      target: current.target,
-      binding_sha256: HASH("b"),
-      decision_sha256: HASH("d"),
-      failed_event_ref: "verification-failed",
-      reason_code: "verification_failed"
-    },
-    evidenceRefs: [],
-    correlationId: "lock-exact"
-  };
-  const locked = fixture({ locks: [validExact] }).authority.decide(selector());
-  assert.equal(locked.decision.failure_lock_state.status, "locked");
-  assert.equal(locked.decision.outcome, "blocked");
-
-  const malformed = structuredClone(validExact);
-  malformed.id = "lock-malformed";
-  malformed.payload.incident_id = "other-incident";
-  malformed.correlationId = "lock-malformed";
-  const unavailable = fixture({ locks: [malformed] }).authority.decide(selector()).decision;
-  assert.equal(unavailable.failure_lock_state.status, "unavailable");
-  assert.equal(unavailable.outcome, "blocked");
-
-  const missing = structuredClone(validExact);
-  missing.id = "lock-missing";
-  delete missing.payload.target;
-  missing.correlationId = "lock-missing";
-  const missingDecision = fixture({ locks: [missing] }).authority.decide(selector()).decision;
-  assert.equal(missingDecision.failure_lock_state.status, "unavailable");
-  assert.equal(missingDecision.outcome, "blocked");
-
-  const other = structuredClone(validExact);
-  other.payload.target = "other-component";
-  other.payload.contract_sha256 = HASH("f");
-  other.payload.lock_key = failureLockKey({ incident_id: INCIDENT, contract_sha256: HASH("f"), target: "other-component" });
-  other.id = other.payload.lock_key;
-  other.correlationId = "lock-other";
-  const unrelated = fixture({ locks: [other] }).authority.decide(selector());
-  assert.equal(unrelated.decision.failure_lock_state.status, "clear");
-});
-
-test("sev1, high, medium, and flagship checkout intents remain human-gated", () => {
-  for (const [intentId, expected] of [["captured-medium-maintenance", "human_review_required"], ["captured-high-maintenance", "explicit_human_decision_required"], ["captured-sev1-maintenance", "explicit_human_decision_required"]]) {
-    const { authority } = fixture({ intentId });
-    assert.equal(authority.decide(selector({ intent_id: intentId })).decision.outcome, expected);
-  }
-  const { authority } = fixture({ intentId: "checkout-payment" });
-  assert.equal(authority.decide(selector({ intent_id: "checkout-payment" })).decision.human_gate, "owner_required");
-});
-
-test("unknown snapshot membership and changed authority payloads fail closed", () => {
-  const frozen = snapshot({ refs: ["ev-change"] });
-  expectPolicyError(() => fixture({ frozen, gateRefs: ["ev-change", "unknown"] }).authority.decide(selector()), "authority_evidence_nonmember");
-  const { authority, ledger } = fixture();
-  const event = ledger.get(`eval-${RUN}`);
-  event.payload.reason = "altered";
-  // Ledger owns the stored payload, so a caller-side decoded clone cannot alter
-  // the provider's authority input.
-  assert.equal(authority.decide(selector()).decision.outcome, "auto_execute_pre_authorized");
-});
-
-test("snapshot registration binds the exact frozen manifest and detects later record drift", () => {
-  const { authority, frozen } = fixture();
-  assert.equal(Object.isFrozen(frozen.records), false);
-  frozen.records[0].source = "altered-source";
-  expectPolicyError(() => authority.decide(selector()), "trusted_snapshot_drift");
-});
-
-test("snapshot-bound freshness receipts reject expired, unknown, hash/mode mismatches, and clock rollback", () => {
-  const frozenAt = new Date(Date.now() - 1000).toISOString();
-  const frozen = snapshot({ frozenAt });
-  const manifest = snapshotManifest(frozen);
-  const receipt = createSnapshotFreshnessReceipt({ manifest, frozen_at: frozenAt });
-  assert.equal(verifySnapshotFreshnessReceipt({ receipt, manifest, now: new Date(Date.now()).toISOString() }).status, "captured_fixture");
-  const expired = { ...receipt, expires_at: new Date(Date.parse(receipt.observed_at) + FRESHNESS_MAX_AGE_MS + 1).toISOString() };
-  expired.receipt_sha256 = sha256Canonical(Object.fromEntries(Object.entries(expired).filter(([key]) => key !== "receipt_sha256")));
-  assert.throws(() => verifySnapshotFreshnessReceipt({ receipt: expired, manifest, now: new Date(Date.parse(expired.expires_at) + 1).toISOString() }), FreshnessReceiptError);
-  const mismatched = { ...receipt, snapshot_content_sha256: HASH("f") };
-  mismatched.receipt_sha256 = sha256Canonical(Object.fromEntries(Object.entries(mismatched).filter(([key]) => key !== "receipt_sha256")));
-  assert.throws(() => verifySnapshotFreshnessReceipt({ receipt: mismatched, manifest, now: new Date(Date.now()).toISOString() }), (error) => error instanceof FreshnessReceiptError && error.code === "freshness_receipt_snapshot_mismatch");
-  const modeMismatched = { ...receipt, snapshot_mode: "frozen_real_otlp_snapshot", source_mode: "live", truth_mode: "live" };
-  modeMismatched.receipt_sha256 = sha256Canonical(Object.fromEntries(Object.entries(modeMismatched).filter(([key]) => key !== "receipt_sha256")));
-  assert.throws(() => verifySnapshotFreshnessReceipt({ receipt: modeMismatched, manifest, now: new Date(Date.now()).toISOString() }), (error) => error instanceof FreshnessReceiptError && error.code === "freshness_receipt_snapshot_mismatch");
-  const unknown = { ...receipt, schema_version: "unknown.v1" };
-  unknown.receipt_sha256 = sha256Canonical(Object.fromEntries(Object.entries(unknown).filter(([key]) => key !== "receipt_sha256")));
-  assert.throws(() => verifySnapshotFreshnessReceipt({ receipt: unknown, manifest, now: new Date(Date.now()).toISOString() }), (error) => error instanceof FreshnessReceiptError && error.code === "freshness_receipt_unknown");
-  assert.throws(() => verifySnapshotFreshnessReceipt({ receipt, manifest, now: new Date(Date.parse(receipt.observed_at) - 1).toISOString() }), (error) => error instanceof FreshnessReceiptError && error.code === "freshness_clock_rollback");
-});
-
-test("future, stale, and temporally reordered authority gates fail closed", () => {
+test("a public receipt verifier validates bounded temporal and manifest properties but cannot issue a receipt", () => {
+  const manifest = manifestFor(forgedSnapshot());
   const now = Date.now();
-  const future = fixture({
-    frozen: snapshot({ frozenAt: new Date(now - 3000).toISOString() }),
-    timestamps: { evaluator: new Date(now - 1000).toISOString(), diagnosis: new Date(now + 60_000).toISOString() }
-  });
-  expectPolicyError(() => future.authority.decide(selector()), "authority_gate_temporal_invalid");
-  const stale = fixture({
-    frozen: snapshot({ frozenAt: new Date(now - FRESHNESS_MAX_AGE_MS - 1000).toISOString() })
-  });
-  expectPolicyError(() => stale.authority.decide(selector()), "freshness_receipt_expired");
-  const reordered = fixture({
-    frozen: snapshot({ frozenAt: new Date(now - 3000).toISOString() }),
-    timestamps: { evaluator: new Date(now - 500).toISOString(), diagnosis: new Date(now - 1000).toISOString() }
-  });
-  expectPolicyError(() => reordered.authority.decide(selector()), "authority_gate_temporal_invalid");
+  const receipt = testReceipt({ manifest, observedAt: new Date(now - 1_000).toISOString() });
+
+  assert.equal(freshness.verifySnapshotFreshnessReceipt({ receipt, manifest, now: new Date(now).toISOString() }).status, "captured_fixture");
+  assert.throws(
+    () => freshness.verifySnapshotFreshnessReceipt({ receipt, manifest, now: new Date(now - 2_000).toISOString() }),
+    (error) => error instanceof freshness.FreshnessReceiptError && error.code === "freshness_clock_rollback"
+  );
+  assert.throws(
+    () => freshness.verifySnapshotFreshnessReceipt({ receipt, manifest, now: new Date(Date.parse(receipt.expires_at)).toISOString() }),
+    (error) => error instanceof freshness.FreshnessReceiptError && error.code === "freshness_receipt_expired"
+  );
+  const mismatched = { ...receipt, snapshot_content_sha256: HASH("e") };
+  mismatched.receipt_sha256 = policy.sha256Canonical(unsignedReceipt(mismatched));
+  assert.throws(
+    () => freshness.verifySnapshotFreshnessReceipt({ receipt: mismatched, manifest, now: new Date(now).toISOString() }),
+    (error) => error instanceof freshness.FreshnessReceiptError && error.code === "freshness_receipt_snapshot_mismatch"
+  );
+  const unknown = { ...receipt, schema_version: "unknown.v1" };
+  unknown.receipt_sha256 = policy.sha256Canonical(unsignedReceipt(unknown));
+  assert.throws(
+    () => freshness.verifySnapshotFreshnessReceipt({ receipt: unknown, manifest, now: new Date(now).toISOString() }),
+    (error) => error instanceof freshness.FreshnessReceiptError && error.code === "freshness_receipt_unknown"
+  );
 });
 
-test("reverse cross-run lock mismatches cannot hide outside the incident-header query", () => {
-  const current = contract();
-  const contractHash = sha256Canonical(current);
-  const lockKey = failureLockKey({ incident_id: INCIDENT, contract_sha256: contractHash, target: current.target });
-  const reverse = {
-    id: lockKey,
-    runId: "run-prior-other-header",
-    incidentId: "other-incident",
-    recordedAt: new Date(Date.now() - 1000).toISOString(),
-    type: "autonomy.locked",
-    actor: "runtime",
-    payload: {
-      schema_version: "flowpulse.autonomy.v1",
-      lock_key: lockKey,
-      incident_id: INCIDENT,
-      contract_sha256: contractHash,
-      target: current.target,
-      binding_sha256: HASH("b"),
-      decision_sha256: HASH("d"),
-      failed_event_ref: "verification-failed",
-      reason_code: "verification_failed"
-    },
-    evidenceRefs: [],
-    correlationId: "reverse-cross-run-lock"
-  };
-  const decision = fixture({ locks: [reverse] }).authority.decide(selector()).decision;
-  assert.equal(decision.failure_lock_state.status, "unavailable");
-  assert.equal(decision.outcome, "blocked");
+test("the deferred authority core no longer derives receipt time from caller snapshot metadata", () => {
+  const source = readFileSync(new URL("../src/autonomy-policy.mjs", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /metadata\(\)\.frozen_at/);
+  assert.doesNotMatch(source, /createSnapshotFreshnessReceipt/);
 });
 
-test("composition does not freeze or mutate caller-owned snapshot input", () => {
-  const frozen = snapshot();
-  const before = structuredClone(frozen.records);
-  const { authority } = fixture({ frozen });
-  authority.decide(selector());
-  assert.deepEqual(frozen.records, before);
-  assert.equal(Object.isFrozen(frozen.records), false);
+test("the recursive production import graph contains no authority factory, registration, or receipt issuer edge", () => {
+  const sourceRoot = resolve(new URL("../src", import.meta.url).pathname);
+  const graph = collectModuleGraph(sourceRoot);
+  const forbiddenSymbols = /\b(?:createServerAutonomyAuthority|registerServerFrozenSnapshot|createSnapshotFreshnessReceipt)\b/;
+
+  for (const [file, source] of graph) {
+    assert.doesNotMatch(source, new RegExp(`export\\s+(?:function|const|class)\\s+${forbiddenSymbols.source}`), relative(sourceRoot, file));
+    const imports = [...source.matchAll(/(?:import|export)\s+(?:[^"']*?\s+from\s+)?["']([^"']+)["']/g)].map((match) => match[1]);
+    for (const specifier of imports) {
+      assert.equal(forbiddenSymbols.test(specifier), false, `${relative(sourceRoot, file)} imports forbidden authority surface`);
+    }
+  }
+
+  for (const entry of ["server.mjs", "openai.mjs", "agent-control-service.mjs", "development-runtime.mjs"]) {
+    assert.equal(reachesModule(graph, resolve(sourceRoot, entry), new Set([
+      resolve(sourceRoot, "autonomy-policy.mjs"),
+      resolve(sourceRoot, "autonomy-freshness.mjs")
+    ])), false, `${entry} must not reach the deferred authority composition`);
+  }
 });
 
-test("independent workers preserve one immutable deterministic appendIfAbsent winner", async () => {
+test("claim and failure-lock identities remain deterministic, bounded, and truth-neutral", () => {
+  const contractHash = HASH("a");
+  const claim = policy.preauthorizationClaimId({
+    incident_id: "inc-cache",
+    environment: "captured_demo",
+    target: "edge-cache",
+    contract_sha256: contractHash,
+    envelope_sha256: HASH("b")
+  });
+  assert.match(claim, /^preauthorization-claim-[a-f0-9]{32}$/);
+  assert.equal(claim, policy.preauthorizationClaimId({
+    incident_id: "inc-cache",
+    environment: "captured_demo",
+    target: "edge-cache",
+    contract_sha256: contractHash,
+    envelope_sha256: HASH("b")
+  }));
+  assert.equal(policy.failureLockKey({ incident_id: "inc-cache", contract_sha256: contractHash, target: "edge-cache" }), policy.failureLockKey({ incident_id: "inc-cache", contract_sha256: contractHash, target: "edge-cache" }));
+});
+
+test("independent workers preserve one immutable deterministic appendIfAbsent winner", async (t) => {
   const directory = mkdtempSync(join(tmpdir(), "flowpulse-autonomy-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
   const path = join(directory, "ledger.sqlite");
   new Ledger(path);
   const id = "preauthorization-claim-worker-test";
-  const events = ["run-cache-1", "run-cache-2"].map((runId) => ({
+  const gate = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT);
+  const events = ["run-cache-1", "run-cache-2"].map((runId, index) => ({
     id,
     runId,
-    incidentId: INCIDENT,
+    incidentId: "inc-cache-1",
     type: "preauthorization.consumed",
     actor: "test",
-    payload: { decision_sha256: HASH(runId === "run-cache-1" ? "a" : "b") },
+    payload: { decision_sha256: HASH(index ? "b" : "a") },
     evidenceRefs: [],
     correlationId: `worker-${runId}`
   }));
-  const gate = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT);
   const workers = events.map((event) => startClaimWorker({ path, event, gate }));
   await Promise.all(workers.map((worker) => worker.ready));
   Atomics.store(new Int32Array(gate), 0, 1);
   Atomics.notify(new Int32Array(gate), 0, workers.length);
   const results = await Promise.all(workers.map((worker) => worker.result));
   assert.equal(results.filter((result) => result.inserted).length, 1);
-  const stored = new Ledger(path).get(id);
-  assert.equal(stored.payload.decision_sha256, results.find((result) => result.inserted).event.payload.decision_sha256);
+  assert.equal(new Ledger(path).get(id).payload.decision_sha256, results.find((result) => result.inserted).event.payload.decision_sha256);
 });
+
+function forgedSnapshot({ frozenAt = new Date(Date.now() - 3_000).toISOString() } = {}) {
+  return new FrozenEvidenceSnapshot({
+    id: "forged-snapshot",
+    records: [
+      { id: "forged-change", kind: "trace", source: "forged-ledger", mode: "captured_fixture", provenance: { sha256: HASH("c") } },
+      { id: "forged-trace", kind: "trace", source: "forged-otlp", mode: "captured_fixture", provenance: { sha256: HASH("d") } }
+    ],
+    metadata: { mode: "deterministic_replay", frozen_at: frozenAt, evidence_ids: ["forged-change", "forged-trace"], caps: { max_records: 120, max_bytes: 131072 } }
+  });
+}
+
+function manifestFor(snapshot) {
+  const records = snapshot.records.map((record) => ({ id: record.id, sha256: record.provenance.sha256, source: record.source, mode: record.mode })).sort((left, right) => left.id.localeCompare(right.id));
+  const unsigned = { id: snapshot.id, mode: snapshot.metadata().mode, content_sha256: policy.sha256Canonical(records), records };
+  return { ...unsigned, manifest_sha256: policy.sha256Canonical(unsigned) };
+}
+
+function appendForgedGateRows(ledger, snapshot) {
+  const now = Date.now();
+  const refs = snapshot.records.map((record) => record.id);
+  const manifest = manifestFor(snapshot);
+  const intent = AUTONOMY_POLICY_ARTIFACT.intents.find((candidate) => candidate.id === "captured-cache-flush");
+  const evaluation = {
+    accepted: true,
+    score: 0.99,
+    classification: "confirmed_system_bug",
+    phase: "diagnosis_pre_approval",
+    gate_checks: { initiating_change: true, temporal_order: true, implementation_semantics: true, controlled_off_on_contrast: true, repeated_direct_failures: true },
+    reason: "self-consistent forged gate",
+    missing_evidence: [],
+    counter_evidence_refs: refs
+  };
+  ledger.append({ id: "forged-evaluation", runId: "forged-run", incidentId: "forged-incident", recordedAt: new Date(now - 1_500).toISOString(), type: "evaluation.accepted", actor: "forged", payload: { ...evaluation, hypothesis_id: "forged-hypothesis" }, evidenceRefs: refs, correlationId: "forged-evaluation" });
+  ledger.append({ id: "forged-diagnosis", runId: "forged-run", incidentId: "forged-incident", recordedAt: new Date(now - 750).toISOString(), type: "diagnosis.gate.passed", actor: "forged", payload: { snapshot: { id: manifest.id, content_sha256: manifest.content_sha256, mode: manifest.mode }, accepted: { diagnosis: { id: "forged-hypothesis", evidence_refs: refs }, evaluation, evidence_ids: refs, proposed_action_contract_sha256: policy.sha256Canonical(intent.contract) } }, evidenceRefs: refs, correlationId: "forged-diagnosis" });
+}
+
+function invokeFormerPublicMint({ publicMint, ledger, snapshot }) {
+  const authority = publicMint({ ledger });
+  authority.registerServerFrozenSnapshot({ run_id: "forged-run", incident_id: "forged-incident", snapshot });
+  return authority.decide({ run_id: "forged-run", incident_id: "forged-incident", intent_id: "captured-cache-flush" }).decision.outcome;
+}
+
+async function assertFormerNamedImportUnavailable(relativeModule, symbol) {
+  const moduleUrl = new URL(relativeModule, import.meta.url).href;
+  const source = `import { ${symbol} } from ${JSON.stringify(moduleUrl)}; export default ${symbol};`;
+  await assert.rejects(import(`data:text/javascript,${encodeURIComponent(source)}`), /does not provide an export named/);
+}
+
+function testReceipt({ manifest, observedAt }) {
+  const unsigned = {
+    schema_version: freshness.FRESHNESS_RECEIPT_SCHEMA_VERSION,
+    issuer: TEST_ISSUER,
+    snapshot_id: manifest.id,
+    snapshot_content_sha256: manifest.content_sha256,
+    snapshot_manifest_sha256: manifest.manifest_sha256,
+    snapshot_mode: manifest.mode,
+    source_mode: "captured_fixture",
+    truth_mode: "captured_simulation",
+    observed_at: observedAt,
+    expires_at: new Date(Date.parse(observedAt) + freshness.FRESHNESS_MAX_AGE_MS).toISOString()
+  };
+  return { ...unsigned, receipt_sha256: policy.sha256Canonical(unsigned) };
+}
+
+function unsignedReceipt(receipt) {
+  const { receipt_sha256: _ignored, ...unsigned } = receipt;
+  return unsigned;
+}
+
+function collectModuleGraph(root) {
+  const files = [];
+  const walk = (directory) => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const candidate = join(directory, entry.name);
+      if (entry.isDirectory()) walk(candidate);
+      else if (entry.isFile() && entry.name.endsWith(".mjs")) files.push(candidate);
+    }
+  };
+  walk(root);
+  return new Map(files.map((file) => [file, readFileSync(file, "utf8")]));
+}
+
+function reachesModule(graph, start, targets, seen = new Set()) {
+  if (targets.has(start)) return true;
+  if (seen.has(start)) return false;
+  seen.add(start);
+  const source = graph.get(start);
+  if (!source) return false;
+  const imports = [...source.matchAll(/(?:import|export)\s+(?:[^"']*?\s+from\s+)?["']([^"']+)["']/g)].map((match) => match[1]);
+  return imports.some((specifier) => {
+    if (!specifier.startsWith(".")) return false;
+    const dependency = resolve(resolve(start, ".."), specifier);
+    return reachesModule(graph, dependency.endsWith(".mjs") ? dependency : `${dependency}.mjs`, targets, seen);
+  });
+}
 
 function startClaimWorker({ path, event, gate }) {
   const worker = new Worker(new URL("./helpers/autonomy-claim-worker.mjs", import.meta.url), { workerData: { path, event, gate } });

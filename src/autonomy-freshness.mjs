@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
 
 export const FRESHNESS_RECEIPT_SCHEMA_VERSION = "flowpulse.snapshot-freshness.v1";
-export const FRESHNESS_RECEIPT_ISSUER = "flowpulse.authority-composition.v1";
 export const FRESHNESS_MAX_AGE_MS = 5 * 60 * 1000;
 
+const FRESHNESS_RECEIPT_ISSUER = "flowpulse.authority-composition.v1";
 const HEX_64 = /^[a-f0-9]{64}$/;
 
 export class FreshnessReceiptError extends Error {
@@ -15,27 +15,8 @@ export class FreshnessReceiptError extends Error {
   }
 }
 
-export function createSnapshotFreshnessReceipt({ manifest, frozen_at }) {
-  const snapshot = normalizeManifest(manifest);
-  const observedAt = timestamp(frozen_at, "frozen_at");
-  const source = sourceForMode(snapshot.mode);
-  const receipt = {
-    schema_version: FRESHNESS_RECEIPT_SCHEMA_VERSION,
-    issuer: FRESHNESS_RECEIPT_ISSUER,
-    snapshot_id: snapshot.id,
-    snapshot_content_sha256: snapshot.content_sha256,
-    snapshot_manifest_sha256: snapshot.manifest_sha256,
-    snapshot_mode: snapshot.mode,
-    source_mode: source.source_mode,
-    truth_mode: source.truth_mode,
-    observed_at: new Date(observedAt).toISOString(),
-    expires_at: new Date(observedAt + FRESHNESS_MAX_AGE_MS).toISOString()
-  };
-  return Object.freeze({ ...receipt, receipt_sha256: sha256Canonical(receipt) });
-}
-
-// This verifier is safe to expose for tests and projections: callers can
-// validate a receipt but cannot inject one into the authority composition.
+// Verification is safe for a bounded projection. Receipt issuance stays inside
+// the future server-owned capture closure and is deliberately not exported.
 export function verifySnapshotFreshnessReceipt({ receipt, manifest, now }) {
   assertExactObject(receipt, [
     "schema_version", "issuer", "snapshot_id", "snapshot_content_sha256", "snapshot_manifest_sha256",

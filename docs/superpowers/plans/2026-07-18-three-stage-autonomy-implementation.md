@@ -198,16 +198,33 @@ contract consumed by later API and browser tests.
 Purpose: make risk decision deterministic and inspectable before wiring a
 runtime or screen.
 
+### Slice 1.5 authority-composition closure
+
+Until Slice 2 composes a server-owned capture and authority provider inside the
+runtime closure, production modules expose no authority factory, snapshot
+registration, or freshness-receipt issuer. Public policy exports are limited to
+non-authority hash/identity utilities and receipt verification. This prevents a
+local importer from combining a real `Ledger`, a caller-created
+`FrozenEvidenceSnapshot`, and forged self-consistent rows to mint an autonomy
+decision. The future Slice 2 composition must own capture time and the exact
+snapshot manifest; it accepts no request/model/UI authority fields and exposes
+only the bounded selector `{run_id, incident_id, intent_id}` to request flow.
+
+Frontend/backend ownership remains fixed: server-owned capture + ledger +
+checked-in registry → private provider → `autonomy.decision.recorded` → bounded
+projection → UI. The UI sends only a permitted selector and renders the
+projection; it never calculates risk, freshness, evidence membership, locks,
+contracts, preauthorization, receipt validity, or repair truth.
+
 Files/functions:
 
-- Add `src/autonomy-policy.mjs` with a server-composition-only authority
-  capability. Its only decision selector is the server-resolved
-  `{ run_id, incident_id, intent_id }`; the capability itself reads the actual
-  ledger, frozen snapshot, checked-in versioned registry, snapshot-bound
-  freshness receipt, and bounded type-scoped lock query. Raw ledger rows,
-  manifests, envelopes, authority objects, risk, source state, freshness, and
-  preauthorization references are not request/model/UI inputs. The provider
-  returns the v1 decision plus canonical decision event.
+- Keep `src/autonomy-policy.mjs` and `src/autonomy-freshness.mjs` limited to
+  non-authority identity/hash and receipt-verification primitives in Slice 1.
+  Slice 2 must construct the private provider inside the server runtime, where
+  its only request-facing input is the server-resolved
+  `{ run_id, incident_id, intent_id }` selector. Raw ledger rows, manifests,
+  envelopes, authority objects, risk, source state, freshness, and
+  preauthorization references are never request/model/UI inputs.
 - Extend `src/ledger.mjs` only with the bounded, globally ordered
   `autonomy.locked` type query and atomic `appendIfAbsent` claim use required
   for cross-run lock and single-use preauthorization. It must not rewrite
@@ -219,34 +236,35 @@ Files/functions:
 
 Data contract/events:
 
-- The trusted provider returns the v1 decision schema and one canonical factor
-  result for every hard gate.
-- The provider derives authority only from the actual decoded append-only ledger
-  stream and frozen snapshot store. It binds the evaluator and
-  deterministic-gate event IDs, sequences, payload hashes, manifest hash, and
-  selected evidence record hashes/sources/modes. Request/model/UI values cannot
-  provide or deserialize this authority object; confidence alone cannot satisfy
-  evidence completeness.
+- Slice 1 produces no autonomy decision and has no executable authority path.
+  Slice 2's private provider will return the v1 decision schema and one
+  canonical factor result for every hard gate.
+- That future provider derives authority only from the actual decoded
+  append-only ledger stream and server-owned frozen snapshot store. It binds the
+  evaluator and deterministic-gate event IDs, sequences, payload hashes,
+  manifest hash, and selected evidence record hashes/sources/modes.
+  Request/model/UI values cannot provide or deserialize this authority object;
+  confidence alone cannot satisfy evidence completeness.
 - The compact legacy `DevelopmentRuntime` evaluator rows are non-authoritative
   for this provider. Slice 2 must emit the full strict evaluator and
   proposed-action-contract binding before any runtime path can request a
   preauthorized decision; checkout remains an Owner-Gated medium-risk path.
-- `autonomy.decision.recorded` appends once after deterministic diagnosis
-  acceptance and before any action request.
+- Slice 2, not Slice 1, may append `autonomy.decision.recorded` once after
+  deterministic diagnosis acceptance and before any action request.
 - A decision binds `envelope_sha256`, `contract_sha256`, `incident_id`,
   `run_id`, `environment`, `snapshot_sha256`, and the exact snapshot manifest
   hash/freshness receipt. The server obtains the envelope only from its
   checked-in registry; no request, model response, or advisory item can choose
   it. Future/freshness-expired or receipt-mismatched gate events are
   non-actionable.
-- A real executor revalidates the same bindings, current envelope status,
+- A later real executor revalidates the same bindings, current envelope status,
   expiry, source freshness, and incident-wide lock immediately before mutation.
   It may proceed only after its deterministic `preauthorization.consumed`
   `appendIfAbsent` claim reports `inserted: true`.
 - In P0 the low decision may reach only `action.simulated` with
   `truth_mode: captured_simulation`; no live executor consumes a
   preauthorization, and the simulated path does not consume a real envelope.
-- The module has no provider, network, UI, or ledger-write dependency.
+- Slice 1 has no provider, network, UI, or ledger-write dependency.
 
 Tests first:
 
