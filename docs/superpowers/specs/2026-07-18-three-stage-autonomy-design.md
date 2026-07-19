@@ -1,517 +1,453 @@
-# FlowPulse three-stage autonomy design
+# FlowPulse three-stage autonomy and incident-integration design
 
-Status: approved product design
+Status: approved product design; implementation requires a separate reviewed plan
+
 Date: 2026-07-18
-Scope: P0 product and control-plane design; no new remediation authority is granted by this document.
 
-## Objective and competition narrative
+Baseline: `d0b3f85adc1c65b9c34600aa1d4f9830a6c32cb1`
 
-FlowPulse presents a production incident as one transparent operating loop rather
-than as a collection of dashboards and agent demos:
+Scope: competition P0 design only. This document grants no remediation,
+provider, deployment, notification-delivery, or production authority.
+
+## 1. Decision and loop contract
+
+### Product decision
+
+**FlowPulse — Incident Flight Recorder + Agentic Autotriage — is an
+evidence-bound harness: it reconstructs causality, rejects unsupported
+diagnoses, and advances only policy-safe actions through deterministic gates
+and human approval.**
+
+It is a Developer Tools product, not a generic observability dashboard,
+connector marketplace, autonomous production responder, or data-platform
+control plane.
+
+The operating loop is:
 
 ```text
 Monitor -> Agent Workbench -> Decision & Recovery -> Monitor
 ```
 
-The product continuously makes system state and incident status legible, then
-lets a bounded agent harness collect evidence, form and challenge hypotheses,
-and decide whether a safe action is even eligible. Humans retain authority over
-material risk. Every observation, tool call, evaluator verdict, policy decision,
-approval, action, verification, and learning result is traceable to the
-append-only ledger.
+### Loop contract
 
-The competition story remains intentionally narrow and truthful:
-
-- The credential-free judge path is a deterministic captured Astronomy Shop
-  replay, including the fixture-supported checkout, payment, retry, Kafka, and
-  downstream narrative.
-- The real local development path is a narrower checkout-to-payment proof:
-  a versioned `paymentUnreachable` change, observed checkout flag consumption,
-  direct payment resolver failures, an exact allowlisted rollback, fresh
-  verification, and an offline backtest.
-- A model may investigate with bounded read-only tools and propose a strict
-  repair contract. It never receives free command authority. The evaluator,
-  deterministic validators, policy, owner decision, and code-owned executor
-  remain separate boundaries.
-
-This design does not claim that GPT has already completed a successful real
-production repair. The preserved real GPT workflow failed closed when its
-evidence was insufficient; successful local repair evidence is deterministic
-and owner-gated.
-
-## Authority principles
-
-1. The append-only ledger is the runtime authority. Langfuse and visual
-   projections are observability surfaces, not control-plane authorities.
-2. Immutable current evidence and deterministic validators decide whether an
-   action is eligible. Model output, a summary, and retrieved historical
-   experience never substitute for evidence.
-3. A repair can only execute through a checked-in, typed allowlisted contract,
-   with idempotency, rollback, receipt, and verification requirements.
-4. Policy-bounded progressive autonomy is the approved model. It is not
-   severity-based autopilot.
-5. The current checkout-to-payment repair remains a per-incident Owner Gate.
-   It is not a low-risk auto-remediation example.
-
-## Current-state mapping
-
-| Product concern | Existing FlowPulse primitive | Gap to close in this design |
-| --- | --- | --- |
-| System visibility | Architecture and Live canvases, source freshness, topology, component drawers | Present them as one Monitor stage; add a first-class monitor trigger and degraded-monitor state. |
-| Incident authority | `incident.opened`, append-only run events, captured replay and local development modes | Make trigger source, freshness, and transition reason visible in one Evidence Track. |
-| Evidence work | Frozen evidence snapshots, bounded tools, context compiler, evidence IDs/hashes/provenance | Surface the active goal, tool coverage, omissions, and stop reason in Agent Workbench. |
-| Diagnosis and challenge | Investigator, independent evaluator, one bounded replan, deterministic Diagnosis Gate | Add an explicit autonomy assessment after diagnosis acceptance; do not treat acceptance as permission to execute. |
-| Human control | `repair.proposed`, `approval.requested`, `approval.granted`, exact contract validation | Add explicit reject, defer, escalation, and preauthorization semantics. |
-| Execution and recovery | Code-owned allowlisted executor, receipt, fresh verification, regression, backtest, policy | Keep these gates intact; make their decision inputs and outcomes understandable in Decision & Recovery. |
-| Learning | Regression artifact and executed offline backtest | Distinguish recorded learning from active promotion; add advisory retrieval only after P0. |
-| Agent collaboration | Ledger-governed Manager and specialist projections | Reframe it as one Agent Workbench; do not imply every visual role is a separate LLM process. |
-| Notifications | Local UI banners and manager activity | Add ledger-visible notification and escalation intent/receipt events before claiming operational paging. |
-
-## Exactly three top-level stages
-
-The application has exactly these primary navigation stages. Existing canvases
-and drawers are retained as stage-local views instead of being removed.
-
-### 1. Monitor
-
-Purpose: continuously show the best available system-health and incident state.
-
-Entry conditions:
-
-- application opens;
-- a run is resumed from ledger state;
-- a source is connected, replayed, stale, or disconnected.
-
-Views:
-
-- `Architecture` and `Live` are Monitor subviews;
-- current source label, freshness, and provenance remain visible;
-- topology, components, status, active incidents, changes, and evidence
-  summaries remain inspectable.
-
-Exit conditions:
-
-- a deterministic monitor rule records `incident.opened` with source and
-  evidence references; or
-- a human explicitly opens an investigation against an eligible snapshot.
-
-If source freshness is not sufficient, Monitor remains visible but enters
-`degraded`; it must not silently start an investigation or label captured data
-as live.
-
-### 2. Agent Workbench
-
-Purpose: make the agent's bounded evidence work, evaluation, and stopping
-decision legible before a repair can be considered.
-
-Entry conditions:
-
-- a ledger-backed incident exists; and
-- a deterministic source/readiness check permits a frozen evidence snapshot.
-
-Required internal sequence:
-
-```text
-goal anchored
-  -> snapshot frozen
-  -> bounded read-only tools
-  -> hypothesis
-  -> independent evaluator
-  -> at most one evidence replan
-  -> deterministic Diagnosis Gate
-  -> autonomy decision
-```
-
-The Workbench owns Diagnose, agent activity, evidence drawers, evaluator
-counter-evidence, and the Manager conversation. The conversation may explain
-or select safe read-only work, but cannot approve or execute remediation.
-
-Exit conditions:
-
-- accepted diagnosis plus passed deterministic gate and an
-  `autonomy.decision.recorded` event -> Decision & Recovery;
-- false positive -> return to Monitor with a resolved/no-action status;
-- insufficient evidence, tool failure, stale source, model failure, or
-  evaluator rejection after the one allowed replan -> Decision & Recovery in
-  an escalation/blocked state, with no repair authority.
-
-### 3. Decision & Recovery
-
-Purpose: expose the policy decision, the exact human decision where required,
-the bounded action, recovery checks, and learning result.
-
-Entry conditions:
-
-- `autonomy.decision.recorded`; or
-- an Agent Workbench stop that requires human escalation.
-
-Views:
-
-- action options, evidence and counter-evidence, risk factors, blast radius,
-  rollback, and verification plan;
-- Owner Gate and its exact contract;
-- execution receipt, recovery checks, before/after Compare, regression,
-  backtest, and policy result.
-
-Exit conditions:
-
-- verified recovery plus a passing executed offline backtest -> Monitor with a
-  resolved incident and learning record;
-- rejected/deferred action -> Monitor with a watch state or Agent Workbench
-  if new evidence is requested;
-- repair/verification failure -> human escalation. The run is not allowed to
-  try another remediation automatically.
-
-## Compact state machine and exceptions
-
-```text
-Monitor.healthy | Monitor.degraded
-  -- deterministic trigger / explicit eligible investigation --> AgentWork.collecting
-
-AgentWork.collecting --> AgentWork.evaluating --> AgentWork.replanning (max 1)
-  -- accepted + deterministic gate --> Decision.risk_assessed
-  -- false positive --> Monitor.no_action
-  -- insufficient/tool/model/stale --> Decision.escalated
-
-Decision.risk_assessed
-  -- low + exact active preauthorization --> Decision.auto_authorized
-  -- medium --> Decision.owner_review
-  -- high/blocked --> Decision.explicit_human_decision
-
-Decision.auto_authorized | Decision.owner_review
-  -- exact action authority --> Decision.executing --> Decision.verifying
-  -- reject/defer/escalate --> Monitor.watch | AgentWork.collecting
-
-Decision.verifying
-  -- all recovery + backtest gates --> Monitor.resolved
-  -- failed/mixed/absent evidence --> Decision.escalated
-```
-
-Exception rules:
-
-| Condition | Required behavior |
+| Element | Contract |
 | --- | --- |
-| Insufficient evidence | Record a safe failure episode and missing evidence classes. Do not propose executable repair or approval. |
-| False positive | Record evaluator rejection; permit only one bounded replan; then stop and return to Monitor. |
-| Tool/connector failure | Mark source/control state degraded. A fixture cannot replace live evidence silently. |
-| Model refusal, malformed output, incomplete output, transport failure | Record one typed safe failure; emit no hypothesis, evaluation, repair, or approval authority events. |
-| Stale/disconnected source | Block diagnosis acceptance and all autonomous execution. |
-| Active SEV-1 | Notify/escalate to Incident Commander and service owner; no automatic consequential repair. |
-| Missing owner | Medium/high actions remain blocked; record escalation. |
-| Repair or verification failure | Stop automatic action, block promotion, require explicit human follow-up. |
-| Repeated failure | Any prior repair or verification failure forces the next decision to human-required until an owner resets policy through a recorded action. |
-| Notification failure | In a production-like low-risk auto path, block execution rather than claim delivery. |
+| Goal | Give an operator a replayable, evidence-backed incident decision without giving a model, UI, connector, or fixture remediation authority. |
+| Inputs | Server-owned ledger, checked-in policy registry, frozen evidence snapshots, bounded source health, and typed repair contracts. |
+| Execute | Normalize evidence, freeze it, investigate with bounded tools, challenge claims, apply deterministic gates, record a policy decision, then require the applicable human gate. |
+| Check | Exact evidence/provenance/causal/contract/freshness/lock checks; post-action verification and offline backtest where a real action is permitted. |
+| Feedback | Unknown, stale, malformed, contradictory, or unavailable input is non-actionable; it never falls back to fixture evidence or permissive UI state. |
+| Record | The append-only ledger records evidence refs, evaluator outcome, decision, human action, receipt, verification, and learning result. |
+| Stop | Stop at insufficient evidence, model/tool failure, stale source, evaluator rejection after the bounded replan, missing owner, failure lock, or failed verification. |
+| Human gate | Checkout-to-payment remains per-incident Owner-Gated. Any external effect, publishing, or real low-risk rollout needs separate authorization. |
 
-## Progressive autonomy decision
+## 2. Honest capability ledger
 
-### Decision rule
+The following labels are independent. A single label such as `live` must never
+stand in for all three facts.
 
-Autonomy is determined by explicit factor gates, not a single opaque score.
-Severity is one input and can block automation, but can never by itself grant
-permission.
+| Axis | Exact enum | Meaning |
+| --- | --- | --- |
+| `source_health` | `live | stale | disconnected | unavailable` | Current reachability and freshness of the source. |
+| `evidence_mode` | `live_stream | frozen_real_snapshot | captured_fixture` | Where the evidence being reasoned over came from. |
+| `execution_mode` | `deterministic_replay | gpt_model_only | real_local_development | captured_simulation` | What generated the workflow state or action record. |
 
-An action can auto-execute only if every condition below is true:
+Truth rules:
 
-1. impact is low for the scoped environment;
-2. current evidence is complete, fresh, non-contradictory, and has passed the
-   independent evaluator plus deterministic causal gate;
-3. action risk is low and the action is reversible and idempotent;
-4. blast radius is exactly one permitted component in the preauthorized
-   environment;
-5. the action matches a live versioned allowlist and preauthorization envelope
-   exactly;
-6. a rollback and fresh verification plan are executable and bounded;
-7. no repair or verification failure exists for the active incident/action
-   lineage; and
-8. required notification targets are available and a notification receipt can
-   be recorded.
+- A frozen real OTLP snapshot is `evidence_mode=frozen_real_snapshot`, even if
+  its source was live when captured. It is never displayed as a live stream.
+- The credential-free judge path is a captured fixture running in
+  `deterministic_replay` mode.
+- The historical real local Astronomy Shop proof is a narrower
+  `real_local_development` record. It is not proof that the local stack is
+  currently ready.
+- The preserved paid GPT workflow is a `gpt_model_only` attempt over a frozen
+  real snapshot that failed closed. It did not create a repair proposal,
+  approval, or repair execution.
+- A low-risk demonstration in P0 is `captured_fixture` plus
+  `captured_simulation`; it emits `action.simulated`, never `repair.executed`,
+  a live receipt, delivered notification, or executed-backtest proof.
 
-Any failed, unknown, or stale factor chooses a stricter outcome. There is no
-best-effort downgrade from medium/high to automatic execution.
+Current product sources are the captured incident bundle and OTLP JSONL
+projection. They remain the only product sources in P0.
 
-### Factor matrix
+## 3. Three operating stages
 
-| Factor | Low / eligible for preauthorized auto action | Medium / human review | High or blocked / explicit human decision |
-| --- | --- | --- | --- |
-| Impact severity | Low, non-critical scoped impact | Customer-facing but bounded impact | SEV-1, data integrity, security, or broad customer impact |
-| Evidence completeness and confidence | Fresh, complete, evaluator-accepted, deterministic gate passed | Causal mechanism proven but scope/impact needs review | Missing, conflicting, stale, or unsupported |
-| Action risk | Typed, idempotent, reversible | Reversible but customer-path or operationally material | Destructive, irreversible, unbounded, or unknown |
-| Blast radius | One component and one preauthorized environment | One production service or a bounded dependency group | Multiple services, regions, tenants, or shared data |
-| Policy/allowlist | Exact active preauthorization | Exact allowlist but no active preauthorization | Outside allowlist or scope |
-| Verification readiness | Fresh thresholds, rollback, and receipt all ready | Verification possible but needs human observation | No trustworthy post-action evidence |
-| Failure history | Zero related repair/verification failures | No decisive prior result | Any related repair/verification failure |
-| Owner/notification readiness | Required destinations have a recordable receipt | Owner is available for review | Owner/IC unavailable, or notification cannot be delivered |
+### Monitor
 
-### Permission matrix
+Monitor exposes health, source truth, topology, active incident state, changes,
+and bounded evidence summaries. Architecture and Live remain Monitor subviews.
 
-| Risk class | Agent may inspect | Agent may propose | Agent may execute | Notification and human gate | Verification and rollback |
-| --- | --- | --- | --- | --- | --- |
-| Low | All bounded read-only evidence tools | Exact typed repair contract only | Only exact active preauthorized action; otherwise no | Notify owner/on-call and record receipt. Preauthorization is the human gate made before the incident. | Mandatory fresh verification and tested rollback; any failure escalates. |
-| Medium | All bounded read-only evidence tools | Options with evidence, counter-evidence, blast radius, rollback, and verification | No | Explicit per-incident Owner approval is mandatory. | Mandatory fresh verification; failure blocks further automatic repair. |
-| High / blocked | All bounded read-only evidence tools | Human-facing options or handoff/runbook only | Never through FlowPulse unless a future separately approved contract exists | Notify Incident Commander and owner; require explicit decision. | No claim of recovery without external receipt and fresh evidence. |
+Entry: application load, ledger resume, or source-health update.
 
-The current `checkout -> payment` case is medium risk: it changes a
-customer-path flag and recreates checkout. It therefore retains the existing
-per-incident Owner Gate even if its repair is reversible and allowlisted.
+Exit: a deterministic trigger opens an incident, or a human starts an eligible
+investigation against a server-owned frozen snapshot.
 
-## Versioned preauthorization envelope
+If source health is stale, disconnected, or unavailable, Monitor remains
+visible and explicitly degraded. It must not start an investigation or present
+captured data as live.
 
-Preauthorization is a strict policy artifact, not a model preference. It is
-created and revoked by a human-owned control-plane process and is evaluated
-before any automatic action.
+### Agent Workbench
+
+Agent Workbench exposes a bounded evidence loop:
+
+```text
+goal -> snapshot -> bounded tools -> hypothesis -> independent evaluator
+     -> at most one replan -> deterministic diagnosis gate -> policy decision
+```
+
+It shows selected and omitted evidence, tool coverage, hypotheses,
+counter-evidence, evaluator outcome, and why the harness stopped. The model,
+knowledge base, summaries, and role-card UI are advisory; immutable evidence
+and deterministic validators are authoritative.
+
+Exit: an accepted deterministic diagnosis yields a policy decision, or any
+unverifiable condition yields a visible blocked/escalated decision with no
+repair authority.
+
+### Decision & Recovery
+
+Decision & Recovery shows the policy decision, exact contract, risk factors,
+blast radius, rollback, verification plan, Owner Gate, receipt, Compare view,
+regression, backtest, and policy result.
+
+Medium checkout-to-payment work requires an explicit per-incident Owner Gate.
+Low P0 work is a captured policy simulation only. High, SEV-1, unavailable,
+stale, conflicting, or locked decisions are non-actionable.
+
+## 4. Authority model
+
+The only future authority chain is:
+
+```text
+server-owned capture + append-only Ledger + checked-in registry
+  + trusted time + private freshness receipt + bounded lock query
+  -> private authority closure
+  -> autonomy.decision.recorded
+  -> bounded backend projection
+  -> UI
+```
+
+### Slice 2 authority closure
+
+Slice 2 creates the one private, non-exported server composition closure. It
+owns the real Ledger, checked-in registry, capture/snapshot store, trusted time,
+freshness issuance and verification, lock validation, and decision derivation.
+Its only request-facing input is a server-resolved exact selector:
+
+```json
+{ "run_id": "...", "incident_id": "...", "intent_id": "..." }
+```
+
+The closure obtains all authority-bearing inputs itself. A route, request,
+model, UI, fixture, replay cursor, or connector cannot submit or select risk,
+registry, intent definition, snapshot, evidence set, freshness, lock state,
+contract hash, preauthorization, receipt, or authority object.
+
+The closure appends one canonical `autonomy.decision.recorded` event only after
+it verifies the exact frozen snapshot, gate-event IDs/sequences/payload hashes,
+evidence record IDs/hashes/sources/modes, contract hash/target/action, active
+policy envelope, trusted freshness receipt, and relevant locks. It accepts no
+legacy compact evaluator rows as authority.
+
+Slice 2 is authority integration only. It does not add a new connector, UI,
+projection, decision endpoint, executor, live auto-action, or browser test.
+
+### Progressive autonomy
+
+Every hard factor is conjunctive. Severity, model confidence, an advisory KB
+item, a summary, or a notification record can only block or explain; none can
+grant authority.
+
+| Outcome | Required conditions | Execution |
+| --- | --- | --- |
+| `auto_execute_pre_authorized` | Low impact; exact active preauthorization; complete fresh evidence; accepted evaluator and deterministic gate; one reversible/idempotent component; exact contract; verification/rollback ready; zero related failures; recordable notification. | P0 does not enable a live executor. Only a captured simulation may demonstrate the state. |
+| `human_review_required` | Causal mechanism and exact contract are proven but the action is customer-path or otherwise medium risk. | Owner approval required. Checkout-to-payment is always here. |
+| `explicit_human_decision_required` or `blocked` | High/SEV-1, missing/contradictory/stale evidence, unavailable source, failed lock check, failed action/verification, or policy mismatch. | No FlowPulse execution. |
+
+Any failed action or verification creates an incident + contract hash + target
+failure lock. A new run cannot evade it. P0 has no unlock endpoint.
+
+## 5. Canonical integration boundary
+
+### EntityGraph
+
+The canonical entity kinds are:
+
+```text
+service | deployment | dag | job | task | topic | dataset | table | query | incident
+```
+
+Each entity has a canonical ID, kind, bounded display name, namespace,
+provider label, provenance ref, and hash. Relations are evidence-backed facts,
+such as `calls`, `publishes_to`, `consumes_from`, `produces`, `reads`, `writes`,
+`scheduled_by`, `deployed_by`, and `affects`. Provider identity is visual
+metadata only; it never controls policy or authority.
+
+### EvidenceEnvelope v1
+
+Every normalized record has this logical contract:
 
 ```json
 {
-  "schema_version": "flowpulse-preauthorization.v1",
-  "id": "preauth-example",
-  "policy_version": "1",
-  "policy_sha256": "sha256:...",
-  "status": "active",
-  "issued_by": "authorized-owner",
-  "issued_at": "RFC3339 timestamp",
-  "expires_at": "RFC3339 timestamp",
-  "environment": "exact environment identifier",
-  "action_contract": {
-    "repair_id": "allowlisted repair id",
-    "command_id": "allowlisted command id",
-    "target": "single component",
-    "expected_before": "bounded expected value",
-    "expected_after": "bounded expected value"
+  "id": "ev_...",
+  "schema_version": "flowpulse.evidence-envelope.v1",
+  "source": {
+    "connector_id": "...",
+    "connector_version": "...",
+    "evidence_mode": "live_stream | frozen_real_snapshot | captured_fixture"
   },
-  "limits": {
-    "max_components": 1,
-    "max_attempts": 1,
-    "require_idempotency": true,
-    "require_rollback": true,
-    "require_fresh_verification": true,
-    "require_notification_receipt": true
-  },
-  "required_verification_check_ids": ["bounded check ids"],
-  "notification_targets": ["owner/on-call routing identifiers"]
+  "signal_kind": "trace | log | metric | change | lineage | run | incident",
+  "observed_at": "RFC3339 timestamp",
+  "frozen_at": "RFC3339 timestamp or null",
+  "entity_refs": ["canonical entity IDs"],
+  "safe_fact": "typed, allowlisted, bounded semantic fields",
+  "provenance": { "record_hash": "sha256", "source_hash": "sha256" },
+  "integrity_hash": "sha256",
+  "redaction_version": "..."
 }
 ```
 
-The envelope is invalid if any field is missing, expired, revoked, ambiguous,
-or differs from the proposed contract. A model cannot create, broaden, renew,
-or select a preauthorization envelope. P0 may implement the schema and gate
-with no production auto-remediation contracts enabled. The existing local
-flagd/docker recovery remains medium risk and explicitly owner-gated.
+No raw payload, trace/span/context ID, SQL text, credential, or
+high-cardinality attribute is a valid `safe_fact`. Source-specific normalizers
+must derive bounded semantic facts before this contract is emitted.
 
-## Evidence Track and Decision Ledger
+### Connector capability manifest
 
-The ledger remains immutable and append-only. The product projects a single
-Evidence Track from existing events and the following minimal additions.
-
-Every projected row has:
+Each future connector declares immutable versioned metadata:
 
 ```text
-event_id, run_id, sequence, occurred_at, stage, actor, event_type, status,
-parent_event_id, evidence_refs, payload_sha256
+connector id/version; supported entity and signal kinds; discover/topology/
+evidence/action/verification capabilities; strict input/output schemas;
+required scopes; source-health/freshness rules; page/byte limits; provenance;
+risk class; and redaction version.
 ```
 
-Existing authoritative events retain their current meanings:
+`action` and `verification` are reserved capability names. They are disabled in
+P0 and cannot mint authority, bypass a FlowPulse policy decision, or execute a
+repair.
 
-| Track concern | Existing event examples |
-| --- | --- |
-| Trigger and scope | `incident.opened`, `change.applied`, `evidence.snapshot.created` |
-| Evidence work | `context.compiled`, `tool.called`, `evidence.queried` |
-| Hypothesis and counter-evidence | `hypothesis.proposed`, `evaluation.rejected`, `evaluation.accepted`, `plan.revised` |
-| Deterministic eligibility | `diagnosis.gate.passed` |
-| Action and human authority | `repair.proposed`, `approval.requested`, `approval.granted`, `repair.executed` |
-| Recovery and learning | `verification.completed`, `regression.created`, `backtest.completed`, `policy.evaluated` |
-| Safe stop | `outcome.classified`, `failure.episode.recorded` |
+### Connector scope
 
-P0 adds one decision event and three closely scoped outcome events:
+P0 provides only the contract plus two offline fixtures:
+
+1. a lineage fixture showing `dag/job/task -> dataset/table`; and
+2. a stream-and-warehouse fixture showing `topic -> consumer/job -> query/table`.
+
+Those fixtures validate normalization and projection contracts. They do not
+claim live Airflow, Kafka, dbt, Snowflake, BigQuery, Databricks, Spark,
+Kubernetes, GitHub, or PagerDuty support.
+
+OpenLineage JSONL ingestion and every vendor-specific adapter are P1. The
+captured incident bundle and OTLP source remain the P0 product sources.
+
+## 6. IncidentProjection v1
+
+Projection is a later slice, not Slice 2. It is the sole browser-facing
+incident state and is derived from ordered ledger events plus bounded source
+projection; it never reads a UI mode, local timer, model text, or client risk
+value.
+
+Required top-level fields:
 
 ```text
-autonomy.decision.recorded
-  schema_version
-  policy_version, policy_sha256
-  risk_class: low | medium | high | blocked
-  factor_results: [{ id, observed, expected, passed, evidence_refs }]
-  decision: observe_only | auto_execute_pre_authorized |
-            human_review_required | explicit_human_decision_required | blocked
-  evaluator_event_ref, diagnosis_gate_event_ref
-  action_contract_ref, preauthorization_ref
-  blast_radius, rollback_plan_ref, verification_plan_ref
-  notification_targets, reason_codes
-
-approval.rejected | approval.deferred
-  owner, approval_request_ref, reason_code, requested_evidence_classes
-
-notification.requested | notification.delivered | notification.failed
-  route, target_ref, related_decision_ref, bounded receipt/status
+schema_version, projection_revision, incident, stage, stage_status,
+source_health, evidence_mode, execution_mode, graph, timeline,
+investigation, decision, human_gate, action, verification, learning,
+why_stopped, truncated, next_cursor
 ```
 
-The UI must show the factors and refs that produced a decision, not merely its
-low/medium/high label. Missing or unavailable information is represented as
-unknown/failed; it must not be normalized to passing.
+Hard limits for one serialized projection:
 
-## Knowledge and advisory experience
+| Field | Limit |
+| --- | ---: |
+| Graph nodes | 128 |
+| Graph edges | 256 |
+| Timeline frames per page | 100 |
+| Evidence summaries | 64 |
+| Evidence refs per event | 32 |
+| Serialized projection | 256 KiB UTF-8 |
+| Strings | bounded, schema-specific UTF-8 limits; no free-form raw source data |
 
-Past regression cases, runbooks, and retrieved knowledge can help the Agent
-Workbench choose what to inspect or explain a recommended option. They are
-advisory only.
+Projection uses deterministic ordering and deterministic truncation. It returns
+`truncated=true` and an opaque `next_cursor` when more frames or detail exist.
+Unknown schema/version/enum/cursor, stale source, lock-query overflow,
+unavailable source, malformed event, or missing required reference yields an
+explicit non-actionable projection; it never defaults to ready or automatic.
 
-- Advisory material is recorded separately as `advisory_refs` with source,
-  version/hash, retrieval time, and relevance explanation.
-- `advisory_refs` are never inserted into `evidence_refs`.
-- Deterministic causal, repair, verification, and backtest validators resolve
-  only immutable current snapshot evidence and checked-in contracts.
-- A retrieved historical success cannot increase confidence, unlock repair,
-  satisfy a missing precondition, or override counter-evidence.
+Legacy rows project `legacy_detail_unavailable`, never an inferred passing
+decision.
 
-P0 presents existing regression artifacts as advisory context where available;
-P1 may add bounded retrieval. Neither path creates personalized memory.
+## 7. Frontend design and ownership
 
-## Minimal information architecture
+The three primary tabs are exactly:
 
-Only three primary tabs are exposed:
+```text
+Monitor -> Agent Workbench -> Decision & Recovery
+```
 
-| Primary tab | Preserved existing visual replay and details |
-| --- | --- |
-| Monitor | Architecture and Live canvas subviews, topology, freshness, component drawers, active incident strip |
-| Agent Workbench | Diagnose replay, evidence drawer, tool/evaluator trace, Manager conversation, agent-role projection, stop reason |
-| Decision & Recovery | Owner Gate, action options, execution receipt, verification, Compare, regression/backtest/policy |
+Architecture and Live become Monitor subviews. Diagnose and evaluator activity
+become Agent Workbench subviews. Owner Gate, receipt, verification, Compare,
+and learning become Decision & Recovery subviews. The white visual incident
+reconstruction, topology, timeline, right-side evidence drawer, reduced-motion
+support, and Compare visual remain product differentiators.
 
-The timeline remains available throughout the three stages and is driven by
-ledger sequence, not animation time. Compare remains a Decision & Recovery
-subview. The right contextual drawer changes emphasis by stage:
+The browser consumes one `IncidentProjectionClient` interface:
 
-- Monitor: health, metrics, logs, traces, dependencies, source freshness.
-- Agent Workbench: objective, selected/omitted evidence, tools, hypotheses,
-  counter-evidence, evaluator, and why the harness stopped.
-- Decision & Recovery: risk factors, exact contract, blast radius, approval,
-  receipt, rollback, verification, and learning gates.
+- `BackendIncidentProjectionClient` reads the bounded state/evidence APIs and
+  event stream.
+- `DemoBundleProjectionClient` reads an immutable generated captured
+  projection with the identical schema.
 
-## P0 and P1 scope
+Demo-client selection is build-time or server-owned and immutable. It cannot
+come from a query string, localStorage, request body, model output, or UI
+control. The demo client is read-only except fixed captured replay commands.
 
-### P0: competition-sized closure
+The replay cursor selects a historical rendered frame only. It cannot advance
+the ledger, set current stage/risk/approval/action/verification, or influence
+authority. Timers may animate presentation only. Provider glyphs are a pure
+glyph registry and never control business logic.
 
-1. Reorganize existing five primary modes into the three stages above while
-   preserving every current replay/evidence surface as a subview.
-2. Add deterministic `autonomy.decision.recorded` policy evaluation with the
-   factor matrix and fail-closed behavior.
-3. Add a versioned preauthorization envelope validator. No current flagship
-   repair becomes automatic.
-4. Add clear approve, reject, defer, and request-evidence decisions for
-   medium/high review.
-5. Add bounded Evidence Track projection and a compact Decision & Recovery
-   explanation of why a run can or cannot proceed.
-6. Add failure lockout after repair/verification failure and truthful
-   notification/escalation state.
-7. Correct misleading interaction copy and preserve existing Owner Gate,
-   causal, verification, regression, and backtest gates.
+The frontend never computes or carries risk, freshness, evidence completeness,
+locks, contract hash, preauthorization, receipt validity, authority, action
+truth, or repair truth. Unknown, stale, malformed, unavailable, or
+schema-mismatched projection data disables action controls and displays why.
 
-### P1: after the competition
+## 8. Slice separation and implementation order
 
-- Real paging/notification connectors and receipt integrations.
-- Bounded advisory retrieval over regression/runbook knowledge.
-- Policy authoring, revoke, expiry, and shadow-mode management UI.
-- Multi-owner routing, RBAC, and external approval integrations.
-- Additional typed Action/Verify connectors and production low-risk rollout.
-- Cross-run statistics and policy candidate ranking.
+The following ordering is mandatory; it prevents authority changes from being
+hidden inside UI or integration work.
 
-### Explicit non-goals
+1. **Slice 2 — authority integration only.** Private closure, canonical
+   decision record, checkout Owner-Gate preservation, failure locks, and
+   authority tests. No projection/UI/connectors/endpoints/executor.
+2. **Sol authority review.** No next slice begins without approval.
+3. **Projection slice.** Implement bounded `IncidentProjection v1`, state API
+   compatibility, cursor behavior, truth-label mapping, and golden tests.
+4. **UI migration slice.** Move the existing visual replay into the three
+   stages using projection only; no client-side decision inference.
+5. **Decision interaction slice.** Add exact approve/reject/defer behavior
+   after server-side contract binding and idempotent claims are proven.
+6. **Demo and browser slice.** Add the low captured policy simulation, medium
+   Owner-Gate replay, Playwright E2E, release checks, and copy corrections.
 
-- Broad severity-based auto-remediation.
+The P0 browser harness is Playwright. It must run two automated fresh-server
+flows: the captured low-risk simulation and the medium checkout Owner-Gate
+path. If the harness cannot be installed and run reliably within the allocated
+time, stop and retain the existing deterministic judge path rather than claim
+automated E2E coverage.
+
+## 9. Flagship demo and submission truth
+
+The default three-minute judge path is deterministic captured replay:
+
+```text
+versioned checkout configuration change -> payment failure -> retry/Kafka lag
+-> downstream delay -> weak Kafka hypothesis rejected -> evidence replan
+-> checkout-only repair proposal -> Owner Gate -> captured verification
+-> regression record
+```
+
+This is explicitly `captured_fixture` + `deterministic_replay`. It may show
+Kafka/accounting/fraud propagation only because the captured bundle supports
+that narrative.
+
+The recorded local proof is shown separately as narrower provenance:
+
+```text
+checkout flag change -> observed checkout flag consumption -> direct payment
+resolver failure -> owner-approved allowlisted rollback -> fresh local proof
+```
+
+The two stories are never spliced into one causal timeline. No copy says
+“AI-generated regression” without author/change provenance. No copy says GPT
+performed the deterministic repair.
+
+Parallel submission work, outside implementation authority, is time-critical:
+
+- public/accessible repository and deterministic test instructions;
+- a sub-three-minute public video showing the captured replay and truth labels;
+- hosted deterministic URL or an equally clear test path;
+- `/feedback` Session ID generated from the core development task;
+- Devpost fields and final human review.
+
+The stated submission deadline is 2026-07-21 17:00 PDT. This does not justify
+weakening evidence, authority, or truth-label gates.
+
+## 10. Acceptance gates
+
+### Slice 2 authority gates
+
+- Only the private server closure can produce a decision from real ledger,
+  server-owned snapshot, registry, trusted time, receipt, and locks.
+- A selector with any unknown/missing/mismatched field is non-actionable.
+- Checkout always produces `human_review_required`; zero repair execution
+  exists before Owner approval.
+- Captured simulation cannot produce a live receipt, `repair.executed`,
+  delivered notification, or executed-offline-backtest promotion.
+- Stale/unknown/malformed source, receipt, gate event, evidence reference,
+  snapshot, cursor, or lock-query result is non-actionable.
+
+### Projection and frontend gates
+
+- Projection contract/golden tests cover truth labels, bounds, truncation,
+  legacy rows, stale/unavailable state, and evidence-link integrity.
+- UI import guards prove no browser module imports policy authority, registry,
+  receipt issuer/verifier for decisions, or executor controls.
+- The browser renders the three stages exclusively from backend projection.
+- Both Playwright paths verify source/evidence/execution truth labels, why
+  stopped, Owner Gate ordering, and zero console errors at 1440x900 and
+  1280x800.
+
+### Demo and release gates
+
+- The default demo works with no Docker, provider credential, or live source.
+- It never labels a captured fixture, frozen snapshot, simulation, or
+  deterministic repair as live GPT remediation.
+- Existing deterministic replay, causal gates, Owner Gate, recovery checks,
+  regression, and backtest remain green.
+
+## 11. P0, P1, and explicit drops
+
+### P0
+
+- Slice 2 authority integration and its review.
+- Bounded IncidentProjection and three-stage migration in later slices.
+- Two offline connector-contract fixtures only.
+- Captured low-risk policy simulation and checkout Owner-Gate replay.
+- Playwright coverage for both paths and submission-ready truthful copy.
+
+### P1
+
+- OpenLineage JSONL ingestion.
+- GitHub, Kubernetes, Airflow, dbt, Kafka, warehouse, Databricks, Spark,
+  BigQuery/Dataflow, Snowflake, and PagerDuty adapters.
+- External notification delivery, RBAC, policy authoring UI, external approval,
+  and actual low-risk production rollout.
+- Advisory retrieval and cross-run policy recommendations.
+
+### Dropped for this competition
+
+- Generic connector marketplace or multi-tenant observability SaaS.
 - Free-form shell, Kubernetes, database, or production command execution.
-- A generic connector marketplace, generic agent framework, or multi-agent
-  fan-out requirement.
-- Knowledge-base content as runtime evidence or repair authority.
-- Automatic SEV-1 remediation.
-- Repeated repair retries after a failed repair or verification.
-- Replacing the ledger with Langfuse, a chat transcript, or a visual state
-  store.
-- Rewriting historical ledger rows to add autonomy metadata.
+- Generic multi-agent fan-out or personalized memory.
+- Severity-only automation, automatic SEV-1 repair, retries after failed
+  repair/verification, and historical ledger rewrites.
 
-## Copy corrections
+## 12. Stop conditions and user review gate
 
-The product must not imply a model capability or authority it does not have.
+Stop implementation and return to the deterministic judge path if any of the
+following occurs:
 
-| Current wording or implication | P0 replacement |
-| --- | --- |
-| `Run GPT-5.6` | `Start investigation` with current source/evidence readiness shown; use model identity only as secondary provenance. |
-| `Recover` at the approval boundary | `Review recovery plan`; a separate explicit approval action must state the exact contract. |
-| `Recovery Console` as a primary mode | `Agent Workbench` for evidence work, with decision and execution shown in Decision & Recovery. |
-| `Live OTLP` without qualification | Show `live`, `captured`, `stale`, or `disconnected` plus freshness. |
-| `Learning recorded` | `Regression recorded; policy <state>`. Never imply autonomous promotion. |
-| Agent graph labels | Mark ledger-derived role projections separately from actual model/provider calls. |
-| Kafka/downstream language in the real local path | Restrict real local claims to the proven checkout-to-payment mechanism; reserve broader Kafka/downstream propagation for the captured fixture. |
+- authority composition would need a public provider, snapshot registration,
+  freshness issuer, or caller-controlled clock;
+- a required evidence record cannot fit the bounded projection;
+- projection cannot distinguish frozen real, captured fixture, and live stream;
+- a connector would need to issue authority or expose raw/sensitive payloads;
+- browser E2E needs mock-only decision state;
+- an implementation changes checkout from Owner-Gated medium risk; or
+- timing forces a choice between truthful deterministic replay and unstable
+  live integration.
 
-## Acceptance criteria and deterministic tests
-
-### Product acceptance
-
-- Exactly three top-level tabs are visible at 1440x900 and 1280x800; every
-  existing evidence and replay surface remains reachable through a stage or
-  drawer.
-- Stage transitions are projected from ledger events and deterministic
-  readiness checks.
-- Every decision displays its factor results, evidence refs, action scope,
-  blast radius, rollback, verification plan, and next human action.
-- No current UI path labels captured evidence as live or an evaluator/model
-  result as a repair execution.
-- The checkout-to-payment action still requires per-incident Owner approval.
-
-### Deterministic and mutation tests
-
-- Changing any one low-risk factor to false/unknown blocks auto-execution.
-- Severity alone cannot grant auto-execution.
-- Expired, revoked, mismatched, cross-environment, multi-component, or
-  over-attempt preauthorization fails closed.
-- A medium/high decision has zero `repair.executed` events before an explicit
-  `approval.granted` event matching the exact contract.
-- Stale, disconnected, insufficient, or model-failure states have zero
-  executable proposal/approval/execution events.
-- Advisory references cannot satisfy diagnosis, causal, repair, verification,
-  or backtest gates.
-- A repair or verification failure forces human-required/blocked outcome and
-  suppresses automatic retries and policy eligibility.
-- Notification failure is visible; a production-like low-risk auto path cannot
-  claim notification delivery without a bounded receipt.
-- Existing exact-contract, owner-before-repair, fresh recovery, regression,
-  executed-backtest, and captured-fixture rejection tests remain green.
-- Accessibility checks cover keyboard stage switching, drawer focus, approval
-  controls, reduced motion, and state labels that do not depend on color.
-
-### Security tests
-
-- Risk policy, preauthorization, and notification identifiers use strict
-  bounded schemas and no untrusted free-form commands.
-- New ledger/API projections contain safe IDs/hashes and bounded explanations,
-  never raw provider output, credentials, raw OTLP, hidden reasoning, or
-  notification secrets.
-- A model cannot create/preselect a preauthorization envelope or change risk
-  class through natural-language output.
-
-## Rollout and shadow-mode safety
-
-P0 ships decision transparency before broad autonomy:
-
-1. Default every action to `human_review_required` unless an exact active
-   preauthorization envelope passes all hard gates.
-2. First run the autonomy decision in shadow mode: record the decision and
-   explain what would have happened, but do not auto-execute.
-3. Enable any low-risk automatic action only in an explicitly scoped
-   disposable/development environment after deterministic mutation tests and
-   owner review of the envelope.
-4. Production-like low-risk automation requires a separate post-competition
-   approval, notification receipt, rollback proof, and observed verification
-   reliability. It is not enabled by this design.
-
-This rollout preserves the stricter existing boundary whenever implementation
-detail is ambiguous: no consequential remediation executes without an exact
-allowlist, deterministic gate, and either a valid preauthorization envelope or
-an explicit Owner Gate.
-
-## Self-review
-
-This specification has no TBD/TODO placeholders. It preserves the existing
-append-only authority model, strong causal and recovery gates, deterministic
-judge replay, and checkout Owner Gate. It does not broaden remediation
-authority, make severity an authorization shortcut, or allow knowledge/history
-to become evidence. P0 is limited to a three-stage product projection, one
-deterministic autonomy decision boundary, one preauthorization schema/gate,
-and transparent decision/exception states; connectors, production rollout,
-and broad automation remain P1 or non-goals.
+This document is the written-spec gate. The user must review it before an
+implementation plan is written or Slice 2 begins.
