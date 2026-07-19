@@ -73,6 +73,10 @@ checked-in deterministic replay remains the credential-free judge path.
   truth.
 - Raw OTLP payloads never enter browser/model APIs. Safe projections redact
   secrets, identifiers, URL query data, emails, and long IDs.
+- Raw model response bodies/text, refusal text, response/call IDs, encrypted
+  reasoning, and API error text never enter the ledger or observability.
+  Only runtime-validated, byte-bounded structured diagnosis/evaluation fields
+  can be recorded after the response boundary passes.
 - A diagnosis must cite the exact applied change and a post-change
   checkout-to-payment network failure in temporal order before repair can be
   proposed.
@@ -96,11 +100,24 @@ fresh verification → regression/policy events. The exact hashes, evidence IDs,
 event ordering, and process/port details are recorded in the
 [runtime QA record](../qa/2026-07-18-competition-backend-hardening-qa.md).
 
-One bounded GPT-5.6 run over a frozen real snapshot correctly returned
-`insufficient_evidence` because it could not prove direct flag consumption or
-propagation. It created no repair proposal, approval request, or execution.
-Langfuse was not configured in that proof, so no trace link, cost, or latency
-claim is made.
+An earlier evidence review found that diagnosis and post-repair verification
+were being conflated. We fixed that phase contract without lowering the causal
+gate. A later no-GPT rehearsal froze the reviewed pinned code semantics, a
+recent flag-off checkout→payment success, the exact off→on change, and three
+distinct flag-on direct-parent resolver failures.
+
+The latest single paid `gpt-5.6` workflow then queried that frozen real
+snapshot eight times, but its investigator response was malformed structured
+text and stopped under the historical `tool_data_failure` taxonomy before it
+emitted a diagnosis or reached the evaluator. It made no repair proposal,
+owner approval request, execution, verification, regression, or policy event,
+and it was not retried. The current code maps this response-boundary class to
+`model_output_invalid` with safe metadata only; no additional paid run was
+made for that patch.
+The real model path remains intentionally bounded to the narrow
+checkout→payment mechanism; Kafka/accounting/fraud propagation remains part of
+the deterministic fixture only where its captured evidence supports it. No
+accepted GPT recovery, Langfuse trace, cost, or latency claim is made yet.
 
 ## Challenges, accomplishments, and learnings
 

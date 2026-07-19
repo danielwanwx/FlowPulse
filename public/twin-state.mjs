@@ -100,6 +100,102 @@ export const LIVE_LAYERS = [
 
 export const LIVE_UNLINKED_LAYER = Object.freeze({ id: "unlinked", label: "Unlinked telemetry" });
 
+// Projection-only visual organization. These categories change geometry and
+// glyph selection, never policy, authority, remediation, or truth state.
+export const PROJECTION_LAYERS = Object.freeze([
+  { id: "upstream", label: "Upstream & entry" },
+  { id: "commerce", label: "Commerce & core" },
+  { id: "stream", label: "Async, stream & data" },
+  { id: "downstream", label: "Downstream & consumers" },
+  { id: "evidence", label: "Evidence infrastructure" }
+]);
+
+const PROJECTION_GLYPHS = Object.freeze({
+  service: "cube", api: "plugs-connected", deployment: "git-commit", change: "git-commit",
+  topic: "queue", stream: "queue", kafka: "queue", consumer: "arrows-clockwise",
+  worker: "gear-six", job: "terminal-window", dag: "tree-structure", task: "check-square",
+  dataset: "circles-four", table: "table", query: "magnifying-glass", database: "database",
+  warehouse: "warehouse", incident: "warning-circle", evaluator: "scales", agent: "robot"
+});
+
+export function projectionTopologyLayout(graph = {}, { mode = "flow" } = {}) {
+  const nodes = Array.isArray(graph.nodes) ? graph.nodes : [];
+  const grouped = new Map(PROJECTION_LAYERS.map((layer) => [layer.id, []]));
+  for (const node of [...nodes].sort((left, right) => String(left.id).localeCompare(String(right.id)))) {
+    grouped.get(projectionLayer(node))?.push({ ...node, glyph: projectionGlyph(node), layer: projectionLayer(node) });
+  }
+  const positioned = [];
+  for (const [layerIndex, layer] of PROJECTION_LAYERS.entries()) {
+    const members = grouped.get(layer.id);
+    for (const [index, node] of members.entries()) positioned.push({
+      ...node,
+      ...(mode === "architecture"
+        ? { x: spreadCoordinate(index, members.length), y: 18 + layerIndex * 18 }
+        : { x: 10 + layerIndex * 20, y: spreadVertical(index, members.length) }),
+      layerIndex,
+      layerSize: members.length,
+      layerPosition: index
+    });
+  }
+  return positioned;
+}
+
+export function projectionEdgeLayout(graph = {}, positioned = projectionTopologyLayout(graph)) {
+  const positions = new Map(positioned.map((node) => [node.id, node]));
+  return (Array.isArray(graph.edges) ? graph.edges : [])
+    .filter((edge) => positions.has(edge.from) && positions.has(edge.to))
+    .sort((left, right) => String(left.id).localeCompare(String(right.id)))
+    .map((edge, index) => ({ ...edge, fromNode: positions.get(edge.from), toNode: positions.get(edge.to), lane: index - Math.floor((Array.isArray(graph.edges) ? graph.edges.length : 0) / 2) }));
+}
+
+export function replayPresentation(frames = [], cursor = 0) {
+  const safeCursor = Math.max(0, Math.min(Math.max(0, frames.length - 1), Number.isSafeInteger(cursor) ? cursor : 0));
+  const visible = frames.slice(0, safeCursor + 1);
+  return {
+    cursor: safeCursor,
+    current: frames[safeCursor] || null,
+    visible,
+    // A cursor only reveals already projected historical frames. It is not
+    // passed to authority, approval, execution, verification, or server APIs.
+    activeRefs: new Set(visible.flatMap((frame) => Array.isArray(frame.evidence_refs) ? frame.evidence_refs : []))
+  };
+}
+
+export function projectionLayer(node = {}) {
+  const kind = String(node.kind || "service").toLowerCase();
+  const identity = String(node.id || "").toLowerCase();
+  // These are visual clustering hints for projection labels only. They do not
+  // alter evidence, severity, action, approval, or any server-side policy.
+  if (/(frontend|gateway|ingress|storefront|load)/.test(identity)) return "upstream";
+  if (/(checkout|payment|cart|commerce)/.test(identity)) return "commerce";
+  if (/(kafka|topic|stream|queue|dataset|table|warehouse|query)/.test(identity)) return "stream";
+  if (/(accounting|fraud|consumer|worker|job|dag|task)/.test(identity)) return "downstream";
+  if (/(evaluator|agent|ledger|evidence|incident)/.test(identity)) return "evidence";
+  if (["client", "browser", "gateway", "ingress", "load_balancer", "api"].includes(kind)) return "upstream";
+  if (["service", "deployment", "change", "database"].includes(kind)) return "commerce";
+  if (["topic", "stream", "kafka", "dataset", "table", "query", "warehouse"].includes(kind)) return "stream";
+  if (["consumer", "worker", "job", "dag", "task"].includes(kind)) return "downstream";
+  return "evidence";
+}
+
+export function projectionGlyph(node = {}) {
+  const kind = String(node.kind || "service").toLowerCase();
+  const identity = String(node.id || "").toLowerCase();
+  // Legacy bounded projections may only have `service` in their graph kind.
+  // The identifier is used as display metadata to restore the distinct
+  // existing Phosphor glyphs, never to infer policy or authority.
+  if (kind === "service") {
+    if (/(frontend|storefront|gateway)/.test(identity)) return "browser";
+    if (/checkout|cart/.test(identity)) return "shopping-cart-simple";
+    if (/payment|billing/.test(identity)) return "credit-card";
+    if (/kafka|topic|stream|queue/.test(identity)) return "queue";
+    if (/accounting|ledger/.test(identity)) return "calculator";
+    if (/fraud|risk/.test(identity)) return "shield-check";
+    if (/observer|monitor/.test(identity)) return "binoculars";
+  }
+  return PROJECTION_GLYPHS[kind] || "cube";
+}
+
 export const AGENT_COLLABORATORS = Object.freeze([
   {
     id: "commander",

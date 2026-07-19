@@ -98,8 +98,8 @@ npm run live:start
 Restart FlowPulse with the same environment variable, open **Live**, and use **Start real case**. The working path is:
 
 1. Apply the repository-owned `paymentUnreachable` change through the real flagd UI API.
-2. Wait for fresh checkout/payment OTLP failure evidence.
-3. Run **Investigate live evidence**. The evaluator rejects unsupported payment-service blame, correlates the versioned change with actual failure telemetry, and proposes the single allowlisted repair.
+2. Wait for the bounded pre-approval Diagnosis Gate: one recent flag-off checkout→payment success, the pinned checkout implementation-semantic record, and three distinct post-change traces in which `paymentUnreachable=on` is the direct parent of the resolver failure.
+3. Run **Investigate live evidence**. The evaluator rejects unsupported payment-service blame, correlates the versioned change with the controlled contrast and repeated real telemetry, and proposes the single allowlisted repair. Recovery evidence is deliberately not required until after the Owner Gate.
 4. Approve the owner gate. FlowPulse restores the known-good flag and recreates only the local checkout container.
 5. Use **Verify recovery** after fresh post-repair OTLP appears. The ledger records verification, a hashed regression capture reference, and deterministic policy gates.
 
@@ -117,7 +117,7 @@ FlowPulse never labels fixture evidence as live. The API and canvas expose one o
 
 - **Deterministic replay** — the default judge path. It uses the immutable Astronomy Shop incident bundle and has no credentials or Docker dependency.
 - **Captured real evidence** — hashed local OTLP records are available as bounded, provenance-preserving evidence summaries and details.
-- **Live GPT-5.6 over frozen OTLP snapshot** — only a fresh `live` Collector spool can create a capped, immutable snapshot for the investigator and adversarial evaluator. Trace summaries contain bounded operation/target/status/error facts, logs contain bounded severity/message/correlation, and metrics contain bounded name/value/unit facts. A development investigation also freezes one hashed, repo-owned `change.applied` record from the checked-in manifest. A stale, disconnected, or irrelevant spool becomes `insufficient_evidence`; it never silently falls back to the fixture.
+- **Live GPT-5.6 over frozen OTLP snapshot** — only a fresh `live` Collector spool can create a capped, immutable snapshot for the investigator and adversarial evaluator. Trace summaries contain bounded operation/target/status/error facts, logs contain bounded severity/message/correlation, and metrics contain bounded name/value/unit facts. An executable development snapshot reserves the exact `change.applied` record, a hashed semantics record from the reviewed pinned checkout source, a recent flag-off success, and three distinct direct-parent flag-on resolver failures. A stale, disconnected, irrelevant, duplicate, or incomplete source becomes `insufficient_evidence`; it never silently falls back to the fixture.
 
 Every browser/model projection is deterministically redacted before it is stored in a safe fact: URL credentials, query strings, fragments, bearer/API secrets, JWTs, emails, UUIDs, session/user/account identifiers, and long numeric IDs are excluded. `/api/state` and `/api/source` return bounded projections only. `/api/evidence` supports cursor-paged evidence summaries and `/api/evidence/:id` returns one redacted detail with its hash and file/byte provenance. Raw OTLP payloads are not exposed to the browser or model.
 
@@ -136,16 +136,27 @@ OPENAI_MODEL=gpt-5.6
 
 Restart the server. The **Run fresh GPT-5.6** control will:
 
-- Give GPT-5.6 strict, allowlisted metric, trace, log, deploy, and commit tools.
-- Execute model-selected tools against the selected frozen OTLP snapshot, never a live unbounded stream or the static judge bundle. The explicit `query_changes` tool returns only the hashed applied development change; it does not pretend there is a source commit or deploy record when there is not.
+- Give GPT-5.6 strict, allowlisted metric, trace, log, change, and pinned-code-semantics tools.
+- Execute model-selected tools against the selected frozen OTLP snapshot, never a live unbounded stream or the static judge bundle. `query_changes` returns only the hashed applied development change, and `query_code` returns only the reviewed commit/path/line range, content hash, and bounded semantic fact—never arbitrary repository contents.
 - Validate every returned evidence ID and repair boundary.
 - Send the candidate diagnosis to a separate GPT-5.6 adversarial evaluator.
 - Replan once with evaluator feedback if the claim is rejected.
-- Record model calls, tool calls, decisions, latency, usage, and scores in the FlowPulse ledger.
+- Record the model/execution mode, tool calls, decisions, evidence references, and evaluator scores in the FlowPulse ledger. When Langfuse credentials are configured, its best-effort mirror additionally records model latency and token usage.
 
-GPT-5.6 is used through the Responses API with medium reasoning effort, strict function schemas, structured outputs, explicit token limits, `store: false`, and a stable safety identifier. Tool and evaluator results are recorded in the append-only ledger, while Langfuse is an observability mirror only. The official guidance recommends the Responses API for reasoning and tool-calling workflows and documents `gpt-5.6` as the flagship alias: [Using GPT-5.6](https://developers.openai.com/api/docs/guides/latest-model), [Function calling](https://developers.openai.com/api/docs/guides/function-calling), and [Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs).
+GPT-5.6 is used through the Responses API with medium reasoning effort, strict function schemas, structured outputs, explicit per-stage and cumulative output-token/call budgets, `store: false`, encrypted-reasoning replay only in process memory, and a stable safety identifier. The response boundary validates HTTP/body bounds, incomplete/refusal/malformed states, exact response-item shape, tool arguments, and the full runtime diagnosis/evaluation schema before parsing can gain authority. It never persists raw response bodies or text, refusal text, call IDs, response IDs, encrypted reasoning, or API error text. Only runtime-validated, byte-bounded structured diagnosis/evaluation fields and safe hashes/counters can enter the ledger; Langfuse is an observability mirror only. The official guidance recommends the Responses API for reasoning and tool-calling workflows and documents `gpt-5.6` as the flagship alias: [Using GPT-5.6](https://developers.openai.com/api/docs/guides/latest-model), [Function calling](https://developers.openai.com/api/docs/guides/function-calling), and [Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs).
 
-For an active local development case, the only model-proposable repair contract is identical to the checked-in adapter contract: `repair-payment-reachable-v1`, `restore known-good paymentUnreachable flag and recreate checkout`, target `checkout`, command `astronomy.restore-payment-and-recreate-checkout`. FlowPulse compares the proposal and approval request against that contract before the adapter can run. It additionally requires the frozen diagnosis to cite that exact ledger-captured applied change and a post-change checkout/payment error trace in temporal order; an unrelated, missing, reversed, or unknown reference cannot create an executable repair or approval request. The standalone **Run fresh GPT-5.6** path is model-only: without an active applied development change it cannot create an executable repair or approval request.
+Truth boundary: the latest bounded credentialed GPT-5.6 attempt successfully
+queried a frozen real OTLP snapshot but stopped at a malformed structured
+investigator response before diagnosis or evaluator acceptance. It created no
+proposal, approval, execution, verification, or learning event and was not
+retried. That historical run recorded the older `tool_data_failure` taxonomy;
+the current response boundary classifies a comparable malformed output as
+`model_output_invalid` with safe metadata only and no authority-bearing events.
+No new paid run occurred while adding this boundary. The deterministic replay
+and separately documented local deterministic recovery proof remain the
+reliable judge path.
+
+For an active local development case, the only model-proposable repair contract is identical to the checked-in adapter contract: `repair-payment-reachable-v1`, `restore known-good paymentUnreachable flag and recreate checkout`, target `checkout`, command `astronomy.restore-payment-and-recreate-checkout`. FlowPulse compares the proposal and approval request against that contract before the adapter can run. The pre-approval Diagnosis Gate requires the exact applied change, exact pinned implementation semantics, a recent known-good flag-off checkout→payment success, and three distinct post-change flag-on direct-parent resolver failures in temporal order. Recovery is a separate post-repair gate. Wider Kafka/accounting/fraud propagation is required only when a diagnosis claims it; the real flag experiment is intentionally scoped to the narrower checkout→payment mechanism. The standalone **Run fresh GPT-5.6** path is model-only: without an active applied development change it cannot create an executable repair or approval request.
 
 ## Langfuse tracing
 
@@ -193,10 +204,11 @@ The runtime is intentionally small:
 The original product contract is in [`docs/specs/2026-07-16-flowpulse-design.md`](docs/specs/2026-07-16-flowpulse-design.md). The current Incident Digital Twin contract is in [`docs/specs/2026-07-16-incident-digital-twin-redesign.md`](docs/specs/2026-07-16-incident-digital-twin-redesign.md). The real Production Workspace contract is in [`docs/specs/2026-07-17-live-development-workspace.md`](docs/specs/2026-07-17-live-development-workspace.md).
 
 The submission-ready assets are in [`docs/submission/`](docs/submission/):
-the [Devpost draft](docs/submission/devpost.md), [2:30 video script](docs/submission/video-script.md), and [owner-visible final checklist](docs/submission/submission-checklist.md). The exact local real-OTLP proof—including evidence IDs, ledger order, and the one fail-closed GPT-5.6 run—is in the [runtime QA record](docs/qa/2026-07-18-competition-backend-hardening-qa.md).
+the [Devpost draft](docs/submission/devpost.md), [2:30 video script](docs/submission/video-script.md), and [owner-visible final checklist](docs/submission/submission-checklist.md). The exact local real-OTLP proofs—including evidence IDs, ledger order, and bounded fail-closed GPT-5.6 runs at progressively stronger evidence gates—are in the [runtime QA record](docs/qa/2026-07-18-competition-backend-hardening-qa.md).
 The public competition repository is [github.com/danielwanwx/FlowPulse](https://github.com/danielwanwx/FlowPulse).
 The Manager and synchronized specialist-operations contract is in [`docs/specs/2026-07-17-agent-control-and-transparent-recovery.md`](docs/specs/2026-07-17-agent-control-and-transparent-recovery.md).
 The compact Architecture, routed Live, and harness-linkage refinement is in [`docs/superpowers/specs/2026-07-17-compact-architecture-and-orchestrated-live-design.md`](docs/superpowers/specs/2026-07-17-compact-architecture-and-orchestrated-live-design.md).
+The bounded model/harness responsibility, immutable skills and protocols, context compiler, and safe failure episodes are documented in [`docs/architecture/flowpulse-harness.md`](docs/architecture/flowpulse-harness.md).
 
 The shared-border Architecture, semantic Live signal path, Recovery Console, and pure-black contrast refinement is in [`docs/superpowers/specs/2026-07-17-recovery-console-and-signal-path-design.md`](docs/superpowers/specs/2026-07-17-recovery-console-and-signal-path-design.md).
 
@@ -238,7 +250,7 @@ Candidate policy `evidence-policy-v2` must pass six deterministic gates: false-d
 - Only the checked-in checkout rollback boundary and allowlisted local command ID are accepted.
 - The judge repair is a captured replay, never a production mutation.
 - Owner approval is mandatory and immutable.
-- Tool loops stop after six rounds; evaluator feedback gets one replan.
+- Tool loops stop after four rounds; evaluator feedback gets one replan.
 - Langfuse failure never affects runtime authority.
 
 ## How Codex and GPT-5.6 were used

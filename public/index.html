@@ -4,235 +4,100 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="light dark">
-    <meta name="description" content="FlowPulse production investigation workspace">
-    <title>FlowPulse | Production Workspace</title>
-    <script>try{const c=document.cookie.split("; ").find(v=>v.startsWith("flowpulse-theme="));document.documentElement.dataset.theme=localStorage.getItem("flowpulse-theme")||(c&&c.split("=")[1])||"light"}catch{document.documentElement.dataset.theme="light"}</script>
+    <meta name="description" content="FlowPulse incident flight recorder and agentic autotriage workspace">
+    <title>FlowPulse | Incident Flight Recorder</title>
+    <script>try{document.documentElement.dataset.theme=localStorage.getItem("flowpulse-theme")==="dark"?"dark":"light"}catch{document.documentElement.dataset.theme="light"}</script>
     <link rel="stylesheet" href="/vendor/phosphor/flowpulse-icons.css">
     <link rel="stylesheet" href="/styles.css">
   </head>
   <body>
-    <a class="skip-link" href="#twin-canvas">Skip to system canvas</a>
-    <div id="app-shell" class="app-shell is-loading" data-mode="architecture">
+    <a class="skip-link" href="#twin-canvas">Skip to incident reconstruction</a>
+    <div id="app-shell" class="app-shell is-loading" data-stage="monitor" data-subview="architecture">
       <header class="topbar">
-        <div class="brand" aria-label="FlowPulse">
-          <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
-          <span>FlowPulse</span>
-        </div>
-        <span id="environment" class="environment-label">dev / astronomy-shop</span>
+        <div class="brand" aria-label="FlowPulse"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span><span>FlowPulse</span></div>
+        <span id="environment" class="environment-label">ledger-derived incident projection</span>
         <div class="topbar-status">
-          <span id="capture-label" class="capture-label">Checking source</span>
-          <button id="theme-toggle" class="theme-toggle" type="button" aria-pressed="false" aria-label="Switch to pure black theme"><span class="theme-swatch" aria-hidden="true"></span><span id="theme-toggle-label" class="visually-hidden">Black</span></button>
-          <details id="workspace-menu" class="workspace-menu">
-            <summary aria-label="Open workspace menu"><i class="ph ph-dots-three" aria-hidden="true"></i></summary>
-            <div class="workspace-menu-panel">
-              <span class="menu-label">Workspace</span>
-              <nav class="menu-navigation" aria-label="Workspace views">
-                <button class="nav-button is-active" type="button" data-nav-tab="map">System map</button>
-                <button class="nav-button" type="button" data-nav-tab="incidents">Incidents</button>
-                <button class="nav-button" type="button" data-nav-tab="changes">Changes</button>
-                <button class="nav-button" type="button" data-nav-tab="evaluations">Evaluations</button>
-              </nav>
-              <div class="workspace-menu-actions">
-                <button id="manager-button" class="button secondary" type="button">Ask Manager</button>
-                <button id="live-button" class="button secondary" type="button">Run GPT-5.6</button>
-                <button id="details-button" class="button secondary" type="button">Inspect run</button>
-              </div>
-              <div class="menu-meta">
-                <a id="langfuse-link" class="text-link is-disabled" href="#" target="_blank" rel="noreferrer">Tracing not configured</a>
-                <span id="ledger-state" class="ledger-state">Loading events</span>
-              </div>
-            </div>
-          </details>
+          <span id="source-badge" class="capture-label source-unavailable">Source unavailable</span>
+          <span id="evidence-badge" class="truth-badge">Evidence unavailable</span>
+          <span id="execution-badge" class="truth-badge">Execution unavailable</span>
+          <button id="theme-toggle" class="theme-toggle" type="button" aria-pressed="false" aria-label="Switch to black theme"><i class="ph ph-moon" aria-hidden="true"></i><span class="visually-hidden">Toggle visual theme</span></button>
         </div>
       </header>
 
       <div id="error-banner" class="error-banner" role="alert" hidden>
-        <span id="error-message">FlowPulse could not load the incident state.</span>
+        <span id="error-message">FlowPulse could not load a valid incident projection.</span>
         <button id="retry-button" class="text-button" type="button">Retry</button>
       </div>
 
       <main>
         <section class="mission-bar" aria-labelledby="workspace-title">
-          <div class="mission-summary">
-            <h1 id="workspace-title">System architecture</h1>
+          <div class="mission-summary"><h1 id="workspace-title">Incident Flight Recorder</h1></div>
+          <div class="mode-switch" role="tablist" aria-label="Primary incident workspaces">
+            <button id="tab-monitor" class="mode-button is-active" type="button" role="tab" aria-selected="true" aria-controls="workspace-panel" data-stage="monitor">Monitor</button>
+            <button id="tab-workbench" class="mode-button" type="button" role="tab" aria-selected="false" aria-controls="workspace-panel" data-stage="agent_workbench">Agent Workbench</button>
+            <button id="tab-decision" class="mode-button" type="button" role="tab" aria-selected="false" aria-controls="workspace-panel" aria-label="Decision and Recovery, Recovery Console subviews" data-stage="decision_recovery">Decision &amp; Recovery</button>
           </div>
-
-          <div class="mode-switch" aria-label="Digital twin mode">
-            <button class="mode-button is-active" type="button" data-mode="architecture">Architecture</button>
-            <button class="mode-button" type="button" data-mode="live">Live</button>
-            <button class="mode-button" type="button" data-mode="replay">Diagnose</button>
-            <button class="mode-button" type="button" data-mode="agents">Recovery Console</button>
-            <button class="mode-button" type="button" data-mode="compare">Compare</button>
-          </div>
-
-          <div class="mission-actions">
-            <div class="stage-readout">
-              <strong id="stage">Healthy</strong>
-              <small id="status-text">Loading authoritative state</small>
-            </div>
-            <button id="development-button" class="button secondary" type="button" hidden>Connect local runtime</button>
-          </div>
+          <div class="mission-actions"><div class="stage-readout"><strong id="stage">Unavailable</strong><small id="status-text">Waiting for a bounded projection</small></div></div>
         </section>
 
-        <section class="twin-workspace" aria-label="Incident system workspace">
+        <section id="workspace-panel" class="twin-workspace" role="tabpanel" aria-labelledby="tab-monitor">
           <div class="canvas-shell">
             <div class="canvas-toolbar">
-              <div>
-                <h2 id="canvas-title">Observed architecture</h2>
-                <p id="canvas-caption">Immutable replay projection</p>
+              <div><h2 id="canvas-title">Incident reconstruction</h2><p id="canvas-caption">Bounded append-only evidence projection</p></div>
+              <div id="subview-rail" class="subview-rail" aria-label="Current stage views"></div>
+              <div class="metric-cluster" aria-label="Projection facts">
+                <button class="metric" type="button" data-focus="incident"><span>Incident</span><strong id="metric-incident">Unavailable</strong><small id="metric-incident-note">no projection</small></button>
+                <button class="metric" type="button" data-focus="evaluator"><span>Evaluator</span><strong id="metric-evaluator">Unavailable</strong><small id="metric-evaluator-note">no evidence</small></button>
+                <button class="metric" type="button" data-focus="owner"><span>Owner Gate</span><strong id="metric-owner">Unavailable</strong><small id="metric-owner-note">render-only</small></button>
               </div>
-              <div class="metric-cluster" aria-label="Incident metrics">
-                <button class="metric" type="button" data-focus-entity="checkout">
-                  <span id="metric-checkout-label">Checkout errors</span><strong id="metric-checkout">0.7%</strong><small id="metric-checkout-note">captured baseline</small>
-                </button>
-                <button class="metric" type="button" data-focus-entity="payment">
-                  <span id="metric-payment-label">Payment</span><strong id="metric-payment">Nominal</strong><small id="metric-payment-note">pre-incident</small>
-                </button>
-                <button class="metric" type="button" data-focus-entity="kafka">
-                  <span id="metric-kafka-label">Kafka lag</span><strong id="metric-kafka">182</strong><small id="metric-kafka-note">lag baseline</small>
-                </button>
-              </div>
-              <div id="zoom-controls" class="zoom-controls" aria-label="Live canvas zoom" hidden>
+              <div id="zoom-controls" class="zoom-controls" aria-label="Topology zoom">
                 <button id="zoom-out" class="icon-button" type="button" aria-label="Zoom out"><i class="ph ph-minus" aria-hidden="true"></i></button>
                 <output id="zoom-level" aria-live="polite">100%</output>
                 <button id="zoom-in" class="icon-button" type="button" aria-label="Zoom in"><i class="ph ph-plus" aria-hidden="true"></i></button>
                 <button id="zoom-reset" class="zoom-reset" type="button">Reset</button>
               </div>
-              <details class="legend-menu">
-                <summary><i class="ph ph-info" aria-hidden="true"></i>Legend</summary>
-                <div class="state-key" aria-label="Canvas entity legend">
-                  <strong>Entity</strong>
-                  <span><i class="key-runtime"></i>Observed runtime</span>
-                  <span><i class="key-control"></i>Control plane</span>
-                  <span><i class="key-outcome"></i>Derived outcome</span>
-                  <strong>Status</strong>
-                  <span><i class="key-live"></i>Live / active</span>
-                  <span><i class="key-verified"></i>Healthy / verified</span>
-                  <span><i class="key-attention"></i>Attention / evidence gap</span>
-                  <span><i class="key-impact"></i>Failure / rejected</span>
-                  <span><i class="key-standby"></i>Standby / unavailable</span>
-                </div>
-              </details>
             </div>
 
             <div id="twin-scroll" class="twin-scroll">
-              <div id="twin-canvas" class="twin-canvas" role="region" aria-label="Astronomy Shop incident system canvas" tabindex="0">
-                <div id="canvas-loading" class="canvas-loading" role="status">
-                  <span>Loading authoritative state</span>
-                </div>
-                <div class="plane-guides" aria-hidden="true">
-                  <span class="plane-guide runtime-guide"><strong>Runtime plane</strong><small>Observed and captured services</small></span>
-                  <span class="plane-guide control-guide"><strong>FlowPulse control plane</strong><small>Change, evaluation, and evidence</small></span>
-                </div>
+              <div id="twin-canvas" class="twin-canvas projection-canvas" role="region" aria-label="Incident topology and causal replay" tabindex="0">
+                <div id="canvas-loading" class="canvas-loading" role="status"><span>Loading bounded incident projection</span></div>
+                <div class="plane-guides" aria-hidden="true"><span class="plane-guide runtime-guide"><strong>Production path</strong><small>server-derived topology</small></span><span class="plane-guide control-guide"><strong>Evidence path</strong><small>bounded provenance</small></span></div>
                 <div id="canvas-layers" class="canvas-layers"></div>
-                <div id="compare-handle" class="compare-handle" aria-hidden="true" hidden><i></i><span></span></div>
-                <input id="compare-canvas-range" class="compare-canvas-range" type="range" min="0" max="100" value="50" step="1" aria-label="Drag to compare incident and verified recovery" hidden>
                 <div id="annotation-layer" class="annotation-layer" aria-live="polite"></div>
-                <div id="approval-banner" class="approval-banner" hidden>
-                  <div><strong>Owner approval required</strong><span id="approval-copy">Rollback is bounded to checkout:2.18.0.</span></div>
-                  <button id="manager-open-button" class="button approve" type="button">Recover</button>
-                </div>
+                <section id="stage-panel" class="stage-panel" aria-live="polite"></section>
+                <section id="decision-panel" class="decision-panel" aria-label="Decision and recovery status" hidden></section>
+                <section id="compare-review-rail" class="compare-review-rail" aria-label="Incident and verified recovery comparison" hidden></section>
               </div>
             </div>
           </div>
 
-          <aside id="compare-review-rail" class="compare-review-rail" aria-labelledby="compare-review-title" hidden></aside>
-
-          <section id="incident-strip" class="incident-strip" aria-label="Active incident">
-            <div class="incident-severity"><span id="severity">SEV-1</span><small>ACTIVE INCIDENT</small></div>
-            <div class="incident-copy"><strong id="incident-title">Loading incident</strong><span id="incident-summary">Reading immutable incident state.</span></div>
-            <div class="incident-stage"><span>Investigation</span><strong id="incident-stage">Evidence collection</strong></div>
-            <button id="open-incident-button" class="button secondary" type="button">Open incident</button>
-          </section>
-
           <aside id="context-drawer" class="context-drawer" aria-labelledby="drawer-title" hidden>
-            <div class="drawer-header">
-              <div><span id="drawer-kind">Run detail</span><h2 id="drawer-title">Incident evidence</h2><p id="drawer-subtitle">Select a component, path, or stage.</p></div>
-              <button id="drawer-close" class="icon-button" type="button" aria-label="Close contextual drawer">Close</button>
-            </div>
-            <div id="drawer-tabs" class="drawer-tabs" role="tablist" aria-label="Incident detail categories"></div>
+            <div class="drawer-header"><div><span id="drawer-kind">Projection detail</span><h2 id="drawer-title">Incident evidence</h2><p id="drawer-subtitle">Select an entity, causal path, or timeline event.</p></div><button id="drawer-close" class="icon-button" type="button" aria-label="Close contextual drawer">Close</button></div>
+            <div id="drawer-tabs" class="drawer-tabs" role="tablist" aria-label="Context detail categories"></div>
             <div id="drawer-content" class="drawer-content" role="tabpanel"></div>
-          </aside>
-
-          <aside id="manager-panel" class="manager-panel" aria-labelledby="manager-title" hidden>
-            <div class="manager-header">
-              <div>
-                <span>FlowPulse Manager</span>
-                <h2 id="manager-title">Incident command</h2>
-                <p id="manager-subtitle">Ledger-grounded coordination</p>
-              </div>
-              <button id="manager-close" class="icon-button" type="button" aria-label="Close Manager panel">Close</button>
-            </div>
-            <div id="manager-status" class="manager-status" role="status"></div>
-            <div id="manager-report" class="manager-report"></div>
-            <div class="manager-actions">
-              <button id="manager-primary-action" class="button secondary" type="button">Continue</button>
-              <button id="approve-button" class="button approve" type="button" hidden>Approve bounded recovery</button>
-              <button id="manager-agents-button" class="button secondary" type="button">Open Recovery Console</button>
-            </div>
-            <div class="manager-activity-section">
-              <div class="manager-section-title"><strong>Team activity</strong><span id="manager-activity-count">0 events</span></div>
-              <div id="manager-activity" class="manager-activity"></div>
-            </div>
-            <form id="manager-form" class="manager-form">
-              <label for="manager-input">Ask about evidence, agents, or recovery</label>
-              <div>
-                <input id="manager-input" name="message" type="text" maxlength="2000" autocomplete="off" placeholder="What is confirmed and what needs my approval?">
-                <button id="manager-send" class="button approve" type="submit">Ask</button>
-              </div>
-              <small>Chat can explain or delegate safe work. It cannot approve remediation.</small>
-            </form>
           </aside>
         </section>
 
-        <section id="timeline-dock" class="timeline-dock" aria-label="Incident timeline" hidden>
+        <section id="timeline-dock" class="timeline-dock" aria-label="Incident replay">
           <div class="transport">
             <span class="transport-label">Replay controls</span>
             <button id="restart-button" class="transport-button" type="button">Restart</button>
             <button id="back-button" class="transport-button" type="button">Back</button>
             <button id="play-button" class="transport-button primary" type="button">Run guided replay</button>
             <button id="forward-button" class="transport-button" type="button">Step</button>
-            <label class="speed-control">Speed
-              <select id="speed-select" aria-label="Replay speed">
-                <option value="1">1x</option>
-                <option value="1.5" selected>1.5x</option>
-                <option value="2">2x</option>
-              </select>
-            </label>
+            <label class="speed-control">Speed<select id="speed-select" aria-label="Replay speed"><option value="1">1x</option><option value="1.5" selected>1.5x</option><option value="2">2x</option></select></label>
           </div>
+          <div class="timeline-main"><div id="stage-track" class="stage-track" aria-label="Ledger-derived timeline"></div><label class="visually-hidden" for="timeline-range">Replay timeline position</label><input id="timeline-range" class="timeline-range" type="range" min="0" max="0" value="0" step="1"></div>
+          <button id="timeline-current" class="timeline-current" type="button"><span id="timeline-time">Unavailable</span><strong id="timeline-title">Unavailable</strong><small id="timeline-copy">No valid projection is loaded</small></button>
+          <div id="compare-control" class="compare-control" hidden><div><strong>Incident</strong><span id="compare-value">50% split</span><strong>Verified recovery</strong></div><label class="visually-hidden" for="compare-range">Compare incident and verified recovery</label><input id="compare-range" type="range" min="0" max="100" value="50" step="1"><div class="compare-presets"><button id="compare-incident" type="button">Incident</button><button id="compare-even" type="button">Even</button><button id="compare-verified" type="button">Recovery</button></div></div>
+        </section>
 
-          <div class="timeline-main">
-            <div id="stage-track" class="stage-track" aria-label="Incident stages"></div>
-            <label class="visually-hidden" for="timeline-range">Replay timeline position</label>
-            <input id="timeline-range" class="timeline-range" type="range" min="0" max="0" value="0" step="1">
-          </div>
-
-          <div id="compare-control" class="compare-control" hidden>
-            <div><strong>Incident</strong><span id="compare-value">50% split</span><strong>Verified</strong></div>
-            <label class="visually-hidden" for="compare-range">Compare incident and verified recovery</label>
-            <input id="compare-range" type="range" min="0" max="100" value="50" step="1">
-            <div class="compare-presets" aria-label="Compare split presets">
-              <button id="compare-incident" type="button">70% incident</button>
-              <button id="compare-even" type="button">Even split</button>
-              <button id="compare-verified" type="button">70% verified</button>
-            </div>
-            <div class="compare-focus-controls" aria-label="Compare review focus">
-              <button type="button" data-compare-focus="impact" aria-pressed="true">Impact</button>
-              <button type="button" data-compare-focus="cause" aria-pressed="false">Cause</button>
-              <button type="button" data-compare-focus="recovery" aria-pressed="false">Recovery</button>
-              <button type="button" data-compare-focus="learning" aria-pressed="false">Learning</button>
-            </div>
-          </div>
-
-          <button id="timeline-current" class="timeline-current" type="button">
-            <span id="timeline-time">15:41</span>
-            <strong id="timeline-title">Healthy</strong>
-            <small id="timeline-copy">Captured system baseline</small>
-          </button>
+        <section class="render-only-bar" aria-label="Decision controls">
+          <div><strong>Controls remain disabled in Slice D</strong><span id="control-explanation">D.1 adds server-resolved decision-ID-bound actions. This view never authorizes remediation.</span></div>
+          <div class="render-only-actions"><button id="approve-control" class="button approve" type="button" disabled>Approve</button><button id="reject-control" class="button secondary" type="button" disabled>Reject</button><button id="defer-control" class="button secondary" type="button" disabled>Defer</button><button id="action-control" class="button secondary" type="button" disabled>Run action</button></div>
         </section>
       </main>
     </div>
-
     <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
     <script type="module" src="/app.js"></script>
   </body>
