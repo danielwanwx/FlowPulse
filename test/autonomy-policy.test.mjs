@@ -53,8 +53,10 @@ test("production exports contain only non-authority utilities and immutable chec
   assert.deepEqual(Object.keys(AUTONOMY_POLICY_ARTIFACT), ["schema_version", "version", "registry", "intents"]);
   assert.equal(Object.isFrozen(AUTONOMY_POLICY_ARTIFACT), true);
   assert.equal(Object.isFrozen(AUTONOMY_POLICY_ARTIFACT.registry.envelopes[0]), true);
-  assert.equal(AUTONOMY_POLICY_ARTIFACT.intents.find((intent) => intent.id === "captured-cache-flush").truth_mode, "captured_simulation");
+  assert.equal(AUTONOMY_POLICY_ARTIFACT.intents.find((intent) => intent.id === "captured-cache-flush").execution_mode, "captured_simulation");
   assert.equal(AUTONOMY_POLICY_ARTIFACT.intents.find((intent) => intent.id === "checkout-payment").impact.level, "medium");
+  assert.equal(AUTONOMY_POLICY_ARTIFACT.intents.find((intent) => intent.id === "checkout-payment").execution_mode, "real_local_development");
+  assert.equal(JSON.stringify(AUTONOMY_POLICY_ARTIFACT).includes("truth_mode"), false);
 });
 
 test("a public receipt verifier validates bounded temporal and manifest properties but cannot issue a receipt", () => {
@@ -104,12 +106,23 @@ test("the recursive production import graph contains no authority factory, regis
     }
   }
 
-  for (const entry of ["server.mjs", "openai.mjs", "agent-control-service.mjs", "development-runtime.mjs"]) {
+  assert.equal(reachesModule(graph, resolve(sourceRoot, "server.mjs"), new Set([
+    resolve(sourceRoot, "autonomy-policy.mjs"),
+    resolve(sourceRoot, "autonomy-freshness.mjs")
+  ])), true, "only the server composition root may reach authority utilities");
+  for (const entry of ["openai.mjs", "agent-control-service.mjs", "development-runtime.mjs"]) {
     assert.equal(reachesModule(graph, resolve(sourceRoot, entry), new Set([
       resolve(sourceRoot, "autonomy-policy.mjs"),
       resolve(sourceRoot, "autonomy-freshness.mjs")
-    ])), false, `${entry} must not reach the deferred authority composition`);
+    ])), false, `${entry} must not reach the private authority composition`);
   }
+});
+
+test("server private decision builder is not externally callable", () => {
+  const server = readFileSync(new URL("../src/server.mjs", import.meta.url), "utf8");
+  assert.match(server, /async function advanceAutonomyAfterDiagnosis\(\{ run_id, incident_id, intent_id \}\)/);
+  assert.doesNotMatch(server, /export\s+(?:async\s+)?function\s+advanceAutonomyAfterDiagnosis/);
+  assert.doesNotMatch(server, /export\s*\{[^}]*advanceAutonomyAfterDiagnosis/);
 });
 
 test("claim and failure-lock identities remain deterministic, bounded, and truth-neutral", () => {

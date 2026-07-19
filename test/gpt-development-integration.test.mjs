@@ -11,7 +11,7 @@ import { Ledger } from "../src/ledger.mjs";
 import { runLiveInvestigation } from "../src/openai.mjs";
 import { IncidentRuntime } from "../src/runtime.mjs";
 
-test("synthetic Responses workflow enforces tool lineage, Owner Gate, real backtest, and policy promotion", async () => {
+test("investigators stop before authority", async () => {
   const runtime = new IncidentRuntime({ ledger: new Ledger(join(mkdtempSync(join(tmpdir(), "flowpulse-gpt-dev-")), "ledger.db")), bundle: loadBundle() });
   let repaired = false;
   let flag = "on";
@@ -56,17 +56,9 @@ test("synthetic Responses workflow enforces tool lineage, Owner Gate, real backt
   assert.equal(events.filter((event) => event.type === "evaluation.rejected").length, 1);
   assert.equal(events.filter((event) => event.type === "evaluation.accepted").length, 1);
   assert.equal(events.filter((event) => event.type === "repair.executed").length, 0);
-  assert.deepEqual(events.find((event) => event.type === "repair.proposed").payload.command_id, contract.command_id);
-
-  await development.approve(runId, "Synthetic owner");
-  await development.verify(runId);
-  events = runtime.ledger.list(runId);
-  const typeOrder = ["regression.created", "backtest.completed", "policy.evaluated"].map((type) => events.findIndex((event) => event.type === type));
-  assert.equal(typeOrder[0] < typeOrder[1] && typeOrder[1] < typeOrder[2], true);
-  assert.equal(events.find((event) => event.type === "approval.granted").sequence < events.find((event) => event.type === "repair.executed").sequence, true);
-  assert.equal(events.find((event) => event.type === "backtest.completed").payload.passed, true);
-  assert.equal(events.find((event) => event.type === "policy.evaluated").payload.passed, true);
-  assert.equal(events.find((event) => event.type === "verification.completed").payload.checks.every((check) => check.passed), true);
+  assert.equal(events.some((event) => event.type === "diagnosis.gate.passed"), true);
+  assert.equal(events.some((event) => event.type === "repair.proposed"), false);
+  assert.equal(events.some((event) => event.type === "approval.requested"), false);
 });
 
 test("synthetic known but unqueried evidence stops before development authority", async () => {

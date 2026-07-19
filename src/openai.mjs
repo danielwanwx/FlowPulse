@@ -40,7 +40,7 @@ export async function runLiveInvestigation({ runtime, runId, evidenceSource, rep
   const { bundle } = runtime;
   runtime.append(runId, "live.run.started", "runtime", {
     model: harness.model.id,
-    execution_mode: "gpt_5_6",
+    execution_mode: "gpt_model_only",
     evidence_mode: sourceMetadata.mode,
     authority: "flowpulse-ledger",
     harness: harnessBinding(harness)
@@ -115,22 +115,10 @@ export async function runLiveInvestigation({ runtime, runId, evidenceSource, rep
 
     for (const event of pendingModelEvents) runtime.append(runId, event.type, event.actor, event.payload, event.evidenceRefs);
     runtime.append(runId, "live.run.completed", "runtime", { ...finalResult, harness: harnessBinding(harness) }, finalResult.diagnosis.evidence_refs);
-    if (finalResult.evaluation.accepted && repairContract) {
-      runtime.append(runId, "repair.proposed", "live-investigator", {
-        ...repairContract,
-        diagnosis_id: finalResult.diagnosis.id,
-        bounded: true,
-        expected_effect: finalResult.diagnosis.proposed_repair.reason
-      }, finalResult.diagnosis.evidence_refs);
-      runtime.append(runId, "approval.requested", "runtime", {
-        ...repairContract,
-        owner_team: "local-development",
-        reason: "The frozen OTLP finding passed adversarial evaluation. This exact local checkout repair still requires owner approval."
-      }, finalResult.diagnosis.evidence_refs);
-    } else if (finalResult.evaluation.accepted) {
+    if (finalResult.evaluation.accepted) {
       runtime.append(runId, "outcome.classified", "live-evaluator", {
         classification: "insufficient_evidence",
-        explanation: "This is a model-only frozen-evidence investigation. No applied development change contract exists, so FlowPulse did not create an executable repair or approval request."
+        explanation: "The investigator reached a diagnosis gate only. The private server authority boundary must independently validate it before any repair proposal or approval request exists."
       }, finalResult.diagnosis.evidence_refs);
     } else {
       runtime.append(runId, "outcome.classified", "live-evaluator", {

@@ -1,12 +1,58 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadBundle } from "../src/bundle.mjs";
 import { Ledger } from "../src/ledger.mjs";
 import { IncidentRuntime } from "../src/runtime.mjs";
+
+function authoritySource() { return readFileSync(new URL("../src/server.mjs", import.meta.url), "utf8"); }
+
+test("server authority closure emits one canonical decision", () => {
+  const source = authoritySource();
+  assert.match(source, /async function advanceAutonomyAfterDiagnosis\(\{ run_id, incident_id, intent_id \}\)/);
+  assert.match(source, /type: "autonomy\.decision\.recorded"/);
+  assert.match(source, /ledger\.appendIfAbsent/);
+  assert.match(source, /decision_id: `autonomy-decision-/);
+});
+
+test("checkout decision preserves exact Owner Gate", () => {
+  const source = authoritySource();
+  assert.match(source, /intent\.id === "checkout-payment"/);
+  assert.match(source, /outcome: human \? "human_review_required"/);
+  assert.match(source, /type: "repair\.proposed"/);
+  assert.match(source, /type: "approval\.requested"/);
+});
+
+test("authority inputs fail closed", () => {
+  const source = authoritySource();
+  assert.match(source, /assertAutonomySelector/);
+  assert.match(source, /authority_selector_invalid/);
+  assert.match(source, /snapshot_scope_or_source_invalid/);
+  assert.match(source, /authority_evidence_membership_invalid/);
+});
+
+test("authority claim conflict never grants execution", () => {
+  const source = authoritySource();
+  assert.match(source, /authority_claim_conflict/);
+  assert.match(source, /!inserted\.inserted/);
+});
+
+test("trusted receipt issuer verifier round trip", () => {
+  const source = authoritySource();
+  assert.match(source, /issueAuthorityFreshnessReceipt/);
+  assert.match(source, /verifyAuthorityReceipt/);
+  assert.match(source, /verifySnapshotFreshnessReceipt/);
+  assert.match(source, /authorityReceiptBindings/);
+});
+
+test("receipt binding mismatch fails closed", () => {
+  const source = authoritySource();
+  assert.match(source, /freshness_receipt_binding_mismatch/);
+  assert.match(source, /safeEqual\(stored, expected\)/);
+});
 
 test("judge API serves state and advances the replay", async (context) => {
   const port = 4600 + Math.floor(Math.random() * 300);

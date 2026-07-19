@@ -122,7 +122,7 @@ export class DevelopmentRuntime {
       tool: "query_live_otlp",
       result_count: refs.length,
       evidence_mode: evidenceSource?.metadata?.().mode || "unit-only-fallback",
-      execution_mode: "deterministic"
+      execution_mode: "real_local_development"
     }, refs);
     this.runtime.append(runId, "loop.symptoms_collected", "runtime", { step: "inspect fresh local telemetry" }, refs);
     const rejectedDiagnosis = {
@@ -193,9 +193,8 @@ export class DevelopmentRuntime {
       claim: "The pinned checkout code, controlled flag-off/on contrast, and three distinct direct-parent failures prove the bounded checkout-to-payment mechanism."
     }, refs);
     this.runtime.append(runId, "evaluation.accepted", "evaluator", {
-      hypothesis_id: "hyp-live-payment-flag",
-      score: 0.9,
-      reason: "Every pre-approval Diagnosis Gate check passed for the bounded checkout-to-payment claim; wider propagation remains unproven."
+      ...acceptedEvaluation,
+      hypothesis_id: "hyp-live-payment-flag"
     }, refs);
     const seed = buildDiagnosisBacktestSeed({
       evidenceSource,
@@ -207,21 +206,8 @@ export class DevelopmentRuntime {
     });
     this.runtime.append(runId, "diagnosis.gate.passed", "runtime", seed, seed.accepted.evidence_ids);
     this.runtime.append(runId, "loop.root_cause_confirmed", "runtime", { step: "confirm local root cause" }, refs);
-    this.runtime.append(runId, "repair.proposed", "investigator", {
-      ...repairContract(change),
-      from: change.after,
-      to: change.known_good,
-      bounded: true,
-      timeout_seconds: change.timeout_seconds,
-      abort_if: change.abort_if,
-      expected_effect: "Restore checkout payment calls and confirm recovery from fresh post-repair OTLP evidence."
-    }, refs);
-    this.runtime.append(runId, "approval.requested", "runtime", {
-      ...repairContract(change),
-      owner_team: "local-development",
-      reason: "Recreating a running checkout container is consequential and requires owner approval."
-    }, refs);
-    this.runtime.append(runId, "loop.approval_requested", "runtime", { step: "request owner approval" }, refs);
+    // Investigation is deliberately non-consequential. The server-owned
+    // autonomy closure re-reads this gate before it may create an Owner Gate.
     return source;
   }
 

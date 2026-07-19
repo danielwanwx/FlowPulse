@@ -62,7 +62,7 @@ const artifact = {
       impact: { level: "low" },
       action: baseAction,
       notification: { status: "recorded_local", delivery_mode: "captured_simulation", target_refs: ["owner-demo"] },
-      truth_mode: "captured_simulation"
+      execution_mode: "captured_simulation"
     },
     {
       id: "captured-medium-maintenance",
@@ -71,7 +71,7 @@ const artifact = {
       impact: { level: "medium" },
       action: baseAction,
       notification: { status: "recorded_local", delivery_mode: "captured_simulation", target_refs: ["owner-demo"] },
-      truth_mode: "captured_simulation"
+      execution_mode: "captured_simulation"
     },
     {
       id: "captured-high-maintenance",
@@ -80,7 +80,7 @@ const artifact = {
       impact: { level: "high" },
       action: { ...baseAction, risk: "high" },
       notification: { status: "recorded_local", delivery_mode: "captured_simulation", target_refs: ["owner-demo"] },
-      truth_mode: "captured_simulation"
+      execution_mode: "captured_simulation"
     },
     {
       id: "captured-sev1-maintenance",
@@ -89,7 +89,7 @@ const artifact = {
       impact: { level: "sev1" },
       action: { ...baseAction, risk: "high" },
       notification: { status: "recorded_local", delivery_mode: "captured_simulation", target_refs: ["owner-demo"] },
-      truth_mode: "captured_simulation"
+      execution_mode: "captured_simulation"
     },
     {
       id: "checkout-payment",
@@ -98,7 +98,7 @@ const artifact = {
       impact: { level: "medium" },
       action: baseAction,
       notification: { status: "recorded_local", delivery_mode: "local_ledger", target_refs: ["owner-demo"] },
-      truth_mode: "captured_simulation"
+      execution_mode: "real_local_development"
     }
   ]
 };

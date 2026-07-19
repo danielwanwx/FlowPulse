@@ -40,6 +40,7 @@ test("real-development loop rejects weak blame, gates rollback, then verifies fr
   const development = new DevelopmentRuntime({ runtime, source, adapter });
   const runId = await development.start();
   await development.investigate(runId, diagnosisSnapshot(runtime, runId));
+  appendServerOwnedOwnerGate(runtime, runId);
 
   let state = development.state(runId);
   assert.equal(state.waiting_for_approval, true);
@@ -469,14 +470,15 @@ test("frozen development investigation cites the exact change and complete pre-a
   await development.investigate(runId, frozen);
   const query = runtime.ledger.list(runId).find((event) => event.type === "evidence.queried");
   assert.equal(query.payload.evidence_mode, "frozen_real_otlp_snapshot");
-  assert.equal(query.payload.execution_mode, "deterministic");
+  assert.equal(query.payload.execution_mode, "real_local_development");
   assert.equal(JSON.stringify(query.payload).toLowerCase().includes("gpt"), false);
   const expected = new Set(frozen.metadata().reserved_causal_ids);
   assert.equal(expected.size, 6);
-  for (const type of ["hypothesis.proposed", "evaluation.accepted", "repair.proposed", "approval.requested"]) {
+  for (const type of ["hypothesis.proposed", "evaluation.accepted", "diagnosis.gate.passed"]) {
     const event = runtime.ledger.list(runId).filter((item) => item.type === type).at(-1);
     assert.deepEqual(new Set(event.evidence_refs), expected);
   }
+  assert.equal(runtime.ledger.list(runId).some((event) => event.type === "repair.proposed" || event.type === "approval.requested"), false);
 });
 
 function change() {
@@ -575,8 +577,21 @@ async function approvedDevelopment({ flagVariant = "off", recoveredEvidence, rea
   });
   const runId = await development.start();
   await development.investigate(runId, diagnosisSnapshot(runtime, runId));
+  appendServerOwnedOwnerGate(runtime, runId);
   await development.approve(runId, "Test owner");
   return { development, runId };
+}
+
+function appendServerOwnedOwnerGate(runtime, runId) {
+  const contract = {
+    repair_id: "repair-payment-reachable-v1",
+    action: "restore known-good paymentUnreachable flag and recreate checkout",
+    target: "checkout",
+    command_id: "astronomy.restore-payment-and-recreate-checkout"
+  };
+  const refs = runtime.ledger.list(runId).find((event) => event.type === "diagnosis.gate.passed").evidence_refs;
+  runtime.append(runId, "repair.proposed", "authority-composition", { ...contract, bounded: true }, refs);
+  runtime.append(runId, "approval.requested", "authority-composition", { ...contract, owner_team: "local-development" }, refs);
 }
 
 function diagnosisSnapshot(runtime, runId, failures = failureEvidenceSet()) {
