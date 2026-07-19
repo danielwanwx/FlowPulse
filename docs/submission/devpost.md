@@ -150,4 +150,4 @@ Digital Twin, Docker for the isolated local Astronomy Shop proof.
 - Repository: [github.com/danielwanwx/FlowPulse](https://github.com/danielwanwx/FlowPulse)
 - Hosted demo: pending owner action
 - Public video: pending owner action
-- Required `/feedback` Session ID: pending generation and confirmation
+- Required primary `/feedback` Session ID: `019f6eaf-ded3-78e1-a9c3-8ae4fd6811e2` (already entered; retain unless evidence shows the majority of core work moved to another session)

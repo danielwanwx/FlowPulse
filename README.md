@@ -18,13 +18,13 @@ OpenAI key, Langfuse account, or collector is required for the judge path.
 
 ```bash
 npm ci
-npm run submission:check
+npm test
 npm start
 ```
 
 Open [http://127.0.0.1:4310](http://127.0.0.1:4310), choose **Diagnose**, and
-run **guided replay**. The release check runs tests plus an isolated fresh-port
-health and full deterministic owner-gate smoke, then exits cleanly.
+run **guided replay**. The test suite includes isolated fresh-port health and
+full deterministic Owner-Gate smoke coverage.
 
 For a containerized sandbox, build the included `Dockerfile`; it runs with
 `HOST=0.0.0.0`, `FLOWPULSE_DEVELOPMENT_ENABLED=0`, and a mounted `/data` SQLite
@@ -44,7 +44,7 @@ Run the verified judge path:
 
 ```bash
 npm ci
-npm run submission:check
+npm test
 npm start
 ```
 
@@ -69,6 +69,12 @@ To run all automated checks:
 ```bash
 npm test
 ```
+
+> Submission-wrapper audit: `npm run submission:check` currently stops before
+> tests because its credential scan treats the tracked
+> `OPENAI_API_KEY="synthetic-test-only"` test fixture as a credential. This is
+> a release-check false positive, not a secret. Use `npm test` for the verified
+> local suite until the wrapper is repaired in a separately reviewed change.
 
 ## Incident Digital Twin
 
@@ -204,7 +210,7 @@ The runtime is intentionally small:
 The original product contract is in [`docs/specs/2026-07-16-flowpulse-design.md`](docs/specs/2026-07-16-flowpulse-design.md). The current Incident Digital Twin contract is in [`docs/specs/2026-07-16-incident-digital-twin-redesign.md`](docs/specs/2026-07-16-incident-digital-twin-redesign.md). The real Production Workspace contract is in [`docs/specs/2026-07-17-live-development-workspace.md`](docs/specs/2026-07-17-live-development-workspace.md).
 
 The submission-ready assets are in [`docs/submission/`](docs/submission/):
-the [Devpost draft](docs/submission/devpost.md), [2:30 video script](docs/submission/video-script.md), and [owner-visible final checklist](docs/submission/submission-checklist.md). The exact local real-OTLP proofs—including evidence IDs, ledger order, and bounded fail-closed GPT-5.6 runs at progressively stronger evidence gates—are in the [runtime QA record](docs/qa/2026-07-18-competition-backend-hardening-qa.md).
+the [Devpost draft](docs/submission/devpost.md), [2:30 video script](docs/submission/video-script.md), and [owner-visible final checklist](docs/submission/submission-checklist.md). The current Build Week owner checklist is in [`docs/BUILD_WEEK_SUBMISSION_CHECKLIST.md`](docs/BUILD_WEEK_SUBMISSION_CHECKLIST.md). The exact local real-OTLP proofs—including evidence IDs, ledger order, and bounded fail-closed GPT-5.6 runs at progressively stronger evidence gates—are in the [runtime QA record](docs/qa/2026-07-18-competition-backend-hardening-qa.md).
 The public competition repository is [github.com/danielwanwx/FlowPulse](https://github.com/danielwanwx/FlowPulse).
 The Manager and synchronized specialist-operations contract is in [`docs/specs/2026-07-17-agent-control-and-transparent-recovery.md`](docs/specs/2026-07-17-agent-control-and-transparent-recovery.md).
 The compact Architecture, routed Live, and harness-linkage refinement is in [`docs/superpowers/specs/2026-07-17-compact-architecture-and-orchestrated-live-design.md`](docs/superpowers/specs/2026-07-17-compact-architecture-and-orchestrated-live-design.md).
@@ -289,3 +295,17 @@ The competition build ships one real local incident, one local repair type, and 
 ## License
 
 MIT. See [`LICENSE`](LICENSE).
+
+## Teammate continuation and submission provenance
+
+The accepted pre-integration frontend visual shell was restored in
+`cb1afd009a4a36593ea33107a4b276830e4e6cff`; the preserved backend-integration
+checkpoint is `3bf116ea7078713386044194c8734e69ddb5815e`. Start teammate work
+from [`docs/team-handoff/SHRIK_HANDOFF.md`](docs/team-handoff/SHRIK_HANDOFF.md)
+and keep changes in small reviewed branches.
+
+For the Build Week Devpost submission, the original primary `/feedback` Session
+ID is `019f6eaf-ded3-78e1-a9c3-8ae4fd6811e2`. New teammate Codex sessions should
+record their IDs as secondary provenance in PR/handoff notes; they do not
+replace the primary Devpost field unless the team documents that the majority
+of core work moved to a different session.
