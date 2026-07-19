@@ -133,7 +133,9 @@ function build({ run, events, evidence, topology, cursor, authority_chain, axes 
   const refs = unique(events.flatMap((event) => event.evidence_refs));
   const evidenceSummaries = refs.slice(0, INCIDENT_PROJECTION_LIMITS.max_evidence_summaries).map((ref) => safeEvidence(evidence.get(ref)));
   const graph = graphFor(topology);
-  const investigation = investigationFor(events);
+  const validatedInvestigation = validateProjectionInvestigation(events);
+  if (validatedInvestigation.invalid_reason && !legacyAuthority) fail(validatedInvestigation.invalid_reason);
+  const investigation = investigationFor(events, validatedInvestigation);
   const state = stateFor(events, authority, legacyAuthority, investigation);
   const projection = {
     schema_version: INCIDENT_PROJECTION_SCHEMA_VERSION,
@@ -180,8 +182,7 @@ function stateFor(events, authority, legacyAuthority, investigation) {
 
 function stage(id) { return { id, label: ({ monitor: "Monitor", agent_workbench: "Agent Workbench", decision_recovery: "Decision & Recovery" })[id] }; }
 
-function investigationFor(events) {
-  const validated = validateProjectionInvestigation(events);
+function investigationFor(events, validated = validateProjectionInvestigation(events)) {
   const hypotheses = events.filter((event) => ["hypothesis.proposed", "diagnosis.proposed"].includes(event.type)).slice(-8).map((event) => ({ id: safeText(event.payload?.id || event.id, 160), status: event.type, evidence_refs: [...event.evidence_refs] }));
   const { rejected, accepted, replan, gate } = validated;
   return { hypotheses, counter_evidence: rejected ? { hypothesis_id: safeText(rejected.payload?.hypothesis_id, 160), evidence_refs: [...rejected.evidence_refs] } : null, evaluator: accepted ? { verdict: "accepted", evidence_refs: [...accepted.evidence_refs] } : rejected ? { verdict: "rejected", evidence_refs: [...rejected.evidence_refs] } : { verdict: "pending", evidence_refs: [] }, diagnosis_gate: gate ? { status: "passed", event_id: gate.id, evidence_refs: [...gate.evidence_refs] } : { status: "pending", event_id: null, evidence_refs: [] }, replan: replan ? { status: "recorded", event_id: replan.id } : { status: "not_recorded", event_id: null } };

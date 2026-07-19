@@ -163,6 +163,28 @@ function input(overrides = {}) {
   };
 }
 
+function investigationPairInput(mutate = ({ accepted, gate }) => [accepted, gate]) {
+  const canonical = canonicalAuthorityEvents();
+  const accepted = structuredClone(canonical.events.find((item) => item.type === "evaluation.accepted"));
+  const gate = structuredClone(canonical.events.find((item) => item.type === "diagnosis.gate.passed"));
+  return input({
+    run: { ...input().run, mode: "development" },
+    source: { mode: "frozen_real_otlp_snapshot", status: "frozen" },
+    evidence: canonical.evidence,
+    events: [...input().events.slice(0, 2), ...mutate({ accepted, gate })]
+  });
+}
+
+function assertInvestigationPairIsNonActionable(value) {
+  const projection = buildIncidentProjection(value);
+  assert.equal(projection.stage_status, "non_actionable");
+  assert.equal(projection.investigation.evaluator.verdict, "unavailable");
+  assert.equal(projection.investigation.diagnosis_gate.status, "unavailable");
+  assert.equal(projection.human_gate.status, "not_actionable");
+  assert.equal(projection.action.status, "not_actionable");
+  assert.equal(projection.verification.status, "not_actionable");
+}
+
 test("IncidentProjection v1 is bounded, deterministic, redacted, and exposes the rejected-hypothesis replan", () => {
   const first = buildIncidentProjection(input());
   const second = buildIncidentProjection(input({ events: [...input().events].reverse() }));
@@ -193,6 +215,63 @@ test("projection never upgrades malformed evaluator or diagnosis-gate payloads",
   assert.notEqual(malformed.investigation.evaluator.verdict, "accepted");
   assert.notEqual(malformed.investigation.diagnosis_gate.status, "passed");
   assert.notEqual(malformed.stage_status, "verified");
+});
+
+test("projection treats accepted evaluation and diagnosis gate as one strict causal pair", () => {
+  const reversed = investigationPairInput(({ accepted, gate }) => {
+    gate.sequence = 6;
+    gate.recorded_at = "2026-07-18T10:00:06.000Z";
+    accepted.sequence = 7;
+    accepted.recorded_at = "2026-07-18T10:00:07.000Z";
+    return [gate, accepted];
+  });
+  const timestampReversed = investigationPairInput(({ accepted, gate }) => {
+    accepted.recorded_at = "2026-07-18T10:00:08.000Z";
+    gate.recorded_at = "2026-07-18T10:00:07.000Z";
+    return [accepted, gate];
+  });
+  const duplicateAccepted = investigationPairInput(({ accepted, gate }) => {
+    const duplicate = { ...structuredClone(accepted), id: "evaluation-duplicate", sequence: 7, recorded_at: "2026-07-18T10:00:07.000Z" };
+    gate.sequence = 8;
+    gate.recorded_at = "2026-07-18T10:00:08.000Z";
+    return [accepted, duplicate, gate];
+  });
+  const conflictingAccepted = investigationPairInput(({ accepted, gate }) => {
+    const conflict = structuredClone(accepted);
+    conflict.id = "evaluation-conflict";
+    conflict.sequence = 7;
+    conflict.recorded_at = "2026-07-18T10:00:07.000Z";
+    conflict.payload.reason = "Conflicting accepted conclusion.";
+    conflict.payload_sha256 = sha256Canonical(conflict.payload);
+    gate.sequence = 8;
+    gate.recorded_at = "2026-07-18T10:00:08.000Z";
+    return [accepted, conflict, gate];
+  });
+  const duplicateGate = investigationPairInput(({ accepted, gate }) => {
+    const duplicate = { ...structuredClone(gate), id: "gate-duplicate", sequence: 8, recorded_at: "2026-07-18T10:00:08.000Z" };
+    return [accepted, gate, duplicate];
+  });
+  const conflictingGate = investigationPairInput(({ accepted, gate }) => {
+    const conflict = structuredClone(gate);
+    conflict.id = "gate-conflict";
+    conflict.sequence = 8;
+    conflict.recorded_at = "2026-07-18T10:00:08.000Z";
+    conflict.payload.candidate_sha256 = "f".repeat(64);
+    conflict.payload_sha256 = sha256Canonical(conflict.payload);
+    return [accepted, gate, conflict];
+  });
+
+  for (const attack of [reversed, timestampReversed, duplicateAccepted, conflictingAccepted, duplicateGate, conflictingGate]) {
+    assertInvestigationPairIsNonActionable(attack);
+  }
+
+  const valid = buildIncidentProjection(investigationPairInput());
+  assert.equal(valid.stage_status, "evaluating");
+  assert.equal(valid.investigation.evaluator.verdict, "accepted");
+  assert.equal(valid.investigation.diagnosis_gate.status, "passed");
+  assert.equal(valid.human_gate.status, "not_required");
+  assert.equal(valid.action.status, "not_started");
+  assert.equal(valid.verification.status, "not_recorded");
 });
 
 test("forged execution and verification semantics cannot upgrade a canonical chain", () => {

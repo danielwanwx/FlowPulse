@@ -47,17 +47,30 @@ export function validateProjectionCanonicalChain({ events, chain, axes, evidence
 }
 
 export function validateProjectionInvestigation(events) {
-  const accepted = last(events, "evaluation.accepted");
-  const gate = last(events, "diagnosis.gate.passed");
+  const acceptedEvents = events.filter((event) => event.type === "evaluation.accepted");
+  const gateEvents = events.filter((event) => event.type === "diagnosis.gate.passed");
   const rejected = last(events, "evaluation.rejected");
-  const validAccepted = accepted && strictAcceptedEvaluation(accepted) ? accepted : null;
-  const validGate = gate && strictDiagnosisGate(gate, validAccepted) ? gate : null;
-  return {
-    accepted: validAccepted,
-    gate: validGate,
+  const base = {
+    accepted: null,
+    gate: null,
     rejected: rejected && safeRejectedEvaluation(rejected) ? rejected : null,
     replan: last(events, "plan.revised") || null
   };
+  if (acceptedEvents.length > 1 || gateEvents.length > 1) return invalidInvestigation(base);
+
+  const accepted = acceptedEvents[0] || null;
+  const gate = gateEvents[0] || null;
+  if (accepted && !strictAcceptedEvaluation(accepted)) return invalidInvestigation(base);
+  if (!gate) return { ...base, accepted };
+  if (!accepted || !strictDiagnosisGate(gate, accepted) || !orderedInvestigationPair(accepted, gate)) return invalidInvestigation(base);
+  return { ...base, accepted, gate };
+}
+
+function invalidInvestigation(base) { return { ...base, invalid_reason: "projection_investigation_pair_invalid" }; }
+
+function orderedInvestigationPair(accepted, gate) {
+  return accepted.run_id === gate.run_id && accepted.incident_id === gate.incident_id
+    && accepted.sequence < gate.sequence && Date.parse(accepted.recorded_at) <= Date.parse(gate.recorded_at);
 }
 
 function canonicalDecision(event, axes) {
@@ -151,7 +164,7 @@ function strictAcceptedEvaluation(event) {
 
 function strictDiagnosisGate(event, accepted) {
   const payload = event?.payload;
-  if (!accepted || !canonicalHeader(event, "diagnosis.gate.passed", "runtime")
+  if (!accepted || accepted.run_id !== event?.run_id || accepted.incident_id !== event?.incident_id || !canonicalHeader(event, "diagnosis.gate.passed", "runtime")
     || event.parent_id !== null || event.correlation_id !== `${event.run_id}:diagnosis.gate.passed`
     || !exactKeys(payload, ["version", "harness", "snapshot", "accepted", "rejected", "repair_contract", "candidate_sha256"])
     || !text(payload.version, 120) || !harnessBinding(payload.harness) || !snapshotSeed(payload.snapshot) || !fullCoreContract(payload.repair_contract) || !isHash(payload.candidate_sha256)
