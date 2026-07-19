@@ -4,16 +4,21 @@ import { spawn } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { loadBundle } from "../src/bundle.mjs";
+import { Ledger } from "../src/ledger.mjs";
+import { IncidentRuntime } from "../src/runtime.mjs";
 
 test("judge API serves state and advances the replay", async (context) => {
   const port = 4600 + Math.floor(Math.random() * 300);
+  const dbPath = join(mkdtempSync(join(tmpdir(), "flowpulse-server-")), "ledger.db");
+  const missingSource = join(mkdtempSync(join(tmpdir(), "flowpulse-source-failure-secret-")), "missing-otel");
   const child = spawn(process.execPath, ["src/server.mjs"], {
     cwd: new URL("..", import.meta.url),
-    env: { ...process.env, PORT: String(port), FLOWPULSE_DB: join(mkdtempSync(join(tmpdir(), "flowpulse-server-")), "ledger.db") },
+    env: { ...process.env, PORT: String(port), FLOWPULSE_DB: dbPath, FLOWPULSE_OTLP_DIR: missingSource, OPENAI_API_KEY: "" },
     stdio: ["ignore", "pipe", "pipe"]
   });
   context.after(() => child.kill("SIGTERM"));
-  await waitForServer(child, port);
+  await waitForHealth(child, port);
 
   const health = await fetch(`http://127.0.0.1:${port}/api/health`).then((response) => response.json());
   assert.equal(health.ok, true);
@@ -22,6 +27,7 @@ test("judge API serves state and advances the replay", async (context) => {
   const initial = await fetch(`http://127.0.0.1:${port}/api/state`).then((response) => response.json());
   assert.equal(initial.status, "investigating");
   assert.equal(initial.events[0].type, "run.started");
+  assert.equal(initial.harness.manifest.legacy_detail_status, "legacy_detail_unavailable");
 
   const advancedResponse = await fetch(`http://127.0.0.1:${port}/api/next`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
   assert.equal(advancedResponse.status, 200);
@@ -85,26 +91,66 @@ test("judge API serves state and advances the replay", async (context) => {
   const crossOriginStyleMutation = await fetch(`http://127.0.0.1:${port}/api/development/case`, { method: "POST" });
   assert.equal(crossOriginStyleMutation.status, 409);
   assert.match((await crossOriginStyleMutation.json()).error, /application\/json is required/);
+  await seedIntegrityMismatch(dbPath);
+  await assertTypedFailureRoutes({ port, dbPath });
 });
 
-function waitForServer(child, port) {
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error("Server did not start")), 5000);
-    child.stdout.on("data", (chunk) => {
-      if (chunk.toString().includes(`127.0.0.1:${port}`)) {
-        clearTimeout(timeout);
-        resolve();
-      }
+async function waitForHealth(child, port) {
+  let startupOutput = "";
+  child.stderr.on("data", (chunk) => { startupOutput = `${startupOutput}${chunk}`.slice(-2_000); });
+  child.stdout.on("data", (chunk) => { startupOutput = `${startupOutput}${chunk}`.slice(-2_000); });
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/api/health`);
+      if (response.ok) return;
+    } catch {
+      // The isolated test server is still binding its fresh local port.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`Server did not start: ${startupOutput || "no startup output"}`);
+}
+
+async function assertTypedFailureRoutes({ port, dbPath }) {
+  for (const path of ["/api/development/investigate", "/api/live"]) {
+    const response = await fetch(`http://127.0.0.1:${port}${path}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}"
     });
-    child.stderr.on("data", (chunk) => {
-      const text = chunk.toString();
-      if (/Error|EADDRINUSE/.test(text)) {
-        clearTimeout(timeout);
-        reject(new Error(text));
-      }
-    });
-    child.on("exit", (code) => {
-      if (code && code !== 0) reject(new Error(`Server exited with ${code}`));
-    });
+    const body = await response.json();
+    assert.equal(response.status, 422, `${path}: ${JSON.stringify(body)}`);
+    assert.equal(body.error.classification, "insufficient_evidence");
+    assert.match(body.error.failure_id, /^failure-/);
+    assert.equal(body.state.status, "degraded");
+    assert.equal(body.state.source.status, "unavailable");
+    assert.equal(body.state.agent_control.status, "unavailable");
+    assert.equal(body.state.harness.failure.legacy_detail_status, "available");
+    assert.equal(body.state.harness.failure.boundary, path.includes("development") ? "diagnosis_gate" : "evidence_snapshot");
+    assert.equal(JSON.stringify(body).includes("flowpulse-source-failure-secret"), false);
+    const events = new Ledger(dbPath).list(body.state.run_id);
+    const failedType = path.includes("development") ? "development.investigation.failed" : "live.run.failed";
+    assert.equal(events.filter((event) => event.type === "outcome.classified").length, 1);
+    assert.equal(events.filter((event) => event.type === "failure.episode.recorded").length, 1);
+    assert.equal(events.filter((event) => event.type === failedType).length, 1);
+    assert.equal(events.some((event) => /^(hypothesis\.proposed|evaluation\.|repair\.|approval\.)/.test(event.type)), false);
+  }
+}
+
+async function seedIntegrityMismatch(dbPath) {
+  const runtime = new IncidentRuntime({ ledger: new Ledger(dbPath), bundle: loadBundle() });
+  const runId = runtime.startRun("development");
+  runtime.append(runId, "change.applied", "development", {
+    applied_at: "2026-07-18T00:00:00.000Z",
+    change: { repair_id: "repair-payment-reachable-v1" }
+  });
+  runtime.append(runId, "diagnosis.baseline.captured", "development", {
+    evidence_id: "baseline-expected",
+    evidence_hash: "expected-hash",
+    evidence: {
+      id: "baseline-mismatch",
+      provenance: { sha256: "actual-hash" }
+    }
   });
 }

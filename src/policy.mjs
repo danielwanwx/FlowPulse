@@ -24,6 +24,7 @@ export function evaluateCandidate({ events, bundle }) {
 
   return {
     candidate: "evidence-policy-v2",
+    source: "captured_fixture",
     gates,
     passed: gates.every((item) => item.passed),
     promotion: gates.every((item) => item.passed) ? "eligible_for_owner_review" : "blocked"

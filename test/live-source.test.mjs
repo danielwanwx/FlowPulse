@@ -61,7 +61,7 @@ test("derives bounded trace, log, and metric facts without exposing payload as a
   const log = source.evidence.find((item) => item.kind === "log");
   const metric = source.evidence.find((item) => item.kind === "metric");
   assert.deepEqual(trace.value.trace, { service: "checkout", operation: "POST /checkout", peer_target: "payment:8080", status: "error", error: "connection refused", observed_at: null });
-  assert.deepEqual(log.value.log, { service: "checkout", severity: "ERROR", message: "payment call refused", trace_id: "abc", span_id: "def", observed_at: null });
+  assert.deepEqual(log.value.log, { service: "checkout", severity: "ERROR", message: "payment call refused", trace_ref: "ba7816bf8f01", span_ref: "cb8379ac2098", observed_at: null });
   assert.deepEqual(metric.value.metric, { service: "checkout", name: "checkout.errors", value: 42, unit: "1", aggregation: "sum", observed_at: null });
   assert.equal(Object.hasOwn(trace.value, "payload"), false);
 });
@@ -81,6 +81,104 @@ test("selects later failing spans and error logs over earlier healthy batch reco
   assert.equal(source.evidence.find((item) => item.kind === "trace").value.trace.status, "error");
   assert.equal(source.evidence.find((item) => item.kind === "log").value.log.severity, "ERROR");
   assert.equal(source.evidence.find((item) => item.kind === "log").value.log.message, "payment ECONNREFUSED");
+});
+
+test("projects a checkout flag evaluation from the direct parent of its payment failure", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "flowpulse-live-flag-causal-"));
+  const evaluatedAt = "2026-07-18T10:00:01.000Z";
+  const failedAt = "2026-07-18T10:00:01.009Z";
+  await writeFile(join(directory, "traces.jsonl"), `${JSON.stringify({ resourceSpans: [resourceSpans("checkout", [
+    {
+      traceId: "raw-trace-id",
+      spanId: "place-order",
+      parentSpanId: "frontend",
+      name: "oteldemo.CheckoutService/PlaceOrder",
+      events: [featureFlagEvent("on", evaluatedAt)]
+    },
+    {
+      traceId: "raw-trace-id",
+      spanId: "payment-call",
+      parentSpanId: "place-order",
+      name: "oteldemo.PaymentService/Charge",
+      endTimeUnixNano: nano(failedAt),
+      status: { code: 2, message: "name resolver error: produced zero addresses" }
+    }
+  ])] })}\n`);
+  const source = await new LiveSource({ directory }).project();
+  const trace = source.evidence.find((item) => item.kind === "trace").value.trace;
+  assert.equal(trace.observed_at, failedAt);
+  assert.match(trace.trace_ref, /^[a-f0-9]{12}$/);
+  assert.match(trace.span_ref, /^[a-f0-9]{12}$/);
+  assert.equal(trace.parent_ref, trace.feature_flag.span_ref);
+  assert.deepEqual(trace.feature_flag, {
+    service: "checkout",
+    key: "paymentUnreachable",
+    variant: "on",
+    value: true,
+    provider: "flagd",
+    reason: "cached",
+    evaluated_at: evaluatedAt,
+    trace_ref: trace.trace_ref,
+    span_ref: trace.parent_ref,
+    same_trace: true,
+    direct_parent: true
+  });
+  assert.equal(JSON.stringify(trace).includes("raw-trace-id"), false);
+  assert.equal(JSON.stringify(trace).includes("context.id"), false);
+});
+
+test("projects a recent flag-off checkout-to-payment success for the controlled baseline", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "flowpulse-live-flag-baseline-"));
+  const evaluatedAt = "2026-07-18T09:59:58.999Z";
+  const succeededAt = "2026-07-18T09:59:59.000Z";
+  await writeFile(join(directory, "traces.jsonl"), `${JSON.stringify({ resourceSpans: [resourceSpans("checkout", [
+    {
+      traceId: "baseline-trace-id",
+      spanId: "place-order",
+      parentSpanId: "frontend",
+      name: "oteldemo.CheckoutService/PlaceOrder",
+      events: [
+        featureFlagEvent("off", evaluatedAt),
+        featureFlagEvent("off", "2026-07-18T10:00:00.000Z", "kafkaQueueProblems")
+      ]
+    },
+    {
+      traceId: "baseline-trace-id",
+      spanId: "payment-call",
+      parentSpanId: "place-order",
+      name: "oteldemo.PaymentService/Charge",
+      endTimeUnixNano: nano(succeededAt),
+      status: { code: 1 }
+    }
+  ])] })}\n`);
+  const project = await new LiveSource({ directory }).project();
+  const trace = project.evidence.find((item) => item.kind === "trace").value.trace;
+  assert.equal(trace.status, "ok");
+  assert.equal(trace.observed_at, succeededAt);
+  assert.deepEqual(trace.feature_flag, {
+    service: "checkout",
+    key: "paymentUnreachable",
+    variant: "off",
+    value: false,
+    provider: "flagd",
+    reason: "cached",
+    evaluated_at: evaluatedAt,
+    trace_ref: trace.trace_ref,
+    span_ref: trace.parent_ref,
+    same_trace: true,
+    direct_parent: true
+  });
+});
+
+test("does not attach a flagd-only evaluation from another trace to a checkout failure", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "flowpulse-live-flagd-only-"));
+  await writeFile(join(directory, "traces.jsonl"), `${JSON.stringify({ resourceSpans: [
+    resourceSpans("flagd", [{ traceId: "flag-trace", spanId: "flag", name: "resolveBoolean", events: [featureFlagEvent("on", "2026-07-18T10:00:01.000Z")] }]),
+    resourceSpans("checkout", [{ traceId: "checkout-trace", spanId: "payment", parentSpanId: "place-order", name: "oteldemo.PaymentService/Charge", status: { code: 2, message: "ECONNREFUSED" } }])
+  ] })}\n`);
+  const source = await new LiveSource({ directory }).project();
+  const trace = source.evidence.find((item) => item.kind === "trace").value.trace;
+  assert.equal(Object.hasOwn(trace, "feature_flag"), false);
 });
 
 test("uses the selected failing span timestamp rather than a later healthy span in the same batch", async () => {
@@ -117,6 +215,21 @@ function resourceSpans(service, spans) {
 }
 
 function nano(iso) { return String(BigInt(Date.parse(iso)) * 1_000_000n); }
+
+function featureFlagEvent(variant, at, key = "paymentUnreachable") {
+  return {
+    name: "feature_flag.evaluation",
+    timeUnixNano: nano(at),
+    attributes: [
+      { key: "feature_flag.key", value: { stringValue: key } },
+      { key: "feature_flag.result.variant", value: { stringValue: variant } },
+      { key: "feature_flag.result.value", value: { boolValue: variant === "on" } },
+      { key: "feature_flag.provider.name", value: { stringValue: "flagd" } },
+      { key: "feature_flag.result.reason", value: { stringValue: "cached" } },
+      { key: "feature_flag.context.id", value: { stringValue: "raw-context-id" } }
+    ]
+  };
+}
 
 function manifest() {
   return {

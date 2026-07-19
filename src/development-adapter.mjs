@@ -5,6 +5,7 @@ import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
+import { buildPinnedCheckoutCodeEvidence } from "./code-evidence.mjs";
 
 const execute = promisify(execFile);
 const root = fileURLToPath(new URL("..", import.meta.url));
@@ -82,8 +83,38 @@ export async function executeApprovedRollback({ commandId }) {
   return { change, completed_at: new Date().toISOString(), command_id: commandId, stdout: summarize(result.stdout), stderr: summarize(result.stderr) };
 }
 
+export async function readAllowlistedFlagVariant() {
+  const change = await developmentChangeManifest();
+  const flag = (await readFlags()).flags?.[change.flag];
+  if (!flag || typeof flag.defaultVariant !== "string"
+    || !Object.hasOwn(flag.variants || {}, flag.defaultVariant)
+    || !Object.hasOwn(flag.variants || {}, change.known_good)
+    || flag.variants[change.known_good] !== false
+    || flag.variants[change.after] !== true
+    || ![change.after, change.known_good].includes(flag.defaultVariant)) {
+    throw new Error(`Upstream flag ${change.flag} is unavailable or invalid`);
+  }
+  return {
+    flag: change.flag,
+    variant: flag.defaultVariant,
+    observed_at: new Date().toISOString(),
+    source: "official flagd-ui API"
+  };
+}
+
 export async function developmentChangeManifest() {
   return readJson(join(integration, "change.payment-unreachable.json"));
+}
+
+export async function readPinnedCheckoutCodeEvidence() {
+  const [pin, allowlist] = await Promise.all([
+    readJson(join(integration, "pin.json")),
+    readJson(join(integration, "code-evidence.payment-unreachable.json"))
+  ]);
+  const revision = (await execute("git", ["rev-parse", "HEAD"], { cwd: checkout, timeout: 8_000 })).stdout.trim();
+  const source = (await execute("git", ["show", `${pin.commit}:${allowlist.path}`], { cwd: checkout, timeout: 8_000, maxBuffer: 1_000_000 })).stdout;
+  const committedAt = (await execute("git", ["show", "-s", "--format=%cI", pin.commit], { cwd: checkout, timeout: 8_000 })).stdout.trim();
+  return buildPinnedCheckoutCodeEvidence({ pin, allowlist, revision, source, committedAt });
 }
 
 export async function stopDevelopment() {

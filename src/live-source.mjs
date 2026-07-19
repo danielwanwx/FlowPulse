@@ -10,6 +10,7 @@ const SIGNAL_FILES = {
 };
 const MAX_BYTES = 4 * 1024 * 1024;
 const MAX_RECORDS = 500;
+const DIAGNOSIS_FLAG_KEY = "paymentUnreachable";
 
 export class LiveSource {
   constructor({ directory, now = () => Date.now(), freshnessMs = 30_000 } = {}) {
@@ -178,32 +179,42 @@ function signalFacts(payload, signal) {
 }
 
 function traceFact(payload) {
-  const candidate = representativeSpan(payload);
+  const index = traceSpanIndex(payload);
+  const candidate = representativeSpan(payload, index);
   if (!candidate) return { service: null, operation: null, peer_target: null, status: "missing", error: null, observed_at: null };
   const { span, service } = candidate;
   const target = targetFor(span);
-  const status = span.status?.code === 2 ? "error" : span.status?.code === 1 ? "ok" : span.status?.code === 0 ? "unset" : "missing";
+  // OTLP may omit the status object for a successful span; the semantic default is UNSET.
+  const status = span.status?.code === 2 ? "error" : span.status?.code === 1 ? "ok" : span.status?.code === 0 || span.status?.code === undefined ? "unset" : "missing";
   const exception = exceptionFor(span);
+  const featureFlag = ancestorFeatureFlag(candidate, index);
+  const traceRef = hashRef(span.traceId);
+  const spanRef = hashRef(span.spanId);
+  const parentRef = hashRef(span.parentSpanId);
   return {
     service: bounded(service, 120),
     operation: bounded(span.name, 160),
     peer_target: bounded(target, 160),
     status,
     error: bounded(span.status?.message || exception, 240),
-    observed_at: timestampFor(span, ["endTimeUnixNano", "startTimeUnixNano", "timeUnixNano"])
+    observed_at: timestampFor(span, ["endTimeUnixNano", "startTimeUnixNano", "timeUnixNano"]),
+    ...(traceRef ? { trace_ref: traceRef } : {}),
+    ...(spanRef ? { span_ref: spanRef } : {}),
+    ...(parentRef ? { parent_ref: parentRef } : {}),
+    ...(featureFlag ? { feature_flag: featureFlag } : {})
   };
 }
 
 function logFact(payload) {
   const candidate = representativeLog(payload);
-  if (!candidate) return { service: null, severity: null, message: null, trace_id: null, span_id: null, observed_at: null };
+  if (!candidate) return { service: null, severity: null, message: null, trace_ref: null, span_ref: null, observed_at: null };
   const { log, service } = candidate;
   return {
     service: bounded(service, 120),
     severity: bounded(log.severityText || log.severityNumber ? String(log.severityText || log.severityNumber) : null, 40),
     message: bounded(anyValue(log.body), 240),
-    trace_id: bounded(log.traceId, 64),
-    span_id: bounded(log.spanId, 32),
+    trace_ref: hashRef(log.traceId),
+    span_ref: hashRef(log.spanId),
     observed_at: timestampFor(log, ["timeUnixNano", "observedTimeUnixNano"])
   };
 }
@@ -222,18 +233,65 @@ function metricFact(payload) {
   };
 }
 
-function representativeSpan(payload) {
+function representativeSpan(payload, index = traceSpanIndex(payload)) {
   const candidates = [];
-  let index = 0;
+  let position = 0;
   for (const resource of payload.resourceSpans || []) {
     const service = attributeValue(resource.resource?.attributes, "service.name");
     for (const scope of resource.scopeSpans || []) for (const span of scope.spans || []) {
       const error = span.status?.code === 2 || Boolean(exceptionFor(span));
       const target = targetFor(span);
-      candidates.push({ span, service, rank: error ? 0 : target ? 1 : 2, index: index++ });
+      const candidate = { span, service };
+      const causalFlag = ancestorFeatureFlag(candidate, index)?.direct_parent;
+      candidates.push({ ...candidate, rank: causalFlag && error ? 0 : causalFlag ? 1 : error ? 2 : target ? 3 : 4, index: position++ });
     }
   }
   return candidates.sort((a, b) => a.rank - b.rank || a.index - b.index)[0] || null;
+}
+
+function traceSpanIndex(payload) {
+  const index = new Map();
+  for (const resource of payload.resourceSpans || []) {
+    const service = attributeValue(resource.resource?.attributes, "service.name");
+    for (const scope of resource.scopeSpans || []) for (const span of scope.spans || []) {
+      if (span.traceId && span.spanId) index.set(`${span.traceId}:${span.spanId}`, { span, service });
+    }
+  }
+  return index;
+}
+
+function ancestorFeatureFlag(candidate, index) {
+  const failure = candidate?.span;
+  let child = failure;
+  let depth = 0;
+  while (child?.traceId && child.parentSpanId) {
+    const parent = index.get(`${child.traceId}:${child.parentSpanId}`);
+    if (!parent) return null;
+    for (let eventIndex = (parent.span.events || []).length - 1; eventIndex >= 0; eventIndex -= 1) {
+      const event = parent.span.events[eventIndex];
+      const key = attributeValue(event.attributes, "feature_flag.key");
+      // The parent may evaluate unrelated flags after the Payment call. Only the
+      // reviewed incident flag is eligible for this bounded causal projection.
+      if (event.name !== "feature_flag.evaluation" || key !== DIAGNOSIS_FLAG_KEY) continue;
+      const sameTrace = parent.span.traceId === failure.traceId;
+      return {
+        service: bounded(parent.service, 120),
+        key: bounded(key, 120),
+        variant: bounded(attributeValue(event.attributes, "feature_flag.result.variant"), 80),
+        value: safeScalar(attributeValue(event.attributes, "feature_flag.result.value"), 120),
+        provider: bounded(attributeValue(event.attributes, "feature_flag.provider.name"), 80),
+        reason: bounded(attributeValue(event.attributes, "feature_flag.result.reason"), 80),
+        evaluated_at: timestampFor(event, ["timeUnixNano", "observedTimeUnixNano"]),
+        trace_ref: hashRef(parent.span.traceId),
+        span_ref: hashRef(parent.span.spanId),
+        same_trace: sameTrace,
+        direct_parent: sameTrace && depth === 0 && failure.parentSpanId === parent.span.spanId
+      };
+    }
+    child = parent.span;
+    depth += 1;
+  }
+  return null;
 }
 
 function representativeLog(payload) {
@@ -290,6 +348,14 @@ function numericValue(point) {
   if (!point) return null;
   const value = point.asDouble ?? point.asInt ?? point.sum;
   return value == null || !Number.isFinite(Number(value)) ? null : Number(value);
+}
+
+function safeScalar(value, length) {
+  return typeof value === "string" ? bounded(value, length) : typeof value === "boolean" || typeof value === "number" ? value : null;
+}
+
+function hashRef(value) {
+  return value ? createHash("sha256").update(String(value)).digest("hex").slice(0, 12) : null;
 }
 
 function bounded(value, length) {

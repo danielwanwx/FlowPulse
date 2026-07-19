@@ -6,14 +6,15 @@ import { fileURLToPath } from "node:url";
 import { Ledger } from "./ledger.mjs";
 import { loadBundle } from "./bundle.mjs";
 import { IncidentRuntime } from "./runtime.mjs";
-import { CausalEvidenceError, runLiveInvestigation } from "./openai.mjs";
+import { runLiveInvestigation } from "./openai.mjs";
 import { initializeObservability, shutdownObservability, withAgentControlTrace } from "./observability.mjs";
 import { LiveSource } from "./live-source.mjs";
 import { CapturedBundleEvidenceSource, InsufficientEvidenceError, LiveOtlpEvidenceSource, versionedChangeEvidence } from "./evidence-source.mjs";
-import { recordInvestigationFailure } from "./investigation-failure.mjs";
+import { investigationFailureEnvelope, localFailureState, projectFailureEpisode, recordInvestigationFailure } from "./investigation-failure.mjs";
 import { DevelopmentRuntime } from "./development-runtime.mjs";
 import * as developmentAdapter from "./development-adapter.mjs";
 import { AgentControlService } from "./agent-control-service.mjs";
+import { harnessBinding, loadHarnessManifest } from "./harness-manifest.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const publicDir = join(root, "public");
@@ -28,8 +29,8 @@ const development = new DevelopmentRuntime({ runtime, source: liveSource, adapte
 const capturedEvidence = new CapturedBundleEvidenceSource(bundle);
 const snapshots = new Map();
 runtime.ensureRun();
-const langfuseEnabled = await initializeObservability().catch((error) => {
-  console.warn(`Langfuse disabled: ${error.message}`);
+const langfuseEnabled = await initializeObservability().catch(() => {
+  console.warn("Langfuse disabled");
   return false;
 });
 const agentControl = new AgentControlService({ runtime, langfuseEnabled });
@@ -128,15 +129,14 @@ const server = createServer(async (request, response) => {
         else await development.investigate(runId, snapshot);
         return json(response, 200, await stateWithSource(runId));
       } catch (error) {
-        if (!(error instanceof CausalEvidenceError || error instanceof InsufficientEvidenceError)) throw error;
-        const classification = recordInvestigationFailure({
+        const failure = recordInvestigationFailure({
           runtime,
           runId,
           error,
           failedType: "development.investigation.failed",
           actor: "development-evaluator"
         });
-        return json(response, 422, { error: error.message, classification, state: await stateWithSource(runId) });
+        return json(response, failure.httpStatus, investigationFailureEnvelope(failure, localFailureState(runtime, runId)));
       }
     }
     if (url.pathname === "/api/development/approve" && request.method === "POST") {
@@ -174,8 +174,8 @@ const server = createServer(async (request, response) => {
         const result = await runLiveInvestigation({ runtime, runId, evidenceSource: snapshot });
         return json(response, 200, { result, state: await stateWithSource(runId) });
       } catch (error) {
-        recordInvestigationFailure({ runtime, runId, error, failedType: "live.run.failed", actor: "live-evaluator" });
-        return json(response, 422, { error: error.message, state: await stateWithSource(runId) });
+        const failure = recordInvestigationFailure({ runtime, runId, error, failedType: "live.run.failed", actor: "live-evaluator" });
+        return json(response, failure.httpStatus, investigationFailureEnvelope(failure, localFailureState(runtime, runId)));
       }
     }
     if (url.pathname === "/api/health" && request.method === "GET") {
@@ -185,7 +185,13 @@ const server = createServer(async (request, response) => {
     if (request.method !== "GET") return json(response, 404, { error: "Not found" });
     return serveStatic(url.pathname, response);
   } catch (error) {
-    return json(response, error.message.includes("Unknown evidence id") ? 404 : error.message.includes("required") ? 409 : 500, { error: error.message });
+    const message = error?.message?.startsWith("application/json is required")
+      ? "application/json is required"
+      : error?.message?.includes("Unknown evidence id")
+        ? "Not found"
+        : "Request could not be completed";
+    const status = message === "Not found" ? 404 : message === "application/json is required" ? 409 : 500;
+    return json(response, status, { error: message });
   }
 });
 
@@ -259,7 +265,8 @@ async function stateWithSource(runId = runtime.ensureRun()) {
     ...projected,
     evidence: source.summariesById(referenced),
     source: await sourceProjection(runId, source),
-    agent_control: agentControl.project(runId)
+    agent_control: agentControl.project(runId),
+    harness: harnessProjection(projected.events)
   };
 }
 
@@ -289,16 +296,52 @@ async function sourceProjection(runId = runtime.ensureRun(), source = null) {
 }
 
 async function freezeLiveEvidence(runId) {
-  const live = new LiveOtlpEvidenceSource(await liveSource.project());
+  const harness = harnessBinding(loadHarnessManifest());
+  let live = new LiveOtlpEvidenceSource(await liveSource.project());
   const runEvents = runtime.ledger.list(runId);
   const applied = runEvents.find((event) => event.type === "change.applied");
   const after = applied?.payload.applied_at;
-  const supplementalRecords = applied ? [versionedChangeEvidence({
-    manifest: applied.payload.change,
-    applied: applied.payload,
-    ledgerEvent: applied
-  })] : [];
-  const snapshot = live.freeze({ incidentId: bundle.incident.id, runId, after, supplementalRecords, executable: Boolean(applied) });
+  const supplementalRecords = [];
+  if (applied) {
+    const baselineCapture = runEvents.find((event) => event.type === "diagnosis.baseline.captured");
+    const codeCapture = runEvents.find((event) => event.type === "code.semantics.captured");
+    const baseline = baselineCapture?.payload?.evidence;
+    const code = codeCapture?.payload?.evidence;
+    const verifiedCode = await developmentAdapter.readPinnedCheckoutCodeEvidence();
+    const baselineMatchesCapture = Boolean(baseline
+      && baselineCapture?.payload?.evidence_id
+      && baselineCapture?.payload?.evidence_hash
+      && baseline.id === baselineCapture.payload.evidence_id
+      && (baseline.provenance?.sha256 || baseline.hash) === baselineCapture.payload.evidence_hash);
+    const codeMatchesCapture = Boolean(code
+      && codeCapture?.payload?.evidence_id
+      && codeCapture?.payload?.evidence_hash
+      && code.id === codeCapture.payload.evidence_id
+      && (code.provenance?.sha256 || code.hash) === codeCapture.payload.evidence_hash
+      && verifiedCode.id === code.id
+      && (verifiedCode.provenance?.sha256 || verifiedCode.hash) === (code.provenance?.sha256 || code.hash));
+    if (!baselineMatchesCapture || !codeMatchesCapture) {
+      throw new InsufficientEvidenceError("Development snapshot cannot recover the exact pre-change baseline and pinned code evidence", {
+        stage: "diagnosis_gate",
+        attempt: 0,
+        round: 0,
+        validator_id: "snapshot_integrity_binding",
+        field_path: "diagnosis.baseline.captured",
+        reason_code: "captured_baseline_or_code_integrity_mismatch",
+        missing_evidence_classes: ["immutable_baseline_or_code_semantics"],
+        next_precondition: "capture_matching_baseline_and_pinned_code_evidence"
+      });
+    }
+    const changeEvidence = versionedChangeEvidence({
+      manifest: applied.payload.change,
+      applied: applied.payload,
+      ledgerEvent: applied
+    });
+    const collected = await development.collectDiagnosisEvidence(runId, { baseline, code, changeEvidence });
+    live = new LiveOtlpEvidenceSource(collected.project);
+    supplementalRecords.push(...collected.records, changeEvidence);
+  }
+  const snapshot = live.freeze({ incidentId: bundle.incident.id, runId, after, supplementalRecords, executable: Boolean(applied), harness });
   snapshots.set(runId, snapshot);
   const metadata = snapshot.metadata();
   runtime.append(runId, "evidence.snapshot.created", "runtime", {
@@ -311,9 +354,35 @@ async function freezeLiveEvidence(runId) {
     bytes: metadata.bytes,
     caps: metadata.caps,
     truncated: metadata.truncated,
-    frozen_at: metadata.frozen_at
+    reserved_causal_ids: metadata.reserved_causal_ids,
+    frozen_at: metadata.frozen_at,
+    harness
   }, snapshot.snapshot.evidence_ids);
   return snapshot;
+}
+
+function harnessProjection(events = []) {
+  const contextual = [...events].reverse().find((event) => event.type === "context.compiled");
+  const bound = [...events].reverse().find((event) => event.payload?.harness)?.payload?.harness || null;
+  const failure = projectFailureEpisode(events);
+  return {
+    manifest: bound ? {
+      version: bound.version || null,
+      sha256: bound.manifest_sha256 || null
+    } : { legacy_detail_status: "legacy_detail_unavailable" },
+    current_stage: contextual?.payload?.stage || failure.stage || null,
+    attempt: contextual?.payload?.attempt ?? failure.attempt ?? null,
+    last_context_sha256: contextual?.payload?.context_sha256 || failure.context_sha256 || null,
+    failure: {
+      legacy_detail_status: failure.legacy_detail_status,
+      boundary: failure.stage || null,
+      validator_id: failure.validator_id || null,
+      reason_code: failure.reason_code || null,
+      tool_coverage: failure.tool_coverage || [],
+      missing_evidence_classes: failure.missing_evidence_classes || [],
+      next_precondition: failure.next_precondition || null
+    }
+  };
 }
 
 function streamAgentEvents(request, response, url) {

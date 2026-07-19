@@ -1,0 +1,14 @@
+{
+  "id": "astronomy-checkout-payment-unreachable-semantics-v1",
+  "repository": "https://github.com/open-telemetry/opentelemetry-demo.git",
+  "commit": "18b36c73ccc2dbc86759dab2e0ef05175a7a8ca5",
+  "path": "src/checkout/main.go",
+  "line_start": 565,
+  "line_end": 575,
+  "content_sha256": "da8ec864c0882d90f822bf06c42ffc2104e86b65ee4acdb2cb6238ccad137c69",
+  "target": "checkout",
+  "flag": "paymentUnreachable",
+  "bad_address": "badAddress:50051",
+  "charge_operation": "PaymentService.Charge",
+  "semantic_fact": "At the pinned commit, paymentUnreachable=true replaces checkout's normal Payment client with badAddress:50051 before PaymentService.Charge."
+}

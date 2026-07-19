@@ -1,0 +1,44 @@
+{
+  "version": "flowpulse.protocols.v1",
+  "tool_protocol": {
+    "id": "frozen-evidence-query",
+    "version": "v1",
+    "tool_names": [
+      "query_metrics",
+      "query_traces",
+      "query_logs",
+      "query_changes",
+      "query_code",
+      "query_deploys",
+      "query_commits"
+    ],
+    "input": {
+      "type": "object",
+      "required": ["entity"],
+      "additional_properties": false
+    },
+    "output": {
+      "authority": "selected_frozen_evidence_ids_only",
+      "raw_provider_call_ids": "forbidden"
+    }
+  },
+  "investigator_evaluator_handoff": {
+    "id": "bounded-candidate-handoff",
+    "version": "v1",
+    "requires": ["current_attempt_tool_lineage", "typed_diagnosis_schema"],
+    "evaluator_counter_evidence": "supplied_candidate_evidence_only",
+    "authority_events": "buffer_until_terminal_validation"
+  },
+  "owner_repair": {
+    "id": "exact-local-repair-contract",
+    "version": "v1",
+    "requires": ["independent_evaluator_acceptance", "deterministic_diagnosis_gate", "exact_allowlisted_contract", "owner_approval"],
+    "execution": "code_owned_executor_only"
+  },
+  "safe_failure": {
+    "id": "safe-failure-episode",
+    "version": "v1",
+    "forbidden": ["raw_provider_body", "model_text", "response_id", "tool_call_id", "encrypted_reasoning", "credentials", "exception_message"],
+    "required": ["stage", "validator_id", "reason_code", "harness_manifest_sha256"]
+  }
+}

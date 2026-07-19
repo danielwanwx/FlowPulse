@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { evidenceById, queryEvidence } from "./bundle.mjs";
-import { isCheckoutPaymentUnreachableTrace } from "./incident-mechanism.mjs";
+import { evaluateCheckoutPaymentDiagnosisGate, isExecutableCheckoutPaymentEvidence } from "./incident-mechanism.mjs";
 import { sanitizeTelemetryText } from "./telemetry-sanitizer.mjs";
 
 export const EVIDENCE_LIST_DEFAULT = 25;
@@ -55,7 +55,7 @@ export class LiveOtlpEvidenceSource {
   entities() { return [...new Set(this.records.map((record) => record.entity))].sort(); }
   has(id) { return this.records.some((record) => record.id === id); }
 
-  freeze({ incidentId, runId, after, entities = INCIDENT_ENTITIES, supplementalRecords = [], executable = false, maxRecords = SNAPSHOT_MAX_RECORDS, maxBytes = SNAPSHOT_MAX_BYTES } = {}) {
+  freeze({ incidentId, runId, after, entities = INCIDENT_ENTITIES, supplementalRecords = [], executable = false, maxRecords = SNAPSHOT_MAX_RECORDS, maxBytes = SNAPSHOT_MAX_BYTES, harness = null } = {}) {
     if (this.project.status !== "live") throw new InsufficientEvidenceError(`OTLP source is ${this.project.status}; a live frozen snapshot cannot be created`);
     const afterMs = after ? Date.parse(after) : Number.NEGATIVE_INFINITY;
     const allowedEntities = new Set(entities);
@@ -64,7 +64,7 @@ export class LiveOtlpEvidenceSource {
     const reserved = executable ? requiredCausalRecords(relevant, supplementalRecords, after) : [];
     const reservedBytes = reserved.reduce((total, record) => total + Buffer.byteLength(JSON.stringify(summarizeEvidence(record))), 0);
     if (executable && (reserved.length > maxRecords || reservedBytes > maxBytes)) {
-      throw new InsufficientEvidenceError("Executable snapshot caps cannot retain the exact applied change and checkout-to-payment failure trace");
+      throw new InsufficientEvidenceError("Executable snapshot caps cannot retain the complete pre-approval Diagnosis Gate evidence");
     }
     const included = [];
     let bytes = 0;
@@ -75,7 +75,7 @@ export class LiveOtlpEvidenceSource {
       bytes += size;
     }
     if (executable && reserved.some((record) => !included.some((item) => item.id === record.id))) {
-      throw new InsufficientEvidenceError("Executable snapshot caps cannot retain the exact applied change and checkout-to-payment failure trace");
+      throw new InsufficientEvidenceError("Executable snapshot caps cannot retain the complete pre-approval Diagnosis Gate evidence");
     }
     if (!included.length) throw new InsufficientEvidenceError("Fresh OTLP has no relevant bounded evidence for the checkout incident");
     const sourceHash = hash([...this.records, ...supplementalRecords].sort(compareEvidence).map((record) => `${record.id}:${record.provenance?.sha256 || record.hash || ""}`).join("\n"));
@@ -84,8 +84,8 @@ export class LiveOtlpEvidenceSource {
       id: `snapshot-${contentHash.slice(0, 16)}`,
       records: included,
       metadata: {
-        mode: "live_gpt_5_6_frozen_otlp_snapshot",
-        label: "live GPT-5.6 over frozen OTLP snapshot",
+        mode: "frozen_real_otlp_snapshot",
+        label: "frozen real OTLP snapshot",
         status: "frozen",
         incident_id: incidentId,
         run_id: runId,
@@ -100,7 +100,8 @@ export class LiveOtlpEvidenceSource {
         caps: { max_records: maxRecords, max_bytes: maxBytes },
         truncated: included.length < relevant.length,
         reserved_causal_ids: reserved.map((record) => record.id),
-        evidence_ids: included.map((record) => record.id)
+        evidence_ids: included.map((record) => record.id),
+        ...(harness ? { harness } : {})
       }
     });
   }
@@ -124,7 +125,7 @@ export class FrozenEvidenceSnapshot {
 }
 
 export class InsufficientEvidenceError extends Error {
-  constructor(message) { super(message); this.name = "InsufficientEvidenceError"; }
+  constructor(message, metadata = {}) { super(message); this.name = "InsufficientEvidenceError"; this.metadata = metadata && typeof metadata === "object" ? metadata : {}; }
 }
 
 export function summarizeEvidence(record) {
@@ -190,10 +191,21 @@ function matches({ kind, entity }) {
 function safeValue(value = {}) {
   return {
     services: Array.isArray(value.services) ? value.services.slice(0, 12).map((item) => sanitizeTelemetryText(item, { limit: 120 })) : [],
-    trace: safeObject(value.trace, ["operation", "peer_target", "status", "error", "observed_at"]),
-    log: safeObject(value.log, ["severity", "message", "trace_id", "span_id", "observed_at"]),
+    trace: safeTrace(value.trace),
+    log: safeObject(value.log, ["severity", "message", "trace_ref", "span_ref", "observed_at"]),
     metric: safeObject(value.metric, ["name", "value", "unit", "aggregation", "observed_at"]),
-    change: safeObject(value.change, ["id", "target", "flag", "before", "after", "repair_id", "repair_command_id", "applied_at"])
+    change: safeObject(value.change, ["id", "target", "flag", "before", "after", "repair_id", "repair_command_id", "applied_at"]),
+    code: safeObject(value.code, ["id", "repository", "commit", "path", "line_start", "line_end", "content_sha256", "target", "flag", "bad_address", "charge_operation", "semantic_fact", "verified_from_git_object"])
+  };
+}
+
+function safeTrace(trace) {
+  if (!trace || typeof trace !== "object") return null;
+  return {
+    ...safeObject(trace, ["service", "operation", "peer_target", "status", "error", "observed_at", "trace_ref", "span_ref", "parent_ref"]),
+    ...(trace.feature_flag ? {
+      feature_flag: safeObject(trace.feature_flag, ["service", "key", "variant", "value", "provider", "reason", "evaluated_at", "trace_ref", "span_ref", "same_trace", "direct_parent"])
+    } : {})
   };
 }
 
@@ -249,34 +261,48 @@ function assertAppliedChange(manifest = {}, applied = {}, ledgerEvent = {}) {
 
 function safeObject(value, fields) {
   if (!value || typeof value !== "object") return null;
-  return Object.fromEntries(fields.filter((key) => value[key] != null).map((key) => [key, typeof value[key] === "string" ? sanitizeTelemetryText(value[key], { limit: fieldLimit(key) }) : value[key]]));
+  return Object.fromEntries(fields.filter((key) => value[key] != null).map((key) => [key, safeField(key, value[key])]));
 }
 
-function fieldLimit(key) { return key === "error" || key === "message" ? 240 : key === "peer_target" ? 160 : 120; }
+function safeField(key, value) {
+  if (typeof value !== "string") return value;
+  if (["trace_ref", "span_ref", "parent_ref"].includes(key) && /^[a-f0-9]{12}$/.test(value)) return value;
+  if (key === "content_sha256" && /^[a-f0-9]{64}$/.test(value)) return value;
+  if (key === "commit" && /^[a-f0-9]{40}$/.test(value)) return value;
+  return sanitizeTelemetryText(value, { limit: fieldLimit(key) });
+}
+
+function fieldLimit(key) { return key === "semantic_fact" ? 360 : key === "error" || key === "message" ? 240 : ["peer_target", "repository"].includes(key) ? 160 : 120; }
 
 function requiredCausalRecords(records, supplementalRecords, after) {
   const change = supplementalRecords.find((record) => record.kind === "change");
   if (!change) throw new InsufficientEvidenceError("Executable development snapshot is missing its applied change record");
   const appliedAt = Date.parse(change.value?.change?.applied_at || after);
-  const failure = records.find((record) => isFailureTrace(record) && Date.parse(record.at) >= appliedAt);
-  if (!Number.isFinite(appliedAt) || !failure) throw new InsufficientEvidenceError("Executable development snapshot is missing a post-change checkout/payment failure trace");
-  return [change, failure].sort(compareEvidence);
+  const gate = evaluateCheckoutPaymentDiagnosisGate(records, change.value?.change);
+  if (!Number.isFinite(appliedAt) || !gate.passed) {
+    throw new InsufficientEvidenceError(`Executable development snapshot is missing Diagnosis Gate evidence: ${gate.missing.join(", ")}`);
+  }
+  return [change, ...gate.required_records].sort(compareEvidence);
 }
 
-export function isFailureTrace(record) {
-  return isCheckoutPaymentUnreachableTrace(record);
+export function isFailureTrace(record, change) {
+  return isExecutableCheckoutPaymentEvidence(record, change);
 }
 
 function safeProvenance(provenance = {}) {
   return {
     file: provenance.file || null,
     line: provenance.line ?? null,
+    line_end: provenance.line_end ?? null,
     byte_start: provenance.byte_start ?? null,
     byte_end: provenance.byte_end ?? null,
     sha256: provenance.sha256 || null,
     manifest_sha256: provenance.manifest_sha256 || null,
     ledger_event_id: provenance.ledger_event_id || null,
-    immutable_capture: Boolean(provenance.immutable_capture)
+    repository: provenance.repository || null,
+    commit: provenance.commit || null,
+    immutable_capture: Boolean(provenance.immutable_capture),
+    verified_from_git_object: Boolean(provenance.verified_from_git_object)
   };
 }
 

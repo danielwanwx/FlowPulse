@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 let sdk;
 let tracing;
 
@@ -26,7 +28,7 @@ export async function withIncidentTrace({ runId, incidentId, input }, work) {
       metadata: { run_id: runId, incident_id: incidentId, authority: "flowpulse-ledger" }
     });
     const context = {
-      traceId: tracing.getActiveTraceId(),
+      traceRef: safeRef(tracing.getActiveTraceId()),
       generation: (name, details) => startObservation(name, details, "generation"),
       tool: (name, details) => startObservation(name, details, "tool"),
       evaluator: (name, details) => startObservation(name, details, "evaluator")
@@ -36,7 +38,7 @@ export async function withIncidentTrace({ runId, incidentId, input }, work) {
       span.update({ output: { status: "completed" } });
       return output;
     } catch (error) {
-      span.update({ output: { status: "failed", error: error.message } });
+      span.update({ output: safeFailureOutput(error) });
       throw error;
     }
   });
@@ -67,7 +69,7 @@ export async function withAgentControlTrace({ runId, incidentId, action, input }
       span.update({ output: { status: "completed", last_event_id: output?.projection?.last_event_id || output?.last_event_id || null } });
       return output;
     } catch (error) {
-      span.update({ output: { status: "failed", error: error.message } });
+      span.update({ output: safeFailureOutput(error) });
       throw error;
     }
   }, { asType: "agent" }));
@@ -80,12 +82,26 @@ function startObservation(name, details, asType) {
 
 function noopContext() {
   return {
-    traceId: null,
+    traceRef: null,
     agent: () => noopObservation(),
     generation: () => noopObservation(),
     tool: () => noopObservation(),
     evaluator: () => noopObservation()
   };
+}
+
+function safeFailureOutput(error) {
+  return {
+    status: "failed",
+    code: error?.code || "internal_error",
+    classification: error?.classification || "internal_error"
+  };
+}
+
+function safeRef(value) {
+  return typeof value === "string" && value.length
+    ? createHash("sha256").update(value).digest("hex").slice(0, 24)
+    : null;
 }
 
 function noopObservation() {

@@ -1,0 +1,41 @@
+{
+  "version": "flowpulse.harness.v1",
+  "model": {
+    "default": "gpt-5.6",
+    "allowed": ["gpt-5.6"],
+    "reasoning_effort": "medium",
+    "store": false
+  },
+  "budgets": {
+    "max_tool_rounds": 4,
+    "max_total_tool_calls": 24,
+    "max_paid_responses": 10,
+    "max_workflow_output_tokens": 49152,
+    "investigator_max_output_tokens": 12288,
+    "evaluator_max_output_tokens": 8192,
+    "min_request_output_tokens": 4096
+  },
+  "skills": {
+    "investigator": {
+      "id": "flowpulse-investigator",
+      "version": "v1",
+      "file": "investigator.v1.md",
+      "sha256": "e1af3b8a8afa322d4c23c538abb3009e6a2038d4aa444f71c97d1a9479c9c703"
+    },
+    "evaluator": {
+      "id": "flowpulse-adversarial-evaluator",
+      "version": "v1",
+      "file": "evaluator.v1.md",
+      "sha256": "f2eb432756a10932c47368a1cddf9e3c9c91697e57a454aef9569e890b7f0e0e"
+    }
+  },
+  "protocols": {
+    "file": "protocols.v1.json",
+    "sha256": "f3650e2edd4f9d673f3f953c8e803b26d0a90da5f9bf754695f37515899a5fe9",
+    "tool_protocol_sha256": "2e44481756d8f81400c44145512833080e3fdd0113a8c502862b5270e80e1530",
+    "investigator_evaluator_handoff_sha256": "be4a9f152fe6a0adaf5870f2366d832f4d4bdada087b390a3425623dfb7eabd3",
+    "owner_repair_sha256": "aa4fe6e1f72240cac73e431a7e21c63d3f10d27e8f577541418b1868151a6b85",
+    "safe_failure_sha256": "697035e2c15d95a5ddd82ce1654976dd03a13393a1cc0d10e4428be657f6bc36"
+  },
+  "canonical_sha256": "7f6d73ddeaae3acac13fec9c12f8275e4da06c4504b06a302d20eb052782d9a0"
+}

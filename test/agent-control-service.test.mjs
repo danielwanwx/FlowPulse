@@ -113,6 +113,7 @@ test("the complete replay crosses the typed harness before every specialist runt
   assert.equal(projection.orchestration.proposal_count, 14);
   assert.equal(projection.orchestration.proposals.every((item) => item.content_sha256.length === 64), true);
   assert.equal(state.events.some((event) => event.type === "backtest.completed" && event.actor === "agent:test"), true);
+  assert.equal(state.events.find((event) => event.type === "backtest.completed").payload.source, "captured_fixture");
 });
 
 test("verification, evolve, and test become visible after owner-approved recovery", () => {

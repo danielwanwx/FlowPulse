@@ -210,6 +210,7 @@ function managerReport(state) {
   const repair = last(events, "repair.proposed");
   const verification = last(events, "verification.completed");
   const regression = last(events, "regression.created");
+  const backtest = last(events, "backtest.completed");
   const citations = unique([
     ...(hypothesis?.evidence_refs || []),
     ...(accepted?.evidence_refs || []),
@@ -239,6 +240,7 @@ function managerReport(state) {
     } : null,
     verification: verification?.payload ?? null,
     regression: regression?.payload ?? null,
+    backtest: backtest?.payload ?? null,
     citations,
     human_gate: state.waiting_for_approval ? "owner_approval_required" : null,
     data_mode: state.mode === "development" ? "real_local_runtime" : "captured_deterministic_replay"
@@ -623,7 +625,7 @@ function recordedStep(index, bundle) {
       after: [
         proposal("evolve", "regression.candidate.proposed", "RegressionCandidate", { id: bundle.regression.id, name: bundle.regression.name }, causal),
         proposal("evolve", "policy.candidate.proposed", "PolicyCandidate", { id: "policy-grounded-causality-v2" }),
-        proposal("test", "backtest.completed", "BacktestReport", { candidate_id: "policy-grounded-causality-v2", passed: true, gates: ["deterministic_replay", "owner_gate", "false_positive_rejection"] })
+        proposal("test", "backtest.completed", "BacktestReport", { source: "captured_fixture", candidate_id: "policy-grounded-causality-v2", passed: true, gates: ["deterministic_replay", "owner_gate", "false_positive_rejection"] })
       ]
     }
   ];
