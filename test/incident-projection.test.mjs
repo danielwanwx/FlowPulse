@@ -6,6 +6,7 @@ import {
   buildIncidentProjection
 } from "../src/incident-projection.mjs";
 import { sha256Canonical } from "../src/autonomy-policy.mjs";
+import { sha256 as hashBoundEvidence } from "../src/regression-backtest.mjs";
 
 const RUN_ID = "run-projection";
 const INCIDENT_ID = "checkout-payment";
@@ -17,8 +18,9 @@ function event(sequence, type, payload = {}, evidence_refs = [], relationship = 
     run_id: RUN_ID,
     incident_id: INCIDENT_ID,
     recorded_at: `2026-07-18T10:${String(Math.floor(sequence / 60)).padStart(2, "0")}:${String(sequence % 60).padStart(2, "0")}.000Z`,
-    actor: "runtime",
+    actor: relationship.actor ?? "runtime",
     type,
+    offset_ms: 0,
     payload,
     payload_sha256: sha256Canonical(payload),
     evidence_refs,
@@ -33,18 +35,94 @@ function authorityIdentity(value) {
 
 function canonicalAuthorityEvents() {
   const refs = ["ev-checkout"];
-  const decision = { ...event(7, "autonomy.decision.recorded", {
-    outcome: "human_review_required", source_health: "live", evidence_mode: "captured_fixture", execution_mode: "deterministic_replay", contract_sha256: "b".repeat(64)
-  }, refs, { correlation_id: "corr-decision" }), id: "decision-7" };
-  const proposal = { ...event(8, "repair.proposed", { decision_id: decision.id }, refs, { correlation_id: decision.id }), id: "proposal-8" };
-  const request = { ...event(9, "approval.requested", { decision_id: decision.id }, refs, { parent_id: proposal.id, correlation_id: decision.id }), id: "request-9" };
-  const approval = { ...event(10, "approval.granted", {}, refs, { correlation_id: decision.id }), id: "approval-10" };
-  const attempt = { ...event(11, "repair.execution.attempted", {}, refs, { parent_id: approval.id, correlation_id: decision.id }), id: "attempt-11" };
-  const execution = { ...event(12, "repair.executed", { completed_at: "2026-07-18T10:01:00.000Z" }, refs, { parent_id: attempt.id, correlation_id: decision.id }), id: "execution-12" };
-  const verification = { ...event(13, "verification.completed", { passed: true, repair_completed_at: "2026-07-18T10:01:00.000Z", checks: [{ passed: true }] }, refs, { correlation_id: decision.id, }), id: "verification-13", actor: "verifier" };
-  const events = [decision, proposal, request, approval, attempt, execution, verification];
+  const contract = {
+    repair_id: "repair-payment-reachable-v1",
+    action: "restore known-good paymentUnreachable flag and recreate checkout",
+    command_id: "astronomy.restore-payment-and-recreate-checkout",
+    target: "checkout",
+    expected_before: "paymentUnreachable=on",
+    expected_after: "paymentUnreachable=off"
+  };
+  const contract_sha256 = sha256Canonical(contract);
+  const evaluation = {
+    accepted: true,
+    score: 0.9,
+    classification: "confirmed_system_bug",
+    phase: "diagnosis_pre_approval",
+    gate_checks: { initiating_change: true, temporal_order: true, implementation_semantics: true, controlled_off_on_contrast: true, repeated_direct_failures: true },
+    reason: "Bounded evidence supports the checkout configuration cause.",
+    missing_evidence: [],
+    counter_evidence_refs: refs
+  };
+  const boundRecord = {
+    id: "ev-checkout", kind: "trace", signal: "traces", title: "Frozen checkout failure", entity: "checkout", source: "frozen", at: "2026-07-18T10:00:01.000Z",
+    hash: "a".repeat(64), provenance: { sha256: "a".repeat(64) }
+  };
+  const evidenceBinding = { id: "ev-checkout", sha256: hashBoundEvidence(boundRecord), record: boundRecord };
+  const diagnosis = {
+    id: "hyp-checkout-flag",
+    title: "Checkout configuration causes the payment failure",
+    confidence: 0.91,
+    claim: "The frozen checkout evidence proves the bounded configuration mechanism.",
+    initiating_change: "paymentUnreachable changed off to on for checkout",
+    failure_mechanism: "Checkout resolver reads the flag and fails its payment child call.",
+    propagation: [],
+    evidence_refs: refs,
+    proposed_repair: { repair_id: contract.repair_id, action: contract.action, command_id: contract.command_id, target: contract.target, reason: "Owner approval is required." }
+  };
+  const decisionPayload = {
+    schema_version: "flowpulse.autonomy.v1", run_id: RUN_ID, incident_id: INCIDENT_ID, intent_id: "checkout-payment", environment: "local_development",
+    source_health: "live", evidence_mode: "frozen_real_snapshot", execution_mode: "real_local_development",
+    contract, contract_sha256, snapshot: { id: "snapshot-projection", content_sha256: "d".repeat(64), mode: "frozen_real_otlp_snapshot", records: [], manifest_sha256: "e".repeat(64) },
+    receipt_sha256: "f".repeat(64), authority_context_sha256: "a".repeat(64),
+    artifact: { schema_version: "flowpulse.autonomy-artifacts.v1", version: "2026-07-18", registry_sha256: "b".repeat(64), intent_sha256: "c".repeat(64), envelope_sha256: "d".repeat(64), artifact_sha256: "e".repeat(64) },
+    authority_evidence: { evaluator: { id: "evaluation-6", sequence: 6, payload_sha256: "0".repeat(64) }, diagnosis_gate: { id: "gate-7", sequence: 7, payload_sha256: "0".repeat(64) }, refs: [{ id: "ev-checkout", sha256: evidenceBinding.sha256, record_sha256: "a".repeat(64), source: "frozen", mode: "frozen_real_otlp_snapshot" }] },
+    outcome: "human_review_required", reason_code: "owner_gate_required", capture_observed_at: "2026-07-18T10:00:00.000Z", decision_sha256: "0".repeat(64), decision_id: "pending"
+  };
+  decisionPayload.decision_sha256 = sha256Canonical({ contract_sha256, marker: "projection-canonical" });
+  const decisionId = `autonomy-decision-${decisionPayload.decision_sha256.slice(0, 32)}`;
+  decisionPayload.decision_id = decisionId;
+  const accepted = { ...event(6, "evaluation.accepted", { ...evaluation, hypothesis_id: diagnosis.id }, refs, { actor: "evaluator", correlation_id: `${RUN_ID}:evaluation.accepted` }), id: "evaluation-6" };
+  const gate = { ...event(7, "diagnosis.gate.passed", {
+    version: "flowpulse.checkout-payment-backtest.v2",
+    harness: {
+      version: "flowpulse.harness.v1", manifest_sha256: "9".repeat(64),
+      model: { id: "gpt-5.6", reasoning_effort: "medium", store: false },
+      skills: {
+        investigator: { id: "flowpulse-investigator", version: "v1", sha256: "1".repeat(64) },
+        evaluator: { id: "flowpulse-adversarial-evaluator", version: "v1", sha256: "2".repeat(64) }
+      },
+      protocols: { sha256: "3".repeat(64), tool_protocol_sha256: "4".repeat(64), investigator_evaluator_handoff_sha256: "5".repeat(64), owner_repair_sha256: "6".repeat(64), safe_failure_sha256: "7".repeat(64) }
+    },
+    snapshot: { id: "snapshot-projection", mode: "frozen_real_otlp_snapshot", content_sha256: "d".repeat(64), source_sha256: "8".repeat(64) },
+    accepted: { diagnosis, evaluation, evidence_ids: refs, evidence_bindings: [evidenceBinding] },
+    rejected: null,
+    repair_contract: { repair_id: contract.repair_id, action: contract.action, command_id: contract.command_id, target: contract.target },
+    candidate_sha256: "7".repeat(64)
+  }, refs, { correlation_id: `${RUN_ID}:diagnosis.gate.passed` }), id: "gate-7" };
+  decisionPayload.authority_evidence.evaluator.payload_sha256 = accepted.payload_sha256;
+  decisionPayload.authority_evidence.diagnosis_gate.payload_sha256 = gate.payload_sha256;
+  const decision = { ...event(8, "autonomy.decision.recorded", decisionPayload, refs, { actor: "authority-composition", correlation_id: decisionId }), id: decisionId };
+  const proposalPayload = { ...contract, bounded: true, decision_id: decision.id, contract_sha256 };
+  const proposal = { ...event(9, "repair.proposed", proposalPayload, refs, { actor: "authority-composition", correlation_id: decision.id }), id: `repair-proposed-${decisionPayload.decision_sha256.slice(0, 32)}` };
+  const requestPayload = { ...contract, owner_team: "local-development", decision_id: decision.id, contract_sha256, reason: "Consequential checkout remediation requires an explicit owner decision." };
+  const request = { ...event(10, "approval.requested", requestPayload, refs, { actor: "authority-composition", parent_id: proposal.id, correlation_id: decision.id }), id: `approval-request-${decisionPayload.decision_sha256.slice(0, 32)}` };
+  const approvalPayload = { owner: "Owner", ...contract, scope: "local checkout container only", decision_id: decision.id, contract_sha256 };
+  const approval = { ...event(11, "approval.granted", approvalPayload, refs, { actor: "owner", correlation_id: decision.id }), id: `approval-granted-${decisionPayload.decision_sha256.slice(0, 32)}` };
+  const attemptPayload = { approval_id: approval.id, decision_id: decision.id, contract_sha256, contract, execution_mode: "real_local_development" };
+  const attempt = { ...event(12, "repair.execution.attempted", attemptPayload, refs, { actor: "authority-composition", parent_id: approval.id, correlation_id: decision.id }), id: `repair-execution-attempt-${decisionPayload.decision_sha256.slice(0, 32)}` };
+  const executionPayload = { repair_id: contract.repair_id, action: contract.action, target: contract.target, from: "on", to: "off", mode: "local-development", command_id: contract.command_id, completed_at: "2026-07-18T10:01:00.000Z", decision_id: decision.id, approval_id: approval.id, contract_sha256 };
+  const execution = { ...event(13, "repair.executed", executionPayload, refs, { actor: "remediation", parent_id: attempt.id, correlation_id: decision.id }), id: `repair-executed-${decisionPayload.decision_sha256.slice(0, 32)}` };
+  const verificationPayload = { schema_version: "flowpulse.canonical-verification.v1", decision_id: decision.id, execution_id: execution.id, contract_sha256, passed: true, repair_completed_at: executionPayload.completed_at, source_status: "live", flag_observed_at: "2026-07-18T10:01:30.000Z", checks: [
+    { id: "flag_variant_restored", metric: "paymentUnreachable_variant", observed: "off", expected: "off", threshold: "== off", passed: true },
+    { id: "fresh_checkout_payment_success", metric: "fresh_healthy_checkout_payment_traces", observed: 1, threshold: ">= 1", passed: true },
+    { id: "no_fresh_resolver_failures", metric: "fresh_checkout_payment_unreachable_traces", observed: 0, threshold: "== 0", passed: true }
+  ] };
+  const verification = { ...event(14, "verification.completed", verificationPayload, ["ev-checkout", "ev-recovery"], { actor: "verifier", parent_id: execution.id, correlation_id: decision.id }), id: "verification-14" };
+  const events = [accepted, gate, decision, proposal, request, approval, attempt, execution, verification];
   return {
     events,
+    evidence: [boundRecord, { id: "ev-recovery", kind: "trace", signal: "traces", title: "Post-repair checkout success", entity: "checkout", source: "frozen", at: "2026-07-18T10:02:00.000Z", hash: "f".repeat(64), provenance: { sha256: "f".repeat(64) } }],
     chain: {
       schema_version: "flowpulse.projection-authority.v1", status: "canonical",
       decision: authorityIdentity(decision), proposal: authorityIdentity(proposal), request: authorityIdentity(request), approval: authorityIdentity(approval), attempt: authorityIdentity(attempt), execution: authorityIdentity(execution), verification: authorityIdentity(verification)
@@ -78,7 +156,7 @@ function input(overrides = {}) {
       event(2, "incident.opened", { title: "Checkout payment failures", severity: "SEV-2" }),
       event(3, "evidence.queried", { tool: "query_traces", result_count: 1 }, ["ev-checkout"]),
       event(4, "hypothesis.proposed", { id: "hyp-kafka", title: "Kafka is the cause", confidence: 0.7, claim: "Kafka delay" }, ["ev-checkout"]),
-      event(5, "evaluation.rejected", { hypothesis_id: "hyp-kafka", score: 0.2, reason: "failure precedes lag" }, ["ev-checkout"]),
+      event(5, "evaluation.rejected", { hypothesis_id: "hyp-kafka", score: 0.2, reason: "failure precedes lag" }, ["ev-checkout"], { actor: "evaluator" }),
       event(6, "plan.revised", { reason: "Inspect checkout first" }, ["ev-checkout"])
     ],
     ...overrides
@@ -98,9 +176,52 @@ test("IncidentProjection v1 is bounded, deterministic, redacted, and exposes the
   assert.equal(first.investigation.evaluator.verdict, "rejected");
   assert.equal(first.investigation.replan.status, "recorded");
   assert.deepEqual(first.timeline.frames.map((frame) => frame.sequence), [1, 2, 3, 4, 5, 6]);
-  assert.equal(first.projection_revision, second.projection_revision);
+  assert.equal(second.stage_status, "non_actionable");
+  assert.equal(second.why_stopped.code, "projection_sequence_invalid");
   assert.equal(JSON.stringify(first).includes("Payment calls fail."), false);
   assert.ok(Buffer.byteLength(JSON.stringify(first), "utf8") <= INCIDENT_PROJECTION_LIMITS.max_serialized_bytes);
+});
+
+test("projection never upgrades malformed evaluator or diagnosis-gate payloads", () => {
+  const malformed = buildIncidentProjection(input({
+    events: [
+      ...input().events,
+      event(7, "evaluation.accepted", {}, ["ev-checkout"]),
+      event(8, "diagnosis.gate.passed", {}, ["ev-checkout"])
+    ]
+  }));
+  assert.notEqual(malformed.investigation.evaluator.verdict, "accepted");
+  assert.notEqual(malformed.investigation.diagnosis_gate.status, "passed");
+  assert.notEqual(malformed.stage_status, "verified");
+});
+
+test("forged execution and verification semantics cannot upgrade a canonical chain", () => {
+  const canonical = canonicalAuthorityEvents();
+  const forged = structuredClone(canonical);
+  forged.events.find((event) => event.type === "repair.executed").payload.from = "attacker-from";
+  forged.events.find((event) => event.type === "repair.executed").payload.to = "attacker-to";
+  const verification = forged.events.find((event) => event.type === "verification.completed");
+  verification.parent_id = "wrong-parent";
+  verification.correlation_id = "wrong-correlation";
+  verification.payload.source_status = "captured";
+  verification.payload.checks = [{ id: "attacker-check", passed: true }];
+  for (const item of forged.events) item.payload_sha256 = sha256Canonical(item.payload);
+  for (const identity of Object.values(forged.chain)) {
+    if (identity?.event_id) {
+      const item = forged.events.find((candidate) => candidate.id === identity.event_id);
+      identity.payload_sha256 = item.payload_sha256;
+    }
+  }
+  const projection = buildIncidentProjection(input({
+    run: { ...input().run, mode: "development" },
+    source: { mode: "frozen_real_otlp_snapshot", status: "frozen" },
+    evidence: forged.evidence,
+    events: [...input().events.slice(0, 2), ...forged.events],
+    authority_chain: forged.chain
+  }));
+  assert.equal(projection.stage_status, "non_actionable");
+  assert.equal(projection.action.status, "not_actionable");
+  assert.equal(projection.verification.status, "not_actionable");
 });
 
 test("projection treats captured legacy Owner-Gate rows as display-only while preserving failure state", () => {
@@ -209,19 +330,26 @@ test("projection never strengthens isolated, reordered, or forged Owner-Gate eve
 
 test("projection renders a fully linked canonical chain only, and rejects relationship or payload drift", () => {
   const canonical = canonicalAuthorityEvents();
-  const valid = buildIncidentProjection(input({ events: [...input().events, ...canonical.events], authority_chain: canonical.chain }));
-  assert.equal(valid.stage_status, "verified");
+  const canonicalInput = () => input({
+    run: { ...input().run, mode: "development" },
+    source: { mode: "frozen_real_otlp_snapshot", status: "frozen" },
+    evidence: canonical.evidence,
+    events: [...input().events.slice(0, 2), ...canonical.events],
+    authority_chain: canonical.chain
+  });
+  const valid = buildIncidentProjection(canonicalInput());
+  assert.equal(valid.stage_status, "verified", valid.why_stopped.code);
   assert.equal(valid.human_gate.status, "granted");
   assert.equal(valid.action.status, "executed");
 
   const reordered = structuredClone(canonical);
-  reordered.events[2].parent_id = null;
-  const relationshipDrift = buildIncidentProjection(input({ events: [...input().events, ...reordered.events], authority_chain: reordered.chain }));
+  reordered.events.find((event) => event.type === "approval.requested").parent_id = null;
+  const relationshipDrift = buildIncidentProjection(input({ ...canonicalInput(), events: [...input().events.slice(0, 2), ...reordered.events], authority_chain: reordered.chain }));
   assert.equal(relationshipDrift.stage_status, "non_actionable");
 
   const payloadDrift = structuredClone(canonical);
-  payloadDrift.events[0].payload.outcome = "non_actionable";
-  const changedPayload = buildIncidentProjection(input({ events: [...input().events, ...payloadDrift.events], authority_chain: payloadDrift.chain }));
+  payloadDrift.events.find((event) => event.type === "autonomy.decision.recorded").payload.outcome = "non_actionable";
+  const changedPayload = buildIncidentProjection(input({ ...canonicalInput(), events: [...input().events.slice(0, 2), ...payloadDrift.events], authority_chain: payloadDrift.chain }));
   assert.equal(changedPayload.stage_status, "non_actionable");
 });
 

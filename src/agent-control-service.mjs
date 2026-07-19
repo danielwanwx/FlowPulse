@@ -57,8 +57,10 @@ export class AgentControlService {
     this.langfuseEnabled = Boolean(langfuseEnabled);
   }
 
-  project(runId = this.runtime.ensureRun(), { incidentProjection = null } = {}) {
-    const state = this.runtime.state(runId);
+  project(runId = this.runtime.ensureRun(), { incidentProjection = null, state: suppliedState = null } = {}) {
+    const state = suppliedState && suppliedState.run_id === runId && Array.isArray(suppliedState.events)
+      ? suppliedState
+      : this.runtime.state(runId);
     const events = state.events;
     const canonicalProjection = validIncidentProjection(incidentProjection, runId) ? incidentProjection : null;
     const statuses = projectStatuses(events, state, this.langfuseEnabled);

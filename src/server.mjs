@@ -21,6 +21,7 @@ import { failureLockKey, sha256Canonical } from "./autonomy-policy.mjs";
 import { FRESHNESS_MAX_AGE_MS, FRESHNESS_RECEIPT_SCHEMA_VERSION, verifySnapshotFreshnessReceipt } from "./autonomy-freshness.mjs";
 import { sha256 as hashBoundEvidence } from "./regression-backtest.mjs";
 import { buildIncidentProjection, INCIDENT_PROJECTION_LIMITS } from "./incident-projection.mjs";
+import { validateProjectionCanonicalChain } from "./projection-canonical-validator.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const publicDir = join(root, "public");
@@ -41,6 +42,9 @@ const authorityReceiptSecret = randomBytes(32);
 const authorityReceiptBindings = new Map();
 const CAPTURE_CLOCK_SKEW_MS = 1_000;
 const BROWSER_RESPONSE_MAX_BYTES = 512 * 1024;
+// This is a server-side work bound, deliberately much smaller than an
+// unbounded ledger scan and independent of the 256 KiB browser response cap.
+const PROJECTION_LEDGER_MAX_BYTES = 2 * 1024 * 1024;
 runtime.ensureRun();
 validateAutonomyPolicyArtifact(AUTONOMY_POLICY_ARTIFACT);
 const langfuseEnabled = await initializeObservability().catch(() => {
@@ -758,12 +762,14 @@ function mime(extension) {
 }
 
 async function stateWithSource(runId = runtime.ensureRun(), { cursor = null } = {}) {
+  const preflight = projectionLedgerPreflight(runId);
+  if (!preflight.ok) return nonActionableBrowserState(runId, preflight.code);
   const projected = runtime.state(runId);
   const referenced = new Set(projected.events.flatMap((event) => event.evidence_refs));
-  const source = await selectedEvidenceSource(runId);
+  const source = await selectedEvidenceSource(runId, projected.mode);
   const evidence = source.summariesById(referenced);
   const sourceState = await sourceProjection(runId, source);
-  const authority_chain = projectionAuthorityChain({ runId, projected });
+  const authority_chain = projectionAuthorityChain({ runId, projected, evidenceById: new Map(evidence.map((record) => [record.id, record])) });
   const incident_projection = buildIncidentProjection({
     run: projected,
     events: projected.events,
@@ -784,17 +790,49 @@ async function stateWithSource(runId = runtime.ensureRun(), { cursor = null } = 
     evidence: incident_projection.evidence,
     source: redactedSource(sourceState, incident_projection),
     incident_projection,
-    agent_control: agentControl.project(runId, { incidentProjection: incident_projection }),
+    agent_control: agentControl.project(runId, { incidentProjection: incident_projection, state: projected }),
     harness: redactedHarness(harnessProjection(projected.events))
   };
   return enforceBrowserResponseCap(state);
+}
+
+function projectionLedgerPreflight(runId) {
+  if (!safeBrowserId(runId)) return { ok: false, code: "projection_ledger_preflight_invalid" };
+  try {
+    const quoted = `'${runId.replaceAll("'", "''")}'`;
+    const row = ledger.query(`SELECT count(*) AS event_count, COALESCE(sum(length(CAST(id AS BLOB)) + length(CAST(run_id AS BLOB)) + length(CAST(incident_id AS BLOB)) + length(CAST(recorded_at AS BLOB)) + length(CAST(type AS BLOB)) + length(CAST(actor AS BLOB)) + length(CAST(payload_json AS BLOB)) + length(CAST(evidence_refs_json AS BLOB)) + length(CAST(COALESCE(parent_id,'') AS BLOB)) + length(CAST(correlation_id AS BLOB))), 0) AS serialized_bytes FROM events WHERE run_id=${quoted};`)[0] || {};
+    const count = Number(row.event_count);
+    const bytes = Number(row.serialized_bytes);
+    if (!Number.isSafeInteger(count) || !Number.isSafeInteger(bytes) || count < 0 || bytes < 0) return { ok: false, code: "projection_ledger_preflight_invalid" };
+    if (count > INCIDENT_PROJECTION_LIMITS.max_input_events || bytes > PROJECTION_LEDGER_MAX_BYTES) return { ok: false, code: "projection_ledger_preflight_exceeded" };
+    return { ok: true };
+  } catch {
+    return { ok: false, code: "projection_ledger_preflight_unavailable" };
+  }
+}
+
+function nonActionableBrowserState(runId, code) {
+  const incident_projection = buildIncidentProjection({});
+  incident_projection.why_stopped = { code: safeBrowserText(code, 120), detail_status: "recorded" };
+  const agent_control = {
+    schema_version: "flowpulse.agent_control.v1", run_id: safeBrowserId(runId), incident_id: null,
+    authority: "append-only-ledger", streaming: "ledger-derived-sse", langfuse: langfuseEnabled ? "observing" : "not_configured",
+    current_agent_id: null, last_event_id: null, last_sequence: 0,
+    report: { title: "Unavailable incident projection", summary: safeBrowserText(code, 120), stage: "Monitor", confidence: null, root_cause: null, rejected_diagnosis: null, repair: null, verification: null, regression: null, backtest: null, citations: [], human_gate: null, data_mode: null },
+    actions: [], work_items: [], graph: { nodes: [], edges: [] }, activity: [], orchestration: { mode: "ledger-governed-agent-team-harness", proposal_count: 0, proposals: [], last_step: null }, incident_projection
+  };
+  return {
+    schema_version: "flowpulse.browser-state.v1", run_id: safeBrowserId(runId), mode: "unavailable", status: "non_actionable", complete: false, waiting_for_approval: false,
+    incident: incident_projection.incident, events: [], evidence: [], source: redactedSource({}, incident_projection), incident_projection, agent_control,
+    harness: { manifest: { legacy_detail_status: "legacy_detail_unavailable" }, current_stage: "unavailable", attempt: null, last_context_sha256: null, failure: { legacy_detail_status: "legacy_detail_unavailable", boundary: "unavailable", validator_id: "unavailable", reason_code: safeBrowserText(code, 120), tool_coverage: [], missing_evidence_classes: [], next_precondition: "unavailable" } }
+  };
 }
 
 // This read-only verifier deliberately stays in the server composition root so
 // the module-private freshness binding remains unavailable to HTTP, fixtures,
 // model output, and browser code. A restart that cannot re-establish the
 // binding projects non-actionable rather than trusting historical shapes.
-function projectionAuthorityChain({ runId, projected }) {
+function projectionAuthorityChain({ runId, projected, evidenceById }) {
   const events = projected.events;
   const decisions = events.filter((event) => event.type === "autonomy.decision.recorded");
   if (!decisions.length) return { schema_version: "flowpulse.projection-authority.v1", status: "legacy", reason: "legacy_detail_unavailable" };
@@ -817,19 +855,23 @@ function projectionAuthorityChain({ runId, projected }) {
     const request = exactlyOne(events, "approval.requested");
     if (!proposal || !request || !sameCanonicalOwnerGateEvent(proposal, ownerGate.proposal, decision) || !sameCanonicalOwnerGateEvent(request, ownerGate.request, proposal) || !(decision.sequence < proposal.sequence && proposal.sequence < request.sequence)) throw autonomyFailure("projection_owner_gate_invalid", "approval.requested");
     const approval = optionalOne(events, "approval.granted");
-    if (approval && !projectionCanonicalApproval(approval, decision, request)) throw autonomyFailure("projection_approval_invalid", "approval.granted");
     const attempt = optionalOne(events, "repair.execution.attempted");
-    if (attempt && (!approval || !projectionCanonicalAttempt(attempt, decision, approval))) throw autonomyFailure("projection_attempt_invalid", "repair.execution.attempted");
     const execution = optionalOne(events, "repair.executed");
-    if (execution && (!attempt || !projectionCanonicalExecution(execution, decision, attempt))) throw autonomyFailure("projection_execution_invalid", "repair.executed");
     const verification = optionalOne(events, "verification.completed");
-    if (verification && (!execution || !projectionCanonicalVerification(verification, execution))) throw autonomyFailure("projection_verification_invalid", "verification.completed");
-    return {
+    const chain = {
       schema_version: "flowpulse.projection-authority.v1", status: "canonical",
       decision: projectionEventIdentity(decision), proposal: projectionEventIdentity(proposal), request: projectionEventIdentity(request),
       approval: approval ? projectionEventIdentity(approval) : null, attempt: attempt ? projectionEventIdentity(attempt) : null,
       execution: execution ? projectionEventIdentity(execution) : null, verification: verification ? projectionEventIdentity(verification) : null
     };
+    const strict = validateProjectionCanonicalChain({
+      events,
+      chain,
+      axes: { source_health: "live", evidence_mode: "frozen_real_snapshot", execution_mode: "real_local_development" },
+      evidence: evidenceById
+    });
+    if (strict.status !== "canonical") throw autonomyFailure(strict.reason || "projection_canonical_schema_invalid", "projection_authority_chain");
+    return chain;
   } catch (error) {
     return projectionAuthorityInvalid(error?.code || "authority_chain_invalid");
   }
@@ -839,27 +881,6 @@ function projectionAuthorityInvalid(reason) { return { schema_version: "flowpuls
 function exactlyOne(events, type) { const matches = events.filter((event) => event.type === type); return matches.length === 1 ? matches[0] : null; }
 function optionalOne(events, type) { const matches = events.filter((event) => event.type === type); if (matches.length > 1) throw autonomyFailure("projection_event_count_invalid", type); return matches[0] || null; }
 function projectionEventIdentity(event) { return { event_id: event.id, sequence: event.sequence, payload_sha256: event.payload_sha256 }; }
-function projectionCanonicalApproval(event, decision, request) {
-  const expectedId = `approval-granted-${decision.payload.decision_sha256.slice(0, 32)}`;
-  const payload = event?.payload;
-  const allowed = ["owner", "repair_id", "action", "target", "command_id", "expected_before", "expected_after", "scope", "decision_id", "contract_sha256"];
-  return Boolean(event && event.id === expectedId && event.run_id === decision.run_id && event.incident_id === decision.incident_id && event.type === "approval.granted" && event.actor === "owner" && event.parent_id == null && event.correlation_id === decision.id && event.offset_ms === 0 && timestamp(event.recorded_at) && sameOrderedRefs(event.evidence_refs, decision.evidence_refs) && payload && Object.keys(payload).sort().join(",") === allowed.sort().join(",") && boundedText(payload.owner, 160) && exactFullContract(payload, decision.payload.contract) && payload.scope === "local checkout container only" && payload.decision_id === decision.id && payload.contract_sha256 === decision.payload.contract_sha256 && request.sequence < event.sequence);
-}
-function projectionCanonicalAttempt(event, decision, approval) {
-  const expectedId = `repair-execution-attempt-${decision.payload.decision_sha256.slice(0, 32)}`;
-  const expected = { approval_id: approval.id, decision_id: decision.id, contract_sha256: decision.payload.contract_sha256, contract: decision.payload.contract, execution_mode: decision.payload.execution_mode };
-  return Boolean(event && event.id === expectedId && event.run_id === decision.run_id && event.incident_id === decision.incident_id && event.type === "repair.execution.attempted" && event.actor === "authority-composition" && event.parent_id === approval.id && event.correlation_id === decision.id && event.offset_ms === 0 && timestamp(event.recorded_at) && sameOrderedRefs(event.evidence_refs, decision.evidence_refs) && sha256Canonical(event.payload) === sha256Canonical(expected) && approval.sequence < event.sequence);
-}
-function projectionCanonicalExecution(event, decision, attempt) {
-  const expectedId = `repair-executed-${decision.payload.decision_sha256.slice(0, 32)}`;
-  const payload = event?.payload;
-  const expectedKeys = ["repair_id", "action", "target", "from", "to", "mode", "command_id", "completed_at", "decision_id", "approval_id", "contract_sha256"];
-  return Boolean(event && event.id === expectedId && event.run_id === decision.run_id && event.incident_id === decision.incident_id && event.type === "repair.executed" && event.actor === "remediation" && event.parent_id === attempt.id && event.correlation_id === decision.id && event.offset_ms === 0 && timestamp(event.recorded_at) && sameOrderedRefs(event.evidence_refs, decision.evidence_refs) && payload && Object.keys(payload).sort().join(",") === expectedKeys.sort().join(",") && payload.repair_id === decision.payload.contract.repair_id && payload.action === decision.payload.contract.action && payload.target === decision.payload.contract.target && payload.command_id === decision.payload.contract.command_id && payload.mode === "local-development" && timestamp(payload.completed_at) && payload.decision_id === decision.id && payload.approval_id === attempt.payload.approval_id && payload.contract_sha256 === decision.payload.contract_sha256 && attempt.sequence < event.sequence);
-}
-function projectionCanonicalVerification(event, execution) {
-  const payload = event?.payload;
-  return Boolean(event && event.type === "verification.completed" && event.actor === "verifier" && event.sequence > execution.sequence && payload && payload.passed === true && payload.repair_completed_at === execution.payload.completed_at && Array.isArray(payload.checks) && payload.checks.length > 0 && Array.isArray(event.evidence_refs) && event.evidence_refs.length > 0);
-}
 
 function redactedLedgerEvent(event) {
   return {
@@ -872,13 +893,30 @@ function redactedLedgerEvent(event) {
 
 function redactedEventPayload(event) {
   const payload = event?.payload && typeof event.payload === "object" && !Array.isArray(event.payload) ? event.payload : {};
-  const result = {};
-  for (const key of ["id", "title", "hypothesis_id", "reason", "claim", "action", "target", "expected_effect", "candidate", "promotion", "classification", "decision_id", "contract_sha256"]) if (typeof payload[key] === "string") result[key] = safeBrowserText(payload[key], 240);
-  if (typeof payload.passed === "boolean") result.passed = payload.passed;
-  if (typeof payload.score === "number" && Number.isFinite(payload.score)) result.score = Math.max(0, Math.min(1, payload.score));
-  if (Array.isArray(payload.checks)) result.checks = payload.checks.slice(0, 16).map((check) => ({ id: safeBrowserText(check?.id || "check", 120), metric: safeBrowserText(check?.metric || "metric", 120), passed: check?.passed === true }));
-  if (Array.isArray(payload.gates)) result.gates = payload.gates.slice(0, 16).map((gate) => ({ id: safeBrowserText(gate?.id || "gate", 120), label: safeBrowserText(gate?.label || "gate", 120), passed: gate?.passed === true }));
-  return result;
+  const copy = (keys) => Object.fromEntries(keys.filter((key) => typeof payload[key] === "string").map((key) => [key, safeBrowserText(payload[key], 240)]));
+  switch (event?.type) {
+    case "run.started": return copy(["mode"]);
+    case "incident.opened": return copy(["title", "severity", "environment"]);
+    case "evidence.queried":
+    case "tool.called": return { ...copy(["tool"]), ...(Number.isSafeInteger(payload.result_count) && payload.result_count >= 0 ? { result_count: Math.min(payload.result_count, 10_000) } : {}) };
+    case "hypothesis.proposed":
+    case "diagnosis.proposed": return { ...copy(["id", "title"]), ...(Number.isFinite(payload.confidence) ? { confidence: Math.max(0, Math.min(1, payload.confidence)) } : {}) };
+    case "evaluation.accepted": return { ...copy(["hypothesis_id", "classification", "phase"]), ...(Number.isFinite(payload.score) ? { score: Math.max(0, Math.min(1, payload.score)) } : {}) };
+    case "evaluation.rejected": return { ...copy(["hypothesis_id"]), ...(Number.isFinite(payload.score) ? { score: Math.max(0, Math.min(1, payload.score)) } : {}) };
+    case "autonomy.decision.recorded": return copy(["intent_id", "outcome", "reason_code", "contract_sha256"]);
+    case "repair.proposed":
+    case "approval.requested": return copy(["repair_id", "action", "target", "decision_id", "contract_sha256"]);
+    case "approval.granted": return copy(["decision_id", "contract_sha256"]);
+    case "repair.execution.attempted": return copy(["decision_id", "approval_id", "contract_sha256", "execution_mode"]);
+    case "repair.executed": return copy(["repair_id", "target", "from", "to", "mode", "command_id", "decision_id", "approval_id", "contract_sha256", "completed_at"]);
+    case "verification.completed": return {
+      ...copy(["source_status", "decision_id", "execution_id", "contract_sha256"]),
+      ...(payload.passed === true || payload.passed === false ? { passed: payload.passed } : {}),
+      checks: Array.isArray(payload.checks) ? payload.checks.slice(0, 3).map((check) => ({ id: safeBrowserText(check?.id || "check", 120), metric: safeBrowserText(check?.metric || "metric", 120), passed: check?.passed === true })) : []
+    };
+    case "outcome.classified": return copy(["classification"]);
+    default: return {};
+  }
 }
 
 function redactedSource(source, projection = null) {
@@ -925,9 +963,9 @@ function safeBrowserId(value) { return typeof value === "string" && /^[A-Za-z0-9
 function safeBrowserHash(value) { return validHash(value) ? value : null; }
 function safeBrowserEnum(value, allowed, fallback) { return allowed.includes(value) ? value : fallback; }
 
-async function selectedEvidenceSource(runId = runtime.ensureRun()) {
+async function selectedEvidenceSource(runId = runtime.ensureRun(), knownMode = null) {
   if (snapshots.has(runId)) return snapshots.get(runId);
-  const mode = runtime.state(runId).mode;
+  const mode = knownMode || runMode(runId);
   if (mode === "replay") return capturedEvidence;
   return new LiveOtlpEvidenceSource(await liveSource.project());
 }

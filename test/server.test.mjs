@@ -18,7 +18,7 @@ test("server-owned development path appends one canonical owner-gated authority 
   const fixture = await startAuthorityFixture(context);
   const response = await postJson(fixture.port, "/api/development/investigate");
   assert.equal(response.status, 200, JSON.stringify(response.body));
-  assert.equal(response.body.incident_projection.decision.status, "human_review_required");
+  assert.equal(response.body.incident_projection.decision.status, "human_review_required", response.body.incident_projection.why_stopped?.code);
   assert.equal(response.body.incident_projection.human_gate.status, "requested");
   assert.deepEqual(
     [response.body.incident_projection.source_health, response.body.incident_projection.evidence_mode, response.body.incident_projection.execution_mode],
@@ -322,7 +322,7 @@ test("judge API serves state and advances the replay", async (context) => {
     env: { ...process.env, PORT: String(port), FLOWPULSE_DB: dbPath, FLOWPULSE_OTLP_DIR: missingSource, OPENAI_API_KEY: "" },
     stdio: ["ignore", "pipe", "pipe"]
   });
-  context.after(() => child.kill("SIGTERM"));
+  context.after(() => stopTestServer(child));
   await waitForHealth(child, port);
 
   const health = await fetch(`http://127.0.0.1:${port}/api/health`).then((response) => response.json());
@@ -345,7 +345,7 @@ test("judge API serves state and advances the replay", async (context) => {
     incidentId: loadBundle().incident.id,
     type: "tool.called",
     actor: "investigator",
-    payload: { raw_provider_text: rawMarker, prompt: rawMarker, response_id: "provider-response-id", reasoning: rawMarker, token_usage: 99 },
+    payload: { raw_provider_text: rawMarker, prompt: rawMarker, response_id: "provider-response-id", reasoning: rawMarker, reason: rawMarker, token_usage: 99 },
     evidenceRefs: []
   });
   const beforeReads = new Ledger(dbPath).list(initial.run_id).length;
@@ -460,6 +460,49 @@ test("judge API serves state and advances the replay", async (context) => {
   await assertTypedFailureRoutes({ port, dbPath });
 });
 
+test("browser projection preflights oversized ledger runs before materializing runtime state", async (context) => {
+  const port = await freshPort();
+  const dbPath = join(mkdtempSync(join(tmpdir(), "flowpulse-server-projection-limit-")), "ledger.db");
+  const child = spawn(process.execPath, ["src/server.mjs"], {
+    cwd: new URL("..", import.meta.url),
+    env: { ...process.env, PORT: String(port), FLOWPULSE_DB: dbPath, OPENAI_API_KEY: "" },
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  context.after(() => stopTestServer(child));
+  await waitForHealth(child, port);
+  const initial = await fetch(`http://127.0.0.1:${port}/api/state`).then((response) => response.json());
+  const values = Array.from({ length: 513 }, (_, index) => `('projection-limit-${index}','${initial.run_id}','${initial.incident.id}','2026-07-18T10:00:00.000Z',0,'tool.called','test','{}','[]',NULL,'projection-limit')`).join(",");
+  new Ledger(dbPath).exec(`INSERT INTO events (id,run_id,incident_id,recorded_at,offset_ms,type,actor,payload_json,evidence_refs_json,parent_id,correlation_id) VALUES ${values};`);
+  const state = await fetch(`http://127.0.0.1:${port}/api/state`).then((response) => response.json());
+  const control = await fetch(`http://127.0.0.1:${port}/api/agent-control`).then((response) => response.json());
+  assert.equal(state.incident_projection.stage_status, "non_actionable");
+  assert.equal(state.incident_projection.why_stopped.code, "projection_ledger_preflight_exceeded");
+  assert.equal(control.incident_projection.stage_status, "non_actionable");
+});
+
+test("browser projection preflights UTF-8 ledger bytes before materializing runtime state", async (context) => {
+  const port = await freshPort();
+  const dbPath = join(mkdtempSync(join(tmpdir(), "flowpulse-server-projection-byte-limit-")), "ledger.db");
+  const child = spawn(process.execPath, ["src/server.mjs"], {
+    cwd: new URL("..", import.meta.url),
+    env: { ...process.env, PORT: String(port), FLOWPULSE_DB: dbPath, OPENAI_API_KEY: "" },
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  context.after(() => stopTestServer(child));
+  await waitForHealth(child, port);
+  const initial = await fetch(`http://127.0.0.1:${port}/api/state`).then((response) => response.json());
+  // Keep the test process itself bounded: SQLite creates the multi-byte string
+  // from a compact expression, while the browser path must reject it by byte
+  // count before it can materialize the ledger row.
+  new Ledger(dbPath).exec(`INSERT INTO events (id,run_id,incident_id,recorded_at,offset_ms,type,actor,payload_json,evidence_refs_json,parent_id,correlation_id)
+    VALUES ('projection-byte-limit','${initial.run_id}','${initial.incident.id}','2026-07-18T10:00:00.000Z',0,'tool.called','test',json_object('detail',replace(hex(zeroblob(800000)),'00','界')),'[]',NULL,'projection-byte-limit');`);
+  const state = await fetch(`http://127.0.0.1:${port}/api/state`).then((response) => response.json());
+  const control = await fetch(`http://127.0.0.1:${port}/api/agent-control`).then((response) => response.json());
+  assert.equal(state.incident_projection.stage_status, "non_actionable");
+  assert.equal(state.incident_projection.why_stopped.code, "projection_ledger_preflight_exceeded");
+  assert.equal(control.incident_projection.stage_status, "non_actionable");
+});
+
 async function waitForHealth(child, port) {
   let startupOutput = "";
   child.stderr.on("data", (chunk) => { startupOutput = `${startupOutput}${chunk}`.slice(-2_000); });
@@ -475,6 +518,18 @@ async function waitForHealth(child, port) {
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
   throw new Error(`Server did not start: ${startupOutput || "no startup output"}`);
+}
+
+async function stopTestServer(child) {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  await new Promise((resolve) => {
+    const timeout = setTimeout(() => child.kill("SIGKILL"), 5_000);
+    child.once("exit", () => {
+      clearTimeout(timeout);
+      resolve();
+    });
+    child.kill("SIGTERM");
+  });
 }
 
 async function assertTypedFailureRoutes({ port, dbPath }) {
@@ -570,7 +625,7 @@ async function startAuthorityFixture(context, { futureCapture = false, staleCapt
     env: { ...process.env, PORT: String(port), FLOWPULSE_DB: dbPath, FLOWPULSE_OTLP_DIR: otlp, OPENAI_API_KEY: "", FLOWPULSE_DEVELOPMENT_ENABLED: "0" },
     stdio: ["ignore", "pipe", "pipe"]
   });
-  context.after(() => child.kill("SIGTERM"));
+  context.after(() => stopTestServer(child));
   await waitForHealth(child, port);
   return { port, dbPath, runId };
 }

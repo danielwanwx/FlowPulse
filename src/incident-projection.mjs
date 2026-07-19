@@ -1,4 +1,5 @@
 import { sha256Canonical } from "./autonomy-policy.mjs";
+import { validateProjectionCanonicalChain, validateProjectionInvestigation } from "./projection-canonical-validator.mjs";
 
 export const INCIDENT_PROJECTION_SCHEMA_VERSION = "flowpulse.incident-projection.v1";
 export const INCIDENT_PROJECTION_LIMITS = Object.freeze({
@@ -70,15 +71,16 @@ function normalize(value) {
 
   const events = [...value.events];
   const ids = new Set();
+  let priorSequence = 0;
   for (const event of events) {
     if (!plain(event) || !id(event.id) || ids.has(event.id) || !Number.isSafeInteger(event.sequence) || event.sequence < 1 || event.run_id !== run.run_id || event.incident_id !== run.incident.id || !KNOWN_EVENTS.has(event.type) || !timestamp(event.recorded_at) || !text(event.actor, 120) || !Number.isSafeInteger(event.offset_ms ?? 0) || !Array.isArray(event.evidence_refs) || event.evidence_refs.length > INCIDENT_PROJECTION_LIMITS.max_evidence_refs_per_event || new Set(event.evidence_refs).size !== event.evidence_refs.length || !event.evidence_refs.every(id) || !boundedValue(event.payload, INCIDENT_PROJECTION_LIMITS.max_payload_bytes)) fail("projection_event_invalid");
     if (event.payload_sha256 != null && (!isHash(event.payload_sha256) || event.payload_sha256 !== sha256Canonical(event.payload))) fail("projection_event_payload_invalid");
     if (event.parent_id != null && !id(event.parent_id)) fail("projection_event_relationship_invalid");
     if (event.correlation_id != null && !id(event.correlation_id)) fail("projection_event_relationship_invalid");
+    if (event.sequence <= priorSequence) fail("projection_sequence_invalid");
+    priorSequence = event.sequence;
     ids.add(event.id);
   }
-  events.sort((left, right) => left.sequence - right.sequence);
-  for (let index = 1; index < events.length; index += 1) if (events[index - 1].sequence >= events[index].sequence) fail("projection_sequence_invalid");
 
   const evidence = new Map();
   for (const record of value.evidence) {
@@ -111,10 +113,10 @@ function truthAxes(runMode, source, events) {
 
 function build({ run, events, evidence, topology, cursor, authority_chain, axes }) {
   if (axes.source_health !== "live") return nonActionable("projection_source_not_actionable", axes);
-  const authority = canonicalChain(events, authority_chain, axes);
+  const authority = canonicalChain(events, authority_chain, axes, evidence);
   const containsAuthority = events.some((event) => AUTHORITY_EVENTS.has(event.type));
   const legacyAuthority = containsAuthority && authority.status !== "canonical" && axes.evidence_mode === "captured_fixture";
-  if (authority.status === "invalid" || (containsAuthority && !legacyAuthority && authority.status !== "canonical")) fail("projection_authority_chain_invalid");
+  if (authority.status === "invalid" || (containsAuthority && !legacyAuthority && authority.status !== "canonical")) fail(authority.reason || "projection_authority_chain_invalid");
 
   const revision = sha256Canonical({
     schema_version: INCIDENT_PROJECTION_SCHEMA_VERSION,
@@ -131,7 +133,8 @@ function build({ run, events, evidence, topology, cursor, authority_chain, axes 
   const refs = unique(events.flatMap((event) => event.evidence_refs));
   const evidenceSummaries = refs.slice(0, INCIDENT_PROJECTION_LIMITS.max_evidence_summaries).map((ref) => safeEvidence(evidence.get(ref)));
   const graph = graphFor(topology);
-  const state = stateFor(events, authority, legacyAuthority);
+  const investigation = investigationFor(events);
+  const state = stateFor(events, authority, legacyAuthority, investigation);
   const projection = {
     schema_version: INCIDENT_PROJECTION_SCHEMA_VERSION,
     projection_revision: revision,
@@ -143,7 +146,7 @@ function build({ run, events, evidence, topology, cursor, authority_chain, axes 
     graph,
     timeline: { frames: page, total_frames: timelineAll.length, cursor: cursor || null },
     evidence: evidenceSummaries,
-    investigation: investigationFor(events),
+    investigation,
     decision: decisionFor(authority, legacyAuthority),
     human_gate: humanGateFor(authority, legacyAuthority),
     action: actionFor(authority, legacyAuthority),
@@ -158,40 +161,9 @@ function build({ run, events, evidence, topology, cursor, authority_chain, axes 
 }
 
 /** Validates the server-provided read-only chain summary against this exact event stream. */
-function canonicalChain(events, value, axes) {
-  if (value == null) return { status: "none", revision: { status: "none" } };
-  if (!plain(value) || value.schema_version !== "flowpulse.projection-authority.v1" || !["canonical", "legacy", "invalid"].includes(value.status)) return { status: "invalid", revision: { status: "invalid" } };
-  if (value.status !== "canonical") return { status: value.status, revision: { status: value.status, reason: safeText(value.reason || "legacy_detail_unavailable", 120) } };
-  const required = ["decision", "proposal", "request"];
-  if (Object.keys(value).sort().join(",") !== "approval,attempt,decision,execution,proposal,request,schema_version,status,verification") return { status: "invalid", revision: { status: "invalid" } };
-  if (!required.every((key) => identityMatches(events, value[key]))) return { status: "invalid", revision: { status: "invalid" } };
-  const decision = eventFor(events, value.decision.event_id);
-  const proposal = eventFor(events, value.proposal.event_id);
-  const request = eventFor(events, value.request.event_id);
-  if (!decision || !proposal || !request || decision.type !== "autonomy.decision.recorded" || proposal.type !== "repair.proposed" || request.type !== "approval.requested" || decision.sequence >= proposal.sequence || proposal.sequence >= request.sequence || !sameRefs(decision.evidence_refs, proposal.evidence_refs) || !sameRefs(decision.evidence_refs, request.evidence_refs) || proposal.parent_id != null || proposal.correlation_id !== decision.id || request.parent_id !== proposal.id || request.correlation_id !== decision.id || request.payload?.decision_id !== decision.id || proposal.payload?.decision_id !== decision.id || decision.payload?.outcome !== "human_review_required" || decision.payload?.source_health !== axes.source_health || decision.payload?.evidence_mode !== axes.evidence_mode || decision.payload?.execution_mode !== axes.execution_mode) return { status: "invalid", revision: { status: "invalid" } };
-  const linked = ["approval", "attempt", "execution", "verification"];
-  let prior = request;
-  for (const key of linked) {
-    const identity = value[key];
-    if (identity == null) break;
-    if (!identityMatches(events, identity)) return { status: "invalid", revision: { status: "invalid" } };
-    const event = eventFor(events, identity.event_id);
-    if (!event || event.sequence <= prior.sequence) return { status: "invalid", revision: { status: "invalid" } };
-    prior = event;
-  }
-  const approval = value.approval ? eventFor(events, value.approval.event_id) : null;
-  const attempt = value.attempt ? eventFor(events, value.attempt.event_id) : null;
-  const execution = value.execution ? eventFor(events, value.execution.event_id) : null;
-  const verification = value.verification ? eventFor(events, value.verification.event_id) : null;
-  if ((attempt && !approval) || (execution && !attempt) || (verification && !execution)) return { status: "invalid", revision: { status: "invalid" } };
-  if (approval && (approval.type !== "approval.granted" || approval.correlation_id !== decision.id || !sameRefs(approval.evidence_refs, decision.evidence_refs))) return { status: "invalid", revision: { status: "invalid" } };
-  if (attempt && (attempt.type !== "repair.execution.attempted" || attempt.parent_id !== approval.id || attempt.correlation_id !== decision.id || !sameRefs(attempt.evidence_refs, decision.evidence_refs))) return { status: "invalid", revision: { status: "invalid" } };
-  if (execution && (execution.type !== "repair.executed" || execution.parent_id !== attempt.id || execution.correlation_id !== decision.id || !sameRefs(execution.evidence_refs, decision.evidence_refs))) return { status: "invalid", revision: { status: "invalid" } };
-  if (verification && (verification.type !== "verification.completed" || verification.actor !== "verifier" || verification.payload?.repair_completed_at !== execution.payload?.completed_at || verification.payload?.passed !== true)) return { status: "invalid", revision: { status: "invalid" } };
-  return { status: "canonical", decision, proposal, request, approval, attempt, execution, verification, revision: { status: "canonical", identities: [value.decision, value.proposal, value.request, value.approval, value.attempt, value.execution, value.verification].filter(Boolean) } };
-}
+function canonicalChain(events, value, axes, evidence) { return validateProjectionCanonicalChain({ events, chain: value, axes, evidence }); }
 
-function stateFor(events, authority, legacyAuthority) {
+function stateFor(events, authority, legacyAuthority, investigation) {
   const failure = lastEvent(events, "outcome.classified");
   if (failure && ["insufficient_evidence", "tool_data_failure", "causal_evidence_rejected"].includes(failure.payload?.classification)) return { stage: stage("agent_workbench"), stage_status: "blocked" };
   if (authority.status === "canonical") {
@@ -201,19 +173,17 @@ function stateFor(events, authority, legacyAuthority) {
     return { stage: stage("decision_recovery"), stage_status: "waiting_for_owner" };
   }
   if (legacyAuthority) return { stage: stage("decision_recovery"), stage_status: "legacy_detail_unavailable" };
-  if (has(events, "plan.revised") || has(events, "evaluation.rejected")) return { stage: stage("agent_workbench"), stage_status: "replanning" };
-  if (has(events, "evaluation.accepted") || has(events, "hypothesis.proposed") || has(events, "diagnosis.gate.passed")) return { stage: stage("agent_workbench"), stage_status: "evaluating" };
+  if (investigation.replan?.status === "recorded" || investigation.evaluator?.verdict === "rejected") return { stage: stage("agent_workbench"), stage_status: "replanning" };
+  if (investigation.evaluator?.verdict === "accepted" || investigation.diagnosis_gate?.status === "passed" || has(events, "hypothesis.proposed")) return { stage: stage("agent_workbench"), stage_status: "evaluating" };
   return { stage: stage("monitor"), stage_status: "collecting" };
 }
 
 function stage(id) { return { id, label: ({ monitor: "Monitor", agent_workbench: "Agent Workbench", decision_recovery: "Decision & Recovery" })[id] }; }
 
 function investigationFor(events) {
+  const validated = validateProjectionInvestigation(events);
   const hypotheses = events.filter((event) => ["hypothesis.proposed", "diagnosis.proposed"].includes(event.type)).slice(-8).map((event) => ({ id: safeText(event.payload?.id || event.id, 160), status: event.type, evidence_refs: [...event.evidence_refs] }));
-  const rejected = lastEvent(events, "evaluation.rejected");
-  const accepted = lastEvent(events, "evaluation.accepted");
-  const replan = lastEvent(events, "plan.revised");
-  const gate = lastEvent(events, "diagnosis.gate.passed");
+  const { rejected, accepted, replan, gate } = validated;
   return { hypotheses, counter_evidence: rejected ? { hypothesis_id: safeText(rejected.payload?.hypothesis_id, 160), evidence_refs: [...rejected.evidence_refs] } : null, evaluator: accepted ? { verdict: "accepted", evidence_refs: [...accepted.evidence_refs] } : rejected ? { verdict: "rejected", evidence_refs: [...rejected.evidence_refs] } : { verdict: "pending", evidence_refs: [] }, diagnosis_gate: gate ? { status: "passed", event_id: gate.id, evidence_refs: [...gate.evidence_refs] } : { status: "pending", event_id: null, evidence_refs: [] }, replan: replan ? { status: "recorded", event_id: replan.id } : { status: "not_recorded", event_id: null } };
 }
 
