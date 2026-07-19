@@ -65,9 +65,10 @@ does not reclassify uncommitted files as committed.
 | Slice 2 private authority composition | missing | foundation exports only non-authority helpers | Implement after dirty harness isolation; Sol review is mandatory afterward. |
 | Canonical autonomy.decision.recorded in runtime | missing | approved schema exists in spec; no current canonical path | Slice 2. |
 | IncidentProjection v1 | partial | stateWithSource and evidence APIs exist; no v1 contract, caps, or orthogonal truth modes | Projection slice after Slice 2 review. |
-| Three-stage UI | partial | public app has five fixed modes, local cursor/timers, and Astronomy topology | UI slice consumes projection only. |
+| Three-stage UI and projection clients | partial | public app has five fixed modes, local cursor/timers, and Astronomy topology; no strict backend/demo client pair | Render-only UI slice consumes projection only; D.1 enables no controls until server contract passes. |
 | Generic integration proof | missing | captured bundle and OTLP JSONL are product sources; no connector manifest | P0 contract plus two offline fixtures only. |
 | OpenLineage and vendor ingestion | intentionally deferred | none | P1; no pre-deadline adapter. |
+| Captured low-risk policy simulation | missing | checked-in low-risk artifact exists, but no ledger-derived action.simulated runtime path | Slice E.0 before browser E2E; no live action/receipt/backtest. |
 | Automated browser E2E | missing | package has no Playwright dependency or script | P0 fresh-server Playwright paths after UI contract stabilizes. |
 | Submission assets | partial / human-external | README, Devpost draft, video script, screenshots, checklist exist; hosted URL/video/confirmed Session ID pending | Parallel human track; update only after represented proof exists. |
 
@@ -196,41 +197,29 @@ or an authority regression appears. Stop rather than reset or rewrite user work.
 Purpose: append a canonical fail-closed autonomy decision after a valid
 diagnosis without adding projection, UI, connectors, routes, or execution.
 
-Likely files:
+### Exact two-phase orchestration
 
-- src/server.mjs: create the unique private composition closure beside real
-  Ledger/runtime/snapshot objects; do not export it or return it to a route.
-- src/ledger.mjs: reuse listAutonomyLocks(512) and appendIfAbsent; extend only
-  if a bounded typed query or atomic decision identity is demonstrably missing.
-- src/autonomy-policy.mjs, src/autonomy-freshness.mjs,
-  src/autonomy-policy-artifacts.mjs: retain non-authority exports; add only
-  shared pure validation needed by the private closure.
-- src/development-runtime.mjs: invoke closure only after exact deterministic
-  diagnosis acceptance; checkout produces human_review_required.
-- src/runtime.mjs: project captured replay decisions truth-bounded; never create
-  a live action.
-- src/openai.mjs: call policy only after evaluator acceptance and current
-  deterministic causal validation; model-only mode stays non-executable.
-- src/regression-backtest.mjs and src/policy.mjs: bind decision data only as an
-  additional consistency input.
-- Tests: autonomy-policy, ledger, development-runtime, runtime, openai-contract,
-  gpt-development-integration, and server tests.
+The authority seam is deliberately singular:
 
-Write these red tests first:
+1. The exported investigation functions in `src/openai.mjs` and
+   `src/development-runtime.mjs` may collect evidence, run the evaluator, append
+   buffered hypothesis/evaluation events, and append `diagnosis.gate.passed`.
+   They return a bounded diagnosis-gate result. They must never append
+   `autonomy.decision.recorded`, `repair.proposed`, or `approval.requested`, and
+   they receive no policy callback, provider, capability, registry, snapshot,
+   receipt, lock list, clock, or authority object.
+2. The existing `src/server.mjs` composition root owns one **non-exported**
+   `advanceAutonomyAfterDiagnosis(selector)` closure. Its exact input is only
+   `{ run_id, incident_id, intent_id }`. It re-reads the actual `Ledger`, loads
+   the checked-in artifact internally, resolves the server-owned frozen capture,
+   issues and verifies its trusted freshness receipt, queries locks, derives the
+   decision, and appends `autonomy.decision.recorded` atomically.
+3. Only that same private closure may, after a `human_review_required` decision,
+   append the exact checked-in `repair.proposed` and `approval.requested` events.
+   It derives their contract and evidence refs from the canonical decision; no
+   exported runtime/model module can pre-append them.
 
-1. Real Ledger + server-owned frozen snapshot + checked-in registry emits exactly
-   one decision for a valid low captured fixture; no public import can mint it.
-2. Checkout remains medium, binds its exact contract, and has zero
-   repair.executed before approval.granted.
-3. Unknown selector, stale/expired/mismatched receipt, malformed/future/legacy
-   evaluator, duplicate/conflicting evidence, contract mismatch, missing source,
-   lock overflow, and exact/cross-run failure lock are non-actionable.
-4. Captured simulation cannot become repair.executed, a live receipt, external
-   delivery, or executed_offline_backtest proof.
-5. appendIfAbsent conflict creates no second decision/claim and never grants
-   permission to execute.
-
-Expected checkout ledger order:
+This preserves the exact checkout order:
 
     diagnosis.gate.passed
     -> autonomy.decision.recorded(human_review_required)
@@ -239,6 +228,49 @@ Expected checkout ledger order:
     -> approval.granted
     -> repair.executed
     -> verification.completed
+
+The existing routes may call the private closure only as an internal continuation
+of their current investigation handler. Slice B adds no endpoint, request field,
+or executor behavior. Model-only investigations remain non-executable.
+
+Allowed files, and no others:
+
+- `src/server.mjs`: define the non-exported closure and wire the internal,
+  selector-only continuation after an existing investigation completes.
+- `src/openai.mjs`: stop at the verified diagnosis gate; remove any pre-decision
+  proposal/approval append.
+- `src/development-runtime.mjs`: stop at the verified diagnosis gate; remove any
+  pre-decision proposal/approval append.
+- `test/server.test.mjs`, `test/openai-contract.test.mjs`,
+  `test/gpt-development-integration.test.mjs`,
+  `test/development-runtime.test.mjs`, `test/ledger.test.mjs`, and
+  `test/autonomy-policy.test.mjs`.
+
+Slice B reuses the already-accepted `src/ledger.mjs`, `src/autonomy-policy.mjs`,
+`src/autonomy-freshness.mjs`, and `src/autonomy-policy-artifacts.mjs` unchanged.
+If those primitives are insufficient, stop and return to plan review; do not
+expand the Slice B file set. Forbidden exports and seams: an authority
+provider/factory, frozen-snapshot registration, freshness issuer, injected
+clock, injected registry, policy callback/capability, or a
+request/body/model/UI supplied authority field.
+
+Write these red tests first:
+
+1. `server authority closure emits one canonical decision`: a real Ledger,
+   server-owned frozen snapshot, and checked-in registry produce exactly one
+   decision; no public import can mint it.
+2. `investigators stop before authority`: accepted GPT and deterministic
+   development diagnosis gates leave zero `repair.proposed`/
+   `approval.requested` until the private server continuation runs.
+3. `checkout decision preserves exact Owner Gate`: checkout is medium,
+   exact-contract-bound, and has zero `repair.executed` before
+   `approval.granted`.
+4. `authority inputs fail closed`: unknown selector, stale/expired/mismatched
+   receipt, malformed/future/legacy evaluator, duplicate/conflicting evidence,
+   contract mismatch, missing source, lock overflow, and exact/cross-run failure
+   lock are non-actionable.
+5. `authority claim conflict never grants execution`: an `appendIfAbsent`
+   conflict creates no second decision/claim and cannot grant permission.
 
 Focused verification:
 
@@ -253,9 +285,15 @@ Focused verification:
 Acceptance: no public mint path, no route/body authority input, exact decision
 bindings, checkout Owner Gate intact, and every negative test fails closed.
 
+Records: record pre/post dirty fingerprints, the exact decision event ID and
+binding hashes from the passing test, the focused/full test output, and the
+isolated staged-file list.
+
 Stop/rollback: a public issuer/provider/snapshot-registration seam, decision
-before valid gate events, or changed Owner-Gate order blocks the slice. Revert
-only this slice's commit; never reset user work.
+before valid gate events, changed Owner-Gate order, or an overlapping dirty file
+that cannot be safely isolated blocks the slice. Stop without staging or
+committing in the overlap case. Otherwise revert only this slice's commit; never
+reset user work.
 
 ## 6. Mandatory Sol review gate
 
@@ -313,8 +351,8 @@ failure to distinguish frozen real from live stream.
 
 Purpose: prove a generic evidence/dataflow boundary without claiming vendor
 integration. This sidecar starts only after Slice C freezes the projection
-contract. It may run in parallel with Slice D because it does not touch UI,
-authority composition, or runtime ingestion.
+schema and runs serially before UI work that consumes its fixtures. It does not
+touch UI, authority composition, runtime ingestion, or the projection module.
 
 Files:
 
@@ -323,8 +361,10 @@ Files:
 - Add test/fixtures/integration/lineage-v1.json and
   test/fixtures/integration/stream-warehouse-v1.json.
 - Add test/integration-contract.test.mjs.
-- Extend incident-projection only if generic entity/edge rendering needs it; do
-  not add runtime ingestion.
+
+`src/incident-projection.mjs` is explicitly out of scope here. The fixtures are
+validated against the already-frozen v1 public schema; a needed schema change is
+a return to Slice C with a new Sol review, not a parallel C.1 edit.
 
 Red tests:
 
@@ -356,7 +396,9 @@ Recovery.
 Files:
 
 - public/index.html: exactly three primary tabs and accurate ARIA labels.
-- public/app.js: add IncidentProjectionClient; replace local
+- public/app.js: add the exact `BackendIncidentProjectionClient` and
+  `DemoBundleProjectionClient` implementations behind one strict
+  `IncidentProjectionClient` schema boundary. Replace local
   stage/risk/approval/verification inference with backend projection; retain
   cursor/timers for presentation only.
 - public/twin-state.mjs: retain deterministic geometry/glyphs but accept
@@ -366,6 +408,13 @@ Files:
 - Extend test/twin-state.test.mjs and add a small frontend contract test only if
   it can be browser-independent.
 
+Client selection is immutable build/server configuration, not a query parameter,
+localStorage value, request body, model output, UI control, or fallback. Both
+clients validate the identical projection schema. A backend fetch/schema failure
+renders unavailable/non-actionable state; it never falls back to the demo
+bundle. `DemoBundleProjectionClient` is read-only except for the fixed captured
+replay command defined in Slice E.0.
+
 Red tests:
 
 1. Three primary tabs with keyboard/focus behavior; topology, drawer, timeline,
@@ -374,10 +423,19 @@ Red tests:
    receipt, verification, and why-stopped only from a valid projection.
 3. Unknown/missing/stale/schema-mismatched projection disables controls and
    labels unavailable.
-4. UI imports no policy authority, registry, receipt issuer, executor, or model
+4. Backend and demo clients pass the same projection golden cases; immutable
+   client selection, backend failure, and schema failure cannot select or fall
+   back to a demo truth mode.
+5. UI imports no policy authority, registry, receipt issuer, executor, or model
    tool; localStorage/query/request cannot choose demo source/truth mode.
-5. Historical cursor changes only the viewed frame and cannot append an event,
+6. Historical cursor changes only the viewed frame and cannot append an event,
    authorize repair, or mark a current stage.
+
+Slice D is render-only. All approve/reject/defer/action controls remain disabled
+and explanatory until Slice D.1's server-resolved, decision-ID-bound, idempotent
+endpoints have passed their tests. Existing `/api/approve` and
+`/api/development/approve` compatibility routes and their default owner labels
+must never be used as a temporary browser authority path.
 
 Focused verification:
 
@@ -396,17 +454,18 @@ selection, or lost evidence detail.
 
 | Screen or action | Endpoint / source | Runtime transition | Ledger / projection | Rendered result | Contract test |
 | --- | --- | --- | --- | --- | --- |
-| Open Monitor | GET /api/state | none | ordered events + source -> IncidentProjection | source/truth badges, topology, current stage | server + projection golden |
+| Open Monitor | immutable `BackendIncidentProjectionClient` or `DemoBundleProjectionClient` selection; GET /api/state only for backend | none | ordered events + source -> IncidentProjection | source/truth badges, topology, current stage | client parity + server/projection golden |
 | Inspect entity | GET /api/evidence/:id | none | bounded redacted evidence detail | drawer fact/hash/provenance | evidence API + UI contract |
 | Start Workbench investigation | existing bounded investigation endpoint; server resolves run | snapshot -> tool loop -> evaluator -> deterministic gate | safe tool/failure/gate events -> projection | selected evidence, rejection/replan, why-stopped | openai/development + projection |
-| Review medium decision | GET /api/state | none | canonical decision event -> projection | risk, contract, Owner Gate | projection + browser |
-| Approve/reject/defer | POST /api/decision/* with decision_id and local actor only | server resolves active decision/contract | approval or defer event -> projection | returned loading/success/error state | server concurrency + browser |
-| Run low policy demo | fixed captured replay command only | captured simulation | action.simulated -> projection | explicit captured-simulation message | runtime + low E2E |
+| Review medium decision | GET /api/state | none | canonical decision event -> projection | risk, contract, Owner Gate; controls disabled in D | projection + browser |
+| Approve/reject/defer | D.1 only: POST /api/decision/* with decision_id and local actor only | server resolves active decision/contract | approval or defer event -> projection | returned loading/success/error state | server concurrency + browser |
+| Run low policy demo | E.0 only: fixed captured replay command | server-resolved captured simulation | action.simulated -> projection | exact captured-simulation message | runtime/server + low E2E |
 | Verify / Compare | GET state plus bounded evidence | code-owned verification only | verification/regression/backtest -> projection | before/after and learning result | runtime/backtest + medium E2E |
 
 The UI cannot derive or submit risk, source freshness, registry, evidence set,
 lock state, contract hash, preauthorization, authority, receipt, or repair
 truth. Unknown/stale/schema-mismatched projection data is disabled/non-actionable.
+Neither client may fall back from failed backend data to a demo bundle.
 
 ## 10. Slice D.1 — decision interaction hardening
 
@@ -429,7 +488,10 @@ Files:
 
 Allowed browser payloads are a bounded current decision_id and a local demo
 actor label. The server resolves every other value. P0 has no external RBAC or
-notification delivery claim.
+notification delivery claim. This is the first slice that may enable the
+previously disabled Slice D controls; compatibility endpoints/default owner
+labels are not an alternative path and must reject requests without an exact
+waiting decision.
 
 Red tests:
 
@@ -455,7 +517,58 @@ bound, idempotent, and ledger-derived. Checkout remains Owner-Gated.
 Stop: any compatibility wrapper can bypass policy, an actor label becomes RBAC,
 or a defer implicitly starts GPT/provider work.
 
-## 11. Slice E — deterministic demos and automated browser E2E
+## 11. Slice E.0 — deterministic captured-simulation backend
+
+Purpose: add the low-risk captured-policy path required by the approved design
+before browser automation. It is a ledger-derived simulation, not an executor,
+receipt issuer, or production action.
+
+Allowed files, and no others:
+
+- `src/runtime.mjs`: define the code-owned fixed captured replay transition.
+- `src/server.mjs`: expose it only through the existing fixed captured replay
+  command after server-side run resolution; it accepts no risk, authority,
+  contract, source, receipt, registry, or preauthorization fields.
+- `test/runtime.test.mjs` and `test/server.test.mjs`.
+
+The sole successful low-risk ledger sequence is:
+
+    autonomy.decision.recorded(auto_execute_pre_authorized,
+      evidence_mode=captured_fixture, execution_mode=captured_simulation)
+    -> notification.recorded(status=recorded_local,
+      delivery_mode=captured_simulation)
+    -> action.simulated
+    -> captured verification/learning events
+
+It must never append `repair.executed`, `approval.granted`, a live receipt,
+`backtest.completed(source=executed_offline_backtest)`, promotion, or an
+external-delivery event. A captured-simulation run cannot mutate the selected
+source or be reclassified as real local development.
+
+Write these red tests first:
+
+1. `captured low simulation is ledger-derived`: the fixed command creates the
+   exact sequence from a server-resolved run and no request field selects policy
+   or truth mode.
+2. `captured simulation cannot acquire real action truth`: assert the forbidden
+   events and receipt/promotion modes are absent.
+3. `unknown or stale captured decision is non-actionable`: malformed decision,
+   missing evidence, or unavailable source appends no `action.simulated`.
+
+Focused verification:
+
+    node --test test/runtime.test.mjs test/server.test.mjs
+    npm test
+    git diff --check
+
+Acceptance: the low path is reproducible with no Docker or credentials, and its
+only action label is `action.simulated`.
+
+Stop/rollback: any need for a live action connector, writable source, model call,
+external notification, or executed-backtest claim blocks the slice. Revert only
+this isolated simulation commit.
+
+## 12. Slice E — deterministic demos and automated browser E2E
 
 Purpose: prove both product paths against a fresh server without Docker, OpenAI
 credentials, local timer truth, or manual client state injection.
@@ -497,7 +610,7 @@ No mock stream, fixture, cursor, or timer mints authority.
 Stop: Playwright cannot run reliably in time or requires a live stack/provider.
 Keep current deterministic smoke and do not claim automated E2E completion.
 
-## 12. Slice F — successful real GPT-5.6 release proof
+## 13. Slice F — successful real GPT-5.6 release proof
 
 Purpose: obtain one honest reproducible GPT evidence-to-recovery proof while
 keeping deterministic replay as the default judge path.
@@ -517,11 +630,17 @@ Preconditions:
 
 One-workflow acceptance:
 
-    weak Kafka/downstream diagnosis -> independent rejection -> one replan
+    actual unsupported model hypothesis -> independent rejection -> one replan
     -> narrow checkout/payment diagnosis -> evaluator acceptance
     -> deterministic gate + exact tool lineage -> Owner Gate
     -> explicit authorized local approval -> allowlisted rollback
     -> fresh verification -> regression.created -> executed backtest -> policy
+
+The captured replay, not this paid path, owns the judge-visible Kafka rejection.
+The model's first rejected claim must be an actual unsupported result of the one
+workflow; it must not be prompted, fabricated, or recorded as a scripted Kafka
+answer. If the current deterministic gate still requires a rejection/replan, an
+attempt-one direct acceptance fails closed rather than being rewritten.
 
 Record run/snapshot IDs, safe hashes, tool/attempt counts, model usage,
 evaluator verdicts, decision/approval/repair order, verification checks,
@@ -531,9 +650,11 @@ body/text, call IDs, reasoning, credentials, raw OTLP, or trace/span IDs.
 Stop: any preflight, model, evaluator, causal, approval, repair, or recovery
 failure ends the workflow with its safe classification. No paid retry. Restore
 the flag off and stop only task-owned services. The submission may still use
-deterministic replay but must state that successful GPT proof is absent.
+deterministic replay but must state that successful GPT proof is absent. In that
+case the competition submission may be truthful, but **release acceptance is
+failed** and no artifact may call the product release-complete.
 
-## 13. Slice G — release and submission handoff
+## 14. Slice G — release and submission handoff
 
 Purpose: create truthful competition assets only after their represented paths
 are verified.
@@ -551,7 +672,8 @@ Checks:
     npm run submission:check
     git diff --check
 
-Release acceptance checklist:
+Release acceptance checklist (all items, including successful GPT proof, are
+required to call the release complete):
 
 - causal replay spans change/deploy/trace/log/metric and only
   fixture-supported dataflow propagation;
@@ -564,6 +686,8 @@ Release acceptance checklist:
 - README includes Codex/GPT-5.6 explanation and judge test path;
 - hosted URL, public narrated video, repository URL, and /feedback Session ID
   appear only after human verification.
+- one successful, separately authorized real GPT-5.6 evidence-to-recovery proof
+  is present with its honest narrow checkout/payment truth boundary.
 
 Hosting, public video, /feedback generation, Devpost entry, and final
 submission are human/external gates. No local implementation task performs or
@@ -572,22 +696,25 @@ claims them.
 Stop: an asset cannot claim a mode, repair, GPT result, or hosted behavior that
 is absent from the final QA record. Leave the field pending rather than infer it.
 
-## 14. Critical-path schedule
+## 15. Critical-path schedule
 
 | Window | Critical work | Parallel work allowed | Stop rule |
 | --- | --- | --- | --- |
 | Jul 18 immediately | inventory/isolate dirty harness; Slice B | submission copy audit only | no overlapping authority edit without isolation |
 | Jul 19 first half | Slice B tests and implementation | none that changes product claims | Sol approval before projection |
-| Jul 19 second half | Slice C projection; C.1 fixtures may run in parallel | video outline only from captured path | no vendor ingestion |
-| Jul 20 first half | Slice D UI migration and D.1 decisions | screenshots only after fresh state is stable | no local authority state |
-| Jul 20 second half | Slice E Playwright/release smoke | host/video preparation using verified captured demo | abandon unstable live work |
+| Jul 19 second half | Slice C projection, then C.1 fixture validation serially | video outline only from captured path | no projection-schema edits in C.1; no vendor ingestion |
+| Jul 20 first half | Slice D render-only migration, then D.1 decision hardening | screenshots only after fresh state is stable | controls stay disabled until D.1 passes |
+| Jul 20 second half | Slice E.0 captured simulation, then Slice E Playwright/release smoke | host/video preparation using verified captured demo | no live action or mock-only E2E state |
 | Jul 21 before 10:00 PDT | final tests, submission check, deterministic rehearsal | human prepares public assets | no late scope increase |
 | Jul 21 before 17:00 PDT | human verifies links, /feedback, Devpost fields, final submit | one GPT proof only if all preconditions and explicit authorization exist | no retry or publication by agent |
 
-If schedule slips, drop P1 adapters and paid GPT proof before weakening the
-deterministic demo, truth labels, or Owner Gate.
+If schedule slips, drop only P1 adapters and unverified presentation polish. Do
+not drop authority, projection limits, either browser E2E, or the successful
+GPT release-acceptance requirement. A truthful deterministic submission may
+proceed without that proof, but it is recorded as submission-only: release
+acceptance remains failed and release-complete copy is prohibited.
 
-## 15. Acceptance-to-test traceability
+## 16. Acceptance-to-test traceability
 
 | Design acceptance | Primary tests | Browser/release proof |
 | --- | --- | --- |
@@ -599,11 +726,11 @@ deterministic demo, truth labels, or Owner Gate.
 | No connector authority | integration contract fixture tests | provider glyph visual-only |
 | Kafka rejection and replan | runtime/openai fixtures | captured replay E2E and video rehearsal |
 | Before/after verification/learning | runtime/development/backtest tests | Compare/Decision & Recovery E2E |
-| Low simulation truth | policy/runtime/server tests | low captured-simulation E2E |
+| Low simulation truth | E.0 runtime/server exact event and forbidden-event tests | low captured-simulation E2E |
 | Successful real GPT proof | GPT development integration fixture, then one authorized QA run | docs update only after actual run |
 | Release reliability | full suite, audit, submission check, diff check | fresh-port rehearsal at both viewports |
 
-## 16. P1 and dropped work
+## 17. P1 and dropped work
 
 P1: OpenLineage JSONL ingestion; GitHub, Kubernetes, Airflow, dbt, Kafka,
 warehouse, Databricks, Spark, BigQuery/Dataflow, Snowflake, and PagerDuty
@@ -615,13 +742,15 @@ multi-agent framework, free-form command execution, automatic SEV-1 repair,
 retries after failed repair/verification, and a dashboard that hides causal
 replay behind generic control-plane language.
 
-## 17. Plan self-review and execution gates
+## 18. Plan self-review and execution gates
 
-This plan resolves prior scope mixing by making Slice 2 authority-only, moving
-projection/UI/browser work to later slices, moving all ingestion to P1, and
-making deterministic captured replay the default demo. It inventories rather
-than overwrites dirty harness work. It includes no provider or Astronomy action
-in a coding slice.
+This plan resolves prior scope mixing by making Slice 2 authority-only, then
+serializing projection, connector-fixture validation, render-only UI, decision
+controls, captured simulation, and browser work. It keeps all ingestion in P1,
+makes deterministic captured replay the default demo, and treats successful
+real GPT proof as a separate release-acceptance gate. It inventories rather than
+overwrites dirty harness work. It includes no provider or Astronomy action in a
+coding slice.
 
 Before each slice, record HEAD, status, affected-file hashes, and intended
 staged files. After each slice run focused tests, npm test, npm audit
