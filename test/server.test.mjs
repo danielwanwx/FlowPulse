@@ -1,57 +1,69 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadBundle } from "../src/bundle.mjs";
 import { Ledger } from "../src/ledger.mjs";
 import { IncidentRuntime } from "../src/runtime.mjs";
+import { LiveSource } from "../src/live-source.mjs";
+import { summarizeEvidence } from "../src/evidence-source.mjs";
+import * as developmentAdapter from "../src/development-adapter.mjs";
+import { failureLockKey, sha256Canonical } from "../src/autonomy-policy.mjs";
 
-function authoritySource() { return readFileSync(new URL("../src/server.mjs", import.meta.url), "utf8"); }
-
-test("server authority closure emits one canonical decision", () => {
-  const source = authoritySource();
-  assert.match(source, /async function advanceAutonomyAfterDiagnosis\(\{ run_id, incident_id, intent_id \}\)/);
-  assert.match(source, /type: "autonomy\.decision\.recorded"/);
-  assert.match(source, /ledger\.appendIfAbsent/);
-  assert.match(source, /decision_id: `autonomy-decision-/);
+test("server-owned development path appends one canonical owner-gated authority decision", async (context) => {
+  const fixture = await startAuthorityFixture(context);
+  const response = await postJson(fixture.port, "/api/development/investigate");
+  assert.equal(response.status, 200, JSON.stringify(response.body));
+  const events = new Ledger(fixture.dbPath).list(fixture.runId);
+  const decisions = events.filter((event) => event.type === "autonomy.decision.recorded");
+  assert.equal(decisions.length, 1);
+  const decision = decisions[0];
+  assert.match(decision.id, /^autonomy-decision-[a-f0-9]{32}$/);
+  assert.equal(decision.payload.outcome, "human_review_required");
+  assert.equal(decision.payload.execution_mode, "real_local_development");
+  for (const key of ["receipt_sha256", "authority_context_sha256", "contract_sha256"]) assert.match(decision.payload[key], /^[a-f0-9]{64}$/);
+  assert.equal(decision.payload.authority_evidence.refs.every((ref) => /^[a-f0-9]{64}$/.test(ref.sha256)), true);
+  const proposal = events.find((event) => event.type === "repair.proposed");
+  const approval = events.find((event) => event.type === "approval.requested");
+  assert.ok(proposal && approval);
+  assert.equal(decision.sequence < proposal.sequence && proposal.sequence < approval.sequence, true);
+  assert.equal(events.some((event) => event.type === "repair.executed"), false);
 });
 
-test("checkout decision preserves exact Owner Gate", () => {
-  const source = authoritySource();
-  assert.match(source, /intent\.id === "checkout-payment"/);
-  assert.match(source, /outcome: human \? "human_review_required"/);
-  assert.match(source, /type: "repair\.proposed"/);
-  assert.match(source, /type: "approval\.requested"/);
+test("repeated concurrent server investigations reuse the canonical authority decision", async (context) => {
+  const fixture = await startAuthorityFixture(context);
+  const first = await postJson(fixture.port, "/api/development/investigate");
+  assert.equal(first.status, 200, JSON.stringify(first.body));
+  const [left, right] = await Promise.all([postJson(fixture.port, "/api/development/investigate"), postJson(fixture.port, "/api/development/investigate")]);
+  assert.equal(left.status, 200, JSON.stringify(left.body));
+  assert.equal(right.status, 200, JSON.stringify(right.body));
+  const events = new Ledger(fixture.dbPath).list(fixture.runId);
+  assert.equal(events.filter((event) => event.type === "autonomy.decision.recorded").length, 1);
+  assert.equal(events.filter((event) => event.type === "repair.proposed").length, 1);
+  assert.equal(events.filter((event) => event.type === "approval.requested").length, 1);
 });
 
-test("authority inputs fail closed", () => {
-  const source = authoritySource();
-  assert.match(source, /assertAutonomySelector/);
-  assert.match(source, /authority_selector_invalid/);
-  assert.match(source, /snapshot_scope_or_source_invalid/);
-  assert.match(source, /authority_evidence_membership_invalid/);
+test("a relevant ledger failure lock is terminal and never creates an Owner Gate", async (context) => {
+  const fixture = await startAuthorityFixture(context);
+  const contract = { repair_id: "repair-payment-reachable-v1", action: "restore known-good paymentUnreachable flag and recreate checkout", target: "checkout", command_id: "astronomy.restore-payment-and-recreate-checkout", expected_before: "paymentUnreachable=on", expected_after: "paymentUnreachable=off" };
+  const contract_sha256 = sha256Canonical(contract);
+  const incidentId = loadBundle().incident.id;
+  new Ledger(fixture.dbPath).append({ id: "test-relevant-autonomy-lock", runId: fixture.runId, incidentId, type: "autonomy.locked", actor: "test", payload: { incident_id: incidentId, contract_sha256, target: "checkout", lock_key: failureLockKey({ incident_id: incidentId, contract_sha256, target: "checkout" }) } });
+  const response = await postJson(fixture.port, "/api/development/investigate");
+  assert.equal(response.status, 200, JSON.stringify(response.body));
+  const events = new Ledger(fixture.dbPath).list(fixture.runId);
+  assert.equal(events.find((event) => event.type === "autonomy.decision.recorded")?.payload.outcome, "non_actionable");
+  assert.equal(events.some((event) => event.type === "repair.proposed" || event.type === "approval.requested" || event.type === "repair.executed"), false);
 });
 
-test("authority claim conflict never grants execution", () => {
-  const source = authoritySource();
-  assert.match(source, /authority_claim_conflict/);
-  assert.match(source, /!inserted\.inserted/);
-});
-
-test("trusted receipt issuer verifier round trip", () => {
-  const source = authoritySource();
-  assert.match(source, /issueAuthorityFreshnessReceipt/);
-  assert.match(source, /verifyAuthorityReceipt/);
-  assert.match(source, /verifySnapshotFreshnessReceipt/);
-  assert.match(source, /authorityReceiptBindings/);
-});
-
-test("receipt binding mismatch fails closed", () => {
-  const source = authoritySource();
-  assert.match(source, /freshness_receipt_binding_mismatch/);
-  assert.match(source, /safeEqual\(stored, expected\)/);
+test("future capture timestamps fail closed before an autonomy decision", async (context) => {
+  const fixture = await startAuthorityFixture(context, { futureCapture: true });
+  const response = await postJson(fixture.port, "/api/development/investigate");
+  assert.equal(response.status, 422, JSON.stringify(response.body));
+  const events = new Ledger(fixture.dbPath).list(fixture.runId);
+  assert.equal(events.some((event) => event.type === "autonomy.decision.recorded" || event.type === "repair.proposed" || event.type === "approval.requested"), false);
 });
 
 test("judge API serves state and advances the replay", async (context) => {
@@ -199,4 +211,66 @@ async function seedIntegrityMismatch(dbPath) {
       provenance: { sha256: "actual-hash" }
     }
   });
+}
+
+async function startAuthorityFixture(context, { futureCapture = false } = {}) {
+  const port = 5000 + Math.floor(Math.random() * 500);
+  const root = mkdtempSync(join(tmpdir(), "flowpulse-server-authority-"));
+  const dbPath = join(root, "ledger.db");
+  const otlp = join(root, "otel");
+  const now = Date.now();
+  const baselineAt = new Date(now - 12_000).toISOString();
+  const appliedAt = new Date(now - 10_000).toISOString();
+  await writeAuthorityOtlp(otlp, baselineAt, now);
+  if (futureCapture) {
+    const future = new Date(now + 60_000);
+    for (const file of ["traces.jsonl", "metrics.jsonl", "logs.jsonl"]) utimesSync(join(otlp, file), future, future);
+  }
+  const live = await new LiveSource({ directory: otlp }).project();
+  const baseline = live.evidence.find((record) => record.value?.trace?.feature_flag?.variant === "off");
+  const code = await developmentAdapter.readPinnedCheckoutCodeEvidence();
+  assert.ok(baseline && code);
+  const runtime = new IncidentRuntime({ ledger: new Ledger(dbPath), bundle: loadBundle() });
+  const runId = runtime.startRun("development");
+  const change = await developmentAdapter.developmentChangeManifest();
+  runtime.append(runId, "change.applied", "test-server-capture", { change, before: "off", after: "on", applied_at: appliedAt, source: "test bounded local capture" });
+  runtime.append(runId, "diagnosis.baseline.captured", "test-server-capture", {
+    evidence_id: baseline.id, evidence_hash: baseline.provenance.sha256, observed_at: baseline.value.trace.observed_at, flag: "paymentUnreachable", variant: "off", source: "fresh bounded OTLP projection", evidence: summarizeEvidence(baseline)
+  }, [baseline.id]);
+  runtime.append(runId, "code.semantics.captured", "test-server-capture", {
+    evidence_id: code.id, evidence_hash: code.provenance.sha256, commit: code.value.code.commit, path: code.value.code.path, line_start: code.value.code.line_start, line_end: code.value.code.line_end, source: code.source, evidence: summarizeEvidence(code)
+  }, [code.id]);
+  const child = spawn(process.execPath, ["src/server.mjs"], {
+    cwd: new URL("..", import.meta.url),
+    env: { ...process.env, PORT: String(port), FLOWPULSE_DB: dbPath, FLOWPULSE_OTLP_DIR: otlp, OPENAI_API_KEY: "" },
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  context.after(() => child.kill("SIGTERM"));
+  await waitForHealth(child, port);
+  return { port, dbPath, runId };
+}
+
+async function postJson(port, pathname) {
+  const response = await fetch(`http://127.0.0.1:${port}${pathname}`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+  return { status: response.status, body: await response.json() };
+}
+
+async function writeAuthorityOtlp(directory, baselineAt, now) {
+  mkdirSync(directory, { recursive: true });
+  const failureTimes = [7_000, 6_000, 5_000].map((offset) => new Date(now - offset).toISOString());
+  const payloads = [tracePayload("baseline", baselineAt, "off", false), ...failureTimes.map((at, index) => tracePayload(`failure-${index}`, at, "on", true))];
+  writeFileSync(join(directory, "traces.jsonl"), `${payloads.map(JSON.stringify).join("\n")}\n`);
+  writeFileSync(join(directory, "metrics.jsonl"), "");
+  writeFileSync(join(directory, "logs.jsonl"), "");
+}
+
+function tracePayload(id, at, variant, failed) {
+  const nano = String(BigInt(Date.parse(at)) * 1_000_000n);
+  const eventAt = String(BigInt(Date.parse(at) - 1) * 1_000_000n);
+  return { resourceSpans: [{ resource: { attributes: [{ key: "service.name", value: { stringValue: "checkout" } }] }, scopeSpans: [{ spans: [
+    { traceId: `trace-${id}`, spanId: `checkout-${id}`, parentSpanId: `frontend-${id}`, name: "oteldemo.CheckoutService/PlaceOrder", events: [{ name: "feature_flag.evaluation", timeUnixNano: eventAt, attributes: [
+      { key: "feature_flag.key", value: { stringValue: "paymentUnreachable" } }, { key: "feature_flag.result.variant", value: { stringValue: variant } }, { key: "feature_flag.result.value", value: { boolValue: variant === "on" } }, { key: "feature_flag.provider.name", value: { stringValue: "flagd" } }, { key: "feature_flag.result.reason", value: { stringValue: "cached" } }
+    ] }] },
+    { traceId: `trace-${id}`, spanId: `payment-${id}`, parentSpanId: `checkout-${id}`, name: "oteldemo.PaymentService/Charge", endTimeUnixNano: nano, status: failed ? { code: 2, message: "name resolver error: produced zero addresses" } : { code: 1 } }
+  ] }] }] };
 }

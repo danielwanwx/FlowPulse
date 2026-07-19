@@ -132,9 +132,12 @@ const server = createServer(async (request, response) => {
       requireJson(request);
       const runId = runtime.ensureRun();
       try {
-        const snapshot = await freezeLiveEvidence(runId);
-        if (process.env.OPENAI_API_KEY) await runLiveInvestigation({ runtime, runId, evidenceSource: snapshot, repairContract: development.repairContract(runId) });
-        else await development.investigate(runId, snapshot);
+        const existingGate = ledger.list(runId).some((event) => event.type === "diagnosis.gate.passed");
+        const snapshot = snapshots.get(runId) || await freezeLiveEvidence(runId);
+        if (!existingGate) {
+          if (process.env.OPENAI_API_KEY) await runLiveInvestigation({ runtime, runId, evidenceSource: snapshot, repairContract: development.repairContract(runId) });
+          else await development.investigate(runId, snapshot);
+        }
         await advanceAutonomyAfterDiagnosis({ run_id: runId, incident_id: runtime.bundle.incident.id, intent_id: "checkout-payment" });
         return json(response, 200, await stateWithSource(runId));
       } catch (error) {
@@ -222,6 +225,7 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
 // route, model tool, fixture, or client can import a decision provider.
 async function advanceAutonomyAfterDiagnosis({ run_id, incident_id, intent_id }) {
   assertAutonomySelector({ run_id, incident_id, intent_id });
+  for (const artifactIntent of AUTONOMY_POLICY_ARTIFACT.intents) validateIntentArtifact(artifactIntent);
   const intent = AUTONOMY_POLICY_ARTIFACT.intents.find((item) => item.id === intent_id);
   if (!intent) throw autonomyFailure("unknown_intent", "intent_id");
   validateIntentArtifact(intent);
@@ -229,10 +233,10 @@ async function advanceAutonomyAfterDiagnosis({ run_id, incident_id, intent_id })
   const events = ledger.list(run_id);
   const now = trustedNow();
   const validated = validateAuthorityPrerequisites({ events, manifest, intent, now, incident_id, run_id });
-  const issued = issueAuthorityFreshnessReceipt({ run_id, incident_id, intent_id, manifest, validated, now });
+  const issued = issueAuthorityFreshnessReceipt({ run_id, incident_id, intent_id, manifest, validated });
   verifyAuthorityReceipt({ receipt: issued.receipt, binding: issued.binding, manifest, validated, now });
   const locks = readAuthorityLocks({ incident_id, run_id, contract_sha256: validated.contract_sha256, target: intent.contract.target });
-  const decision = buildAuthorityDecision({ run_id, incident_id, intent, manifest, validated, receipt: issued.receipt, locks, now });
+  const decision = buildAuthorityDecision({ run_id, incident_id, intent, manifest, validated, receipt: issued.receipt, locks });
   return appendDecisionAndPendingOwnerContract({ decision, validated, intent });
 }
 
@@ -253,13 +257,16 @@ function captureAuthoritySnapshot({ run_id, incident_id, intent_id }) {
   const expectedIds = [...metadata.evidence_ids].sort();
   if (expectedIds.length !== records.length || expectedIds.some((id, index) => id !== records[index].id)) throw autonomyFailure("snapshot_manifest_drift", "snapshot.evidence_ids");
   const core = { id: snapshot.id, content_sha256: metadata.content_hash, mode: metadata.mode, records };
-  if (!boundedText(intent_id, 120) || !boundedText(metadata.frozen_at, 40) || !validHash(core.content_sha256)) throw autonomyFailure("snapshot_manifest_invalid", "snapshot.metadata");
-  return { ...core, manifest_sha256: sha256Canonical(core), frozen_at: metadata.frozen_at };
+  const frozenAt = timestamp(metadata.frozen_at);
+  const sourceObservedAt = timestamp(metadata.source_last_observed_at);
+  if (!boundedText(intent_id, 120) || !frozenAt || !sourceObservedAt || sourceObservedAt > frozenAt || !validHash(core.content_sha256)) throw autonomyFailure("snapshot_manifest_invalid", "snapshot.metadata");
+  return { ...core, manifest_sha256: sha256Canonical(core), frozen_at: metadata.frozen_at, source_observed_at: metadata.source_last_observed_at };
 }
 
-function issueAuthorityFreshnessReceipt({ run_id, incident_id, intent_id, manifest, validated, now }) {
-  const observed_at = now;
-  const expires_at = new Date(Date.parse(now) + FRESHNESS_MAX_AGE_MS).toISOString();
+function issueAuthorityFreshnessReceipt({ run_id, incident_id, intent_id, manifest, validated }) {
+  // A receipt describes the server-owned capture, never a decision-time refresh.
+  const observed_at = manifest.frozen_at;
+  const expires_at = new Date(timestamp(observed_at) + FRESHNESS_MAX_AGE_MS).toISOString();
   const unsigned = {
     schema_version: FRESHNESS_RECEIPT_SCHEMA_VERSION,
     issuer: "flowpulse.authority-composition.v1",
@@ -273,7 +280,7 @@ function issueAuthorityFreshnessReceipt({ run_id, incident_id, intent_id, manife
     expires_at
   };
   const receipt = { ...unsigned, receipt_sha256: sha256Canonical(unsigned) };
-  const binding = authorityBinding({ run_id, incident_id, intent_id, manifest, validated, receipt_sha256: receipt.receipt_sha256 });
+  const binding = authorityBinding({ run_id, incident_id, intent_id, manifest, validated, artifact: artifactBinding(intent_id), receipt_sha256: receipt.receipt_sha256 });
   authorityReceiptBindings.set(receipt.receipt_sha256, binding);
   return { receipt, binding };
 }
@@ -285,7 +292,7 @@ function verifyAuthorityReceipt({ receipt, binding, manifest, validated, now }) 
     throw autonomyFailure(error?.code || "freshness_receipt_invalid", error?.field_path || "receipt");
   }
   const stored = authorityReceiptBindings.get(receipt.receipt_sha256);
-  const expected = authorityBinding({ run_id: validated.run_id, incident_id: validated.incident_id, intent_id: validated.intent_id, manifest, validated, receipt_sha256: receipt.receipt_sha256 });
+  const expected = authorityBinding({ run_id: validated.run_id, incident_id: validated.incident_id, intent_id: validated.intent_id, manifest, validated, artifact: artifactBinding(validated.intent_id), receipt_sha256: receipt.receipt_sha256 });
   if (!stored || !binding || !safeEqual(stored, binding) || !safeEqual(stored, expected)) throw autonomyFailure("freshness_receipt_binding_mismatch", "receipt");
 }
 
@@ -298,7 +305,16 @@ function validateAuthorityPrerequisites({ events, manifest, intent, now, inciden
   if (accepted.length !== 1 || gates.length !== 1) throw autonomyFailure("authority_gate_count_invalid", "events");
   const evaluation = accepted[0];
   const gate = gates[0];
-  if (evaluation.sequence >= gate.sequence || Date.parse(evaluation.recorded_at) > Date.parse(gate.recorded_at) || Date.parse(gate.recorded_at) > Date.parse(now)) throw autonomyFailure("authority_gate_order_invalid", "events");
+  const decisionAt = timestamp(now);
+  const sourceObservedAt = timestamp(manifest.source_observed_at);
+  const frozenAt = timestamp(manifest.frozen_at);
+  const evaluationAt = timestamp(evaluation.recorded_at);
+  const gateAt = timestamp(gate.recorded_at);
+  if (!decisionAt || !sourceObservedAt || !frozenAt || !evaluationAt || !gateAt
+    || sourceObservedAt > frozenAt || frozenAt > evaluationAt || evaluationAt > gateAt || gateAt > decisionAt
+    || decisionAt - frozenAt >= FRESHNESS_MAX_AGE_MS || evaluation.sequence >= gate.sequence) {
+    throw autonomyFailure("authority_gate_order_invalid", "events");
+  }
   const payload = evaluation.payload;
   const expectedChecks = ["initiating_change", "temporal_order", "implementation_semantics", "controlled_off_on_contrast", "repeated_direct_failures"];
   if (payload?.accepted !== true || payload.classification !== "confirmed_system_bug" || payload.phase !== "diagnosis_pre_approval" || !expectedChecks.every((key) => payload.gate_checks?.[key] === true) || !Array.isArray(payload.missing_evidence) || payload.missing_evidence.length) {
@@ -309,7 +325,7 @@ function validateAuthorityPrerequisites({ events, manifest, intent, now, inciden
   const refs = gate.payload?.accepted?.evidence_ids;
   const contract = intent.contract;
   const contract_sha256 = sha256Canonical(contract);
-  if (!diagnosis || !gateEvaluation || !Array.isArray(refs) || !sameSet(refs, evaluation.evidence_refs) || !sameSet(refs, payload.counter_evidence_refs) || !sameSet(refs, diagnosis.evidence_refs) || !sameSet(refs, gate.evidence_refs) || !sameSet(payload.counter_evidence_refs, gateEvaluation.counter_evidence_refs)) {
+  if (!diagnosis || !gateEvaluation || !boundedText(diagnosis.id, 160) || payload.hypothesis_id !== diagnosis.id || gateEvaluation.accepted !== true || !Array.isArray(refs) || !sameSet(refs, evaluation.evidence_refs) || !sameSet(refs, payload.counter_evidence_refs) || !sameSet(refs, diagnosis.evidence_refs) || !sameSet(refs, gate.evidence_refs) || !sameSet(payload.counter_evidence_refs, gateEvaluation.counter_evidence_refs)) {
     throw autonomyFailure("authority_evidence_refs_invalid", "diagnosis.gate.passed");
   }
   if (!contractMatches(diagnosis.proposed_repair, contract) || !contractMatches(gate.payload?.repair_contract, contract) || gate.payload?.snapshot?.id !== manifest.id || gate.payload?.snapshot?.content_sha256 !== manifest.content_sha256 || gate.payload?.snapshot?.mode !== manifest.mode) {
@@ -318,16 +334,17 @@ function validateAuthorityPrerequisites({ events, manifest, intent, now, inciden
   const manifestById = new Map(manifest.records.map((record) => [record.id, record]));
   if (new Set(refs).size !== refs.length || refs.length === 0 || refs.some((id) => !manifestById.has(id))) throw autonomyFailure("authority_evidence_membership_invalid", "evidence_refs");
   const bindings = gate.payload?.accepted?.evidence_bindings;
-  if (!Array.isArray(bindings) || bindings.length !== refs.length || bindings.some((item) => {
+  if (!Array.isArray(bindings) || bindings.length !== refs.length || new Set(bindings.map((item) => item?.id)).size !== bindings.length || bindings.some((item) => {
     const record = manifestById.get(item?.id);
     const safeRecord = item?.record;
     const evidenceHash = safeRecord?.provenance?.sha256 || safeRecord?.hash;
-    return !record || !validHash(item.sha256) || evidenceHash !== record.sha256 || safeRecord?.source !== record.source;
+    return !record || !validHash(item.sha256) || item.sha256 !== sha256Canonical(safeRecord) || evidenceHash !== record.sha256 || safeRecord?.source !== record.source;
   })) throw autonomyFailure("authority_evidence_binding_invalid", "evidence_bindings");
   return {
     run_id, incident_id, intent_id: intent.id, evaluation_event_id: evaluation.id, evaluation_sequence: evaluation.sequence,
     evaluation_payload_sha256: evaluation.payload_sha256, diagnosis_event_id: gate.id, diagnosis_sequence: gate.sequence,
-    diagnosis_payload_sha256: gate.payload_sha256, evidence_refs: [...refs].sort(), evidence_bindings: bindings.map((item) => ({ id: item.id, sha256: item.record.provenance?.sha256 || item.record.hash, source: item.record.source, mode: manifest.mode })).sort((a, b) => a.id.localeCompare(b.id)), contract_sha256
+    diagnosis_payload_sha256: gate.payload_sha256, evidence_refs: [...refs].sort(), evidence_bindings: bindings.map((item) => ({ id: item.id, sha256: item.sha256, record_sha256: item.record.provenance?.sha256 || item.record.hash, source: item.record.source, mode: manifest.mode })).sort((a, b) => a.id.localeCompare(b.id)), contract_sha256,
+    gate_identity_sha256: sha256Canonical({ evaluator: { id: evaluation.id, sequence: evaluation.sequence, payload_sha256: evaluation.payload_sha256 }, diagnosis_gate: { id: gate.id, sequence: gate.sequence, payload_sha256: gate.payload_sha256 }, evidence_bindings: bindings.map((item) => ({ id: item.id, sha256: item.sha256 })).sort((a, b) => a.id.localeCompare(b.id)), contract_sha256 })
   };
 }
 
@@ -346,29 +363,40 @@ function readAuthorityLocks({ incident_id, run_id, contract_sha256, target }) {
   return { blocked: false };
 }
 
-function buildAuthorityDecision({ run_id, incident_id, intent, manifest, validated, receipt, locks, now }) {
+function buildAuthorityDecision({ run_id, incident_id, intent, manifest, validated, receipt, locks }) {
   const impact = intent.impact?.level;
-  const human = impact !== "low" || intent.id === "checkout-payment" || locks.blocked;
+  const blocked = locks.blocked === true;
+  const human = !blocked && (impact !== "low" || intent.id === "checkout-payment");
+  const artifact = artifactBinding(intent.id);
+  const immutableIdentity = {
+    run_id, incident_id, intent_id: intent.id, environment: intent.environment,
+    artifact, manifest: stripManifest(manifest), gate_identity_sha256: validated.gate_identity_sha256,
+    contract_sha256: validated.contract_sha256, evidence_bindings: validated.evidence_bindings,
+    source_health: "live", evidence_mode: "frozen_real_snapshot", execution_mode: intent.execution_mode,
+    lock_event_id: locks.event_id || null, receipt_sha256: receipt.receipt_sha256
+  };
+  const decision_sha256 = sha256Canonical(immutableIdentity);
   const payload = {
     schema_version: "flowpulse.autonomy.v1", run_id, incident_id, intent_id: intent.id, environment: intent.environment,
     source_health: "live", evidence_mode: "frozen_real_snapshot", execution_mode: intent.execution_mode,
     contract: intent.contract, contract_sha256: validated.contract_sha256, snapshot: stripManifest(manifest),
-    receipt_sha256: receipt.receipt_sha256, authority_evidence: {
+    receipt_sha256: receipt.receipt_sha256, authority_context_sha256: authorityBinding(immutableIdentity),
+    artifact, authority_evidence: {
       evaluator: { id: validated.evaluation_event_id, sequence: validated.evaluation_sequence, payload_sha256: validated.evaluation_payload_sha256 },
       diagnosis_gate: { id: validated.diagnosis_event_id, sequence: validated.diagnosis_sequence, payload_sha256: validated.diagnosis_payload_sha256 },
       refs: validated.evidence_bindings
     },
-    outcome: human ? "human_review_required" : "auto_execute_pre_authorized",
-    reason_code: locks.blocked ? "failure_lock_present" : human ? "owner_gate_required" : "preauthorized_low_risk",
-    decision_at: now
+    outcome: blocked ? "non_actionable" : human ? "human_review_required" : "auto_execute_pre_authorized",
+    reason_code: blocked ? "failure_lock_present" : human ? "owner_gate_required" : "preauthorized_low_risk",
+    capture_observed_at: manifest.source_observed_at,
+    decision_sha256
   };
-  const decision_sha256 = sha256Canonical(payload);
   return { ...payload, decision_sha256, decision_id: `autonomy-decision-${decision_sha256.slice(0, 32)}` };
 }
 
 function appendDecisionAndPendingOwnerContract({ decision, validated, intent }) {
   const inserted = ledger.appendIfAbsent({ id: decision.decision_id, runId: decision.run_id, incidentId: decision.incident_id, type: "autonomy.decision.recorded", actor: "authority-composition", payload: decision, evidenceRefs: validated.evidence_refs, correlationId: decision.decision_id });
-  if (!inserted.inserted && inserted.event?.payload?.decision_sha256 !== decision.decision_sha256) throw autonomyFailure("authority_claim_conflict", "decision_id");
+  if (!inserted.inserted && (inserted.event?.payload?.decision_sha256 !== decision.decision_sha256 || inserted.event?.payload?.authority_context_sha256 !== decision.authority_context_sha256)) throw autonomyFailure("authority_claim_conflict", "decision_id");
   if (decision.outcome === "human_review_required") {
     const proposalId = `repair-proposed-${decision.decision_sha256.slice(0, 32)}`;
     ledger.appendIfAbsent({ id: proposalId, runId: decision.run_id, incidentId: decision.incident_id, type: "repair.proposed", actor: "authority-composition", payload: { ...intent.contract, bounded: true, decision_id: decision.decision_id, contract_sha256: decision.contract_sha256 }, evidenceRefs: validated.evidence_refs, correlationId: decision.decision_id });
@@ -381,15 +409,30 @@ function assertAutonomySelector(value) {
   if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join(",") !== "incident_id,intent_id,run_id" || !boundedText(value.run_id, 160) || !boundedText(value.incident_id, 160) || !boundedText(value.intent_id, 120)) throw autonomyFailure("authority_selector_invalid", "selector");
 }
 function validateIntentArtifact(intent) {
-  if (!intent || Object.hasOwn(intent, "truth_mode") || !["captured_simulation", "real_local_development"].includes(intent.execution_mode) || !["low", "medium", "high", "sev1"].includes(intent.impact?.level) || !["repair_id", "action", "target", "command_id"].every((key) => boundedText(intent.contract?.[key], 240))) {
+  const allowedIntent = ["action", "contract", "environment", "execution_mode", "id", "impact", "notification"];
+  const allowedContract = ["action", "command_id", "expected_after", "expected_before", "repair_id", "target"];
+  if (!intent || Object.keys(intent).sort().join(",") !== allowedIntent.join(",") || Object.hasOwn(intent, "truth_mode") || Object.hasOwn(intent, "source_health") || Object.hasOwn(intent, "evidence_mode") || !["captured_simulation", "real_local_development"].includes(intent.execution_mode) || !["low", "medium", "high", "sev1"].includes(intent.impact?.level) || !intent.contract || Object.keys(intent.contract).sort().join(",") !== allowedContract.join(",") || !["repair_id", "action", "target", "command_id", "expected_before", "expected_after"].every((key) => boundedText(intent.contract?.[key], 240))) {
     throw autonomyFailure("artifact_truth_or_contract_invalid", "intent");
   }
+}
+function artifactBinding(intentId) {
+  const intent = AUTONOMY_POLICY_ARTIFACT.intents.find((item) => item.id === intentId);
+  if (!intent) throw autonomyFailure("unknown_intent", "intent_id");
+  return {
+    schema_version: AUTONOMY_POLICY_ARTIFACT.schema_version,
+    version: AUTONOMY_POLICY_ARTIFACT.version,
+    registry_sha256: sha256Canonical(AUTONOMY_POLICY_ARTIFACT.registry),
+    intent_sha256: sha256Canonical(intent),
+    envelope_sha256: sha256Canonical(AUTONOMY_POLICY_ARTIFACT.registry.envelopes.filter((envelope) => envelope.action_contract.repair_id === intent.contract.repair_id)),
+    artifact_sha256: sha256Canonical(AUTONOMY_POLICY_ARTIFACT)
+  };
 }
 function stripManifest(manifest) { return { id: manifest.id, content_sha256: manifest.content_sha256, mode: manifest.mode, records: manifest.records, manifest_sha256: manifest.manifest_sha256 }; }
 function authorityBinding(value) { return createHmac("sha256", authorityReceiptSecret).update(sha256Canonical(value), "utf8").digest("hex"); }
 function safeEqual(left, right) { return typeof left === "string" && typeof right === "string" && left.length === right.length && timingSafeEqual(Buffer.from(left), Buffer.from(right)); }
 function trustedNow() { return new Date().toISOString(); }
 function validHash(value) { return typeof value === "string" && /^[a-f0-9]{64}$/.test(value); }
+function timestamp(value) { const parsed = Date.parse(value || ""); return Number.isFinite(parsed) ? parsed : null; }
 function boundedText(value, bytes) { return typeof value === "string" && value.length > 0 && Buffer.byteLength(value, "utf8") <= bytes; }
 function validLedgerEvent(event, incident_id, run_id) { return event && event.incident_id === incident_id && event.run_id === run_id && Number.isInteger(event.sequence) && event.sequence > 0 && boundedText(event.id, 200) && boundedText(event.recorded_at, 40) && validHash(event.payload_sha256) && Array.isArray(event.evidence_refs); }
 function sameSet(left, right) { return Array.isArray(left) && Array.isArray(right) && new Set(left).size === left.length && new Set(right).size === right.length && left.length === right.length && [...left].every((item) => right.includes(item)); }

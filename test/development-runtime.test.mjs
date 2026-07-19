@@ -40,7 +40,7 @@ test("real-development loop rejects weak blame, gates rollback, then verifies fr
   const development = new DevelopmentRuntime({ runtime, source, adapter });
   const runId = await development.start();
   await development.investigate(runId, diagnosisSnapshot(runtime, runId));
-  appendServerOwnedOwnerGate(runtime, runId);
+  appendVerifierControlEvents(runtime, runId);
 
   let state = development.state(runId);
   assert.equal(state.waiting_for_approval, true);
@@ -577,12 +577,15 @@ async function approvedDevelopment({ flagVariant = "off", recoveredEvidence, rea
   });
   const runId = await development.start();
   await development.investigate(runId, diagnosisSnapshot(runtime, runId));
-  appendServerOwnedOwnerGate(runtime, runId);
+  appendVerifierControlEvents(runtime, runId);
   await development.approve(runId, "Test owner");
   return { development, runId };
 }
 
-function appendServerOwnedOwnerGate(runtime, runId) {
+// This fixture supplies already-authorized control events only to exercise
+// DevelopmentRuntime's downstream verification/backtest contract. Slice-B
+// authority issuance itself is covered through the real server path.
+function appendVerifierControlEvents(runtime, runId) {
   const contract = {
     repair_id: "repair-payment-reachable-v1",
     action: "restore known-good paymentUnreachable flag and recreate checkout",

@@ -2,6 +2,7 @@
 // deeply frozen, and is intentionally not accepted from routes, models, or UI.
 const LOW_CONTRACT = {
   repair_id: "repair-low-cache-flush-v1",
+  action: "simulate a bounded edge-cache flush",
   command_id: "flowpulse.simulate-cache-flush",
   target: "edge-cache",
   expected_before: "stale",
@@ -10,6 +11,7 @@ const LOW_CONTRACT = {
 
 const CHECKOUT_CONTRACT = {
   repair_id: "repair-payment-reachable-v1",
+  action: "restore known-good paymentUnreachable flag and recreate checkout",
   command_id: "astronomy.restore-payment-and-recreate-checkout",
   target: "checkout",
   expected_before: "paymentUnreachable=on",
