@@ -603,6 +603,20 @@ function atomicApprovalClaim({ approvalId, approvalPayload, decision, proposal, 
     lock_key
   });
   const text = (name) => `CAST(@${name} AS TEXT)`;
+  // Existing locks are fully decoded and integrity-checked before this
+  // transaction. A row that arrives after that observation cannot safely be
+  // validated with SQLite alone, so any defensive signal that it touches this
+  // authority tuple blocks the claim. This preserves valid pre-existing
+  // unrelated locks while making the TOCTOU window fail closed.
+  const newlyObservedAuthorityLock = `l.type='autonomy.locked'
+      AND l.sequence > CAST(@observed_lock_sequence AS INTEGER)
+      AND (
+        l.incident_id=${text("incident_id")}
+        OR json_extract(l.payload_json,'$.incident_id')=${text("incident_id")}
+        OR (json_extract(l.payload_json,'$.contract_sha256')=${text("contract_sha256")}
+          AND json_extract(l.payload_json,'$.target')=${text("target")})
+        OR json_extract(l.payload_json,'$.lock_key')=${text("lock_key")}
+      )`;
   const script = `${parameters}
 BEGIN IMMEDIATE;
 INSERT INTO events (id, run_id, incident_id, recorded_at, offset_ms, type, actor, payload_json, evidence_refs_json, parent_id, correlation_id)
@@ -613,44 +627,12 @@ WHERE EXISTS (SELECT 1 FROM events d WHERE d.id=${text("decision_id")} AND d.run
   AND (SELECT sequence FROM events WHERE id=${text("decision_id")}) < (SELECT sequence FROM events WHERE id=${text("proposal_id")})
   AND (SELECT sequence FROM events WHERE id=${text("proposal_id")}) < (SELECT sequence FROM events WHERE id=${text("request_id")})
   AND NOT EXISTS (SELECT 1 FROM events WHERE run_id=${text("run_id")} AND type='approval.granted')
-  AND NOT EXISTS (SELECT 1 FROM events l
-    WHERE l.type='autonomy.locked'
-      AND l.sequence > CAST(@observed_lock_sequence AS INTEGER)
-      AND (l.incident_id=${text("incident_id")} OR json_extract(l.payload_json,'$.incident_id')=${text("incident_id")})
-      AND (
-        l.incident_id != ${text("incident_id")}
-        OR json_extract(l.payload_json,'$.incident_id') != ${text("incident_id")}
-        OR json_type(l.payload_json,'$.contract_sha256') != 'text'
-        OR json_type(l.payload_json,'$.target') != 'text'
-        OR json_type(l.payload_json,'$.lock_key') != 'text'
-        OR (json_extract(l.payload_json,'$.contract_sha256')=${text("contract_sha256")}
-          AND json_extract(l.payload_json,'$.target')=${text("target")}
-          AND json_extract(l.payload_json,'$.lock_key') != ${text("lock_key")})
-        OR (json_extract(l.payload_json,'$.contract_sha256')=${text("contract_sha256")}
-          AND json_extract(l.payload_json,'$.target')=${text("target")}
-          AND json_extract(l.payload_json,'$.lock_key')=${text("lock_key")})
-      ));
+  AND NOT EXISTS (SELECT 1 FROM events l WHERE ${newlyObservedAuthorityLock});
 SELECT changes() AS approval_inserted;
 INSERT OR ROLLBACK INTO events (id, run_id, incident_id, recorded_at, offset_ms, type, actor, payload_json, evidence_refs_json, parent_id, correlation_id)
 SELECT ${text("decision_id")}, ${text("run_id")}, ${text("incident_id")}, strftime('%Y-%m-%dT%H:%M:%fZ','now'), 0, 'approval.guard', 'authority-composition', '{}', '[]', NULL, ${text("decision_id")}
 WHERE changes() = 1
-  AND EXISTS (SELECT 1 FROM events l
-    WHERE l.type='autonomy.locked'
-      AND l.sequence > CAST(@observed_lock_sequence AS INTEGER)
-      AND (l.incident_id=${text("incident_id")} OR json_extract(l.payload_json,'$.incident_id')=${text("incident_id")})
-      AND (
-        l.incident_id != ${text("incident_id")}
-        OR json_extract(l.payload_json,'$.incident_id') != ${text("incident_id")}
-        OR json_type(l.payload_json,'$.contract_sha256') != 'text'
-        OR json_type(l.payload_json,'$.target') != 'text'
-        OR json_type(l.payload_json,'$.lock_key') != 'text'
-        OR (json_extract(l.payload_json,'$.contract_sha256')=${text("contract_sha256")}
-          AND json_extract(l.payload_json,'$.target')=${text("target")}
-          AND json_extract(l.payload_json,'$.lock_key') != ${text("lock_key")})
-        OR (json_extract(l.payload_json,'$.contract_sha256')=${text("contract_sha256")}
-          AND json_extract(l.payload_json,'$.target')=${text("target")}
-          AND json_extract(l.payload_json,'$.lock_key')=${text("lock_key")})
-      ));
+  AND EXISTS (SELECT 1 FROM events l WHERE ${newlyObservedAuthorityLock});
 COMMIT;
 `;
   try {

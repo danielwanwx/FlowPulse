@@ -153,6 +153,54 @@ test("a lock written at the atomic approval claim boundary rolls back approval a
   assert.equal(events.some((event) => event.type === "approval.granted" || event.type === "repair.execution.attempted" || event.type === "repair.executed"), false);
 });
 
+test("every newly observed trigger-time lock that touches current development authority rolls back approval", async (context) => {
+  const contract = checkoutContract();
+  const contract_sha256 = sha256Canonical(contract);
+  const incidentId = loadBundle().incident.id;
+  const currentKey = failureLockKey({ incident_id: incidentId, contract_sha256, target: contract.target });
+  const wrongKey = failureLockKey({ incident_id: incidentId, contract_sha256: "b".repeat(64), target: contract.target });
+  const cases = [
+    ["other tuple with current key", { incident_id: incidentId, contract_sha256: "a".repeat(64), target: "other-target", lock_key: currentKey }],
+    ["missing payload incident", { contract_sha256, target: contract.target, lock_key: currentKey }],
+    ["correct tuple with wrong key", { incident_id: incidentId, contract_sha256, target: contract.target, lock_key: wrongKey }],
+    ["other header with current payload", { incident_id: incidentId, contract_sha256, target: contract.target, lock_key: currentKey }, "other-incident"],
+    ["other header and payload with current key", { incident_id: "other-incident", contract_sha256: "a".repeat(64), target: "other-target", lock_key: currentKey }, "other-incident"]
+  ];
+  for (const [label, payload, headerIncidentId] of cases) {
+    const fixture = await startAuthorityFixture(context);
+    assert.equal((await postJson(fixture.port, "/api/development/investigate")).status, 200, label);
+    seedApprovalClaimLockTrigger(new Ledger(fixture.dbPath), { id: `test-trigger-lock-${label.replaceAll(/[^a-z]/g, "-")}`, payload, headerIncidentId });
+    const response = await postJson(fixture.port, "/api/development/approve", { owner: "Test owner" });
+    assert.equal(response.status, 500, `${label}: ${JSON.stringify(response.body)}`);
+    const events = new Ledger(fixture.dbPath).list(fixture.runId);
+    assert.equal(events.some((event) => event.type === "approval.granted" || event.type === "repair.execution.attempted" || event.type === "repair.executed"), false, label);
+  }
+});
+
+test("a trigger-time lock from a different incident remains unrelated", async (context) => {
+  const fixture = await startAuthorityFixture(context);
+  assert.equal((await postJson(fixture.port, "/api/development/investigate")).status, 200);
+  const otherIncident = "other-incident";
+  const otherContract = "a".repeat(64);
+  const otherTarget = "other-target";
+  seedApprovalClaimLockTrigger(new Ledger(fixture.dbPath), {
+    id: "test-trigger-unrelated-lock",
+    headerIncidentId: otherIncident,
+    payload: {
+      incident_id: otherIncident,
+      contract_sha256: otherContract,
+      target: otherTarget,
+      lock_key: failureLockKey({ incident_id: otherIncident, contract_sha256: otherContract, target: otherTarget })
+    }
+  });
+  const response = await postJson(fixture.port, "/api/development/approve", { owner: "Test owner" });
+  assert.equal(response.status, 500, JSON.stringify(response.body));
+  const events = new Ledger(fixture.dbPath).list(fixture.runId);
+  assert.equal(events.filter((event) => event.type === "approval.granted").length, 1);
+  assert.equal(events.filter((event) => event.type === "repair.execution.attempted").length, 1);
+  assert.equal(events.filter((event) => event.type === "repair.executed").length, 0);
+});
+
 test("a manually seeded approval-shaped event is inert outside the private server approval claim", async (context) => {
   const fixture = await startAuthorityFixture(context);
   assert.equal((await postJson(fixture.port, "/api/development/investigate")).status, 200);
@@ -166,13 +214,44 @@ test("a manually seeded approval-shaped event is inert outside the private serve
     type: "approval.granted",
     actor: "owner",
     payload: { owner: "forged", ...contract, scope: "local checkout container only", decision_id: decision.id, contract_sha256: decision.payload.contract_sha256 },
-    evidenceRefs: decision.evidence_refs,
+    evidenceRefs: [...decision.evidence_refs].reverse(),
     correlationId: decision.id
   });
   const response = await postJson(fixture.port, "/api/development/approve", { owner: "Test owner" });
   assert.equal(response.status, 500, JSON.stringify(response.body));
   const events = ledger.list(fixture.runId);
   assert.equal(events.filter((event) => event.type === "repair.execution.attempted").length, 0);
+  assert.equal(events.filter((event) => event.type === "repair.executed").length, 0);
+});
+
+test("a reordered pre-existing execution-attempt claim is inert and cannot invoke the adapter", async (context) => {
+  const fixture = await startAuthorityFixture(context);
+  assert.equal((await postJson(fixture.port, "/api/development/investigate")).status, 200);
+  const ledger = new Ledger(fixture.dbPath);
+  const decision = ledger.list(fixture.runId).find((event) => event.type === "autonomy.decision.recorded");
+  const approvalId = `approval-granted-${decision.payload.decision_sha256.slice(0, 32)}`;
+  ledger.append({
+    id: `repair-execution-attempt-${decision.payload.decision_sha256.slice(0, 32)}`,
+    runId: fixture.runId,
+    incidentId: decision.incident_id,
+    type: "repair.execution.attempted",
+    actor: "authority-composition",
+    payload: {
+      approval_id: approvalId,
+      decision_id: decision.id,
+      contract_sha256: decision.payload.contract_sha256,
+      contract: decision.payload.contract,
+      execution_mode: decision.payload.execution_mode
+    },
+    evidenceRefs: [...decision.evidence_refs].reverse(),
+    parentId: approvalId,
+    correlationId: decision.id
+  });
+  const response = await postJson(fixture.port, "/api/development/approve", { owner: "Test owner" });
+  assert.equal(response.status, 500, JSON.stringify(response.body));
+  const events = ledger.list(fixture.runId);
+  assert.equal(events.filter((event) => event.type === "approval.granted").length, 1);
+  assert.equal(events.filter((event) => event.type === "repair.execution.attempted").length, 1);
   assert.equal(events.filter((event) => event.type === "repair.executed").length, 0);
 });
 
@@ -485,18 +564,19 @@ function reverseEvidenceRefsSql() {
   return "(SELECT json_group_array(value) FROM (SELECT value FROM json_each(NEW.evidence_refs_json) ORDER BY key DESC))";
 }
 
-function seedApprovalClaimLockTrigger(ledger) {
+function seedApprovalClaimLockTrigger(ledger, { id = "test-atomic-approval-lock", payload: providedPayload, headerIncidentId } = {}) {
   const contract = checkoutContract();
   const contract_sha256 = sha256Canonical(contract);
   const incidentId = loadBundle().incident.id;
-  const payload = JSON.stringify({ incident_id: incidentId, contract_sha256, target: contract.target, lock_key: failureLockKey({ incident_id: incidentId, contract_sha256, target: contract.target }) });
+  const payload = JSON.stringify(providedPayload || { incident_id: incidentId, contract_sha256, target: contract.target, lock_key: failureLockKey({ incident_id: incidentId, contract_sha256, target: contract.target }) });
+  const headerIncident = headerIncidentId === undefined ? "NEW.incident_id" : sqlLiteral(headerIncidentId);
   ledger.exec(`
     CREATE TRIGGER test_lock_at_atomic_approval
     BEFORE INSERT ON events
     WHEN NEW.type = 'approval.granted'
     BEGIN
       INSERT INTO events (id, run_id, incident_id, recorded_at, offset_ms, type, actor, payload_json, evidence_refs_json, parent_id, correlation_id)
-      VALUES ('test-atomic-approval-lock', NEW.run_id, NEW.incident_id, NEW.recorded_at, 0, 'autonomy.locked', 'test', ${sqlLiteral(payload)}, '[]', NULL, NEW.correlation_id);
+      VALUES (${sqlLiteral(id)}, NEW.run_id, ${headerIncident}, NEW.recorded_at, 0, 'autonomy.locked', 'test', ${sqlLiteral(payload)}, '[]', NULL, NEW.correlation_id);
     END;
   `);
 }
