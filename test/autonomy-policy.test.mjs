@@ -8,7 +8,7 @@ import { Ledger } from "../src/ledger.mjs";
 import { FrozenEvidenceSnapshot } from "../src/evidence-source.mjs";
 import * as policy from "../src/autonomy-policy.mjs";
 import * as freshness from "../src/autonomy-freshness.mjs";
-import { AUTONOMY_POLICY_ARTIFACT } from "../src/autonomy-policy-artifacts.mjs";
+import { AUTONOMY_POLICY_ARTIFACT, validateAutonomyPolicyArtifact } from "../src/autonomy-policy-artifacts.mjs";
 
 const HASH = (character) => character.repeat(64);
 const TEST_ISSUER = "flowpulse.authority-composition.v1";
@@ -57,6 +57,28 @@ test("production exports contain only non-authority utilities and immutable chec
   assert.equal(AUTONOMY_POLICY_ARTIFACT.intents.find((intent) => intent.id === "checkout-payment").impact.level, "medium");
   assert.equal(AUTONOMY_POLICY_ARTIFACT.intents.find((intent) => intent.id === "checkout-payment").execution_mode, "real_local_development");
   assert.equal(JSON.stringify(AUTONOMY_POLICY_ARTIFACT).includes("truth_mode"), false);
+});
+
+test("checked-in artifact recursively rejects nested authority, truth, risk, and full-contract drift", () => {
+  assert.equal(validateAutonomyPolicyArtifact(structuredClone(AUTONOMY_POLICY_ARTIFACT)), true);
+  const cases = [
+    (artifact) => { artifact.intents[4].action.risk = "low"; },
+    (artifact) => { artifact.intents[4].action.source_health = "live"; },
+    (artifact) => { artifact.intents[4].impact.extra = true; },
+    (artifact) => { artifact.intents[4].notification.execution_mode = "captured_simulation"; },
+    (artifact) => { artifact.intents[4].notification.delivery_mode = "captured_simulation"; },
+    (artifact) => { delete artifact.intents[4].contract.expected_after; },
+    (artifact) => { artifact.intents[4].contract.truth_mode = "live"; },
+    (artifact) => { artifact.intents[4].source_health = "live"; },
+    (artifact) => { artifact.intents[4].evidence_mode = "frozen_real_snapshot"; },
+    (artifact) => { artifact.intents[4].truth_mode = "legacy"; },
+    (artifact) => { artifact.intents[4].execution_mode = "legacy_truth_mode"; }
+  ];
+  for (const mutate of cases) {
+    const artifact = structuredClone(AUTONOMY_POLICY_ARTIFACT);
+    mutate(artifact);
+    assert.throws(() => validateAutonomyPolicyArtifact(artifact));
+  }
 });
 
 test("a public receipt verifier validates bounded temporal and manifest properties but cannot issue a receipt", () => {

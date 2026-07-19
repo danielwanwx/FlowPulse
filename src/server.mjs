@@ -10,15 +10,16 @@ import { IncidentRuntime } from "./runtime.mjs";
 import { runLiveInvestigation } from "./openai.mjs";
 import { initializeObservability, shutdownObservability, withAgentControlTrace } from "./observability.mjs";
 import { LiveSource } from "./live-source.mjs";
-import { CapturedBundleEvidenceSource, InsufficientEvidenceError, LiveOtlpEvidenceSource, versionedChangeEvidence } from "./evidence-source.mjs";
+import { CapturedBundleEvidenceSource, InsufficientEvidenceError, LiveOtlpEvidenceSource, summarizeEvidence, versionedChangeEvidence } from "./evidence-source.mjs";
 import { investigationFailureEnvelope, localFailureState, projectFailureEpisode, recordInvestigationFailure } from "./investigation-failure.mjs";
 import { DevelopmentRuntime } from "./development-runtime.mjs";
 import * as developmentAdapter from "./development-adapter.mjs";
 import { AgentControlService } from "./agent-control-service.mjs";
 import { harnessBinding, loadHarnessManifest } from "./harness-manifest.mjs";
-import { AUTONOMY_POLICY_ARTIFACT } from "./autonomy-policy-artifacts.mjs";
+import { AUTONOMY_POLICY_ARTIFACT, validateAutonomyPolicyArtifact } from "./autonomy-policy-artifacts.mjs";
 import { failureLockKey, sha256Canonical } from "./autonomy-policy.mjs";
 import { FRESHNESS_MAX_AGE_MS, FRESHNESS_RECEIPT_SCHEMA_VERSION, verifySnapshotFreshnessReceipt } from "./autonomy-freshness.mjs";
+import { sha256 as hashBoundEvidence } from "./regression-backtest.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const publicDir = join(root, "public");
@@ -32,11 +33,14 @@ const liveSource = new LiveSource({ directory: process.env.FLOWPULSE_OTLP_DIR ||
 const development = new DevelopmentRuntime({ runtime, source: liveSource, adapter: developmentAdapter });
 const capturedEvidence = new CapturedBundleEvidenceSource(bundle);
 const snapshots = new Map();
+const developmentInvestigations = new Map();
 // This key and map intentionally remain module-private. They bind an issued
 // receipt to this server's capture and cannot be reconstructed by a request.
 const authorityReceiptSecret = randomBytes(32);
 const authorityReceiptBindings = new Map();
+const CAPTURE_CLOCK_SKEW_MS = 1_000;
 runtime.ensureRun();
+validateAutonomyPolicyArtifact(AUTONOMY_POLICY_ARTIFACT);
 const langfuseEnabled = await initializeObservability().catch(() => {
   console.warn("Langfuse disabled");
   return false;
@@ -130,15 +134,11 @@ const server = createServer(async (request, response) => {
     }
     if (url.pathname === "/api/development/investigate" && request.method === "POST") {
       requireJson(request);
+      const body = await readJson(request);
+      if (!isEmptyObject(body)) return json(response, 409, { error: "Development investigation accepts no caller authority input" });
       const runId = runtime.ensureRun();
       try {
-        const existingGate = ledger.list(runId).some((event) => event.type === "diagnosis.gate.passed");
-        const snapshot = snapshots.get(runId) || await freezeLiveEvidence(runId);
-        if (!existingGate) {
-          if (process.env.OPENAI_API_KEY) await runLiveInvestigation({ runtime, runId, evidenceSource: snapshot, repairContract: development.repairContract(runId) });
-          else await development.investigate(runId, snapshot);
-        }
-        await advanceAutonomyAfterDiagnosis({ run_id: runId, incident_id: runtime.bundle.incident.id, intent_id: "checkout-payment" });
+        await singleFlightDevelopmentInvestigation(runId);
         return json(response, 200, await stateWithSource(runId));
       } catch (error) {
         const failure = recordInvestigationFailure({
@@ -155,7 +155,9 @@ const server = createServer(async (request, response) => {
       requireJson(request);
       const body = await readJson(request);
       const runId = runtime.ensureRun();
-      await development.approve(runId, body.owner || "Development owner");
+      const owner = approvalOwner(body);
+      if (!owner) return json(response, 409, { error: "An explicit bounded owner is required" });
+      await approveDevelopmentAfterAuthority({ run_id: runId, incident_id: runtime.bundle.incident.id, intent_id: "checkout-payment", owner });
       return json(response, 200, await stateWithSource(runId));
     }
     if (url.pathname === "/api/development/verify" && request.method === "POST") {
@@ -176,6 +178,7 @@ const server = createServer(async (request, response) => {
     if (url.pathname === "/api/approve" && request.method === "POST") {
       const body = await readJson(request);
       const runId = runtime.ensureRun();
+      if (runMode(runId) === "development") return json(response, 409, { error: "Development approval requires the canonical development Owner Gate" });
       runtime.approve(runId, body.owner || "Incident owner");
       return json(response, 200, await stateWithSource(runId));
     }
@@ -223,12 +226,43 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
 // The following boundary is intentionally local to this server module. It is
 // invoked only after an investigator has persisted diagnosis.gate.passed; no
 // route, model tool, fixture, or client can import a decision provider.
+async function singleFlightDevelopmentInvestigation(runId) {
+  const existing = developmentInvestigations.get(runId);
+  if (existing) return existing;
+  const work = (async () => {
+    const existingGate = ledger.list(runId).some((event) => event.type === "diagnosis.gate.passed");
+    const snapshot = snapshots.get(runId) || await freezeLiveEvidence(runId);
+    if (!existingGate) {
+      if (process.env.OPENAI_API_KEY) await runLiveInvestigation({ runtime, runId, evidenceSource: snapshot, repairContract: development.repairContract(runId) });
+      else await development.investigate(runId, snapshot);
+    }
+    await advanceAutonomyAfterDiagnosis({ run_id: runId, incident_id: runtime.bundle.incident.id, intent_id: "checkout-payment" });
+  })();
+  developmentInvestigations.set(runId, work);
+  try {
+    return await work;
+  } finally {
+    if (developmentInvestigations.get(runId) === work) developmentInvestigations.delete(runId);
+  }
+}
+
+async function approveDevelopmentAfterAuthority({ run_id, incident_id, intent_id, owner }) {
+  const decision = await advanceAutonomyAfterDiagnosis({ run_id, incident_id, intent_id });
+  if (decision?.payload?.outcome !== "human_review_required") throw autonomyFailure("owner_gate_not_actionable", "autonomy.decision.recorded");
+  const events = ledger.list(run_id);
+  const request = events.find((event) => event.type === "approval.requested" && event.payload?.decision_id === decision.id);
+  const proposal = events.find((event) => event.type === "repair.proposed" && event.payload?.decision_id === decision.id);
+  if (!request || !proposal || !exactFullContract(request.payload, decision.payload.contract) || !exactFullContract(proposal.payload, decision.payload.contract)) {
+    throw autonomyFailure("owner_gate_contract_invalid", "approval.requested");
+  }
+  return development.approve(run_id, owner);
+}
+
 async function advanceAutonomyAfterDiagnosis({ run_id, incident_id, intent_id }) {
   assertAutonomySelector({ run_id, incident_id, intent_id });
-  for (const artifactIntent of AUTONOMY_POLICY_ARTIFACT.intents) validateIntentArtifact(artifactIntent);
+  validateAutonomyPolicyArtifact(AUTONOMY_POLICY_ARTIFACT);
   const intent = AUTONOMY_POLICY_ARTIFACT.intents.find((item) => item.id === intent_id);
   if (!intent) throw autonomyFailure("unknown_intent", "intent_id");
-  validateIntentArtifact(intent);
   const manifest = captureAuthoritySnapshot({ run_id, incident_id, intent_id });
   const events = ledger.list(run_id);
   const now = trustedNow();
@@ -247,20 +281,27 @@ function captureAuthoritySnapshot({ run_id, incident_id, intent_id }) {
   if (metadata.mode !== "frozen_real_otlp_snapshot" || metadata.run_id !== run_id || metadata.incident_id !== incident_id || metadata.source_status !== "live") {
     throw autonomyFailure("snapshot_scope_or_source_invalid", "snapshot.metadata");
   }
-  const records = snapshot.records.map((record) => ({
-    id: record.id,
-    sha256: record.provenance?.sha256 || record.hash,
-    source: record.source,
-    mode: metadata.mode
-  })).sort((a, b) => a.id.localeCompare(b.id));
-  if (!records.length || records.some((record) => !validHash(record.sha256) || !boundedText(record.id, 160) || !boundedText(record.source, 240))) throw autonomyFailure("snapshot_manifest_invalid", "snapshot.records");
+  const snapshotRecords = new Map();
+  const records = snapshot.records.map((record) => {
+    const summary = summarizeEvidence(record);
+    snapshotRecords.set(record.id, record);
+    return {
+      id: record.id,
+      sha256: record.provenance?.sha256 || record.hash,
+      source: record.source,
+      mode: metadata.mode,
+      summary_sha256: hashBoundEvidence(summary)
+    };
+  }).sort((a, b) => a.id.localeCompare(b.id));
+  if (!records.length || records.some((record) => !validHash(record.sha256) || !validHash(record.summary_sha256) || !boundedText(record.id, 160) || !boundedText(record.source, 240))) throw autonomyFailure("snapshot_manifest_invalid", "snapshot.records");
   const expectedIds = [...metadata.evidence_ids].sort();
   if (expectedIds.length !== records.length || expectedIds.some((id, index) => id !== records[index].id)) throw autonomyFailure("snapshot_manifest_drift", "snapshot.evidence_ids");
   const core = { id: snapshot.id, content_sha256: metadata.content_hash, mode: metadata.mode, records };
   const frozenAt = timestamp(metadata.frozen_at);
   const sourceObservedAt = timestamp(metadata.source_last_observed_at);
-  if (!boundedText(intent_id, 120) || !frozenAt || !sourceObservedAt || sourceObservedAt > frozenAt || !validHash(core.content_sha256)) throw autonomyFailure("snapshot_manifest_invalid", "snapshot.metadata");
-  return { ...core, manifest_sha256: sha256Canonical(core), frozen_at: metadata.frozen_at, source_observed_at: metadata.source_last_observed_at };
+  if (!boundedText(intent_id, 120) || !frozenAt || !sourceObservedAt || sourceObservedAt - frozenAt > CAPTURE_CLOCK_SKEW_MS || !validHash(core.content_sha256)) throw autonomyFailure("snapshot_manifest_invalid", "snapshot.metadata");
+  const captureFrozenAt = new Date(Math.max(frozenAt, sourceObservedAt)).toISOString();
+  return { ...core, manifest_sha256: sha256Canonical(core), frozen_at: captureFrozenAt, source_observed_at: metadata.source_last_observed_at, snapshot_records: snapshotRecords };
 }
 
 function issueAuthorityFreshnessReceipt({ run_id, incident_id, intent_id, manifest, validated }) {
@@ -280,7 +321,7 @@ function issueAuthorityFreshnessReceipt({ run_id, incident_id, intent_id, manife
     expires_at
   };
   const receipt = { ...unsigned, receipt_sha256: sha256Canonical(unsigned) };
-  const binding = authorityBinding({ run_id, incident_id, intent_id, manifest, validated, artifact: artifactBinding(intent_id), receipt_sha256: receipt.receipt_sha256 });
+  const binding = authorityBinding({ run_id, incident_id, intent_id, manifest: stripManifest(manifest), validated, artifact: artifactBinding(intent_id), receipt_sha256: receipt.receipt_sha256 });
   authorityReceiptBindings.set(receipt.receipt_sha256, binding);
   return { receipt, binding };
 }
@@ -292,7 +333,7 @@ function verifyAuthorityReceipt({ receipt, binding, manifest, validated, now }) 
     throw autonomyFailure(error?.code || "freshness_receipt_invalid", error?.field_path || "receipt");
   }
   const stored = authorityReceiptBindings.get(receipt.receipt_sha256);
-  const expected = authorityBinding({ run_id: validated.run_id, incident_id: validated.incident_id, intent_id: validated.intent_id, manifest, validated, artifact: artifactBinding(validated.intent_id), receipt_sha256: receipt.receipt_sha256 });
+  const expected = authorityBinding({ run_id: validated.run_id, incident_id: validated.incident_id, intent_id: validated.intent_id, manifest: stripManifest(manifest), validated, artifact: artifactBinding(validated.intent_id), receipt_sha256: receipt.receipt_sha256 });
   if (!stored || !binding || !safeEqual(stored, binding) || !safeEqual(stored, expected)) throw autonomyFailure("freshness_receipt_binding_mismatch", "receipt");
 }
 
@@ -325,10 +366,11 @@ function validateAuthorityPrerequisites({ events, manifest, intent, now, inciden
   const refs = gate.payload?.accepted?.evidence_ids;
   const contract = intent.contract;
   const contract_sha256 = sha256Canonical(contract);
-  if (!diagnosis || !gateEvaluation || !boundedText(diagnosis.id, 160) || payload.hypothesis_id !== diagnosis.id || gateEvaluation.accepted !== true || !Array.isArray(refs) || !sameSet(refs, evaluation.evidence_refs) || !sameSet(refs, payload.counter_evidence_refs) || !sameSet(refs, diagnosis.evidence_refs) || !sameSet(refs, gate.evidence_refs) || !sameSet(payload.counter_evidence_refs, gateEvaluation.counter_evidence_refs)) {
+  if (!diagnosis || !gateEvaluation || !boundedText(diagnosis.id, 160) || payload.hypothesis_id !== diagnosis.id || !sameCanonicalEvaluation(payload, gateEvaluation) || !Array.isArray(refs) || !sameSet(refs, evaluation.evidence_refs) || !sameSet(refs, payload.counter_evidence_refs) || !sameSet(refs, diagnosis.evidence_refs) || !sameSet(refs, gate.evidence_refs) || !sameSet(payload.counter_evidence_refs, gateEvaluation.counter_evidence_refs)) {
     throw autonomyFailure("authority_evidence_refs_invalid", "diagnosis.gate.passed");
   }
-  if (!contractMatches(diagnosis.proposed_repair, contract) || !contractMatches(gate.payload?.repair_contract, contract) || gate.payload?.snapshot?.id !== manifest.id || gate.payload?.snapshot?.content_sha256 !== manifest.content_sha256 || gate.payload?.snapshot?.mode !== manifest.mode) {
+  const change = events.find((event) => event.type === "change.applied")?.payload?.change;
+  if (!coreContractMatches(diagnosis.proposed_repair, contract) || !coreContractMatches(gate.payload?.repair_contract, contract) || !contractMatchesCapturedChange(contract, change) || gate.payload?.snapshot?.id !== manifest.id || gate.payload?.snapshot?.content_sha256 !== manifest.content_sha256 || gate.payload?.snapshot?.mode !== manifest.mode) {
     throw autonomyFailure("authority_contract_or_snapshot_mismatch", "diagnosis.gate.passed");
   }
   const manifestById = new Map(manifest.records.map((record) => [record.id, record]));
@@ -337,8 +379,10 @@ function validateAuthorityPrerequisites({ events, manifest, intent, now, inciden
   if (!Array.isArray(bindings) || bindings.length !== refs.length || new Set(bindings.map((item) => item?.id)).size !== bindings.length || bindings.some((item) => {
     const record = manifestById.get(item?.id);
     const safeRecord = item?.record;
-    const evidenceHash = safeRecord?.provenance?.sha256 || safeRecord?.hash;
-    return !record || !validHash(item.sha256) || item.sha256 !== sha256Canonical(safeRecord) || evidenceHash !== record.sha256 || safeRecord?.source !== record.source;
+    const sourceRecord = manifest.snapshot_records.get(item?.id);
+    const currentSummary = sourceRecord ? summarizeEvidence(sourceRecord) : null;
+    const evidenceHash = currentSummary?.provenance?.sha256 || currentSummary?.hash;
+    return !record || !sourceRecord || !validHash(item.sha256) || item.sha256 !== record.summary_sha256 || item.sha256 !== hashBoundEvidence(safeRecord) || record.summary_sha256 !== hashBoundEvidence(currentSummary) || hashBoundEvidence(safeRecord) !== hashBoundEvidence(currentSummary) || evidenceHash !== record.sha256 || currentSummary?.source !== record.source;
   })) throw autonomyFailure("authority_evidence_binding_invalid", "evidence_bindings");
   return {
     run_id, incident_id, intent_id: intent.id, evaluation_event_id: evaluation.id, evaluation_sequence: evaluation.sequence,
@@ -396,7 +440,7 @@ function buildAuthorityDecision({ run_id, incident_id, intent, manifest, validat
 
 function appendDecisionAndPendingOwnerContract({ decision, validated, intent }) {
   const inserted = ledger.appendIfAbsent({ id: decision.decision_id, runId: decision.run_id, incidentId: decision.incident_id, type: "autonomy.decision.recorded", actor: "authority-composition", payload: decision, evidenceRefs: validated.evidence_refs, correlationId: decision.decision_id });
-  if (!inserted.inserted && (inserted.event?.payload?.decision_sha256 !== decision.decision_sha256 || inserted.event?.payload?.authority_context_sha256 !== decision.authority_context_sha256)) throw autonomyFailure("authority_claim_conflict", "decision_id");
+  if (!inserted.inserted && !sameCanonicalDecisionEvent(inserted.event, decision, validated.evidence_refs)) throw autonomyFailure("authority_claim_conflict", "decision_id");
   if (decision.outcome === "human_review_required") {
     const proposalId = `repair-proposed-${decision.decision_sha256.slice(0, 32)}`;
     ledger.appendIfAbsent({ id: proposalId, runId: decision.run_id, incidentId: decision.incident_id, type: "repair.proposed", actor: "authority-composition", payload: { ...intent.contract, bounded: true, decision_id: decision.decision_id, contract_sha256: decision.contract_sha256 }, evidenceRefs: validated.evidence_refs, correlationId: decision.decision_id });
@@ -407,13 +451,6 @@ function appendDecisionAndPendingOwnerContract({ decision, validated, intent }) 
 
 function assertAutonomySelector(value) {
   if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join(",") !== "incident_id,intent_id,run_id" || !boundedText(value.run_id, 160) || !boundedText(value.incident_id, 160) || !boundedText(value.intent_id, 120)) throw autonomyFailure("authority_selector_invalid", "selector");
-}
-function validateIntentArtifact(intent) {
-  const allowedIntent = ["action", "contract", "environment", "execution_mode", "id", "impact", "notification"];
-  const allowedContract = ["action", "command_id", "expected_after", "expected_before", "repair_id", "target"];
-  if (!intent || Object.keys(intent).sort().join(",") !== allowedIntent.join(",") || Object.hasOwn(intent, "truth_mode") || Object.hasOwn(intent, "source_health") || Object.hasOwn(intent, "evidence_mode") || !["captured_simulation", "real_local_development"].includes(intent.execution_mode) || !["low", "medium", "high", "sev1"].includes(intent.impact?.level) || !intent.contract || Object.keys(intent.contract).sort().join(",") !== allowedContract.join(",") || !["repair_id", "action", "target", "command_id", "expected_before", "expected_after"].every((key) => boundedText(intent.contract?.[key], 240))) {
-    throw autonomyFailure("artifact_truth_or_contract_invalid", "intent");
-  }
 }
 function artifactBinding(intentId) {
   const intent = AUTONOMY_POLICY_ARTIFACT.intents.find((item) => item.id === intentId);
@@ -436,7 +473,26 @@ function timestamp(value) { const parsed = Date.parse(value || ""); return Numbe
 function boundedText(value, bytes) { return typeof value === "string" && value.length > 0 && Buffer.byteLength(value, "utf8") <= bytes; }
 function validLedgerEvent(event, incident_id, run_id) { return event && event.incident_id === incident_id && event.run_id === run_id && Number.isInteger(event.sequence) && event.sequence > 0 && boundedText(event.id, 200) && boundedText(event.recorded_at, 40) && validHash(event.payload_sha256) && Array.isArray(event.evidence_refs); }
 function sameSet(left, right) { return Array.isArray(left) && Array.isArray(right) && new Set(left).size === left.length && new Set(right).size === right.length && left.length === right.length && [...left].every((item) => right.includes(item)); }
-function contractMatches(left, right) { return Boolean(left && right && left.repair_id === right.repair_id && left.action === right.action && left.target === right.target && left.command_id === right.command_id); }
+function sameCanonicalDecisionEvent(event, decision, evidenceRefs) {
+  return Boolean(event && event.id === decision.decision_id && event.run_id === decision.run_id && event.incident_id === decision.incident_id && event.type === "autonomy.decision.recorded" && event.actor === "authority-composition" && event.parent_id == null && event.correlation_id === decision.decision_id && sameSet(event.evidence_refs, evidenceRefs) && sha256Canonical(event.payload) === sha256Canonical(decision));
+}
+function coreContractMatches(value, contract) {
+  return Boolean(value && Object.keys(value).every((key) => ["repair_id", "action", "target", "command_id", "reason"].includes(key)) && ["repair_id", "action", "target", "command_id"].every((key) => value[key] === contract[key]) && (!Object.hasOwn(value, "reason") || boundedText(value.reason, 2_048)));
+}
+function exactFullContract(value, contract) {
+  return Boolean(value && contract && ["repair_id", "action", "target", "command_id", "expected_before", "expected_after"].every((key) => value[key] === contract[key]));
+}
+function contractMatchesCapturedChange(contract, change) {
+  return Boolean(change && contract.repair_id === change.repair_id && contract.target === change.target && contract.command_id === change.repair_command_id && contract.action === `restore known-good ${change.flag} flag and recreate checkout` && contract.expected_before === `${change.flag}=${change.after}` && contract.expected_after === `${change.flag}=${change.known_good}`);
+}
+function sameCanonicalEvaluation(eventPayload, gatePayload) {
+  const keys = ["accepted", "score", "classification", "phase", "gate_checks", "reason", "missing_evidence", "counter_evidence_refs"];
+  if (!eventPayload || !gatePayload || Object.keys(gatePayload).sort().join(",") !== keys.sort().join(",")) return false;
+  return sha256Canonical(Object.fromEntries(keys.map((key) => [key, eventPayload[key]]))) === sha256Canonical(gatePayload);
+}
+function isEmptyObject(value) { return Boolean(value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === 0); }
+function approvalOwner(value) { return value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === 1 && boundedText(value.owner, 160) ? value.owner : null; }
+function runMode(runId) { return ledger.list(runId).find((event) => event.type === "run.started")?.payload?.mode || null; }
 function autonomyFailure(code, field_path) { const error = new InsufficientEvidenceError("Autonomy authority boundary rejected the run"); error.code = code; error.metadata = { stage: "authority_decision", validator_id: "server_authority_closure", reason_code: code, field_path, next_precondition: "produce_a_matching_frozen_diagnosis_gate" }; return error; }
 
 async function serveStatic(pathname, response) {
