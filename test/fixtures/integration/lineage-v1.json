@@ -1,0 +1,82 @@
+{
+  "manifest": {
+    "schema_version": "flowpulse.connector-manifest.v1",
+    "connector_id": "connector-lineage-fixture",
+    "version": "v1",
+    "display": { "name": "Lineage fixture", "glyph": "lineage" },
+    "source_kinds": ["workflow_lineage"],
+    "entity_kinds": ["dag", "job", "task", "dataset", "table"],
+    "relation_types": ["reads", "produces", "scheduled_by", "affects"],
+    "evidence_types": ["failure", "lineage", "run", "quality"],
+    "capture_modes": ["captured_fixture"],
+    "input_contract_versions": ["flowpulse.evidence-envelope.v1"],
+    "output_contract_versions": ["flowpulse.connector-projection.v1"],
+    "capabilities": { "discover": true, "topology": true, "evidence": true, "action": false, "verification": false },
+    "permissions": { "read_only": true, "network_write": false, "action": false, "remediation": false, "authority": false },
+    "scopes": { "incident_id": true, "run_id": true, "correlation_id": true },
+    "risk_class": "advisory",
+    "redaction": { "required": true, "version": "v1", "states": ["redacted", "synthetic"] },
+    "limits": { "max_envelope_bytes": 49152, "max_entities": 64, "max_relations": 128, "max_evidence": 64 },
+    "provenance": { "required": true, "hash_algorithm": "sha256" },
+    "health": { "accepted": ["live"], "max_age_ms": 300000 },
+    "contract_sha256": "9da6978fb9257650792a414c4d2814108d58566edc307b3667c7757246a19af4"
+  },
+  "envelope": {
+    "schema_version": "flowpulse.evidence-envelope.v1",
+    "envelope_id": "env-lineage-v1",
+    "event_id": "event-lineage-v1",
+    "source_id": "source-lineage-captured-v1",
+    "incident_id": "incident-payment-data-delay",
+    "run_id": "run-payment-data-delay-v1",
+    "correlation_id": "corr-payment-data-delay-v1",
+    "observed_at": "2026-07-18T10:00:00.000Z",
+    "received_at": "2026-07-18T10:00:30.000Z",
+    "frozen_at": "2026-07-18T10:00:30.000Z",
+    "source_kind": "workflow_lineage",
+    "capture_mode": "captured_fixture",
+    "source_health": "live",
+    "provenance": {
+      "connector_id": "connector-lineage-fixture",
+      "connector_version": "v1",
+      "source_reference": "capture://lineage-v1",
+      "content_type": "application/json",
+      "encoding": "utf-8",
+      "redaction_state": "synthetic",
+      "content_sha256": "d5fd7b3c8df67f4e85bca6db1cbac5b45d54eda6e1c3d709df611c9f28332b86"
+    },
+    "entities": [
+      { "id": "dag-payments", "kind": "dag", "label": "Payments refresh", "namespace": "analytics", "provider_label": "Airflow", "provenance_ref": "capture://lineage-v1#dag-payments", "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+      { "id": "dataset-raw-orders", "kind": "dataset", "label": "raw orders", "namespace": "analytics", "provider_label": "OpenLineage", "provenance_ref": "capture://lineage-v1#dataset-raw-orders", "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
+      { "id": "job-dbt-payments", "kind": "job", "label": "dbt payments model", "namespace": "analytics", "provider_label": "dbt", "provenance_ref": "capture://lineage-v1#job-dbt-payments", "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" },
+      { "id": "table-stg-payments", "kind": "table", "label": "staged payments", "namespace": "analytics", "provider_label": "dbt", "provenance_ref": "capture://lineage-v1#table-stg-payments", "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd" },
+      { "id": "task-refresh-payments", "kind": "task", "label": "refresh payments task", "namespace": "analytics", "provider_label": "Airflow", "provenance_ref": "capture://lineage-v1#task-refresh-payments", "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" }
+    ],
+    "relations": [
+      { "id": "rel-task-dag", "from": "task-refresh-payments", "to": "dag-payments", "type": "scheduled_by", "evidence_ids": ["evidence-dbt-run"] },
+      { "id": "rel-job-raw", "from": "job-dbt-payments", "to": "dataset-raw-orders", "type": "reads", "evidence_ids": ["evidence-dbt-run"] },
+      { "id": "rel-job-stage", "from": "job-dbt-payments", "to": "table-stg-payments", "type": "produces", "evidence_ids": ["evidence-dbt-run", "evidence-lineage-impact"] }
+    ],
+    "evidence": [
+      { "id": "evidence-dbt-run", "type": "failure", "entity_id": "job-dbt-payments", "summary": "payments model failed after an upstream schema change", "fault_locality": "origin", "observed_at": "2026-07-18T10:00:05.000Z", "provenance": { "source_reference": "capture://lineage-v1#run-42", "redaction_state": "synthetic" } },
+      { "id": "evidence-lineage-impact", "type": "lineage", "entity_id": "table-stg-payments", "summary": "staged payments table did not materialize for the captured run", "fault_locality": "impact", "observed_at": "2026-07-18T10:00:20.000Z", "provenance": { "source_reference": "capture://lineage-v1#table-stg-payments", "redaction_state": "synthetic" } }
+    ]
+  },
+  "receipt": {
+    "schema_version": "flowpulse.connector-receipt.v1",
+    "receipt_id": "receipt-lineage-v1",
+    "connector_id": "connector-lineage-fixture",
+    "connector_version": "v1",
+    "manifest_contract_sha256": "9da6978fb9257650792a414c4d2814108d58566edc307b3667c7757246a19af4",
+    "envelope_schema_version": "flowpulse.evidence-envelope.v1",
+    "envelope_id": "env-lineage-v1",
+    "event_id": "event-lineage-v1",
+    "incident_id": "incident-payment-data-delay",
+    "run_id": "run-payment-data-delay-v1",
+    "correlation_id": "corr-payment-data-delay-v1",
+    "content_sha256": "d5fd7b3c8df67f4e85bca6db1cbac5b45d54eda6e1c3d709df611c9f28332b86",
+    "capture_mode": "captured_fixture",
+    "source_health": "live",
+    "issued_at": "2026-07-18T10:00:31.000Z",
+    "expires_at": "2026-07-18T10:05:00.000Z"
+  }
+}

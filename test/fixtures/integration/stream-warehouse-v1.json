@@ -1,0 +1,85 @@
+{
+  "manifest": {
+    "schema_version": "flowpulse.connector-manifest.v1",
+    "connector_id": "connector-stream-warehouse-fixture",
+    "version": "v1",
+    "display": { "name": "Stream warehouse fixture", "glyph": "stream-warehouse" },
+    "source_kinds": ["stream_warehouse"],
+    "entity_kinds": ["topic", "dataset", "job", "query", "table"],
+    "relation_types": ["consumes_from", "produces", "writes", "affects"],
+    "evidence_types": ["lag", "failure", "metric", "quality"],
+    "capture_modes": ["captured_fixture"],
+    "input_contract_versions": ["flowpulse.evidence-envelope.v1"],
+    "output_contract_versions": ["flowpulse.connector-projection.v1"],
+    "capabilities": { "discover": true, "topology": true, "evidence": true, "action": false, "verification": false },
+    "permissions": { "read_only": true, "network_write": false, "action": false, "remediation": false, "authority": false },
+    "scopes": { "incident_id": true, "run_id": true, "correlation_id": true },
+    "risk_class": "advisory",
+    "redaction": { "required": true, "version": "v1", "states": ["redacted", "synthetic"] },
+    "limits": { "max_envelope_bytes": 49152, "max_entities": 64, "max_relations": 128, "max_evidence": 64 },
+    "provenance": { "required": true, "hash_algorithm": "sha256" },
+    "health": { "accepted": ["live"], "max_age_ms": 300000 },
+    "contract_sha256": "56d5f13065d1200788b5a6b5861d8aeaf8077ac6b636533ffafbd7e84b59acff"
+  },
+  "envelope": {
+    "schema_version": "flowpulse.evidence-envelope.v1",
+    "envelope_id": "env-stream-warehouse-v1",
+    "event_id": "event-stream-warehouse-v1",
+    "source_id": "source-stream-warehouse-captured-v1",
+    "incident_id": "incident-payment-data-delay",
+    "run_id": "run-payment-data-delay-v1",
+    "correlation_id": "corr-payment-data-delay-v1",
+    "observed_at": "2026-07-18T10:01:00.000Z",
+    "received_at": "2026-07-18T10:01:20.000Z",
+    "frozen_at": "2026-07-18T10:01:20.000Z",
+    "source_kind": "stream_warehouse",
+    "capture_mode": "captured_fixture",
+    "source_health": "live",
+    "provenance": {
+      "connector_id": "connector-stream-warehouse-fixture",
+      "connector_version": "v1",
+      "source_reference": "capture://stream-warehouse-v1",
+      "content_type": "application/json",
+      "encoding": "utf-8",
+      "redaction_state": "synthetic",
+      "content_sha256": "7b94370094f218fc1ac03c2176c436018f50e1064575293d834be6f0ff5ad5f4"
+    },
+    "entities": [
+      { "id": "topic-payment-events", "kind": "topic", "label": "payment events", "namespace": "payments", "provider_label": "Kafka", "provenance_ref": "capture://stream-warehouse-v1#topic-payment-events", "sha256": "1111111111111111111111111111111111111111111111111111111111111111" },
+      { "id": "dataset-payment-partition-3", "kind": "dataset", "label": "payment partition 3", "namespace": "payments", "provider_label": "Kafka", "provenance_ref": "capture://stream-warehouse-v1#dataset-payment-partition-3", "sha256": "2222222222222222222222222222222222222222222222222222222222222222" },
+      { "id": "job-accounting-consumer", "kind": "job", "label": "accounting consumer", "namespace": "accounting", "provider_label": "Flink", "provenance_ref": "capture://stream-warehouse-v1#job-accounting-consumer", "sha256": "3333333333333333333333333333333333333333333333333333333333333333" },
+      { "id": "job-fraud-score", "kind": "job", "label": "fraud score stream job", "namespace": "fraud", "provider_label": "Spark", "provenance_ref": "capture://stream-warehouse-v1#job-fraud-score", "sha256": "4444444444444444444444444444444444444444444444444444444444444444" },
+      { "id": "query-fraud-ledger-write", "kind": "query", "label": "fraud ledger write", "namespace": "warehouse", "provider_label": "Snowflake", "provenance_ref": "capture://stream-warehouse-v1#query-fraud-ledger-write", "sha256": "5555555555555555555555555555555555555555555555555555555555555555" },
+      { "id": "table-fraud-ledger", "kind": "table", "label": "fraud ledger", "namespace": "warehouse", "provider_label": "Databricks", "provenance_ref": "capture://stream-warehouse-v1#table-fraud-ledger", "sha256": "6666666666666666666666666666666666666666666666666666666666666666" }
+    ],
+    "relations": [
+      { "id": "rel-dataset-accounting", "from": "dataset-payment-partition-3", "to": "job-accounting-consumer", "type": "affects", "evidence_ids": ["evidence-partition-lag"] },
+      { "id": "rel-consumer-topic", "from": "job-accounting-consumer", "to": "topic-payment-events", "type": "consumes_from", "evidence_ids": ["evidence-partition-lag"] },
+      { "id": "rel-job-topic", "from": "job-fraud-score", "to": "topic-payment-events", "type": "consumes_from", "evidence_ids": ["evidence-partition-lag"] },
+      { "id": "rel-job-query", "from": "job-fraud-score", "to": "query-fraud-ledger-write", "type": "produces", "evidence_ids": ["evidence-fraud-delay"] },
+      { "id": "rel-query-table", "from": "query-fraud-ledger-write", "to": "table-fraud-ledger", "type": "writes", "evidence_ids": ["evidence-fraud-delay"] }
+    ],
+    "evidence": [
+      { "id": "evidence-partition-lag", "type": "lag", "entity_id": "dataset-payment-partition-3", "summary": "payment partition lag increased after the captured payment failures", "fault_locality": "propagation", "observed_at": "2026-07-18T10:01:05.000Z", "provenance": { "source_reference": "capture://stream-warehouse-v1#dataset-payment-partition-3", "redaction_state": "synthetic" } },
+      { "id": "evidence-fraud-delay", "type": "quality", "entity_id": "table-fraud-ledger", "summary": "fraud ledger freshness missed the captured data objective", "fault_locality": "impact", "observed_at": "2026-07-18T10:01:10.000Z", "provenance": { "source_reference": "capture://stream-warehouse-v1#table-fraud-ledger", "redaction_state": "synthetic" } }
+    ]
+  },
+  "receipt": {
+    "schema_version": "flowpulse.connector-receipt.v1",
+    "receipt_id": "receipt-stream-warehouse-v1",
+    "connector_id": "connector-stream-warehouse-fixture",
+    "connector_version": "v1",
+    "manifest_contract_sha256": "56d5f13065d1200788b5a6b5861d8aeaf8077ac6b636533ffafbd7e84b59acff",
+    "envelope_schema_version": "flowpulse.evidence-envelope.v1",
+    "envelope_id": "env-stream-warehouse-v1",
+    "event_id": "event-stream-warehouse-v1",
+    "incident_id": "incident-payment-data-delay",
+    "run_id": "run-payment-data-delay-v1",
+    "correlation_id": "corr-payment-data-delay-v1",
+    "content_sha256": "7b94370094f218fc1ac03c2176c436018f50e1064575293d834be6f0ff5ad5f4",
+    "capture_mode": "captured_fixture",
+    "source_health": "live",
+    "issued_at": "2026-07-18T10:01:21.000Z",
+    "expires_at": "2026-07-18T10:05:20.000Z"
+  }
+}
