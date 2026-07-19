@@ -255,7 +255,12 @@ async function approveDevelopmentAfterAuthority({ run_id, incident_id, intent_id
   if (!request || !proposal || !exactFullContract(request.payload, decision.payload.contract) || !exactFullContract(proposal.payload, decision.payload.contract)) {
     throw autonomyFailure("owner_gate_contract_invalid", "approval.requested");
   }
-  return development.approve(run_id, owner);
+  const claim = claimCanonicalDevelopmentApproval({ run_id, incident_id, intent_id, owner, decision, proposal, request });
+  return development.executeCanonicalApproval(run_id, {
+    approval_id: claim.id,
+    decision_id: decision.id,
+    contract_sha256: decision.payload.contract_sha256
+  });
 }
 
 async function advanceAutonomyAfterDiagnosis({ run_id, incident_id, intent_id }) {
@@ -402,9 +407,9 @@ function readAuthorityLocks({ incident_id, run_id, contract_sha256, target }) {
     if (!validLedgerEvent(event, event.incident_id, event.run_id) || !payload || payload.incident_id !== event.incident_id || !boundedText(payload.target, 160) || !validHash(payload.contract_sha256) || payload.lock_key !== failureLockKey({ incident_id: payload.incident_id, contract_sha256: payload.contract_sha256, target: payload.target })) {
       throw autonomyFailure("failure_lock_state_unavailable", "autonomy.locked");
     }
-    if (payload.incident_id === incident_id && payload.contract_sha256 === contract_sha256 && payload.target === target) return { blocked: true, event_id: event.id };
+    if (payload.incident_id === incident_id && payload.contract_sha256 === contract_sha256 && payload.target === target) return { blocked: true, event_id: event.id, observed_sequence: locks.at(-1)?.sequence || 0 };
   }
-  return { blocked: false };
+  return { blocked: false, observed_sequence: locks.at(-1)?.sequence || 0 };
 }
 
 function buildAuthorityDecision({ run_id, incident_id, intent, manifest, validated, receipt, locks }) {
@@ -442,11 +447,110 @@ function appendDecisionAndPendingOwnerContract({ decision, validated, intent }) 
   const inserted = ledger.appendIfAbsent({ id: decision.decision_id, runId: decision.run_id, incidentId: decision.incident_id, type: "autonomy.decision.recorded", actor: "authority-composition", payload: decision, evidenceRefs: validated.evidence_refs, correlationId: decision.decision_id });
   if (!inserted.inserted && !sameCanonicalDecisionEvent(inserted.event, decision, validated.evidence_refs)) throw autonomyFailure("authority_claim_conflict", "decision_id");
   if (decision.outcome === "human_review_required") {
-    const proposalId = `repair-proposed-${decision.decision_sha256.slice(0, 32)}`;
-    ledger.appendIfAbsent({ id: proposalId, runId: decision.run_id, incidentId: decision.incident_id, type: "repair.proposed", actor: "authority-composition", payload: { ...intent.contract, bounded: true, decision_id: decision.decision_id, contract_sha256: decision.contract_sha256 }, evidenceRefs: validated.evidence_refs, correlationId: decision.decision_id });
-    ledger.appendIfAbsent({ id: `approval-request-${decision.decision_sha256.slice(0, 32)}`, runId: decision.run_id, incidentId: decision.incident_id, type: "approval.requested", actor: "authority-composition", payload: { ...intent.contract, owner_team: "local-development", decision_id: decision.decision_id, contract_sha256: decision.contract_sha256, reason: "Consequential checkout remediation requires an explicit owner decision." }, evidenceRefs: validated.evidence_refs, correlationId: decision.decision_id, parentId: proposalId });
+    const ownerGate = canonicalOwnerGate({ decision, intent, evidenceRefs: validated.evidence_refs });
+    const proposal = ledger.appendIfAbsent(ownerGate.proposal);
+    if (!proposal.inserted && !sameCanonicalOwnerGateEvent(proposal.event, ownerGate.proposal, inserted.event)) throw autonomyFailure("owner_gate_proposal_conflict", "repair.proposed");
+    const request = ledger.appendIfAbsent(ownerGate.request);
+    if (!request.inserted && !sameCanonicalOwnerGateEvent(request.event, ownerGate.request, proposal.event)) throw autonomyFailure("owner_gate_request_conflict", "approval.requested");
+    if (!(inserted.event.sequence < proposal.event.sequence && proposal.event.sequence < request.event.sequence)) throw autonomyFailure("owner_gate_order_invalid", "approval.requested");
   }
   return inserted.event;
+}
+
+function canonicalOwnerGate({ decision, intent, evidenceRefs }) {
+  const proposalId = `repair-proposed-${decision.decision_sha256.slice(0, 32)}`;
+  const requestId = `approval-request-${decision.decision_sha256.slice(0, 32)}`;
+  return {
+    proposal: {
+      id: proposalId,
+      runId: decision.run_id,
+      incidentId: decision.incident_id,
+      type: "repair.proposed",
+      actor: "authority-composition",
+      payload: { ...intent.contract, bounded: true, decision_id: decision.decision_id, contract_sha256: decision.contract_sha256 },
+      evidenceRefs,
+      correlationId: decision.decision_id
+    },
+    request: {
+      id: requestId,
+      runId: decision.run_id,
+      incidentId: decision.incident_id,
+      type: "approval.requested",
+      actor: "authority-composition",
+      payload: { ...intent.contract, owner_team: "local-development", decision_id: decision.decision_id, contract_sha256: decision.contract_sha256, reason: "Consequential checkout remediation requires an explicit owner decision." },
+      evidenceRefs,
+      correlationId: decision.decision_id,
+      parentId: proposalId
+    }
+  };
+}
+
+function claimCanonicalDevelopmentApproval({ run_id, incident_id, intent_id, owner, decision, proposal, request }) {
+  assertAutonomySelector({ run_id, incident_id, intent_id });
+  const intent = AUTONOMY_POLICY_ARTIFACT.intents.find((item) => item.id === intent_id);
+  if (!intent || !sameCanonicalDecisionEvent(decision, decision.payload, decision.evidence_refs)) throw autonomyFailure("canonical_decision_invalid", "autonomy.decision.recorded");
+  const ownerGate = canonicalOwnerGate({ decision: decision.payload, intent, evidenceRefs: decision.evidence_refs });
+  if (!sameCanonicalOwnerGateEvent(proposal, ownerGate.proposal, decision) || !sameCanonicalOwnerGateEvent(request, ownerGate.request, proposal) || !(decision.sequence < proposal.sequence && proposal.sequence < request.sequence)) {
+    throw autonomyFailure("owner_gate_contract_or_order_invalid", "approval.requested");
+  }
+  const locks = readAuthorityLocks({ incident_id, run_id, contract_sha256: decision.payload.contract_sha256, target: intent.contract.target });
+  if (locks.blocked) throw autonomyFailure("failure_lock_present", "autonomy.locked");
+  const approvalId = `approval-granted-${decision.payload.decision_sha256.slice(0, 32)}`;
+  const approvalPayload = { owner, ...decision.payload.contract, scope: "local checkout container only", decision_id: decision.id, contract_sha256: decision.payload.contract_sha256 };
+  const inserted = atomicApprovalClaim({
+    approvalId,
+    approvalPayload,
+    decision,
+    proposal,
+    request,
+    observedLockSequence: locks.observed_sequence
+  });
+  if (!inserted) throw autonomyFailure("atomic_approval_claim_rejected", "approval.granted");
+  const approval = ledger.get(approvalId);
+  if (!sameCanonicalApprovalEvent(approval, { approvalId, approvalPayload, decision, request })) throw autonomyFailure("atomic_approval_claim_invalid", "approval.granted");
+  return approval;
+}
+
+function atomicApprovalClaim({ approvalId, approvalPayload, decision, proposal, request, observedLockSequence }) {
+  const parameters = sqliteParameters({
+    approval_id: approvalId,
+    approval_payload: JSON.stringify(approvalPayload),
+    approval_correlation_id: decision.id,
+    decision_id: decision.id,
+    decision_payload: JSON.stringify(decision.payload),
+    proposal_id: proposal.id,
+    proposal_payload: JSON.stringify(proposal.payload),
+    request_id: request.id,
+    request_payload: JSON.stringify(request.payload),
+    run_id: decision.run_id,
+    incident_id: decision.incident_id,
+    evidence_refs: JSON.stringify(decision.evidence_refs),
+    observed_lock_sequence: String(observedLockSequence)
+  });
+  const text = (name) => `CAST(@${name} AS TEXT)`;
+  const script = `${parameters}
+BEGIN IMMEDIATE;
+INSERT INTO events (id, run_id, incident_id, recorded_at, offset_ms, type, actor, payload_json, evidence_refs_json, parent_id, correlation_id)
+SELECT ${text("approval_id")}, ${text("run_id")}, ${text("incident_id")}, strftime('%Y-%m-%dT%H:%M:%fZ','now'), 0, 'approval.granted', 'owner', ${text("approval_payload")}, ${text("evidence_refs")}, NULL, ${text("approval_correlation_id")}
+WHERE EXISTS (SELECT 1 FROM events d WHERE d.id=${text("decision_id")} AND d.run_id=${text("run_id")} AND d.incident_id=${text("incident_id")} AND d.type='autonomy.decision.recorded' AND d.actor='authority-composition' AND d.parent_id IS NULL AND d.correlation_id=${text("decision_id")} AND d.offset_ms=0 AND d.payload_json=${text("decision_payload")} AND d.evidence_refs_json=${text("evidence_refs")})
+  AND EXISTS (SELECT 1 FROM events p WHERE p.id=${text("proposal_id")} AND p.run_id=${text("run_id")} AND p.incident_id=${text("incident_id")} AND p.type='repair.proposed' AND p.actor='authority-composition' AND p.parent_id IS NULL AND p.correlation_id=${text("decision_id")} AND p.offset_ms=0 AND p.payload_json=${text("proposal_payload")} AND p.evidence_refs_json=${text("evidence_refs")})
+  AND EXISTS (SELECT 1 FROM events r WHERE r.id=${text("request_id")} AND r.run_id=${text("run_id")} AND r.incident_id=${text("incident_id")} AND r.type='approval.requested' AND r.actor='authority-composition' AND r.parent_id=${text("proposal_id")} AND r.correlation_id=${text("decision_id")} AND r.offset_ms=0 AND r.payload_json=${text("request_payload")} AND r.evidence_refs_json=${text("evidence_refs")})
+  AND (SELECT sequence FROM events WHERE id=${text("decision_id")}) < (SELECT sequence FROM events WHERE id=${text("proposal_id")})
+  AND (SELECT sequence FROM events WHERE id=${text("proposal_id")}) < (SELECT sequence FROM events WHERE id=${text("request_id")})
+  AND NOT EXISTS (SELECT 1 FROM events WHERE run_id=${text("run_id")} AND type='approval.granted')
+  AND NOT EXISTS (SELECT 1 FROM events l WHERE l.type='autonomy.locked' AND l.sequence > CAST(@observed_lock_sequence AS INTEGER) AND (l.incident_id=${text("incident_id")} OR json_extract(l.payload_json,'$.incident_id')=${text("incident_id")}));
+INSERT OR ROLLBACK INTO events (id, run_id, incident_id, recorded_at, offset_ms, type, actor, payload_json, evidence_refs_json, parent_id, correlation_id)
+SELECT ${text("decision_id")}, ${text("run_id")}, ${text("incident_id")}, strftime('%Y-%m-%dT%H:%M:%fZ','now'), 0, 'approval.guard', 'authority-composition', '{}', '[]', NULL, ${text("decision_id")}
+WHERE EXISTS (SELECT 1 FROM events WHERE id=${text("approval_id")})
+  AND EXISTS (SELECT 1 FROM events l WHERE l.type='autonomy.locked' AND l.sequence > CAST(@observed_lock_sequence AS INTEGER) AND (l.incident_id=${text("incident_id")} OR json_extract(l.payload_json,'$.incident_id')=${text("incident_id")}));
+COMMIT;
+SELECT count(*) FROM events WHERE id=${text("approval_id")};`;
+  const output = ledger.exec(script).trim().split(/\s+/).at(-1);
+  return output === "1";
+}
+
+function sqliteParameters(values) {
+  return [".parameter init", ...Object.entries(values).map(([name, value]) => `.parameter set @${name} X'${Buffer.from(String(value), "utf8").toString("hex")}'`)].join("\n");
 }
 
 function assertAutonomySelector(value) {
@@ -474,7 +578,13 @@ function boundedText(value, bytes) { return typeof value === "string" && value.l
 function validLedgerEvent(event, incident_id, run_id) { return event && event.incident_id === incident_id && event.run_id === run_id && Number.isInteger(event.sequence) && event.sequence > 0 && boundedText(event.id, 200) && boundedText(event.recorded_at, 40) && validHash(event.payload_sha256) && Array.isArray(event.evidence_refs); }
 function sameSet(left, right) { return Array.isArray(left) && Array.isArray(right) && new Set(left).size === left.length && new Set(right).size === right.length && left.length === right.length && [...left].every((item) => right.includes(item)); }
 function sameCanonicalDecisionEvent(event, decision, evidenceRefs) {
-  return Boolean(event && event.id === decision.decision_id && event.run_id === decision.run_id && event.incident_id === decision.incident_id && event.type === "autonomy.decision.recorded" && event.actor === "authority-composition" && event.parent_id == null && event.correlation_id === decision.decision_id && sameSet(event.evidence_refs, evidenceRefs) && sha256Canonical(event.payload) === sha256Canonical(decision));
+  return Boolean(event && event.id === decision.decision_id && event.run_id === decision.run_id && event.incident_id === decision.incident_id && event.type === "autonomy.decision.recorded" && event.actor === "authority-composition" && event.parent_id == null && event.correlation_id === decision.decision_id && event.offset_ms === 0 && timestamp(event.recorded_at) && sameSet(event.evidence_refs, evidenceRefs) && sha256Canonical(event.payload) === sha256Canonical(decision));
+}
+function sameCanonicalOwnerGateEvent(event, candidate, parent) {
+  return Boolean(event && event.id === candidate.id && event.run_id === candidate.runId && event.incident_id === candidate.incidentId && event.type === candidate.type && event.actor === candidate.actor && event.parent_id === (candidate.parentId || null) && event.correlation_id === candidate.correlationId && event.offset_ms === 0 && timestamp(event.recorded_at) && sameSet(event.evidence_refs, candidate.evidenceRefs) && sha256Canonical(event.payload) === sha256Canonical(candidate.payload) && Number.isInteger(parent?.sequence) && parent.sequence < event.sequence);
+}
+function sameCanonicalApprovalEvent(event, { approvalId, approvalPayload, decision, request }) {
+  return Boolean(event && event.id === approvalId && event.run_id === decision.run_id && event.incident_id === decision.incident_id && event.type === "approval.granted" && event.actor === "owner" && event.parent_id == null && event.correlation_id === decision.id && event.offset_ms === 0 && timestamp(event.recorded_at) && sameSet(event.evidence_refs, decision.evidence_refs) && sha256Canonical(event.payload) === sha256Canonical(approvalPayload) && request.sequence < event.sequence);
 }
 function coreContractMatches(value, contract) {
   return Boolean(value && Object.keys(value).every((key) => ["repair_id", "action", "target", "command_id", "reason"].includes(key)) && ["repair_id", "action", "target", "command_id"].every((key) => value[key] === contract[key]) && (!Object.hasOwn(value, "reason") || boundedText(value.reason, 2_048)));

@@ -10,6 +10,7 @@ import { IncidentRuntime } from "../src/runtime.mjs";
 import { LiveOtlpEvidenceSource, versionedChangeEvidence } from "../src/evidence-source.mjs";
 import { PINNED_CHECKOUT_CODE_SPEC } from "../src/code-evidence.mjs";
 import { buildDiagnosisBacktestSeed, createDevelopmentRegressionArtifact, runDevelopmentBacktest, sha256 } from "../src/regression-backtest.mjs";
+import { sha256Canonical } from "../src/autonomy-policy.mjs";
 
 test("real-development loop rejects weak blame, gates rollback, then verifies fresh evidence", async () => {
   const runtime = new IncidentRuntime({
@@ -457,6 +458,42 @@ test("mismatched approval request cannot execute the checked-in development repa
   runtime.append(runId, "approval.requested", "test", { repair_id: "unrelated", action: "other", target: "payment", command_id: "other" });
   await assert.rejects(() => development.approve(runId), /does not match/);
   assert.equal(executions, 0);
+});
+
+test("a canonical server approval claim executes the allowlisted rollback exactly once", async () => {
+  const runtime = new IncidentRuntime({
+    ledger: new Ledger(join(mkdtempSync(join(tmpdir(), "flowpulse-development-canonical-claim-")), "ledger.db")),
+    bundle: loadBundle()
+  });
+  let executions = 0;
+  const development = new DevelopmentRuntime({
+    runtime,
+    source: { async project() { return { status: "live", evidence: [] }; } },
+    adapter: {
+      async executeApprovedRollback({ commandId }) { executions += 1; return { command_id: commandId, completed_at: "2026-07-17T12:01:00.000Z", stdout: "", stderr: "" }; }
+    }
+  });
+  const runId = runtime.startRun("development");
+  const applied = change();
+  runtime.append(runId, "change.applied", "test", { change: applied, before: "off", after: "on", applied_at: "2026-07-17T12:00:00.000Z" });
+  const contract = { repair_id: applied.repair_id, action: "restore known-good paymentUnreachable flag and recreate checkout", target: applied.target, command_id: applied.repair_command_id };
+  const decisionId = "autonomy-decision-test-canonical";
+  const approvalId = "approval-granted-test-canonical";
+  const contractSha = sha256Canonical({ ...contract, expected_before: "paymentUnreachable=on", expected_after: "paymentUnreachable=off" });
+  runtime.ledger.append({
+    id: approvalId,
+    runId,
+    incidentId: runtime.bundle.incident.id,
+    type: "approval.granted",
+    actor: "owner",
+    payload: { owner: "Test owner", ...contract, scope: "local checkout container only", decision_id: decisionId, contract_sha256: contractSha },
+    correlationId: decisionId
+  });
+  await development.executeCanonicalApproval(runId, { approval_id: approvalId, decision_id: decisionId, contract_sha256: contractSha });
+  assert.equal(executions, 1);
+  assert.equal(runtime.ledger.list(runId).filter((event) => event.type === "repair.executed").length, 1);
+  await assert.rejects(() => development.executeCanonicalApproval(runId, { approval_id: approvalId, decision_id: decisionId, contract_sha256: contractSha }), /missing or invalid/);
+  assert.equal(executions, 1);
 });
 
 test("frozen development investigation cites the exact change and complete pre-approval Diagnosis Gate", async () => {

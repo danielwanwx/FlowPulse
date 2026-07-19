@@ -57,6 +57,24 @@ test("a conflicting pre-existing decision claim fails closed without an Owner Ga
   assert.equal(events.some((event) => event.type === "repair.proposed" || event.type === "approval.requested" || event.type === "approval.granted" || event.type === "repair.executed"), false);
 });
 
+test("a header-only canonical decision collision fails closed", async (context) => {
+  const fixture = await startAuthorityFixture(context, { conflictingDecision: { headerOnly: true } });
+  const response = await postJson(fixture.port, "/api/development/investigate");
+  assert.equal(response.status, 422, JSON.stringify(response.body));
+  const events = new Ledger(fixture.dbPath).list(fixture.runId);
+  assert.equal(events.some((event) => event.type === "repair.proposed" || event.type === "approval.requested" || event.type === "approval.granted" || event.type === "repair.executed"), false);
+});
+
+test("conflicting canonical Owner-Gate proposal or request fails closed", async (context) => {
+  for (const type of ["repair.proposed", "approval.requested"]) {
+    const fixture = await startAuthorityFixture(context, { conflictingOwnerGate: type });
+    const response = await postJson(fixture.port, "/api/development/investigate");
+    assert.equal(response.status, 422, `${type}: ${JSON.stringify(response.body)}`);
+    const events = new Ledger(fixture.dbPath).list(fixture.runId);
+    assert.equal(events.some((event) => event.type === "approval.granted" || event.type === "repair.executed"), false, type);
+  }
+});
+
 test("a pre-existing decision with a tampered receipt or context fails closed", async (context) => {
   for (const patch of [{ path: "$.receipt_sha256", value: "f".repeat(64) }, { path: "$.authority_context_sha256", value: "e".repeat(64) }]) {
     const fixture = await startAuthorityFixture(context, { conflictingDecision: patch });
@@ -124,6 +142,15 @@ test("a lock inserted after the Owner Gate request blocks approval and compatibi
   const events = new Ledger(fixture.dbPath).list(fixture.runId);
   assert.equal(events.some((event) => event.type === "approval.granted" || event.type === "repair.executed"), false);
   assert.equal(events.filter((event) => event.type === "autonomy.decision.recorded").at(-1)?.payload.outcome, "non_actionable");
+});
+
+test("a lock written at the atomic approval claim boundary rolls back approval and execution", async (context) => {
+  const fixture = await startAuthorityFixture(context, { approvalTimeLock: true });
+  assert.equal((await postJson(fixture.port, "/api/development/investigate")).status, 200);
+  const approval = await postJson(fixture.port, "/api/development/approve", { owner: "Test owner" });
+  assert.equal(approval.status, 500, JSON.stringify(approval.body));
+  const events = new Ledger(fixture.dbPath).list(fixture.runId);
+  assert.equal(events.some((event) => event.type === "approval.granted" || event.type === "repair.executed"), false);
 });
 
 test("judge API serves state and advances the replay", async (context) => {
@@ -273,7 +300,7 @@ async function seedIntegrityMismatch(dbPath) {
   });
 }
 
-async function startAuthorityFixture(context, { futureCapture = false, staleCapture = false, conflictingDecision = null, misorderedEvaluator = false, hypothesisMismatch = false, tamperedEvaluator = false, tamperedEvidence = false } = {}) {
+async function startAuthorityFixture(context, { futureCapture = false, staleCapture = false, conflictingDecision = null, conflictingOwnerGate = null, approvalTimeLock = false, misorderedEvaluator = false, hypothesisMismatch = false, tamperedEvaluator = false, tamperedEvidence = false } = {}) {
   const port = await freshPort();
   const root = mkdtempSync(join(tmpdir(), "flowpulse-server-authority-"));
   const dbPath = join(root, "ledger.db");
@@ -306,6 +333,8 @@ async function startAuthorityFixture(context, { futureCapture = false, staleCapt
   }, [code.id]);
   const ledger = new Ledger(dbPath);
   if (conflictingDecision) seedConflictingDecisionTrigger(ledger, conflictingDecision);
+  if (conflictingOwnerGate) seedConflictingOwnerGateTrigger(ledger, conflictingOwnerGate);
+  if (approvalTimeLock) seedApprovalClaimLockTrigger(ledger);
   if (misorderedEvaluator) seedMisorderedEvaluatorTrigger(ledger);
   if (hypothesisMismatch) seedGateMutationTrigger(ledger, "$.accepted.diagnosis.id", "mismatched-hypothesis");
   if (tamperedEvaluator) seedGateMutationTrigger(ledger, "$.accepted.evaluation.reason", "tampered evaluator content");
@@ -334,15 +363,46 @@ function checkoutContract() {
   return { repair_id: "repair-payment-reachable-v1", action: "restore known-good paymentUnreachable flag and recreate checkout", target: "checkout", command_id: "astronomy.restore-payment-and-recreate-checkout", expected_before: "paymentUnreachable=on", expected_after: "paymentUnreachable=off" };
 }
 
-function seedConflictingDecisionTrigger(ledger, { path = "$.outcome", value = "auto_execute_pre_authorized" } = {}) {
+function seedConflictingDecisionTrigger(ledger, { path = "$.outcome", value = "auto_execute_pre_authorized", headerOnly = false } = {}) {
+  const actor = headerOnly ? sqlLiteral("test-conflict") : "NEW.actor";
+  const payload = headerOnly ? "NEW.payload_json" : `json_set(NEW.payload_json, ${sqlLiteral(path)}, ${sqlLiteral(value)})`;
   ledger.exec(`
     CREATE TRIGGER test_conflicting_autonomy_decision
     BEFORE INSERT ON events
     WHEN NEW.type = 'autonomy.decision.recorded'
     BEGIN
       INSERT INTO events (id, run_id, incident_id, recorded_at, offset_ms, type, actor, payload_json, evidence_refs_json, parent_id, correlation_id)
-      VALUES (NEW.id, NEW.run_id, NEW.incident_id, NEW.recorded_at, NEW.offset_ms, NEW.type, 'test-conflict', json_set(NEW.payload_json, ${sqlLiteral(path)}, ${sqlLiteral(value)}), '[]', NULL, NEW.correlation_id);
+      VALUES (NEW.id, NEW.run_id, NEW.incident_id, NEW.recorded_at, NEW.offset_ms, NEW.type, ${actor}, ${payload}, NEW.evidence_refs_json, NEW.parent_id, NEW.correlation_id);
       SELECT RAISE(IGNORE);
+    END;
+  `);
+}
+
+function seedConflictingOwnerGateTrigger(ledger, type) {
+  ledger.exec(`
+    CREATE TRIGGER test_conflicting_owner_gate
+    BEFORE INSERT ON events
+    WHEN NEW.type = ${sqlLiteral(type)}
+    BEGIN
+      INSERT INTO events (id, run_id, incident_id, recorded_at, offset_ms, type, actor, payload_json, evidence_refs_json, parent_id, correlation_id)
+      VALUES (NEW.id, NEW.run_id, NEW.incident_id, NEW.recorded_at, NEW.offset_ms, NEW.type, 'test-conflict', NEW.payload_json, NEW.evidence_refs_json, NEW.parent_id, NEW.correlation_id);
+      SELECT RAISE(IGNORE);
+    END;
+  `);
+}
+
+function seedApprovalClaimLockTrigger(ledger) {
+  const contract = checkoutContract();
+  const contract_sha256 = sha256Canonical(contract);
+  const incidentId = loadBundle().incident.id;
+  const payload = JSON.stringify({ incident_id: incidentId, contract_sha256, target: contract.target, lock_key: failureLockKey({ incident_id: incidentId, contract_sha256, target: contract.target }) });
+  ledger.exec(`
+    CREATE TRIGGER test_lock_at_atomic_approval
+    BEFORE INSERT ON events
+    WHEN NEW.type = 'approval.granted'
+    BEGIN
+      INSERT INTO events (id, run_id, incident_id, recorded_at, offset_ms, type, actor, payload_json, evidence_refs_json, parent_id, correlation_id)
+      VALUES ('test-atomic-approval-lock', NEW.run_id, NEW.incident_id, NEW.recorded_at, 0, 'autonomy.locked', 'test', ${sqlLiteral(payload)}, '[]', NULL, NEW.correlation_id);
     END;
   `);
 }

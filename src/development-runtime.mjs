@@ -241,6 +241,38 @@ export class DevelopmentRuntime {
     return result;
   }
 
+  // The server-owned authority closure appends approval.granted atomically.
+  // This method consumes that exact claim; it never creates approval authority.
+  async executeCanonicalApproval(runId = this.runtime.ensureRun(), claim = {}) {
+    this.assertMode(runId);
+    if (!claim || typeof claim !== "object" || Array.isArray(claim) || Object.keys(claim).sort().join(",") !== "approval_id,contract_sha256,decision_id") {
+      throw new Error("A canonical server approval claim is required");
+    }
+    const events = this.runtime.ledger.list(runId);
+    const change = this.changeFor(runId);
+    const contract = repairContract(change);
+    const approvals = events.filter((event) => event.type === "approval.granted" && event.id === claim.approval_id);
+    const approval = approvals.length === 1 ? approvals[0] : null;
+    if (!approval || events.some((event) => event.type === "repair.executed") || approval.actor !== "owner" || approval.correlation_id !== claim.decision_id || approval.payload?.decision_id !== claim.decision_id || approval.payload?.contract_sha256 !== claim.contract_sha256 || !exactContract(approval.payload, contract)) {
+      throw new Error("Canonical approval claim is missing or invalid");
+    }
+    const result = await this.adapter.executeApprovedRollback({ commandId: contract.command_id });
+    this.runtime.append(runId, "repair.executed", "remediation", {
+      repair_id: change.repair_id,
+      action: contract.action,
+      target: contract.target,
+      from: change.after,
+      to: change.known_good,
+      mode: "local-development",
+      command_id: result.command_id,
+      completed_at: result.completed_at,
+      stdout: result.stdout,
+      stderr: result.stderr
+    });
+    this.runtime.append(runId, "loop.repair_executed", "runtime", { step: "execute approved local rollback" });
+    return result;
+  }
+
   async verify(runId = this.runtime.ensureRun()) {
     this.assertMode(runId);
     const harness = harnessBinding(loadHarnessManifest());
