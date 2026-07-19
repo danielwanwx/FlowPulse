@@ -26,6 +26,7 @@ const DISPLAY_TEXT = /^[A-Za-z0-9][A-Za-z0-9 .,:;_/@#-]*$/;
 const CAPTURE_REFERENCE = /^capture:\/\/[A-Za-z0-9][A-Za-z0-9._:-]{0,159}(?:#[A-Za-z0-9][A-Za-z0-9._:-]{0,159})?$/;
 const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const UNSAFE_TEXT = /(?:\b(?:api[_ -]?key|access[_ -]?token|token|secret|password|passwd|pwd|authorization|bearer|private[ -]?key|client[ -]?secret|prompt|context|instruction|session(?:[_ -]?id)?|cookie|localstorage|raw[ -]?(?:log|payload|query|error)|stack|trace|payload|query|error)\b|\b(?:select|insert|update|delete|merge|drop|create|alter|show|describe|explain|with|grant|revoke|truncate|call|execute|use|set|pragma|vacuum|attach|detach|copy|load|replace|begin|commit|rollback|savepoint|release|analyze|reindex|lock|unlock|prepare|deallocate|declare|fetch|listen|notify)\b|(?:[a-z][a-z0-9+.-]*):\/\/|\b[A-Za-z0-9._-]{1,80}:[A-Za-z0-9._~!$&'()*+,;=%/-]{1,160}@[A-Za-z0-9.-]{1,253}\b|<\/?(?:script|html|svg|img|iframe)\b|javascript:|file:\/\/|localhost|\/users\/|%[0-9a-f]{2}|&#(?:x?[0-9a-f]+|[a-z]+);|\b(?:AKIA|ASIA)[0-9A-Z]{16}\b|(?<![A-Za-z0-9+/=_-])[A-Za-z0-9+/=_-]{40}(?![A-Za-z0-9+/=_-])|\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b)/i;
+const UNSAFE_ADMIN_COMMAND = /(?:\b(?:begin|start|end|commit|rollback|abort)\s+(?:transaction|work)\b|\bexec(?:ute)?\s+(?:immediate\s+)?[A-Za-z0-9_.-]+\b|\bupsert(?:\s+into)?\s+[A-Za-z0-9_.-]+\b|\b(?:connect|disconnect)\s+(?:(?:to|from)\s+)?(?:database|server|warehouse)\b|\brename\s+(?:table|column|database|schema|index|view)\b|\bcomment\s+on\s+(?:table|column|database|schema|view)\b)/i;
 const UNSAFE_JSON_KEYS = new Set(["__proto__", "prototype", "constructor"]);
 
 export class EvidenceEnvelopeError extends Error {
@@ -141,7 +142,7 @@ export function isSafeDisplayText(value, limit) {
 }
 
 function unsafeText(value) {
-  if (UNSAFE_TEXT.test(value)) return true;
+  if (matchesUnsafeText(value)) return true;
   const tokens = value.match(/[A-Za-z0-9+/_-]{8,}={0,2}/g) ?? [];
   return tokens.some((token) => unsafeEncodedToken(token));
 }
@@ -153,11 +154,13 @@ function unsafeEncodedToken(token) {
   if (!/^[A-Za-z0-9+/]+={0,2}$/.test(normalized) || normalized.length % 4 === 1) return false;
   try {
     const decoded = Buffer.from(normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "="), "base64").toString("utf8");
-    return decoded.length > 0 && /^[\x20-\x7e]+$/.test(decoded) && UNSAFE_TEXT.test(decoded);
+    return decoded.length > 0 && /^[\x20-\x7e]+$/.test(decoded) && matchesUnsafeText(decoded);
   } catch {
     return true;
   }
 }
+
+function matchesUnsafeText(value) { return UNSAFE_TEXT.test(value) || UNSAFE_ADMIN_COMMAND.test(value); }
 
 function captureReference(value, allowFragment) {
   return typeof value === "string" && Buffer.byteLength(value, "utf8") <= EVIDENCE_ENVELOPE_LIMITS.max_string_bytes && CAPTURE_REFERENCE.test(value) && (allowFragment || !value.includes("#"));
