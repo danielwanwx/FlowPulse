@@ -10,7 +10,6 @@ import { IncidentRuntime } from "../src/runtime.mjs";
 import { LiveOtlpEvidenceSource, versionedChangeEvidence } from "../src/evidence-source.mjs";
 import { PINNED_CHECKOUT_CODE_SPEC } from "../src/code-evidence.mjs";
 import { buildDiagnosisBacktestSeed, createDevelopmentRegressionArtifact, runDevelopmentBacktest, sha256 } from "../src/regression-backtest.mjs";
-import { sha256Canonical } from "../src/autonomy-policy.mjs";
 
 test("real-development loop rejects weak blame, gates rollback, then verifies fresh evidence", async () => {
   const runtime = new IncidentRuntime({
@@ -48,7 +47,9 @@ test("real-development loop rejects weak blame, gates rollback, then verifies fr
   assert.equal(state.events.some((event) => event.type === "evaluation.rejected" && event.payload.hypothesis_id === "hyp-payment-service"), true);
   assert.equal(state.events.some((event) => event.type === "repair.executed"), false);
 
-  await development.approve(runId, "Test development owner");
+  repaired = true;
+  flagVariant = "off";
+  appendVerifierRepairExecution(runtime, runId);
   await development.verify(runId);
   state = development.state(runId);
   assert.equal(state.complete, true);
@@ -440,60 +441,21 @@ test("development investigation without checkout flag-consumption evidence creat
   assert.equal(events.some((event) => event.type === "repair.proposed" || event.type === "approval.requested"), false);
 });
 
-test("mismatched approval request cannot execute the checked-in development repair", async () => {
+test("DevelopmentRuntime exposes no approval or execution authority", async () => {
   const runtime = new IncidentRuntime({
     ledger: new Ledger(join(mkdtempSync(join(tmpdir(), "flowpulse-development-mismatch-")), "ledger.db")),
     bundle: loadBundle()
   });
-  let executions = 0;
   const development = new DevelopmentRuntime({
     runtime,
     source: { async project() { return { status: "live", evidence: [failureEvidence()] }; } },
     adapter: {
       async applyDevelopmentCase() { return { change: change(), before: "off", after: "on", applied_at: "2026-07-17T12:00:00.000Z", source: "test" }; },
-      async executeApprovedRollback() { executions += 1; return { command_id: "should-not-run" }; }
+      async executeApprovedRollback() { throw new Error("must not be called by investigation runtime"); }
     }
   });
-  const runId = await development.start();
-  runtime.append(runId, "approval.requested", "test", { repair_id: "unrelated", action: "other", target: "payment", command_id: "other" });
-  await assert.rejects(() => development.approve(runId), /does not match/);
-  assert.equal(executions, 0);
-});
-
-test("a canonical server approval claim executes the allowlisted rollback exactly once", async () => {
-  const runtime = new IncidentRuntime({
-    ledger: new Ledger(join(mkdtempSync(join(tmpdir(), "flowpulse-development-canonical-claim-")), "ledger.db")),
-    bundle: loadBundle()
-  });
-  let executions = 0;
-  const development = new DevelopmentRuntime({
-    runtime,
-    source: { async project() { return { status: "live", evidence: [] }; } },
-    adapter: {
-      async executeApprovedRollback({ commandId }) { executions += 1; return { command_id: commandId, completed_at: "2026-07-17T12:01:00.000Z", stdout: "", stderr: "" }; }
-    }
-  });
-  const runId = runtime.startRun("development");
-  const applied = change();
-  runtime.append(runId, "change.applied", "test", { change: applied, before: "off", after: "on", applied_at: "2026-07-17T12:00:00.000Z" });
-  const contract = { repair_id: applied.repair_id, action: "restore known-good paymentUnreachable flag and recreate checkout", target: applied.target, command_id: applied.repair_command_id };
-  const decisionId = "autonomy-decision-test-canonical";
-  const approvalId = "approval-granted-test-canonical";
-  const contractSha = sha256Canonical({ ...contract, expected_before: "paymentUnreachable=on", expected_after: "paymentUnreachable=off" });
-  runtime.ledger.append({
-    id: approvalId,
-    runId,
-    incidentId: runtime.bundle.incident.id,
-    type: "approval.granted",
-    actor: "owner",
-    payload: { owner: "Test owner", ...contract, scope: "local checkout container only", decision_id: decisionId, contract_sha256: contractSha },
-    correlationId: decisionId
-  });
-  await development.executeCanonicalApproval(runId, { approval_id: approvalId, decision_id: decisionId, contract_sha256: contractSha });
-  assert.equal(executions, 1);
-  assert.equal(runtime.ledger.list(runId).filter((event) => event.type === "repair.executed").length, 1);
-  await assert.rejects(() => development.executeCanonicalApproval(runId, { approval_id: approvalId, decision_id: decisionId, contract_sha256: contractSha }), /missing or invalid/);
-  assert.equal(executions, 1);
+  assert.equal(typeof development.approve, "undefined");
+  assert.equal(typeof development.executeCanonicalApproval, "undefined");
 });
 
 test("frozen development investigation cites the exact change and complete pre-approval Diagnosis Gate", async () => {
@@ -615,7 +577,8 @@ async function approvedDevelopment({ flagVariant = "off", recoveredEvidence, rea
   const runId = await development.start();
   await development.investigate(runId, diagnosisSnapshot(runtime, runId));
   appendVerifierControlEvents(runtime, runId);
-  await development.approve(runId, "Test owner");
+  repaired = true;
+  appendVerifierRepairExecution(runtime, runId);
   return { development, runId };
 }
 
@@ -632,6 +595,29 @@ function appendVerifierControlEvents(runtime, runId) {
   const refs = runtime.ledger.list(runId).find((event) => event.type === "diagnosis.gate.passed").evidence_refs;
   runtime.append(runId, "repair.proposed", "authority-composition", { ...contract, bounded: true }, refs);
   runtime.append(runId, "approval.requested", "authority-composition", { ...contract, owner_team: "local-development" }, refs);
+}
+
+function appendVerifierRepairExecution(runtime, runId) {
+  const contract = {
+    repair_id: "repair-payment-reachable-v1",
+    action: "restore known-good paymentUnreachable flag and recreate checkout",
+    target: "checkout",
+    command_id: "astronomy.restore-payment-and-recreate-checkout"
+  };
+  const refs = runtime.ledger.list(runId).find((event) => event.type === "diagnosis.gate.passed").evidence_refs;
+  // This isolated downstream fixture exercises verification/backtest semantics;
+  // server tests exercise the only authority-bearing approval path.
+  runtime.append(runId, "approval.granted", "owner", { owner: "verification fixture", ...contract }, refs);
+  runtime.append(runId, "repair.executed", "remediation", {
+    repair_id: contract.repair_id,
+    action: contract.action,
+    target: contract.target,
+    from: "on",
+    to: "off",
+    mode: "local-development",
+    command_id: contract.command_id,
+    completed_at: "2026-07-17T12:01:00.000Z"
+  }, refs);
 }
 
 function diagnosisSnapshot(runtime, runId, failures = failureEvidenceSet()) {

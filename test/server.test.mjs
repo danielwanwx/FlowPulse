@@ -150,7 +150,82 @@ test("a lock written at the atomic approval claim boundary rolls back approval a
   const approval = await postJson(fixture.port, "/api/development/approve", { owner: "Test owner" });
   assert.equal(approval.status, 500, JSON.stringify(approval.body));
   const events = new Ledger(fixture.dbPath).list(fixture.runId);
-  assert.equal(events.some((event) => event.type === "approval.granted" || event.type === "repair.executed"), false);
+  assert.equal(events.some((event) => event.type === "approval.granted" || event.type === "repair.execution.attempted" || event.type === "repair.executed"), false);
+});
+
+test("a manually seeded approval-shaped event is inert outside the private server approval claim", async (context) => {
+  const fixture = await startAuthorityFixture(context);
+  assert.equal((await postJson(fixture.port, "/api/development/investigate")).status, 200);
+  const ledger = new Ledger(fixture.dbPath);
+  const decision = ledger.list(fixture.runId).find((event) => event.type === "autonomy.decision.recorded");
+  const contract = checkoutContract();
+  ledger.append({
+    id: `approval-granted-${decision.payload.decision_sha256.slice(0, 32)}`,
+    runId: fixture.runId,
+    incidentId: decision.incident_id,
+    type: "approval.granted",
+    actor: "owner",
+    payload: { owner: "forged", ...contract, scope: "local checkout container only", decision_id: decision.id, contract_sha256: decision.payload.contract_sha256 },
+    evidenceRefs: decision.evidence_refs,
+    correlationId: decision.id
+  });
+  const response = await postJson(fixture.port, "/api/development/approve", { owner: "Test owner" });
+  assert.equal(response.status, 500, JSON.stringify(response.body));
+  const events = ledger.list(fixture.runId);
+  assert.equal(events.filter((event) => event.type === "repair.execution.attempted").length, 0);
+  assert.equal(events.filter((event) => event.type === "repair.executed").length, 0);
+});
+
+test("simultaneous canonical Owner-Gate approvals create one approval and one execution attempt", async (context) => {
+  const fixture = await startAuthorityFixture(context);
+  assert.equal((await postJson(fixture.port, "/api/development/investigate")).status, 200);
+  const [left, right] = await Promise.all([
+    postJson(fixture.port, "/api/development/approve", { owner: "Test owner" }),
+    postJson(fixture.port, "/api/development/approve", { owner: "Test owner" })
+  ]);
+  assert.equal(left.status, 500, JSON.stringify(left.body));
+  assert.equal(right.status, 500, JSON.stringify(right.body));
+  const events = new Ledger(fixture.dbPath).list(fixture.runId);
+  assert.equal(events.filter((event) => event.type === "approval.granted").length, 1);
+  assert.equal(events.filter((event) => event.type === "repair.execution.attempted").length, 1);
+  assert.equal(events.filter((event) => event.type === "repair.executed").length, 0);
+});
+
+test("exact and malformed locks block approval while a valid unrelated same-incident lock does not", async (context) => {
+  const contract = checkoutContract();
+  const contract_sha256 = sha256Canonical(contract);
+  const incidentId = loadBundle().incident.id;
+  for (const [label, payload, expectedApprovals] of [
+    ["exact", { incident_id: incidentId, contract_sha256, target: contract.target, lock_key: failureLockKey({ incident_id: incidentId, contract_sha256, target: contract.target }) }, 0],
+    ["malformed", { incident_id: "other-incident", contract_sha256, target: contract.target, lock_key: failureLockKey({ incident_id: incidentId, contract_sha256, target: contract.target }) }, 0],
+    ["unrelated", { incident_id: incidentId, contract_sha256: "a".repeat(64), target: "other-target", lock_key: failureLockKey({ incident_id: incidentId, contract_sha256: "a".repeat(64), target: "other-target" }) }, 1]
+  ]) {
+    const fixture = await startAuthorityFixture(context);
+    assert.equal((await postJson(fixture.port, "/api/development/investigate")).status, 200, label);
+    const ledger = new Ledger(fixture.dbPath);
+    ledger.append({ id: `test-${label}-approval-lock`, runId: fixture.runId, incidentId, type: "autonomy.locked", actor: "test", payload });
+    const response = await postJson(fixture.port, "/api/development/approve", { owner: "Test owner" });
+    assert.equal(response.status, 500, `${label}: ${JSON.stringify(response.body)}`);
+    const events = ledger.list(fixture.runId);
+    assert.equal(events.filter((event) => event.type === "approval.granted").length, expectedApprovals, label);
+    assert.equal(events.filter((event) => event.type === "repair.execution.attempted").length, expectedApprovals, label);
+    assert.equal(events.filter((event) => event.type === "repair.executed").length, 0, label);
+  }
+});
+
+test("ordered evidence-reference collisions fail closed for decision, proposal, and approval request", async (context) => {
+  const cases = [
+    { label: "decision", options: { conflictingDecision: { reorderEvidenceRefs: true } } },
+    { label: "proposal", options: { reorderedOwnerGate: "repair.proposed" } },
+    { label: "request", options: { reorderedOwnerGate: "approval.requested" } }
+  ];
+  for (const { label, options } of cases) {
+    const fixture = await startAuthorityFixture(context, options);
+    const response = await postJson(fixture.port, "/api/development/investigate");
+    assert.equal(response.status, 422, `${label}: ${JSON.stringify(response.body)}`);
+    const events = new Ledger(fixture.dbPath).list(fixture.runId);
+    assert.equal(events.some((event) => event.type === "approval.granted" || event.type === "repair.execution.attempted" || event.type === "repair.executed"), false, label);
+  }
 });
 
 test("judge API serves state and advances the replay", async (context) => {
@@ -300,7 +375,7 @@ async function seedIntegrityMismatch(dbPath) {
   });
 }
 
-async function startAuthorityFixture(context, { futureCapture = false, staleCapture = false, conflictingDecision = null, conflictingOwnerGate = null, approvalTimeLock = false, misorderedEvaluator = false, hypothesisMismatch = false, tamperedEvaluator = false, tamperedEvidence = false } = {}) {
+async function startAuthorityFixture(context, { futureCapture = false, staleCapture = false, conflictingDecision = null, conflictingOwnerGate = null, reorderedOwnerGate = null, approvalTimeLock = false, misorderedEvaluator = false, hypothesisMismatch = false, tamperedEvaluator = false, tamperedEvidence = false } = {}) {
   const port = await freshPort();
   const root = mkdtempSync(join(tmpdir(), "flowpulse-server-authority-"));
   const dbPath = join(root, "ledger.db");
@@ -334,6 +409,7 @@ async function startAuthorityFixture(context, { futureCapture = false, staleCapt
   const ledger = new Ledger(dbPath);
   if (conflictingDecision) seedConflictingDecisionTrigger(ledger, conflictingDecision);
   if (conflictingOwnerGate) seedConflictingOwnerGateTrigger(ledger, conflictingOwnerGate);
+  if (reorderedOwnerGate) seedReorderedOwnerGateTrigger(ledger, reorderedOwnerGate);
   if (approvalTimeLock) seedApprovalClaimLockTrigger(ledger);
   if (misorderedEvaluator) seedMisorderedEvaluatorTrigger(ledger);
   if (hypothesisMismatch) seedGateMutationTrigger(ledger, "$.accepted.diagnosis.id", "mismatched-hypothesis");
@@ -346,7 +422,7 @@ async function startAuthorityFixture(context, { futureCapture = false, staleCapt
   }
   const child = spawn(process.execPath, ["src/server.mjs"], {
     cwd: new URL("..", import.meta.url),
-    env: { ...process.env, PORT: String(port), FLOWPULSE_DB: dbPath, FLOWPULSE_OTLP_DIR: otlp, OPENAI_API_KEY: "" },
+    env: { ...process.env, PORT: String(port), FLOWPULSE_DB: dbPath, FLOWPULSE_OTLP_DIR: otlp, OPENAI_API_KEY: "", FLOWPULSE_DEVELOPMENT_ENABLED: "0" },
     stdio: ["ignore", "pipe", "pipe"]
   });
   context.after(() => child.kill("SIGTERM"));
@@ -363,16 +439,17 @@ function checkoutContract() {
   return { repair_id: "repair-payment-reachable-v1", action: "restore known-good paymentUnreachable flag and recreate checkout", target: "checkout", command_id: "astronomy.restore-payment-and-recreate-checkout", expected_before: "paymentUnreachable=on", expected_after: "paymentUnreachable=off" };
 }
 
-function seedConflictingDecisionTrigger(ledger, { path = "$.outcome", value = "auto_execute_pre_authorized", headerOnly = false } = {}) {
+function seedConflictingDecisionTrigger(ledger, { path = "$.outcome", value = "auto_execute_pre_authorized", headerOnly = false, reorderEvidenceRefs = false } = {}) {
   const actor = headerOnly ? sqlLiteral("test-conflict") : "NEW.actor";
   const payload = headerOnly ? "NEW.payload_json" : `json_set(NEW.payload_json, ${sqlLiteral(path)}, ${sqlLiteral(value)})`;
+  const evidenceRefs = reorderEvidenceRefs ? reverseEvidenceRefsSql() : "NEW.evidence_refs_json";
   ledger.exec(`
     CREATE TRIGGER test_conflicting_autonomy_decision
     BEFORE INSERT ON events
     WHEN NEW.type = 'autonomy.decision.recorded'
     BEGIN
       INSERT INTO events (id, run_id, incident_id, recorded_at, offset_ms, type, actor, payload_json, evidence_refs_json, parent_id, correlation_id)
-      VALUES (NEW.id, NEW.run_id, NEW.incident_id, NEW.recorded_at, NEW.offset_ms, NEW.type, ${actor}, ${payload}, NEW.evidence_refs_json, NEW.parent_id, NEW.correlation_id);
+      VALUES (NEW.id, NEW.run_id, NEW.incident_id, NEW.recorded_at, NEW.offset_ms, NEW.type, ${actor}, ${payload}, ${evidenceRefs}, NEW.parent_id, NEW.correlation_id);
       SELECT RAISE(IGNORE);
     END;
   `);
@@ -389,6 +466,23 @@ function seedConflictingOwnerGateTrigger(ledger, type) {
       SELECT RAISE(IGNORE);
     END;
   `);
+}
+
+function seedReorderedOwnerGateTrigger(ledger, type) {
+  ledger.exec(`
+    CREATE TRIGGER test_reordered_owner_gate
+    BEFORE INSERT ON events
+    WHEN NEW.type = ${sqlLiteral(type)}
+    BEGIN
+      INSERT INTO events (id, run_id, incident_id, recorded_at, offset_ms, type, actor, payload_json, evidence_refs_json, parent_id, correlation_id)
+      VALUES (NEW.id, NEW.run_id, NEW.incident_id, NEW.recorded_at, NEW.offset_ms, NEW.type, NEW.actor, NEW.payload_json, ${reverseEvidenceRefsSql()}, NEW.parent_id, NEW.correlation_id);
+      SELECT RAISE(IGNORE);
+    END;
+  `);
+}
+
+function reverseEvidenceRefsSql() {
+  return "(SELECT json_group_array(value) FROM (SELECT value FROM json_each(NEW.evidence_refs_json) ORDER BY key DESC))";
 }
 
 function seedApprovalClaimLockTrigger(ledger) {
