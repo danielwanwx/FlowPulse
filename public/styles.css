@@ -422,54 +422,69 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .is-source-topology .source-node.kind-stream { --icon: #d97706; --icon-soft: #fffbeb; }
 .is-source-topology .source-node.kind-worker { --icon: #7c3aed; --icon-soft: #f5f3ff; }
 .is-source-topology .source-node.kind-database { --icon: #059669; --icon-soft: #ecfdf5; }
-.twin-canvas.is-architecture-source { min-width: 0; }
-.is-architecture-source .source-node { width: var(--architecture-card-width); min-height: 72px; grid-template-columns: 27px minmax(0, 1fr); grid-template-rows: 27px auto auto; align-content: center; gap: 2px 7px; padding: 6px 8px; border-radius: 0; box-shadow: none; }
+.twin-canvas.is-architecture-source {
+  --architecture-canvas: #f4f7fa;
+  --architecture-surface: #ffffff;
+  --architecture-surface-muted: #f8fafc;
+  --architecture-border: #d7e0e9;
+  --architecture-border-strong: #aebdcb;
+  --architecture-copy: #172231;
+  --architecture-muted: #59697a;
+  --architecture-shadow: 0 10px 24px rgba(37, 58, 82, .08);
+  --architecture-system-radius: 16px;
+  --architecture-node-radius: 12px;
+  --architecture-control-radius: 8px;
+  min-width: 0;
+  background: var(--architecture-canvas);
+}
+.is-architecture-source .source-node { width: var(--architecture-card-width); min-height: 72px; grid-template-columns: 27px minmax(0, 1fr); grid-template-rows: 27px auto auto; align-content: center; gap: 2px 7px; padding: 6px 8px; border-radius: var(--architecture-node-radius); box-shadow: none; }
 .is-architecture-source .source-node .node-icon { width: 27px; height: 27px; font-size: 16px; }
 .is-architecture-source .source-node .node-copy { display: contents; }
 .is-architecture-source .source-node .node-origin { grid-column: 2; grid-row: 1; align-self: center; margin: 0; color: var(--ink); font-size: 7.5px; opacity: .62; }
 .is-architecture-source .source-node .node-detail { grid-column: 1 / -1; grid-row: 3; display: block; overflow: hidden; margin: 1px 0 0; color: var(--ink); font-family: var(--mono); font-size: 7.5px; font-weight: 650; line-height: 1.2; opacity: .58; text-overflow: ellipsis; white-space: nowrap; }
 .is-architecture-source .source-node .node-status { margin-top: 2px; font-size: 8px; }
-.is-architecture-source .architecture-systems { position: absolute; inset: 0; display: grid; grid-template-columns: minmax(0, 1fr) 238px; grid-template-rows: minmax(0, 1fr) auto; gap: 10px 12px; padding: 12px 20px; }
-.architecture-system { min-width: 0; border: 1px solid var(--line-strong); background: var(--canvas); }
-.architecture-observed-system { display: flex; flex-direction: column; overflow: hidden; }
-.architecture-flowpulse-system { display: flex; flex-direction: column; gap: 8px; padding-bottom: 8px; }
-.architecture-system-heading { min-height: 45px; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 7px 9px; border-bottom: 1px solid var(--line-strong); font-family: var(--mono); }
-.architecture-system-heading > span { padding: 4px 5px; color: var(--canvas); background: var(--ink); font-size: 8px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; }
-.architecture-system-heading > div { display: grid; gap: 2px; }
-.architecture-system-heading strong { color: var(--ink); font-size: 10px; letter-spacing: .025em; text-transform: uppercase; }
-.architecture-system-heading small { color: var(--muted); font-size: 8px; }
-.architecture-system-heading em { color: var(--muted); font-size: 8px; font-style: normal; text-align: right; }
-.architecture-system-heading[data-system="flowpulse"] > span { background: var(--blue); }
-.architecture-flowpulse-system .architecture-system-heading { grid-template-columns: auto minmax(0, 1fr); }
-.architecture-flowpulse-system .architecture-system-heading em { grid-column: 2; text-align: left; }
-.architecture-observed-stack { --architecture-card-width: clamp(88px, 7.5vw, 110px); display: flex; flex: 1; flex-direction: column; justify-content: center; gap: 7px; padding: 8px 10px; }
-.architecture-tier { position: relative; flex: none; width: 100%; display: block; margin: 0; }
-.architecture-tier-row { min-height: 54px; height: auto; display: grid; grid-template-columns: repeat(auto-fit, var(--architecture-card-width)); align-items: stretch; justify-content: center; gap: 6px; }
-.architecture-tier-label { width: 100%; min-height: 31px; display: flex; align-items: center; gap: 7px; margin: 0 0 5px; padding: 0; color: var(--ink); border: 0; border-bottom: 1px solid var(--line-strong); background: transparent; font-family: var(--mono); line-height: 1; text-align: left; }
-.architecture-tier-label b { min-width: 25px; padding: 4px 5px; color: var(--canvas); background: var(--ink); font-size: 8px; font-weight: 800; text-align: center; }
-.architecture-tier-label > span { display: grid; gap: 2px; }
-.architecture-tier-label strong { font-size: 9px; font-weight: 800; letter-spacing: .035em; text-transform: uppercase; }
-.architecture-tier-label small { color: var(--muted); font-size: 8px; letter-spacing: 0; text-transform: none; }
-.architecture-tier-label em { margin-left: auto; color: var(--muted); font-size: 8px; font-style: normal; }
-.architecture-relation-summary, .architecture-flowpulse-relations, .architecture-cross-boundary { padding: 7px 9px; border-top: 1px solid var(--line-strong); font-family: var(--mono); font-size: 8px; line-height: 1.35; }
-.architecture-relation-summary { display: flex; justify-content: space-between; gap: 8px; color: var(--muted); }
-.architecture-relation-summary strong { color: var(--ink); }
-.architecture-flowpulse-nodes { --architecture-card-width: 100%; display: grid; gap: 6px; padding: 0 8px; }
+.is-architecture-source .architecture-systems { position: absolute; inset: 0; display: grid; grid-template-columns: minmax(0, 1fr) 248px; grid-template-rows: minmax(0, 1fr) auto; gap: 12px 14px; padding: 14px 20px; }
+.is-architecture-source .architecture-system { min-width: 0; overflow: hidden; border: 1px solid var(--architecture-border); border-radius: var(--architecture-system-radius); background: var(--architecture-surface); box-shadow: var(--architecture-shadow); }
+.is-architecture-source .architecture-observed-system { display: flex; flex-direction: column; }
+.is-architecture-source .architecture-flowpulse-system { display: flex; flex-direction: column; gap: 8px; padding-bottom: 10px; border-color: color-mix(in srgb, var(--blue) 36%, var(--architecture-border)); background: var(--architecture-surface-muted); }
+.is-architecture-source .architecture-system-heading { min-height: 64px; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 11px 13px; border-bottom: 1px solid var(--architecture-border); color: var(--architecture-copy); background: var(--architecture-surface); font-family: var(--mono); }
+.is-architecture-source .architecture-system-heading > span { padding: 5px 7px; border-radius: var(--architecture-control-radius); color: #ffffff; background: #2d3a49; font-size: 9px; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; }
+.is-architecture-source .architecture-system-heading > div { display: grid; gap: 3px; }
+.is-architecture-source .architecture-system-heading strong { color: var(--architecture-copy); font-family: var(--font); font-size: 14px; font-weight: 750; letter-spacing: -.012em; text-transform: none; }
+.is-architecture-source .architecture-system-heading small { color: var(--architecture-muted); font-family: var(--font); font-size: 11px; }
+.is-architecture-source .architecture-system-heading em { color: var(--architecture-muted); font-family: var(--font); font-size: 10px; font-style: normal; text-align: right; }
+.is-architecture-source .architecture-system-heading[data-system="flowpulse"] { background: #f7faff; }
+.is-architecture-source .architecture-system-heading[data-system="flowpulse"] > span { background: var(--blue); }
+.is-architecture-source .architecture-flowpulse-system .architecture-system-heading { grid-template-columns: auto minmax(0, 1fr); }
+.is-architecture-source .architecture-flowpulse-system .architecture-system-heading em { grid-column: 2; text-align: left; }
+.is-architecture-source .architecture-observed-stack { --architecture-card-width: clamp(88px, 7.5vw, 110px); display: flex; flex: 1; flex-direction: column; justify-content: center; gap: 9px; padding: 12px 14px; }
+.is-architecture-source .architecture-tier { position: relative; flex: none; width: 100%; display: block; margin: 0; }
+.is-architecture-source .architecture-tier-row { min-height: 54px; height: auto; display: grid; grid-template-columns: repeat(auto-fit, var(--architecture-card-width)); align-items: stretch; justify-content: center; gap: 7px; }
+.is-architecture-source .architecture-tier-label { width: 100%; min-height: 35px; display: flex; align-items: center; gap: 8px; margin: 0 0 6px; padding: 0; color: var(--architecture-copy); border: 0; border-bottom: 1px solid var(--architecture-border); background: transparent; font-family: var(--mono); line-height: 1; text-align: left; }
+.is-architecture-source .architecture-tier-label b { min-width: 27px; padding: 5px 6px; border-radius: var(--architecture-control-radius); color: #ffffff; background: #2d3a49; font-size: 8px; font-weight: 800; text-align: center; }
+.is-architecture-source .architecture-tier-label > span { display: grid; gap: 3px; }
+.is-architecture-source .architecture-tier-label strong { font-size: 10px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; }
+.is-architecture-source .architecture-tier-label small { color: var(--architecture-muted); font-size: 9px; letter-spacing: 0; text-transform: none; }
+.is-architecture-source .architecture-tier-label em { margin-left: auto; color: var(--architecture-muted); font-size: 9px; font-style: normal; }
+.is-architecture-source .architecture-relation-summary, .is-architecture-source .architecture-flowpulse-relations, .is-architecture-source .architecture-cross-boundary { padding: 10px 13px; border-top: 1px solid var(--architecture-border); font-family: var(--mono); font-size: 9px; line-height: 1.4; }
+.is-architecture-source .architecture-relation-summary { display: flex; justify-content: space-between; gap: 12px; color: var(--architecture-muted); background: var(--architecture-surface-muted); }
+.is-architecture-source .architecture-relation-summary strong { color: var(--architecture-copy); }
+.is-architecture-source .architecture-flowpulse-nodes { --architecture-card-width: 100%; display: grid; gap: 7px; padding: 2px 10px; }
 .architecture-flowpulse-nodes .source-node { position: relative; left: auto !important; top: auto !important; width: 100%; height: 54px; min-height: 54px; margin: 0; transform: none; }
 .architecture-flowpulse-nodes .source-node .node-detail, .architecture-flowpulse-nodes .source-node .node-status { display: none; }
-.architecture-flowpulse-relations { margin-top: auto; color: var(--muted); }
-.architecture-flowpulse-relations > strong, .architecture-cross-boundary strong { display: block; color: var(--ink); font-size: 8px; }
-.architecture-flowpulse-relations > span { display: block; margin-top: 3px; }
-.architecture-flowpulse-relations ul, .architecture-cross-boundary ul { display: grid; gap: 4px; margin: 5px 0 0; padding: 0; list-style: none; }
-.architecture-flowpulse-relations li, .architecture-cross-boundary li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 6px; padding: 4px 5px; border: 1px solid var(--line); color: var(--muted); }
-.architecture-flowpulse-relations li small, .architecture-cross-boundary li small { grid-column: 1 / -1; overflow: hidden; color: var(--faint); text-overflow: ellipsis; white-space: nowrap; }
-.architecture-cross-boundary { grid-column: 1 / -1; display: flex; align-items: center; gap: 12px; color: var(--muted); border: 1px solid color-mix(in srgb, var(--blue) 42%, var(--line)); }
-.architecture-cross-boundary header { flex: 0 0 250px; }
-.architecture-cross-boundary header span { display: block; margin-top: 2px; font-size: 8px; }
-.architecture-cross-boundary ul { flex: 1; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); width: 100%; margin: 0; }
-.architecture-cross-boundary li { border-color: color-mix(in srgb, var(--blue) 35%, var(--line)); }
-.architecture-cross-boundary li strong, .architecture-cross-boundary li span { color: var(--blue); }
-.architecture-cross-boundary p { margin: 0; }
+.is-architecture-source .architecture-flowpulse-relations { margin-top: auto; color: var(--architecture-muted); background: var(--architecture-surface); }
+.is-architecture-source .architecture-flowpulse-relations > strong, .is-architecture-source .architecture-cross-boundary strong { display: block; color: var(--architecture-copy); font-size: 9px; }
+.is-architecture-source .architecture-flowpulse-relations > span { display: block; margin-top: 3px; }
+.is-architecture-source .architecture-flowpulse-relations ul, .is-architecture-source .architecture-cross-boundary ul { display: grid; gap: 5px; margin: 6px 0 0; padding: 0; list-style: none; }
+.is-architecture-source .architecture-flowpulse-relations li, .is-architecture-source .architecture-cross-boundary li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 7px; padding: 5px 6px; border: 1px solid var(--architecture-border); border-radius: var(--architecture-control-radius); color: var(--architecture-muted); background: var(--architecture-surface); }
+.is-architecture-source .architecture-flowpulse-relations li small, .is-architecture-source .architecture-cross-boundary li small { grid-column: 1 / -1; overflow: hidden; color: var(--architecture-muted); text-overflow: ellipsis; white-space: nowrap; }
+.is-architecture-source .architecture-cross-boundary { grid-column: 1 / -1; display: flex; align-items: center; gap: 14px; color: var(--architecture-muted); border: 1px solid color-mix(in srgb, var(--blue) 46%, var(--architecture-border)); border-radius: var(--architecture-control-radius); background: #f7faff; box-shadow: 0 4px 12px rgba(37, 99, 235, .06); }
+.is-architecture-source .architecture-cross-boundary header { flex: 0 0 260px; }
+.is-architecture-source .architecture-cross-boundary header span { display: block; margin-top: 3px; font-size: 9px; }
+.is-architecture-source .architecture-cross-boundary ul { flex: 1; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); width: 100%; margin: 0; }
+.is-architecture-source .architecture-cross-boundary li { border-color: color-mix(in srgb, var(--blue) 35%, var(--architecture-border)); }
+.is-architecture-source .architecture-cross-boundary li strong, .is-architecture-source .architecture-cross-boundary li span { color: var(--blue); }
+.is-architecture-source .architecture-cross-boundary p { margin: 0; }
 .is-architecture-source .architecture-tier .source-node {
   position: relative;
   left: auto !important;
@@ -482,8 +497,8 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
   transform: none;
   overflow: hidden;
   border-width: 1px .5px;
-  border-color: var(--line-strong);
-  border-radius: 0;
+  border-color: var(--architecture-border-strong);
+  border-radius: var(--architecture-node-radius);
   box-shadow: none;
 }
 .is-architecture-source .architecture-tier .source-node:hover { z-index: 7; transform: none; border-color: var(--ink); box-shadow: inset 0 -2px 0 var(--ink); }
@@ -1070,6 +1085,8 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
   .canvas-toolbar { padding-inline: 16px; }
   .metric { min-width: 118px; padding-inline: 11px; }
   .timeline-dock { grid-template-columns: max-content minmax(180px, 1fr) max-content; gap: 7px 12px; padding-inline: 16px; }
+  .is-architecture-source .architecture-system-heading { min-height: 60px; padding: 9px 11px; }
+  .is-architecture-source .architecture-observed-stack { gap: 7px; padding: 8px 12px; }
 }
 
 @media (max-width: 1080px) {

@@ -152,11 +152,13 @@ test("architecture layout is deterministic, layered, and leaves room for complet
   assert.doesNotMatch(appJs, /style="left:\$\{node\.x\}/);
   assert.match(stylesCss, /\.architecture-tier-row \{[^}]+min-height: 54px;[^}]+grid-template-columns: repeat\(auto-fit, var\(--architecture-card-width\)\)/s);
   assert.match(stylesCss, /\.architecture-tier \{[^}]+width: 100%;[^}]+display: block/s);
-  assert.match(stylesCss, /\.architecture-tier \.source-node \{[\s\S]+position: relative;[\s\S]+margin: 0;[\s\S]+border-width: 1px \.5px/s);
+  assert.match(stylesCss, /\.architecture-tier \.source-node \{[\s\S]+position: relative;[\s\S]+margin: 0;[\s\S]+border-width: 1px \.5px;[\s\S]+border-radius: var\(--architecture-node-radius\)/s);
   assert.match(stylesCss, /--architecture-card-width: clamp\(88px, 7\.5vw, 110px\)/);
   assert.match(stylesCss, /\.architecture-tier \.source-node strong \{[^}]+font-size: 11px/s);
-  assert.match(stylesCss, /\.twin-canvas\.is-architecture-source \{ min-width: 0; \}/);
-  assert.match(stylesCss, /\.architecture-tier-label \{[^}]+display: flex;[^}]+border-bottom: 1px solid var\(--line-strong\)/s);
+  assert.match(stylesCss, /\.twin-canvas\.is-architecture-source \{[^}]+--architecture-system-radius: 16px;[^}]+--architecture-node-radius: 12px;[^}]+--architecture-control-radius: 8px;[^}]+min-width: 0;/s);
+  assert.match(stylesCss, /\.is-architecture-source \.architecture-system \{[^}]+border-radius: var\(--architecture-system-radius\);[^}]+background: var\(--architecture-surface\);/s);
+  assert.match(stylesCss, /\.is-architecture-source \.architecture-flowpulse-system \{[^}]+border-color: color-mix\(in srgb, var\(--blue\)/s);
+  assert.match(stylesCss, /\.is-architecture-source \.architecture-tier-label \{[^}]+display: flex;[^}]+border-bottom: 1px solid var\(--architecture-border\)/s);
   assert.match(appJs, /architecture-tier-label[^\n]+layer\.description/);
   assert.match(appJs, /service\.name=\$\{node\.id\}/);
   assert.match(appJs, /telemetry\.sdk\.language/);
