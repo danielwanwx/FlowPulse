@@ -2259,17 +2259,17 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 /* Architecture component detail: one flat four-level material scale. */
 .app-shell[data-mode="architecture"] {
   --architecture-vector: #111827;
-  background: #d3dce2;
+  background: #e9eef1;
 }
 .app-shell[data-mode="architecture"] main { background: transparent; }
 .app-shell[data-mode="architecture"] .twin-workspace,
 .app-shell[data-mode="architecture"] .canvas-shell,
-.app-shell[data-mode="architecture"] .twin-scroll { background: #c9d4dc; }
+.app-shell[data-mode="architecture"] .twin-scroll { background: #e9eef1; }
 .app-shell[data-mode="architecture"] .topbar,
-.app-shell[data-mode="architecture"] .mission-bar { background: #d3dce2; }
+.app-shell[data-mode="architecture"] .mission-bar { background: #e9eef1; }
 .twin-canvas.is-architecture-source {
   --architecture-surface: transparent;
-  --architecture-surface-muted: rgba(233, 238, 241, .78);
+  --architecture-surface-muted: rgba(211, 220, 226, .88);
   --architecture-node-surface: rgba(255, 255, 255, .86);
   background: transparent;
 }
@@ -2291,7 +2291,7 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .is-architecture-source .architecture-observed-system { background: transparent; }
 .is-architecture-source .architecture-layer-module,
 .is-architecture-source .architecture-flowpulse-system {
-  background: rgba(233, 238, 241, .82);
+  background: rgba(211, 220, 226, .88);
 }
 .is-architecture-source .architecture-layer-module.is-detail { background: rgba(255, 255, 255, .92); }
 .is-architecture-source .architecture-thumbnail-node,
@@ -2405,12 +2405,12 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 @media (prefers-reduced-transparency: reduce) {
   .app-shell[data-mode="architecture"],
   .app-shell[data-mode="architecture"] .topbar,
-  .app-shell[data-mode="architecture"] .mission-bar { background: #d3dce2; }
+  .app-shell[data-mode="architecture"] .mission-bar { background: #e9eef1; }
   .app-shell[data-mode="architecture"] .twin-workspace,
   .app-shell[data-mode="architecture"] .canvas-shell,
-  .app-shell[data-mode="architecture"] .twin-scroll { background: #c9d4dc; }
+  .app-shell[data-mode="architecture"] .twin-scroll { background: #e9eef1; }
   .is-architecture-source .architecture-layer-module,
-  .is-architecture-source .architecture-flowpulse-system { background: #e9eef1; }
+  .is-architecture-source .architecture-flowpulse-system { background: #d3dce2; }
   .is-architecture-source .architecture-layer-module.is-detail,
   .is-architecture-source .architecture-thumbnail-node,
   .is-architecture-source .source-node.is-architecture-compact { background: #ffffff; }

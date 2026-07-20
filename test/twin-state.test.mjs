@@ -210,9 +210,9 @@ test("architecture is a static four-layer overview with backend-owned status dot
   assert.match(architectureStaticCss, /is-pending[\s\S]+?--architecture-status: var\(--amber\);/);
   assert.match(architectureStaticCss, /is-sleeping[\s\S]+?--architecture-status: var\(--faint\);/);
   assert.match(appJs, /"fault", "pending", "warning"/);
-  assert.match(architectureDetailCss, /\.app-shell\[data-mode="architecture"\] \{[\s\S]+?background: #d3dce2;/);
-  assert.match(architectureDetailCss, /\.twin-workspace,[\s\S]+?\.twin-scroll \{ background: #c9d4dc; \}/);
-  assert.match(architectureDetailCss, /\.architecture-layer-module,[\s\S]+?\.architecture-flowpulse-system \{[\s\S]+?background: rgba\(233, 238, 241, \.82\);/);
+  assert.match(architectureDetailCss, /\.app-shell\[data-mode="architecture"\] \{[\s\S]+?background: #e9eef1;/);
+  assert.match(architectureDetailCss, /\.twin-workspace,[\s\S]+?\.twin-scroll \{ background: #e9eef1; \}/);
+  assert.match(architectureDetailCss, /\.architecture-layer-module,[\s\S]+?\.architecture-flowpulse-system \{[\s\S]+?background: rgba\(211, 220, 226, \.88\);/);
   assert.match(architectureDetailCss, /\.architecture-layer-module\.is-detail \{ background: rgba\(255, 255, 255, \.92\); \}/);
   assert.match(architectureDetailCss, /\.architecture-component-detail \{[\s\S]+?display: grid;/);
   assert.match(architectureDetailCss, /\.architecture-detail-facts \{[\s\S]+?grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/);
