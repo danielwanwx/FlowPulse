@@ -1761,6 +1761,15 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .is-live-source .live-count-8.live-index-5 { top: 68.75%; }
 .is-live-source .live-count-8.live-index-6 { top: 81.25%; }
 .is-live-source .live-count-8.live-index-7 { top: 93.75%; }
+.is-live-source .live-count-9.live-index-0 { top: 6.25%; }
+.is-live-source .live-count-9.live-index-1 { top: 17.188%; }
+.is-live-source .live-count-9.live-index-2 { top: 28.125%; }
+.is-live-source .live-count-9.live-index-3 { top: 39.063%; }
+.is-live-source .live-count-9.live-index-4 { top: 50%; }
+.is-live-source .live-count-9.live-index-5 { top: 60.938%; }
+.is-live-source .live-count-9.live-index-6 { top: 71.875%; }
+.is-live-source .live-count-9.live-index-7 { top: 82.813%; }
+.is-live-source .live-count-9.live-index-8 { top: 93.75%; }
 .is-source-topology .source-node.is-unlinked { --signal: var(--amber); border-style: dashed; border-color: color-mix(in srgb, var(--amber) 45%, var(--line)); box-shadow: none; }
 .is-source-topology .source-node.is-unlinked .node-status { color: var(--amber); }
 .live-guides, .agent-guides { position: absolute; z-index: 1; inset: 0; pointer-events: none; }
@@ -2680,6 +2689,15 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .is-architecture-source .control-component-detail .control-detail-list { gap: 3px; }
 .is-architecture-source .control-component-detail .control-detail-list > div { gap: 2px; }
 .is-architecture-source .control-component-detail .control-detail-list small { font-size: 10px; line-height: 1.25; }
+.is-architecture-source .control-detail-activity {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 14px;
+  margin: 0;
+}
+.is-architecture-source .control-detail-activity div { min-width: 0; display: grid; gap: 2px; }
+.is-architecture-source .control-detail-activity dt { color: var(--control-muted); font-size: 10px; font-weight: 500; }
+.is-architecture-source .control-detail-activity dd { margin: 0; color: var(--control-copy); font-size: 11px; font-weight: 500; line-height: 1.35; overflow-wrap: anywhere; }
 .is-architecture-source .control-system-tile .node-status-dot { --control-status: var(--faint); }
 .is-architecture-source .control-system-tile .node-status-dot,
 .is-architecture-source .control-component-detail .node-status-dot { background: var(--control-status); }
@@ -2694,3 +2712,145 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .is-architecture-source .control-component-detail .node-status-dot.is-accepted { --control-status: var(--green); }
 .is-architecture-source .control-system-tile .node-status-dot.is-rejected,
 .is-architecture-source .control-component-detail .node-status-dot.is-rejected { --control-status: var(--red); }
+
+/* Stage C: Live reuses the Architecture material and node language. The v2 runtime
+   projection supplies identity and status; connection choreography remains Stage D. */
+.app-shell[data-mode="live"] {
+  --architecture-vector: #111827;
+  background: #e9eef1;
+}
+.app-shell[data-mode="live"] main,
+.app-shell[data-mode="live"] .twin-workspace,
+.app-shell[data-mode="live"] .canvas-shell,
+.app-shell[data-mode="live"] .twin-scroll,
+.app-shell[data-mode="live"] .topbar,
+.app-shell[data-mode="live"] .mission-bar { background: #e9eef1; }
+.app-shell[data-mode="live"] .topbar,
+.app-shell[data-mode="live"] .mission-bar,
+.app-shell[data-mode="live"] .canvas-toolbar,
+.app-shell[data-mode="live"] .mode-switch,
+.app-shell[data-mode="live"] .workspace-menu > summary,
+.app-shell[data-mode="live"] .theme-toggle,
+.app-shell[data-mode="live"] .legend-menu > summary,
+.app-shell[data-mode="live"] .zoom-controls,
+.app-shell[data-mode="live"] .metric,
+.app-shell[data-mode="live"] .metric-cluster,
+.app-shell[data-mode="live"] .workspace-menu-panel,
+.app-shell[data-mode="live"] .state-key,
+.app-shell[data-mode="live"] .context-drawer {
+  border: 0;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+.app-shell[data-mode="live"] .topbar,
+.app-shell[data-mode="live"] .mission-bar,
+.app-shell[data-mode="live"] .canvas-toolbar { background: rgba(233, 238, 241, .78); }
+.app-shell[data-mode="live"] .mode-switch,
+.app-shell[data-mode="live"] .workspace-menu > summary,
+.app-shell[data-mode="live"] .theme-toggle,
+.app-shell[data-mode="live"] .legend-menu > summary,
+.app-shell[data-mode="live"] .zoom-controls,
+.app-shell[data-mode="live"] .metric { background: rgba(255, 255, 255, .5); }
+.twin-canvas.is-live-source {
+  --architecture-page-radius: 24px;
+  --architecture-node-radius: 16px;
+  --architecture-copy: #111827;
+  --architecture-muted: #475569;
+  min-width: 0;
+  overflow: hidden;
+  background: transparent;
+  border-radius: var(--architecture-page-radius);
+}
+.is-live-source .live-guides { z-index: 1; }
+.is-live-source .live-guides span {
+  top: 2px;
+  color: #64748b;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", sans-serif;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.is-live-source .live-guides span::after { display: none; }
+.is-live-source .live-guide-0 { left: 13%; }
+.is-live-source .live-guide-1 { left: 38%; }
+.is-live-source .live-guide-2 { left: 63%; }
+.is-live-source .live-guide-3 { left: 88%; }
+.is-live-source .live-guide-4 { left: 94%; }
+.is-live-source .source-node {
+  --live-status: var(--faint);
+  width: 180px;
+  height: 60px;
+  min-height: 60px;
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+  align-content: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: var(--architecture-node-radius);
+  color: var(--architecture-copy);
+  background: rgba(255, 255, 255, .9);
+  box-shadow: none;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", sans-serif;
+}
+.is-live-source .source-node:hover,
+.is-live-source .source-node.is-selected {
+  transform: translateY(-2px);
+  border: 0;
+  outline: none;
+  background: #ffffff;
+  box-shadow: none;
+}
+.is-live-source .source-node:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.is-live-source .source-node .node-icon {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 12px;
+  color: var(--architecture-vector);
+  background: rgba(211, 220, 226, .58);
+  box-shadow: none;
+  font-size: 16px;
+}
+.is-live-source .source-node .node-copy { min-width: 0; display: grid; align-content: center; gap: 2px; }
+.is-live-source .source-node strong { overflow: hidden; color: var(--architecture-copy); font-size: 13px; font-weight: 600; line-height: 1.2; text-overflow: ellipsis; white-space: nowrap; }
+.is-live-source .source-node .node-origin,
+.is-live-source .source-node .node-detail { display: none; }
+.is-live-source .source-node .node-status { margin: 0; color: #64748b; font-size: 10px; line-height: 1.2; }
+.is-live-source .source-node .node-status-dot { top: 8px; right: 8px; width: 7px; height: 7px; background: var(--live-status); }
+.is-live-source .source-node.is-healthy,
+.is-live-source .source-node.is-observed,
+.is-live-source .source-node.is-recording,
+.is-live-source .source-node.is-active,
+.is-live-source .source-node.is-verified { --live-status: var(--green); }
+.is-live-source .source-node.is-warning,
+.is-live-source .source-node.is-pending,
+.is-live-source .source-node.is-change,
+.is-live-source .source-node.is-approval,
+.is-live-source .source-node.is-unlinked { --live-status: var(--amber); }
+.is-live-source .source-node.is-impact,
+.is-live-source .source-node.is-root,
+.is-live-source .source-node.is-rejected,
+.is-live-source .source-node.is-fault { --live-status: var(--red); }
+.is-live-source .source-node.is-idle,
+.is-live-source .source-node.is-quiet,
+.is-live-source .source-node.is-dormant,
+.is-live-source .source-node.is-sleeping { --live-status: var(--faint); }
+.is-live-source .source-node.is-unlinked { border: 0; box-shadow: none; }
+@media (max-width: 1320px) {
+  .is-architecture-source .control-detail-activity { grid-template-columns: 1fr; }
+  .is-live-source .source-node { width: 180px; }
+}
+@media (prefers-reduced-transparency: reduce) {
+  .app-shell[data-mode="live"],
+  .app-shell[data-mode="live"] .topbar,
+  .app-shell[data-mode="live"] .mission-bar,
+  .app-shell[data-mode="live"] .twin-workspace,
+  .app-shell[data-mode="live"] .canvas-shell,
+  .app-shell[data-mode="live"] .twin-scroll { background: #e9eef1; }
+  .is-live-source .source-node { background: #ffffff; }
+}

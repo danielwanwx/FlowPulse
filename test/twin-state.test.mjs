@@ -270,7 +270,7 @@ test("architecture is a static four-layer overview with backend-owned status dot
   assert.match(appJs, /architecture-flowpulse-nodes\$\{selectedControlDetail \? " is-detail" : ""\}/);
   assert.match(appJs, /architectureDetail\?\.scope === mode && event\.key === "Escape"/);
   assert.match(appJs, /function controlComponentDetailMarkup\(/);
-  assert.doesNotMatch(appJs, /live-control-system|data-live-control|data-control-scope|liveViewTopology/);
+  assert.doesNotMatch(appJs, /live-control-system|data-live-control|data-control-scope/);
   assert.match(appJs, /architecture-status-dot/);
   assert.match(appJs, /data-architecture-control-id/);
   assert.match(appJs, /let architectureDetail = null;/);
@@ -371,14 +371,15 @@ test("architecture is a static four-layer overview with backend-owned status dot
   assert.doesNotMatch(appJs, /metric-payment-label"\]\.textContent = "Runtime dependencies"/);
 });
 
-test("live layout keeps the same deterministic layers with more room for dependency pulses", () => {
+test("Stage C Live layout keeps the backend layer ordering with room for later paths", () => {
   const nodes = LIVE_LAYERS.flatMap((layer) => layer.ids.map((id, index) => ({ id, label: id, kind: index === 0 ? "client" : "service" })));
   const first = livePositions(nodes);
   const second = livePositions([...nodes].reverse());
   const coordinates = (items) => Object.fromEntries(items.map(({ id, layer, x, y }) => [id, { layer, x, y }]));
   assert.deepEqual(coordinates(first), coordinates(second));
   assert.deepEqual([...new Set(first.map(({ layer }) => layer))], LIVE_LAYERS.map(({ id }) => id));
-  assert.deepEqual([...new Set(first.map(({ x }) => x))], [10, 30, 50, 70]);
+  assert.deepEqual(LIVE_LAYERS.map(({ ids }) => ids.length), [6, 9, 3, 4]);
+  assert.deepEqual([...new Set(first.map(({ x }) => x))], [13, 38, 63, 88]);
   assert.ok(first.every(({ y }) => y >= 6.25 && y <= 93.75));
   assert.doesNotMatch(stylesCss, /\.architecture-guides/);
   assert.match(stylesCss, /\.live-guides span[^}]+top: 10px/s);
@@ -389,7 +390,7 @@ test("live layout keeps the same deterministic layers with more room for depende
   assert.match(appJs, /function containedLiveView/);
   assert.match(appJs, /\(rect\.width - inset \* 2\) \/ LIVE_WORLD\.width/);
   assert.match(appJs, /live-column-\$\{node\.layerIndex\} live-count-\$\{node\.layerSize\} live-index-\$\{node\.layerPosition\}/);
-  assert.match(stylesCss, /\.is-live-source \.live-count-7\.live-index-6 \{ top: 87\.5%; \}/);
+  assert.match(stylesCss, /\.is-live-source \.live-count-9\.live-index-8 \{ top: 93\.75%; \}/);
 });
 
 test("live topology normalizes endpoints and explains true telemetry islands", () => {
@@ -407,7 +408,7 @@ test("live topology normalizes endpoints and explains true telemetry islands", (
   assert.match(appJs, /Insufficient dependency evidence/);
 });
 
-test("captured browser topology consumes the bounded projection aliases and keeps every valid replay edge", () => {
+test("Live consumes only the strict v2 runtime view and never uses the six-node compatibility topology", () => {
   const projected = topologyIntegrity({
     services: [
       { id: "frontend", kind: "client" }, { id: "checkout", kind: "service" }, { id: "payment", kind: "api" },
@@ -426,11 +427,40 @@ test("captured browser topology consumes the bounded projection aliases and keep
   assert.deepEqual(primaryLiveEdges(projected).map(({ id }) => id), [
     "checkout-kafka", "checkout-payment", "frontend-checkout", "kafka-accounting", "kafka-fraud"
   ]);
-  assert.match(appJs, /const topology = architecture \? architecture\.graph : topologyIntegrity\(source\.topology\)/);
-  assert.match(appJs, /sourceState\(\)\.status === "captured" \? "Captured replay"/);
-  assert.match(stylesCss, /\.is-live-source \.edge-group \.edge-line \{ stroke: #9ca5b0; stroke-width: 1\.5; opacity: \.82; \}/);
+  assert.match(appJs, /function liveTopologyView\(\) \{[\s\S]+liveViewTopology\(state\?\.topology_views\)/);
+  assert.match(appJs, /const live = layout === "live" \? liveTopologyView\(\) : null;/);
+  assert.match(appJs, /const topology = architecture \? architecture\.graph : live\?\.runtime_data\.graph/);
+  assert.doesNotMatch(appJs.match(/function renderSourceCanvas\(layout\) \{[\s\S]+?\n\}/)?.[0] || "", /source\.topology/);
+  assert.match(appJs, /Live projection unavailable/);
+  assert.match(stylesCss, /\.twin-canvas\.is-live-source \{[\s\S]+?border-radius: var\(--architecture-page-radius\);/);
+  assert.match(stylesCss, /\.is-live-source \.source-node \{[\s\S]+?border: 0;[\s\S]+?border-radius: var\(--architecture-node-radius\);[\s\S]+?box-shadow: none;/);
   assert.match(appJs, /event\.target\.matches\("\[data-node-id\], \[data-edge-id\], \[data-agent-edge-id\]"\)/);
   assert.match(appJs, /event\.target\.dataset\.nodeId\) openDrawer\(\{ type: "node"/);
+});
+
+test("control details use a supported Observer glyph and render only bounded projected activity facts", () => {
+  const controlDetailSource = appJs.slice(appJs.indexOf("function controlComponentDetailMarkup"), appJs.indexOf("function openArchitectureDetail"));
+  assert.match(appJs, /observer: "binoculars"/);
+  assert.match(controlDetailSource, /controlActivityMarkup\(detail\.activity\)/);
+  assert.match(controlDetailSource, /Current activity/);
+  assert.match(controlDetailSource, /Last recorded event/);
+  assert.match(controlDetailSource, /Evidence references/);
+  assert.match(controlDetailSource, /Gate result/);
+  assert.match(controlDetailSource, /Source status/);
+  assert.doesNotMatch(controlDetailSource, /payload|prompt|token|secret|raw_log/i);
+});
+
+test("Stage C keeps a shared keyed 22-node surface while Live defers runtime paths and packets", () => {
+  const renderSourceCanvasSource = appJs.slice(appJs.indexOf("function renderSourceCanvas"), appJs.indexOf("function architectureLayerStatus"));
+  assert.match(appJs, /data-transition-key="\$\{escapeHtml\(transitionKey\(node\.id\)\)\}"/);
+  assert.match(appJs, /querySelectorAll\("\[data-transition-key\]"\)/);
+  assert.match(appJs, /node\.classList\.contains\("twin-node"\)/);
+  assert.match(renderSourceCanvasSource, /const edges = "";/);
+  assert.match(renderSourceCanvasSource, /Stage C keeps runtime paths and packets deferred/);
+  assert.doesNotMatch(renderSourceCanvasSource, /renderLiveChange\(/);
+  assert.doesNotMatch(renderSourceCanvasSource, /startLiveSignalLoop\(/);
+  assert.match(renderSourceCanvasSource, /positioned\.length\} observed services\. Runtime paths are deferred/);
+  assert.doesNotMatch(appJs, /live-control-system|data-live-control|data-control-scope/);
 });
 
 test("B1 recovery console keeps six collaborators visible while owner approval stays separate", () => {
@@ -648,7 +678,7 @@ function segmentHitsRect(a, b, rect) {
   return false;
 }
 
-test("live pulses follow deterministic topology depth with one segment per edge", () => {
+test("Stage C retains deterministic runtime ordering while deferring rendered paths and packets", () => {
   const topology = {
     nodes: ["frontend", "checkout", "payment", "kafka", "accounting"].map((id) => ({ id })),
     edges: [
@@ -670,34 +700,19 @@ test("live pulses follow deterministic topology depth with one segment per edge"
     "kafka->accounting",
     "checkout->payment"
   ]);
-  assert.match(appJs, /data-live-edge-id/);
-  assert.match(appJs, /data-signal-order/);
+  const renderSourceCanvasSource = appJs.slice(appJs.indexOf("function renderSourceCanvas"), appJs.indexOf("function architectureLayerStatus"));
+  assert.match(renderSourceCanvasSource, /const edges = "";/);
+  assert.match(renderSourceCanvasSource, /runtime paths and packets deferred/i);
+  assert.doesNotMatch(renderSourceCanvasSource, /data-live-edge-id|data-signal-order|signal-droplet/);
   assert.match(appJs, /classList\.toggle\("is-live-source", mode === "live"\)/);
-  assert.match(appJs, /classList\.add\("is-signal-active"\)/);
-  assert.match(appJs, /is-signal-launch/);
-  assert.match(appJs, /is-signal-arrival/);
-  assert.match(appJs, /class="signal-droplet"/);
-  assert.match(appJs, /signal-droplet-tail-far/);
-  assert.match(appJs, /path\.getPointAtLength\(path\.getTotalLength\(\) \* Math\.max/);
-  assert.match(appJs, /place\(body, bodyPoint\)/);
-  assert.match(appJs, /group\.dataset\.signalProgress = progress\.toFixed\(3\)/);
-  assert.match(stylesCss, /\.is-live-source \.edge-group \{ --edge-signal: var\(--live-pulse\); \}/);
-  assert.match(stylesCss, /--live-pulse: #159fe8/);
-  assert.match(stylesCss, /\.signal-droplet-halo \{[^}]+opacity: \.15/s);
-  assert.match(stylesCss, /\.edge-group\.is-signal-active \.signal-droplet \{ display: block; \}/);
-  assert.doesNotMatch(stylesCss, /\.edge-group\.is-signal-active \.edge-line[^}]+animation/s);
-  assert.doesNotMatch(appJs, /class="signal-trace"/);
-  assert.doesNotMatch(appJs.match(/function startLiveSignalLoop\(\)[\s\S]+?\n\}/)?.[0] || "", /setInterval/);
-  assert.match(appJs, /candidate\.dataset\.signalFrom === group\.dataset\.signalTo/);
+  assert.match(appJs, /function startLiveSignalLoop\(/);
   assert.match(appJs, /liveSignalDuration\(pathLength\)/);
   assert.match(appJs, /liveSignalProgress\(elapsed, pathLength\)/);
-  assert.doesNotMatch(stylesCss.match(/@keyframes signal-node-arrival \{[\s\S]+?\n\}/)?.[0] || "", /border-color/);
-  assert.match(stylesCss, /prefers-reduced-motion:[\s\S]+\.edge-group\.is-signal-active \.signal-droplet \{ display: none;/s);
   assert.match(appJs, /data-recovery-command-send/);
   assert.match(appJs, /sendRecoveryCommand\(commandButton\.closest\("form"\)\)/);
 });
 
-test("live renders a deterministic primary dependency skeleton without losing connected components", () => {
+test("future primary dependency selection remains deterministic without changing the Stage C canvas", () => {
   const topology = topologyIntegrity({
     nodes: ["load-generator", "frontend-web", "frontend-proxy", "frontend", "checkout", "cart", "payment", "flagd"].map((id) => ({ id, kind: "service" })),
     edges: [
@@ -724,9 +739,10 @@ test("live renders a deterministic primary dependency skeleton without losing co
   assert.deepEqual(selectedReversed.map(({ id }) => id), selected.map(({ id }) => id));
   const inboundCounts = selected.reduce((counts, { to }) => counts.set(to, (counts.get(to) || 0) + 1), new Map());
   assert.equal(Math.max(...inboundCounts.values()), 2);
-  assert.match(appJs, /const primaryEdges = primaryLiveEdges\(topology\)/);
+  assert.match(appJs, /Stage C keeps runtime paths and packets deferred/);
   assert.match(appJs, /dataset\.observedEdges/);
   assert.match(appJs, /dataset\.displayedEdges/);
+  assert.match(appJs, /dataset\.displayedEdges = "0"/);
 });
 
 test("live signal travel keeps one physical speed and slows only at the destination", () => {
@@ -842,7 +858,7 @@ test("every canvas mode exposes the shared status-dot contract with compact tool
   assert.match(indexHtml, /Live \/ active/);
   assert.match(indexHtml, /Failure \/ rejected/);
   assert.match(stylesCss, /\.metric small:empty \{ display: none; \}/);
-  assert.match(appJs, /node\.connectivity === "unlinked" \? "unlinked" : nodeStates\[id\]/);
+  assert.match(appJs, /node\.connectivity === "unlinked" \? "unlinked" : node\.status \|\| "dormant"/);
   assert.match(appJs, /sourceStatusLabel\(status, source\.status\)/);
   assert.match(stylesCss, /\.component-context\.is-warning, \.component-context\.is-unlinked/);
   assert.doesNotMatch(appJs, /observed components arranged by system role/);

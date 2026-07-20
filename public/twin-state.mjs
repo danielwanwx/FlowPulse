@@ -77,24 +77,24 @@ export const ARCHITECTURE_LAYERS = [
 
 export const LIVE_LAYERS = [
   {
-    id: "entry",
-    label: "Entry & delivery",
-    ids: ["load-generator", "frontend-web", "frontend-proxy", "frontend"]
+    id: "experience",
+    label: "Client & entry",
+    ids: ["ad", "frontend", "frontend-proxy", "frontend-web", "image-provider", "load-generator"]
   },
   {
     id: "commerce",
-    label: "Commerce request path",
-    ids: ["cart", "currency", "shipping", "checkout", "product-catalog", "recommendation", "ad"]
+    label: "Commerce & APIs",
+    ids: ["cart", "checkout", "currency", "email", "payment", "product-catalog", "quote", "recommendation", "shipping"]
   },
   {
     id: "processing",
-    label: "Payment & asynchronous processing",
-    ids: ["payment", "kafka", "accounting", "fraud-detection", "fraud", "email", "quote", "image-provider"]
+    label: "Async & data",
+    ids: ["accounting", "fraud-detection", "kafka"]
   },
   {
     id: "platform",
-    label: "Platform, telemetry & data",
-    ids: ["flagd-ui", "flagd", "telemetry-docs", "otelcol-contrib", "astronomy-db"]
+    label: "Platform & telemetry",
+    ids: ["flagd", "flagd-ui", "otelcol-contrib", "telemetry-docs"]
   }
 ];
 
@@ -254,7 +254,8 @@ export function livePositions(nodes = []) {
   const fallbackLayer = { client: 0, api: 1, service: 1, stream: 2, worker: 2, database: 3 };
   for (const node of nodes) {
     const known = knownLayer.get(node.id);
-    const layerIndex = node.connectivity === "unlinked" ? LIVE_LAYERS.length : known?.index ?? fallbackLayer[node.kind] ?? 3;
+    const projectedLayerIndex = LIVE_LAYERS.findIndex((layer) => layer.id === node.layer);
+    const layerIndex = projectedLayerIndex >= 0 ? projectedLayerIndex : node.connectivity === "unlinked" ? LIVE_LAYERS.length : known?.index ?? fallbackLayer[node.kind] ?? 3;
     buckets[layerIndex].push({ node, order: known?.order ?? 1_000 });
   }
   return buckets.flatMap((bucket, layerIndex) => {
@@ -266,7 +267,7 @@ export function livePositions(nodes = []) {
       layerIndex,
       layerPosition: index,
       layerSize: sorted.length,
-      x: [10, 30, 50, 70, 90][layerIndex],
+      x: [13, 38, 63, 88, 94][layerIndex],
       y: spreadVertical(index, sorted.length)
     }));
   });
