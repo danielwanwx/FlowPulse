@@ -1387,9 +1387,9 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 }
 .twin-canvas.is-architecture-source {
   --architecture-shadow: none;
-  --architecture-surface: rgba(255, 255, 255, .12);
-  --architecture-surface-muted: rgba(235, 244, 252, .18);
-  --architecture-node-surface: rgba(255, 255, 255, .28);
+  --architecture-surface: rgba(255, 255, 255, .10);
+  --architecture-surface-muted: rgba(235, 244, 252, .14);
+  --architecture-node-surface: rgba(255, 255, 255, .18);
   background:
     radial-gradient(ellipse 55% 58% at 2% 4%, rgba(255, 255, 255, .34), transparent 78%),
     radial-gradient(ellipse 44% 56% at 100% 100%, rgba(151, 169, 184, .35), transparent 78%),
@@ -1426,7 +1426,7 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
   font-size: 13px;
 }
 .is-architecture-source .architecture-thumbnail-label {
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 500;
 }
 .is-architecture-source .architecture-thumbnail-icon,
