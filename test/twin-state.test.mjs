@@ -35,6 +35,7 @@ import {
 const indexHtml = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
 const appJs = readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
 const stylesCss = readFileSync(new URL("../public/styles.css", import.meta.url), "utf8");
+const architectureRefinementCss = stylesCss.slice(stylesCss.lastIndexOf("/* Architecture refinement: compact nested anatomy"));
 const topologyManifest = JSON.parse(readFileSync(new URL("../data/topology/otel-demo-system-v1.json", import.meta.url), "utf8"));
 
 function backendArchitectureView() {
@@ -173,7 +174,13 @@ test("architecture uses a four-layer overview and a bounded Experience detail fa
   assert.match(stylesCss, /\.architecture-workspace-turn\.is-turning-back,[^}]+rotateY\(-88deg\)/s);
   assert.match(stylesCss, /\.architecture-workspace-face \{[^}]+backface-visibility: hidden;/s);
   assert.match(stylesCss, /\.architecture-experience-nodes \{[^}]+grid-template-columns: repeat\(3, minmax\(0, 1fr\)\)/s);
-  assert.match(stylesCss, /\.architecture-thumbnail-node \{[^}]+grid-template-columns: 25px minmax\(0, 1fr\);[^}]+border-radius: var\(--architecture-node-radius\);/s);
+  assert.match(architectureRefinementCss, /--architecture-vector: #58758e;/);
+  assert.match(architectureRefinementCss, /\.architecture-observed-system \{[^}]+background: transparent;[^}]+box-shadow: none;[^}]+backdrop-filter: none;/s);
+  assert.match(architectureRefinementCss, /\.architecture-workspace-face \{[^}]+background: transparent;[^}]+box-shadow: none;[^}]+backdrop-filter: none;/s);
+  assert.match(architectureRefinementCss, /\.architecture-thumbnail-node \{[^}]+min-height: 54px;[^}]+grid-template-columns: 32px minmax\(0, 1fr\);[^}]+border-radius: var\(--architecture-node-radius\);/s);
+  assert.match(architectureRefinementCss, /\.architecture-flowpulse-nodes \.source-node\.is-architecture-compact \{[^}]+height: 54px;[^}]+min-height: 54px;[^}]+grid-template-columns: 32px minmax\(0, 1fr\);/s);
+  assert.match(architectureRefinementCss, /@media \(max-width: 1320px\) \{[\s\S]+?\.architecture-layer-anatomy \{ grid-template-columns: repeat\(3, minmax\(0, 1fr\)\); gap: 7px; \}/);
+  assert.match(architectureRefinementCss, /\.architecture-thumbnail-icon,\s*\.is-architecture-source \.source-node\.is-architecture-compact \.node-icon \{[^}]+color: var\(--architecture-vector\);/s);
   assert.match(stylesCss, /\.is-architecture-source \.source-node\.is-architecture-compact \{[^}]+border: 0;[^}]+border-radius: var\(--architecture-node-radius\);/s);
   assert.match(stylesCss, /--architecture-page-radius: 22px;[\s\S]+--architecture-system-radius: 22px;[\s\S]+--architecture-node-radius: 14px;[\s\S]+--architecture-control-radius: 14px;/);
   assert.match(stylesCss, /--architecture-font: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", sans-serif;/);

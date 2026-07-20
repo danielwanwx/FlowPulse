@@ -970,17 +970,18 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
   --architecture-node-radius: 14px;
   --architecture-control-radius: 14px;
   --architecture-font: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", sans-serif;
-  --architecture-surface: rgba(255, 255, 255, .5);
-  --architecture-surface-muted: rgba(235, 244, 252, .52);
-  --architecture-node-surface: rgba(255, 255, 255, .64);
+  --architecture-surface: rgba(255, 255, 255, .28);
+  --architecture-surface-muted: rgba(232, 242, 251, .28);
+  --architecture-node-surface: rgba(255, 255, 255, .24);
   --architecture-copy: #1c2833;
   --architecture-muted: #667684;
+  --architecture-vector: #58758e;
   --architecture-shadow: 0 24px 62px rgba(61, 78, 95, .13), inset 0 1px 0 rgba(255, 255, 255, .9);
   background:
-    radial-gradient(ellipse 48% 46% at 10% 8%, rgba(255, 255, 255, .42), transparent 78%),
-    radial-gradient(ellipse 42% 48% at 93% 88%, rgba(181, 196, 209, .3), transparent 78%),
-    rgba(231, 237, 241, .22);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .76);
+    radial-gradient(ellipse 48% 46% at 10% 8%, rgba(255, 255, 255, .3), transparent 78%),
+    radial-gradient(ellipse 42% 48% at 93% 88%, rgba(145, 164, 180, .52), transparent 78%),
+    rgba(177, 190, 201, .64);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .56);
 }
 .is-architecture-source .architecture-systems {
   grid-template-columns: minmax(0, 1fr) 272px;
@@ -995,12 +996,18 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
   backdrop-filter: blur(26px) saturate(128%);
   -webkit-backdrop-filter: blur(26px) saturate(128%);
 }
-.is-architecture-source .architecture-observed-system { min-height: 0; }
+.is-architecture-source .architecture-observed-system {
+  min-height: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
 .is-architecture-source .architecture-flowpulse-system {
   gap: 10px;
   padding: 14px 12px 12px;
   background: var(--architecture-surface-muted);
-  box-shadow: 0 24px 60px rgba(43, 92, 141, .14), inset 0 1px 0 rgba(255, 255, 255, .9);
+  box-shadow: 0 22px 52px rgba(43, 92, 141, .12), inset 0 1px 0 rgba(255, 255, 255, .72);
 }
 .is-architecture-source .architecture-control-heading {
   display: flex;
@@ -1031,7 +1038,7 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .is-architecture-source .architecture-workspace {
   min-height: 0;
   flex: 1;
-  padding: 12px;
+  padding: 0;
   perspective: 1400px;
 }
 .is-architecture-source .architecture-workspace-turn {
@@ -1040,15 +1047,15 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .is-architecture-source .architecture-workspace-face {
   border: 0;
   border-radius: var(--architecture-system-radius);
-  background: rgba(255, 255, 255, .3);
-  box-shadow: 0 18px 46px rgba(68, 87, 106, .1), inset 0 1px 0 rgba(255, 255, 255, .88);
+  background: transparent;
+  box-shadow: none;
   font-family: var(--architecture-font);
-  backdrop-filter: blur(22px) saturate(124%);
-  -webkit-backdrop-filter: blur(22px) saturate(124%);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 .is-architecture-source .architecture-layer-grid {
   gap: 14px;
-  padding: 14px;
+  padding: 0;
 }
 .is-architecture-source .architecture-layer-module {
   grid-template-columns: minmax(0, 1fr) auto;
@@ -1057,8 +1064,8 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
   padding: 16px;
   border: 0;
   border-radius: var(--architecture-system-radius);
-  background: rgba(255, 255, 255, .52);
-  box-shadow: 0 16px 38px rgba(57, 74, 92, .11), inset 0 1px 0 rgba(255, 255, 255, .9);
+  background: rgba(255, 255, 255, .3);
+  box-shadow: 0 16px 38px rgba(57, 74, 92, .1), inset 0 1px 0 rgba(255, 255, 255, .76);
   font-family: var(--architecture-font);
   backdrop-filter: blur(18px) saturate(122%);
   -webkit-backdrop-filter: blur(18px) saturate(122%);
@@ -1067,8 +1074,8 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .is-architecture-source button.architecture-layer-module:focus-visible {
   transform: translateY(-2px);
   border: 0;
-  background: rgba(255, 255, 255, .68);
-  box-shadow: 0 20px 44px rgba(48, 83, 117, .15), inset 0 2px 0 rgba(255, 255, 255, .98);
+  background: rgba(255, 255, 255, .45);
+  box-shadow: 0 20px 44px rgba(48, 83, 117, .13), inset 0 2px 0 rgba(255, 255, 255, .84);
 }
 .is-architecture-source .architecture-layer-copy {
   grid-column: auto;
@@ -1094,34 +1101,23 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   align-content: start;
-  gap: 7px;
+  gap: 8px;
 }
 .is-architecture-source .architecture-layer-anatomy[data-architecture-member-count="4"] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .is-architecture-source .architecture-thumbnail-node {
   min-width: 0;
-  min-height: 36px;
+  min-height: 54px;
   display: grid;
-  grid-template-columns: 25px minmax(0, 1fr);
+  grid-template-columns: 32px minmax(0, 1fr);
   align-items: center;
-  gap: 6px;
-  padding: 5px 7px 5px 5px;
+  gap: 8px;
+  padding: 8px 10px;
   border-radius: var(--architecture-node-radius);
   color: var(--architecture-copy);
-  background: rgba(255, 255, 255, .44);
-  box-shadow: 0 7px 16px rgba(62, 80, 98, .07), inset 0 1px 0 rgba(255, 255, 255, .82);
-  backdrop-filter: blur(10px) saturate(116%);
-  -webkit-backdrop-filter: blur(10px) saturate(116%);
-}
-.is-architecture-source .architecture-thumbnail-icon {
-  width: 25px;
-  height: 25px;
-  display: grid;
-  place-items: center;
-  border-radius: 10px;
-  color: #34526a;
-  background: rgba(235, 243, 249, .72);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .9);
-  font-size: 14px;
+  background: rgba(255, 255, 255, .2);
+  box-shadow: 0 9px 20px rgba(62, 80, 98, .07), inset 0 1px 0 rgba(255, 255, 255, .72);
+  backdrop-filter: blur(14px) saturate(116%);
+  -webkit-backdrop-filter: blur(14px) saturate(116%);
 }
 .is-architecture-source .architecture-thumbnail-label {
   overflow: hidden;
@@ -1139,8 +1135,8 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
   height: 30px;
   border-radius: 50%;
   color: var(--blue);
-  background: rgba(231, 242, 253, .78);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .92), 0 6px 16px rgba(50, 87, 124, .1);
+  background: rgba(255, 255, 255, .2);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .76), 0 6px 16px rgba(50, 87, 124, .08);
   font-size: 15px;
 }
 .is-architecture-source .architecture-face-heading {
@@ -1177,8 +1173,8 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .is-architecture-source .source-node.is-architecture-compact {
   border: 0;
   border-radius: var(--architecture-node-radius);
-  background: rgba(255, 255, 255, .63);
-  box-shadow: 0 12px 28px rgba(61, 80, 100, .11), inset 0 1px 0 rgba(255, 255, 255, .94);
+  background: rgba(255, 255, 255, .3);
+  box-shadow: 0 9px 20px rgba(61, 80, 100, .08), inset 0 1px 0 rgba(255, 255, 255, .72);
   font-family: var(--architecture-font);
   backdrop-filter: blur(14px) saturate(120%);
   -webkit-backdrop-filter: blur(14px) saturate(120%);
@@ -1186,13 +1182,21 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .is-architecture-source .source-node.is-architecture-compact:hover,
 .is-architecture-source .source-node.is-architecture-compact.is-selected {
   border: 0;
-  background: rgba(255, 255, 255, .78);
-  box-shadow: 0 17px 35px rgba(49, 83, 118, .15), inset 3px 0 0 rgba(37, 99, 235, .74), inset 0 1px 0 rgba(255, 255, 255, .98);
+  background: rgba(255, 255, 255, .36);
+  box-shadow: 0 17px 35px rgba(49, 83, 118, .13), inset 3px 0 0 rgba(37, 99, 235, .74), inset 0 1px 0 rgba(255, 255, 255, .84);
 }
+.is-architecture-source .architecture-thumbnail-icon,
 .is-architecture-source .source-node.is-architecture-compact .node-icon {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
   border: 0;
   border-radius: 12px;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .88);
+  color: var(--architecture-vector);
+  background: rgba(221, 233, 242, .46);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .76);
+  font-size: 16px;
 }
 .is-architecture-source .source-node.is-architecture-compact strong {
   overflow: visible;
@@ -1209,8 +1213,11 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
   padding: 1px 0;
 }
 .is-architecture-source .architecture-flowpulse-nodes .source-node.is-architecture-compact {
-  height: 56px;
-  min-height: 56px;
+  height: 54px;
+  min-height: 54px;
+  grid-template-columns: 32px minmax(0, 1fr);
+  gap: 8px;
+  padding: 8px 10px;
 }
 .is-architecture-source .architecture-flowpulse-summary {
   gap: 6px;
@@ -1265,9 +1272,10 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
   .is-architecture-source .architecture-systems { grid-template-columns: minmax(0, 1fr) 236px; gap: 14px; padding: 12px 14px; }
   .is-architecture-source .architecture-layer-grid { gap: 10px; padding: 10px; }
   .is-architecture-source .architecture-layer-module { gap: 9px 10px; padding: 12px; }
-  .is-architecture-source .architecture-layer-anatomy { grid-template-columns: repeat(auto-fit, minmax(76px, 1fr)); gap: 5px; }
-  .is-architecture-source .architecture-thumbnail-node { min-height: 32px; grid-template-columns: 22px minmax(0, 1fr); padding: 4px; }
-  .is-architecture-source .architecture-thumbnail-icon { width: 22px; height: 22px; font-size: 12px; }
+  .is-architecture-source .architecture-layer-anatomy { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; }
+  .is-architecture-source .architecture-thumbnail-node { min-height: 46px; grid-template-columns: 30px minmax(0, 1fr); gap: 7px; padding: 7px 8px; }
+  .is-architecture-source .architecture-thumbnail-icon { width: 30px; height: 30px; font-size: 15px; }
+  .is-architecture-source .architecture-flowpulse-nodes .source-node.is-architecture-compact { height: 46px; min-height: 46px; grid-template-columns: 30px minmax(0, 1fr); gap: 7px; padding: 7px 8px; }
   .is-architecture-source .architecture-thumbnail-label { font-size: 10px; }
 }
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
