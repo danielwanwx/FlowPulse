@@ -72,6 +72,18 @@ export const ARCHITECTURE_LAYERS = [
     label: "Async, data & platform",
     description: "eventing, workers, configuration, and telemetry",
     ids: ["email", "kafka", "accounting", "fraud-detection", "fraud", "quote", "image-provider", "flagd-ui", "flagd", "telemetry-docs", "otelcol-contrib", "astronomy-db"]
+  },
+  {
+    id: "control",
+    label: "FlowPulse control plane",
+    description: "bounded change and investigation components",
+    ids: ["deployment", "agent", "evaluator"]
+  },
+  {
+    id: "evidence",
+    label: "Evidence plane",
+    description: "append-only evidence and decision record",
+    ids: ["ledger"]
   }
 ];
 
@@ -227,7 +239,8 @@ export function architecturePositions(nodes = []) {
 
   for (const node of nodes) {
     const known = knownLayer.get(node.id);
-    const layerIndex = known?.index ?? fallbackLayer[node.kind] ?? 3;
+    const backendRuntimeLayer = ["experience", "commerce", "processing", "platform"].indexOf(node.layer);
+    const layerIndex = node.plane === "evidence" ? 5 : node.plane === "control" ? 4 : backendRuntimeLayer >= 0 ? backendRuntimeLayer : known?.index ?? fallbackLayer[node.kind] ?? 3;
     buckets[layerIndex].push({ node, order: known?.order ?? 1_000 });
   }
 
@@ -241,7 +254,7 @@ export function architecturePositions(nodes = []) {
       layerPosition: index,
       layerSize: sorted.length,
       x: spreadCoordinate(index, sorted.length),
-      y: [18, 39, 61, 82][layerIndex]
+      y: [18, 34, 50, 66, 80, 92][layerIndex]
     }));
   });
 }
@@ -384,6 +397,86 @@ export function topologyIntegrity(topology = {}) {
     invalid_edges: invalidEdges,
     unlinked_node_ids: nodes.filter((node) => !connected.has(node.id)).map((node) => node.id)
   };
+}
+
+export function architectureViewTopology(topologyViews = {}) {
+  if (!plainRecord(topologyViews) || topologyViews.schema_version !== "flowpulse.topology-views.v1" || !validTopologyTruth(topologyViews.truth)) return null;
+  const architecture = topologyViews.architecture;
+  if (!plainRecord(architecture) || !sameKeys(architecture, ["graph", "runtime_data", "control_evidence"]) || !plainRecord(architecture.graph) || !plainRecord(architecture.runtime_data) || !plainRecord(architecture.control_evidence)) return null;
+  const { graph, runtime_data: runtimeData, control_evidence: controlEvidence } = architecture;
+  if (!sameKeys(graph, ["nodes", "edges", "total_nodes", "total_edges", "truncated"]) || !sameKeys(runtimeData, ["node_count", "edge_count"]) || !sameKeys(controlEvidence, ["node_count", "relation_count"])
+    || !Array.isArray(graph.nodes) || !Array.isArray(graph.edges)
+    || graph.total_nodes !== graph.nodes.length || graph.total_edges !== graph.edges.length || graph.truncated !== false
+    || runtimeData.node_count !== 22 || runtimeData.edge_count !== 22
+    || controlEvidence.node_count !== 4 || !Number.isInteger(controlEvidence.relation_count) || controlEvidence.relation_count < 0 || controlEvidence.relation_count > 32
+    || graph.nodes.length !== runtimeData.node_count + controlEvidence.node_count
+    || graph.edges.length !== runtimeData.edge_count + controlEvidence.relation_count) return null;
+  if (!graph.nodes.every(validArchitectureNode) || !graph.edges.every(validArchitectureEdge)) return null;
+
+  const topology = topologyIntegrity({ nodes: graph.nodes, edges: graph.edges });
+  if (topology.invalid_edges.length || topology.nodes.length !== graph.nodes.length || topology.edges.length !== graph.edges.length) return null;
+  if (!graph.nodes.every((node, index) => node.id === topology.nodes[index]?.id)
+    || !graph.edges.every((edge, index) => edge.id === topology.edges[index]?.id && edge.from === topology.edges[index]?.from && edge.to === topology.edges[index]?.to)) return null;
+
+  const controlIds = ["deployment", "agent", "evaluator", "ledger"];
+  const controls = topology.nodes.filter((node) => ["control", "evidence"].includes(node.plane));
+  const runtimeEdges = topology.edges.filter((edge) => ["runtime", "data"].includes(edge.plane));
+  const controlEdges = topology.edges.filter((edge) => ["control", "evidence"].includes(edge.plane));
+  if (controls.length !== controlEvidence.node_count || runtimeEdges.length !== runtimeData.edge_count || controlEdges.length !== controlEvidence.relation_count
+    || controls.map((node) => node.id).sort().join(",") !== [...controlIds].sort().join(",")
+    || topology.nodes.some((node) => controlIds.includes(node.id) !== ["control", "evidence"].includes(node.plane))) return null;
+
+  return {
+    graph: { ...topology, total_nodes: graph.total_nodes, total_edges: graph.total_edges, truncated: false },
+    runtime_data: { ...runtimeData },
+    control_evidence: { ...controlEvidence },
+    truth: { ...topologyViews.truth }
+  };
+}
+
+function validArchitectureNode(node) {
+  return plainRecord(node) && sameKeys(node, ["id", "kind", "display_class", "plane", "layer", "label", "status", "source_health", "signal_types", "provenance_refs"])
+    && typeof node.id === "string" && /^[a-z0-9][a-z0-9-]{0,79}$/.test(node.id)
+    && typeof node.label === "string" && node.label.length > 0 && node.label.length <= 160
+    && ["service", "job", "topic", "deployment", "dataset"].includes(node.kind)
+    && ["client", "service", "api", "stream", "worker", "change", "agent", "evaluator", "ledger"].includes(node.display_class)
+    && ["runtime", "data", "control", "evidence"].includes(node.plane)
+    && typeof node.layer === "string" && node.layer.length > 0 && node.layer.length <= 80
+    && ["observed", "idle", "recording", "active", "rejected", "accepted"].includes(node.status)
+    && ["live", "stale", "disconnected", "unavailable"].includes(node.source_health)
+    && Array.isArray(node.signal_types) && node.signal_types.length <= 3 && node.signal_types.every((value) => ["trace", "metric", "log"].includes(value))
+    && Array.isArray(node.provenance_refs) && node.provenance_refs.length > 0 && node.provenance_refs.length <= 4 && node.provenance_refs.every(validProvenanceRef);
+}
+
+function validArchitectureEdge(edge) {
+  return plainRecord(edge) && sameKeys(edge, ["id", "from", "to", "kind", "plane", "label", "status", "provenance_refs"])
+    && typeof edge.id === "string" && edge.id.length > 0 && edge.id.length <= 160
+    && typeof edge.from === "string" && typeof edge.to === "string" && edge.from !== edge.to
+    && ["runtime", "data", "control", "evidence"].includes(edge.plane)
+    && typeof edge.kind === "string" && edge.kind.length > 0 && edge.kind.length <= 80
+    && (edge.label === null || typeof edge.label === "string" && edge.label.length <= 160)
+    && ["observed", "idle", "recording", "active", "rejected", "accepted"].includes(edge.status)
+    && Array.isArray(edge.provenance_refs) && edge.provenance_refs.length > 0 && edge.provenance_refs.length <= 4 && edge.provenance_refs.every(validProvenanceRef);
+}
+
+function validTopologyTruth(truth) {
+  return plainRecord(truth) && sameKeys(truth, ["source_health", "evidence_mode", "execution_mode", "label"])
+    && ["live", "stale", "disconnected", "unavailable"].includes(truth.source_health)
+    && ["live_stream", "frozen_real_snapshot", "captured_fixture"].includes(truth.evidence_mode)
+    && ["deterministic_replay", "gpt_model_only", "real_local_development", "captured_simulation"].includes(truth.execution_mode)
+    && ["LIVE", "CAPTURED", "UNAVAILABLE"].includes(truth.label);
+}
+
+function validProvenanceRef(value) {
+  return typeof value === "string" && value.length > 0 && value.length <= 200 && /^(capture|code|ledger|evidence):\/\/[A-Za-z0-9._:/#-]+$/.test(value);
+}
+
+function plainRecord(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype;
+}
+
+function sameKeys(value, keys) {
+  return Object.keys(value).sort().join(",") === [...keys].sort().join(",");
 }
 
 export function normalizeServiceId(value) {

@@ -438,6 +438,17 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .architecture-tier-label strong { font-size: 9px; font-weight: 800; letter-spacing: .035em; text-transform: uppercase; }
 .architecture-tier-label small { color: var(--muted); font-size: 8px; letter-spacing: 0; text-transform: none; }
 .architecture-tier-label em { margin-left: auto; color: var(--muted); font-size: 8px; font-style: normal; }
+.architecture-tier-label[data-plane="control"] b { background: var(--blue); }
+.architecture-tier-label[data-plane="evidence"] b { background: var(--green); }
+.architecture-tier-relations { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.architecture-tier-relations span { max-width: 100%; padding: 2px 5px; overflow: hidden; color: var(--muted); border: 1px solid var(--line); border-radius: 2px; font-family: var(--mono); font-size: 8px; line-height: 1.2; text-overflow: ellipsis; white-space: nowrap; }
+.architecture-tier-relations[data-plane="control"] span { color: var(--blue); border-color: color-mix(in srgb, var(--blue) 35%, var(--line)); }
+.architecture-tier-relations[data-plane="evidence"] span { color: var(--green); border-color: color-mix(in srgb, var(--green) 35%, var(--line)); }
+.is-architecture-source .architecture-stack.is-complete-topology { gap: 7px; padding-block: 8px 10px; }
+.is-architecture-source .architecture-stack.is-complete-topology .architecture-tier-row { min-height: 58px; }
+.is-architecture-source .architecture-stack.is-complete-topology .source-node { height: 58px; min-height: 58px; }
+.is-architecture-source .architecture-stack.is-complete-topology .source-node .node-detail { display: none; }
+.is-architecture-source .architecture-stack.is-complete-topology .source-node strong { font-size: 11px; }
 .is-architecture-source .architecture-tier .source-node {
   position: relative;
   left: auto !important;

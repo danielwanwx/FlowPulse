@@ -11,6 +11,7 @@ import {
   TWIN_NODES,
   TWIN_STAGES,
   activeIncidentState,
+  architectureViewTopology,
   availableStage,
   architecturePositions,
   compareFrames,
@@ -33,6 +34,63 @@ import {
 const indexHtml = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
 const appJs = readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
 const stylesCss = readFileSync(new URL("../public/styles.css", import.meta.url), "utf8");
+const topologyManifest = JSON.parse(readFileSync(new URL("../data/topology/otel-demo-system-v1.json", import.meta.url), "utf8"));
+
+function backendArchitectureView() {
+  const controls = [
+    { id: "deployment", kind: "deployment", display_class: "change", plane: "control", layer: "change", label: "Deployment", status: "observed", source_health: "unavailable", signal_types: [], provenance_refs: ["evidence://ev-deploy-checkout"] },
+    { id: "agent", kind: "service", display_class: "agent", plane: "control", layer: "investigation", label: "Investigator", status: "idle", source_health: "unavailable", signal_types: [], provenance_refs: ["code://flowpulse/investigator"] },
+    { id: "evaluator", kind: "service", display_class: "evaluator", plane: "control", layer: "evaluation", label: "Evaluator", status: "idle", source_health: "unavailable", signal_types: [], provenance_refs: ["code://flowpulse/evaluator"] },
+    { id: "ledger", kind: "dataset", display_class: "ledger", plane: "evidence", layer: "evidence", label: "Evidence Ledger", status: "recording", source_health: "unavailable", signal_types: [], provenance_refs: ["ledger://append-only"] }
+  ];
+  const controlEdges = [{ id: "deployment-checkout", from: "deployment", to: "checkout", kind: "affects", plane: "control", label: "Deployment evidence", status: "observed", provenance_refs: ["evidence://ev-deploy-checkout"] }];
+  const nodes = [...topologyManifest.nodes, ...controls];
+  const edges = [...topologyManifest.edges, ...controlEdges];
+  return {
+    schema_version: "flowpulse.topology-views.v1",
+    truth: { source_health: "unavailable", evidence_mode: "captured_fixture", execution_mode: "deterministic_replay", label: "CAPTURED" },
+    architecture: {
+      graph: { nodes, edges, total_nodes: nodes.length, total_edges: edges.length, truncated: false },
+      runtime_data: { node_count: 22, edge_count: 22 },
+      control_evidence: { node_count: 4, relation_count: 1 }
+    }
+  };
+}
+
+test("Architecture accepts only the complete backend topology view and retains separate control evidence counts", () => {
+  const view = architectureViewTopology(backendArchitectureView());
+  assert.ok(view);
+  assert.equal(view.graph.nodes.length, 26);
+  assert.equal(view.runtime_data.node_count, 22);
+  assert.equal(view.runtime_data.edge_count, 22);
+  assert.equal(view.control_evidence.node_count, 4);
+  assert.equal(view.control_evidence.relation_count, 1);
+  assert.deepEqual(view.graph.nodes.filter((node) => ["control", "evidence"].includes(node.plane)).map((node) => node.id).sort(), ["agent", "deployment", "evaluator", "ledger"]);
+  assert.equal(view.graph.edges.filter((edge) => edge.plane === "runtime").length, 22);
+  assert.equal(view.graph.edges.filter((edge) => ["control", "evidence"].includes(edge.plane)).length, 1);
+  const ids = new Set(view.graph.nodes.map((node) => node.id));
+  assert.equal(view.graph.edges.every((edge) => ids.has(edge.from) && ids.has(edge.to)), true);
+  const positioned = new Map(architecturePositions(view.graph.nodes).map((node) => [node.id, node]));
+  for (const node of view.graph.nodes.filter((node) => ["runtime", "data"].includes(node.plane))) {
+    assert.equal(positioned.get(node.id).layer, node.layer);
+  }
+  assert.equal(positioned.get("deployment").layer, "control");
+  assert.equal(positioned.get("ledger").layer, "evidence");
+
+  assert.equal(architectureViewTopology({ schema_version: "flowpulse.topology-views.v1", architecture: { graph: { nodes: topologyManifest.nodes, edges: topologyManifest.edges } } }), null);
+  const invalid = backendArchitectureView();
+  invalid.architecture.graph.edges[0] = { ...invalid.architecture.graph.edges[0], to: "missing" };
+  assert.equal(architectureViewTopology(invalid), null);
+  const unsafe = backendArchitectureView();
+  unsafe.architecture.graph.nodes[0] = { ...unsafe.architecture.graph.nodes[0], raw_trace: "not browser-safe" };
+  assert.equal(architectureViewTopology(unsafe), null);
+
+  const architectureFunction = appJs.match(/function architectureTopology\(\) \{[\s\S]+?\n\}/)?.[0] || "";
+  assert.match(architectureFunction, /architectureViewTopology\(state\?\.topology_views\)/);
+  assert.doesNotMatch(architectureFunction, /sourceState\(|TWIN_NODES|TWIN_EDGES/);
+  assert.match(appJs, /architectureComponentContext/);
+  assert.match(appJs, /function architectureView\(\) \{[\s\S]+architectureViewTopology\(state\?\.topology_views\)/);
+});
 
 test("light and pure-black themes have a persisted accessible toggle", () => {
   assert.match(indexHtml, /id="theme-toggle"[^>]+aria-label="Switch to pure black theme"/);
@@ -62,7 +120,7 @@ test("architecture layout is deterministic, layered, and leaves room for complet
   const second = architecturePositions([...nodes].reverse());
   const coordinates = (items) => Object.fromEntries(items.map(({ id, layer, x, y }) => [id, { layer, x, y }]));
   assert.deepEqual(coordinates(first), coordinates(second));
-  assert.deepEqual([...new Set(first.map(({ layer }) => layer))], ARCHITECTURE_LAYERS.map(({ id }) => id));
+  assert.deepEqual([...new Set(first.map(({ layer }) => layer))], ARCHITECTURE_LAYERS.slice(0, 4).map(({ id }) => id));
   assert.ok(ARCHITECTURE_LAYERS.every(({ description }) => typeof description === "string" && description.length > 0));
   assert.ok(first.every(({ x, y }) => x >= 6 && x <= 94 && y >= 18 && y <= 82));
   assert.deepEqual([...new Set(first.map(({ layerSize }) => layerSize))], [2, 4, 6, 10]);
@@ -71,6 +129,9 @@ test("architecture layout is deterministic, layered, and leaves room for complet
     for (let index = 1; index < xs.length; index++) assert.ok((xs[index] - xs[index - 1]) * 12.8 >= 116);
   }
   assert.match(appJs, /if \(layout === "architecture"\) \{[\s\S]+architecture-stack/);
+  assert.match(appJs, /topology\.edges\.filter\(\(edge\) => \["control", "evidence"\]\.includes\(edge\.plane\)\)/);
+  assert.match(appJs, /dataset\.runtimeEdges/);
+  assert.match(appJs, /dataset\.controlRelations/);
   assert.doesNotMatch(appJs.match(/if \(layout === "architecture"\) \{[\s\S]+?return;/)?.[0] || "", /edge-map|pulse-flow/);
   assert.doesNotMatch(appJs, /style="left:\$\{node\.x\}/);
   assert.match(stylesCss, /\.architecture-tier-row \{[^}]+min-height: 72px;[^}]+grid-template-columns: repeat\(auto-fit, var\(--architecture-card-width\)\)/s);
@@ -83,7 +144,7 @@ test("architecture layout is deterministic, layered, and leaves room for complet
   assert.match(appJs, /architecture-tier-label[^\n]+layer\.description/);
   assert.match(appJs, /service\.name=\$\{node\.id\}/);
   assert.match(appJs, /telemetry\.sdk\.language/);
-  assert.match(appJs, /layout === "architecture" \? `\$\{kindLabel\(node\.kind\)\}/);
+  assert.match(appJs, /const origin = architecture \? `\$\{kindLabel\(node\.kind\)\} · \$\{node\.plane\} \/ \$\{node\.layer\}`/);
   assert.match(stylesCss, /@media \(max-width: 1080px\)[\s\S]+\.architecture-tier-row \{ grid-template-columns: repeat\(auto-fit, minmax\(96px, 112px\)\); \}/);
 });
 
@@ -142,7 +203,7 @@ test("captured browser topology consumes the bounded projection aliases and keep
   assert.deepEqual(primaryLiveEdges(projected).map(({ id }) => id), [
     "checkout-kafka", "checkout-payment", "frontend-checkout", "kafka-accounting", "kafka-fraud"
   ]);
-  assert.match(appJs, /const sourceTopology = topologyIntegrity\(sourceState\(\)\.topology\)/);
+  assert.match(appJs, /const topology = architecture \? architecture\.graph : topologyIntegrity\(source\.topology\)/);
   assert.match(appJs, /sourceState\(\)\.status === "captured" \? "Captured replay"/);
   assert.match(stylesCss, /\.is-live-source \.edge-group \.edge-line \{ stroke: #9ca5b0; stroke-width: 1\.5; opacity: \.82; \}/);
   assert.match(appJs, /event\.target\.matches\("\[data-node-id\], \[data-edge-id\], \[data-agent-edge-id\]"\)/);

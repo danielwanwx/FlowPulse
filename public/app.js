@@ -10,6 +10,7 @@ import {
   activeIncidentState,
   availableStage,
   architecturePositions,
+  architectureViewTopology,
   compareFrames,
   compareProvenance,
   eventsAtStage,
@@ -197,7 +198,8 @@ function renderHeader() {
   els["incident-stage"].textContent = state.stage;
   els["workspace-title"].textContent = titles[mode];
   els["canvas-title"].textContent = canvasTitles[mode];
-  els.stage.textContent = mode === "architecture" ? `${architectureTopology().nodes.length} observed services` : mode === "live" ? source.label : mode === "agents" ? agentControl().report.stage : mode === "compare" ? "Incident vs verified" : timelineStages()[cursor].label;
+  const architecture = mode === "architecture" ? architectureView() : null;
+  els.stage.textContent = mode === "architecture" ? architecture ? `${architecture.graph.nodes.length} backend components` : "Architecture unavailable" : mode === "live" ? source.label : mode === "agents" ? agentControl().report.stage : mode === "compare" ? "Incident vs verified" : timelineStages()[cursor].label;
   els["status-text"].textContent = modeStatus();
   els["ledger-state"].textContent = `${state.events.length} immutable events`;
   els["capture-label"].textContent = captureLabel();
@@ -252,15 +254,26 @@ function renderMetrics() {
     setMetric("kafka", String(control.orchestration?.proposal_count || 0), control.langfuse === "observing" ? "harness + Langfuse" : "harness validated");
     return;
   }
-  if (mode === "architecture" || mode === "live" || state.mode === "development") {
+  if (mode === "architecture") {
+    const view = architectureView();
+    const topology = view?.graph;
+    els["metric-checkout-label"].textContent = "Components";
+    els["metric-payment-label"].textContent = "Dependencies";
+    els["metric-kafka-label"].textContent = "Source truth";
+    setMetric("checkout", String(topology?.nodes.length || 0), view ? `${view.runtime_data.node_count} runtime/data · ${view.control_evidence.node_count} FlowPulse` : "Backend view unavailable");
+    setMetric("payment", String(topology?.edges.length || 0), view ? `${view.runtime_data.edge_count} runtime · ${view.control_evidence.relation_count} control/evidence` : "No compatibility fallback");
+    setMetric("kafka", view?.truth.label || "UNAVAILABLE", "backend projection");
+    return;
+  }
+  if (mode === "live" || state.mode === "development") {
     const source = sourceState();
-    const topology = topologyIntegrity(mode === "architecture" ? architectureTopology() : source.topology);
+    const topology = topologyIntegrity(source.topology);
     const visibleDependencies = mode === "live" ? primaryLiveEdges(topology).length : topology?.edges?.length || 0;
     els["metric-checkout-label"].textContent = "Services";
     els["metric-payment-label"].textContent = "Dependencies";
     els["metric-kafka-label"].textContent = "Source age";
     setMetric("checkout", String(topology?.nodes?.length || 0), "");
-    setMetric("payment", String(topology?.edges?.length || 0), mode === "architecture" ? "hidden in Architecture" : `${visibleDependencies} primary paths shown${topology.unlinked_node_ids.length ? ` · ${topology.unlinked_node_ids.length} gaps` : ""}`);
+    setMetric("payment", String(topology?.edges?.length || 0), `${visibleDependencies} primary paths shown${topology.unlinked_node_ids.length ? ` · ${topology.unlinked_node_ids.length} gaps` : ""}`);
     setMetric("kafka", source.freshness_ms == null ? "—" : formatAge(source.freshness_ms), "");
     return;
   }
@@ -328,8 +341,9 @@ function renderCanvas() {
 }
 
 function renderSourceCanvas(layout) {
-  const source = sourceState();
-  const topology = topologyIntegrity(layout === "architecture" ? architectureTopology() : source.topology);
+  const architecture = layout === "architecture" ? architectureView() : null;
+  const source = architecture ? architectureSource(architecture) : sourceState();
+  const topology = architecture ? architecture.graph : topologyIntegrity(source.topology);
   els["compare-handle"].hidden = true;
   els["compare-canvas-range"].hidden = true;
   els["compare-review-rail"].hidden = true;
@@ -337,27 +351,38 @@ function renderSourceCanvas(layout) {
   if (!topology?.nodes?.length) {
     els["canvas-layers"].innerHTML = `<div class="source-empty">
       <i class="ph ph-plugs" aria-hidden="true"></i>
-      <strong>${escapeHtml(source.label)}</strong>
-      <span>${source.status === "disconnected" ? "No OTLP capture is registered. Connect the pinned local runtime or open Diagnose." : "The collector files exist but do not contain a complete OTLP record yet."}</span>
+      <strong>${layout === "architecture" ? "Architecture projection unavailable" : escapeHtml(source.label)}</strong>
+      <span>${layout === "architecture" ? "The backend-owned complete topology view is missing or invalid. The six-node incident compatibility graph is not used as a fallback." : source.status === "disconnected" ? "No OTLP capture is registered. Connect the pinned local runtime or open Diagnose." : "The collector files exist but do not contain a complete OTLP record yet."}</span>
     </div>`;
-    els["twin-canvas"].setAttribute("aria-label", `${source.label}. No observed service topology is available.`);
+    els["twin-canvas"].setAttribute("aria-label", layout === "architecture" ? "Architecture projection unavailable." : `${source.label}. No observed service topology is available.`);
     return;
   }
   const positioned = layout === "architecture" ? architecturePositions(topology.nodes) : livePositions(topology.nodes);
-  const nodeStates = liveIncidentNodeStates({ mode: state.mode, events: state.events, source });
+  const nodeStates = layout === "architecture"
+    ? Object.fromEntries(topology.nodes.map((node) => [node.id, node.status]))
+    : liveIncidentNodeStates({ mode: state.mode, events: state.events, source });
   if (layout === "architecture") {
+    const controlRelations = topology.edges.filter((edge) => ["control", "evidence"].includes(edge.plane));
     const tiers = ARCHITECTURE_LAYERS.map((layer, layerIndex) => {
       const members = positioned.filter((node) => node.layerIndex === layerIndex);
       if (!members.length) return "";
+      const relations = layer.id === "control"
+        ? controlRelations.filter((edge) => edge.plane === "control")
+        : layer.id === "evidence"
+          ? controlRelations.filter((edge) => edge.plane === "evidence")
+          : [];
       return `<section class="architecture-tier architecture-tier-${layerIndex}" aria-label="${escapeHtml(layer.label)}">
-        <header class="architecture-tier-label"><b aria-hidden="true">${String(layerIndex + 1).padStart(2, "0")}</b><span><strong>${escapeHtml(layer.label)}</strong><small>${escapeHtml(layer.description || "Observed services")}</small></span><em>${members.length} component${members.length === 1 ? "" : "s"}</em></header>
+        <header class="architecture-tier-label" data-plane="${escapeHtml(layer.id)}"><b aria-hidden="true">${String(layerIndex + 1).padStart(2, "0")}</b><span><strong>${escapeHtml(layer.label)}</strong><small>${escapeHtml(layer.description || "Observed services")}</small></span><em>${members.length} component${members.length === 1 ? "" : "s"}</em></header>
         <div class="architecture-tier-row">${members.map((node) => sourceNodeMarkup(node, { layout, source, nodeStates })).join("")}</div>
+        ${relations.length ? `<div class="architecture-tier-relations" data-plane="${escapeHtml(layer.id)}">${relations.map((edge) => `<span>${escapeHtml(edge.label || edge.kind)} · ${escapeHtml(edge.from)} → ${escapeHtml(edge.to)}</span>`).join("")}</div>` : ""}
       </section>`;
     }).join("");
-    els["canvas-layers"].innerHTML = `<div class="twin-layer layer-current architecture-stack">${tiers}</div>`;
+    els["canvas-layers"].innerHTML = `<div class="twin-layer layer-current architecture-stack is-complete-topology">${tiers}</div>`;
     els["twin-canvas"].dataset.invalidEdges = String(topology.invalid_edges.length);
     els["twin-canvas"].dataset.unlinkedNodes = "0";
-    els["twin-canvas"].setAttribute("aria-label", `Architecture block stack with ${positioned.length} observed services from ${sourceOrigin(layout)}. Dependency lines are intentionally hidden.`);
+    els["twin-canvas"].dataset.runtimeEdges = String(architecture.runtime_data.edge_count);
+    els["twin-canvas"].dataset.controlRelations = String(architecture.control_evidence.relation_count);
+    els["twin-canvas"].setAttribute("aria-label", `Architecture block stack with ${architecture.runtime_data.node_count} runtime/data components and ${architecture.control_evidence.node_count} FlowPulse control/evidence components. ${architecture.runtime_data.edge_count} runtime dependencies and ${architecture.control_evidence.relation_count} control/evidence relations are projected by the backend.`);
     return;
   }
   const positions = new Map(positioned.map((node) => [node.id, node]));
@@ -394,14 +419,15 @@ function renderSourceCanvas(layout) {
 }
 
 function sourceNodeMarkup(node, { layout, source, nodeStates }) {
-  const nodeState = node.connectivity === "unlinked" ? "unlinked" : nodeStates[node.id] || "dormant";
-  const nodeStatus = sourceStatusLabel(nodeState, source.status);
+  const architecture = layout === "architecture";
+  const nodeState = architecture ? nodeStates[node.id] || "observed" : node.connectivity === "unlinked" ? "unlinked" : nodeStates[node.id] || "dormant";
+  const nodeStatus = architecture ? statusLabel(nodeState) : sourceStatusLabel(nodeState, source.status);
   const ariaStatus = nodeState === "unlinked" ? "Insufficient dependency evidence" : nodeStatus;
-  const profile = sourceComponentProfile(node);
-  const origin = layout === "architecture" ? `${kindLabel(node.kind)}${profile.language ? ` · ${profile.language}` : ""}` : `RUNTIME · ${sourceOrigin(layout)}`;
-  const detail = layout === "architecture" ? profile.capability : node.detail || (nodeState === "unlinked" ? "dependency not observed" : "observed service.name");
+  const profile = architecture ? architectureComponentProfile(node) : sourceComponentProfile(node);
+  const origin = architecture ? `${kindLabel(node.kind)} · ${node.plane} / ${node.layer}` : `RUNTIME · ${sourceOrigin(layout)}`;
+  const detail = architecture ? `${node.provenance_refs.length} provenance ref${node.provenance_refs.length === 1 ? "" : "s"}` : node.detail || (nodeState === "unlinked" ? "dependency not observed" : "observed service.name");
   const livePositionClass = layout === "live" ? ` live-column-${node.layerIndex} live-count-${node.layerSize} live-index-${node.layerPosition}` : "";
-  return `<button class="twin-node source-node plane-runtime kind-${escapeHtml(node.kind)} is-${nodeState}${livePositionClass}" type="button" data-node-id="${escapeHtml(node.id)}" data-status="${escapeHtml(nodeState)}" data-transition-key="${escapeHtml(transitionKey(node.id))}" aria-label="${escapeHtml(profile.capability)}, ${escapeHtml(kindLabel(node.kind))} ${escapeHtml(node.label)}, ${escapeHtml(profile.runtimeIdentity)}, ${escapeHtml(ariaStatus)}">
+  return `<button class="twin-node source-node plane-${escapeHtml(node.plane || "runtime")} kind-${escapeHtml(node.kind)} is-${nodeState}${livePositionClass}" type="button" data-node-id="${escapeHtml(node.id)}" data-status="${escapeHtml(nodeState)}" data-transition-key="${escapeHtml(transitionKey(node.id))}" aria-label="${escapeHtml(architecture ? node.label : profile.capability)}, ${escapeHtml(kindLabel(node.kind))}, ${escapeHtml(architecture ? `${node.plane} plane ${node.layer} layer` : profile.runtimeIdentity)}, ${escapeHtml(ariaStatus)}">
     <span class="node-icon" aria-hidden="true"><i class="ph ph-${iconForLive(node)}"></i></span>
     <span class="node-copy"><span class="node-origin">${escapeHtml(origin)}</span><strong>${escapeHtml(node.label)}</strong><span class="node-detail">${escapeHtml(detail)}</span><span class="node-status">${escapeHtml(nodeStatus)}</span></span>
     <span class="node-status-dot" aria-hidden="true"></span>
@@ -1088,6 +1114,10 @@ function renderDrawer() {
 }
 
 function drawerTabsForSelection(focus) {
+  if (focus?.type === "node" && mode === "architecture" && architectureTopology()?.nodes.some((node) => node.id === focus.id)) {
+    const source = sourceComponentContext(focus.id);
+    return source ? sourceDrawerTabs(source) : [["overview", "Overview"]];
+  }
   if (focus?.type === "node" && agentControl().graph.nodes.some((node) => node.id === focus.id)) return [["agent", "Brief"]];
   if (focus?.type === "agent-edge") return [["agent", "Handoff"]];
   if (focus?.type === "node") {
@@ -1108,9 +1138,9 @@ function drawerTabsForSelection(focus) {
 
 function sourceDrawerTabs(context) {
   const tabs = [["overview", "Overview"]];
-  if (context.evidence.length) tabs.push(["signals", "Signals"]);
+  if (context.architecture ? context.node.signal_types.length : context.evidence.length) tabs.push(["signals", "Signals"]);
   if (context.incoming.length || context.outgoing.length) tabs.push(["dependencies", "Dependencies"]);
-  if (context.evidence.length) tabs.push(["evidence", "Evidence"]);
+  if (context.architecture ? context.node.provenance_refs.length : context.evidence.length) tabs.push(["evidence", "Evidence"]);
   return tabs;
 }
 
@@ -1118,7 +1148,7 @@ function selectionMeta(focus) {
   if (focus.type === "node") {
     const context = sourceComponentContext(focus.id);
     if (context) return { kind: kindLabel(context.node.kind), title: context.node.label, subtitle: `${context.profile.capability} · ${context.profile.runtimeIdentity}` };
-    const node = NODE_BY_ID.get(focus.id) || topologyIntegrity(sourceState().topology).nodes.find((item) => item.id === focus.id) || agentControl().graph.nodes.find((item) => item.id === focus.id);
+    const node = NODE_BY_ID.get(focus.id) || architectureTopology()?.nodes.find((item) => item.id === focus.id) || topologyIntegrity(sourceState().topology).nodes.find((item) => item.id === focus.id) || agentControl().graph.nodes.find((item) => item.id === focus.id);
     return { kind: kindLabel(node?.kind || "component"), title: node?.label || focus.id, subtitle: node?.connectivity === "unlinked" ? "Insufficient dependency evidence in the authoritative OTLP window" : node?.detail || "System component" };
   }
   if (focus.type === "agent-edge") {
@@ -1126,7 +1156,7 @@ function selectionMeta(focus) {
     return { kind: "Agent handoff", title: edge?.label || focus.id, subtitle: `${agentLabel(edge?.from)} to ${agentLabel(edge?.to)}` };
   }
   if (focus.type === "edge") {
-    const edge = EDGE_BY_ID.get(focus.id) || sourceState().topology?.edges?.find((item) => item.id === focus.id);
+    const edge = EDGE_BY_ID.get(focus.id) || architectureTopology()?.edges.find((item) => item.id === focus.id) || sourceState().topology?.edges?.find((item) => item.id === focus.id);
     return { kind: "Dependency path", title: edge?.label || focus.id, subtitle: `${labelFor(edge?.from)} to ${labelFor(edge?.to)}` };
   }
   if (focus.type === "annotation") return { kind: "Causal annotation", title: annotationTitle(focus.id), subtitle: TWIN_STAGES[cursor].label };
@@ -1156,9 +1186,9 @@ function drawerTone(focus) {
 }
 
 function drawerContent(tab) {
-  if (selected?.type === "node" && agentControl().graph.nodes.some((node) => node.id === selected.id)) return renderAgentOperationDetail(selected.id);
-  if (selected?.type === "agent-edge") return renderAgentEdgeDetail(selected.id);
   const component = selected?.type === "node" ? sourceComponentContext(selected.id) : null;
+  if (selected?.type === "node" && !component && agentControl().graph.nodes.some((node) => node.id === selected.id)) return renderAgentOperationDetail(selected.id);
+  if (selected?.type === "agent-edge") return renderAgentEdgeDetail(selected.id);
   if (component) return renderSourceDrawerContent(tab, component);
   const componentIntro = "";
   const visibleEvents = projectedEvents();
@@ -1186,6 +1216,13 @@ function drawerContent(tab) {
 }
 
 function renderSourceDrawerContent(tab, context) {
+  if (context.architecture) {
+    if (tab === "overview") return renderArchitectureComponentContext(context);
+    if (tab === "signals") return renderArchitectureSignalSummary(context);
+    if (tab === "dependencies") return renderSourceDependencies(context);
+    if (tab === "evidence") return renderArchitectureProvenance(context);
+    return emptyDetail("No bounded architecture detail is available for this component.");
+  }
   if (tab === "overview") return renderSourceComponentContext(context);
   if (tab === "signals") return renderSourceSignalSummary(context);
   if (tab === "dependencies") return renderSourceDependencies(context);
@@ -1778,7 +1815,7 @@ function timelineCopy(index) {
 }
 
 function modeStatus() {
-  if (mode === "architecture") return sourceState().status === "live" ? "Current source projection" : "Last-known source projection";
+  if (mode === "architecture") return architectureView() ? "Backend-owned architecture projection" : "Architecture projection unavailable";
   if (mode === "live") return sourceState().status === "live" ? "Fresh authoritative telemetry" : "Source truth preserved";
   if (mode === "agents") return `${agentControl().current_agent_id.replaceAll("_", " ")} · ledger synchronized`;
   if (mode === "compare") return compareProvenance(state.events).status;
@@ -1789,10 +1826,10 @@ function modeStatus() {
 
 function modeCaption(frame) {
   if (mode === "architecture") {
-    const source = sourceState();
-    return source.topology?.nodes?.length
-      ? `${source.label} · ${architectureTopology().nodes.length} components`
-      : "Captured incident architecture";
+    const view = architectureView();
+    return view
+      ? `${view.truth.label} · ${view.runtime_data.node_count} runtime/data + ${view.control_evidence.node_count} FlowPulse components`
+      : "Backend architecture projection unavailable";
   }
   if (mode === "live") {
     const source = sourceState();
@@ -1823,8 +1860,9 @@ function tabForAnnotation(id) {
 }
 
 function defaultTabForNode(id) {
+  if (mode === "architecture" && architectureTopology()?.nodes.some((node) => node.id === id)) return "overview";
   if (agentControl().graph.nodes.some((node) => node.id === id)) return "agent";
-  if (["architecture", "live"].includes(mode) && sourceState().topology?.nodes?.some((node) => node.id === id)) return "overview";
+  if (mode === "live" && sourceState().topology?.nodes?.some((node) => node.id === id)) return "overview";
   if (id === "deployment") return "changes";
   if (id === "agent") return "agent";
   if (id === "evaluator") return "eval";
@@ -1853,7 +1891,7 @@ function developmentAnnotations(index) {
 }
 
 function kindLabel(kind) {
-  return ({ client: "Client", service: "Service", api: "API", stream: "Stream", worker: "Worker", change: "Deployment change", agent: "Investigation agent", evaluator: "Adversarial evaluator", database: "Evidence database", component: "Agent operation" })[kind] || "Component";
+  return ({ client: "Client", service: "Service", api: "API", stream: "Stream", worker: "Worker", topic: "Stream", job: "Worker", deployment: "Deployment", dataset: "Evidence dataset", change: "Deployment change", agent: "Investigation agent", evaluator: "Adversarial evaluator", database: "Evidence database", component: "Agent operation" })[kind] || "Component";
 }
 
 function nodeOrigin(node) {
@@ -1902,6 +1940,7 @@ function sourceState() {
 
 function sourceComponentContext(id) {
   if (!["architecture", "live"].includes(mode)) return null;
+  if (mode === "architecture") return architectureComponentContext(id);
   const source = sourceState();
   const topology = topologyIntegrity(source.topology);
   const node = topology.nodes.find((item) => item.id === id);
@@ -1911,6 +1950,25 @@ function sourceComponentContext(id) {
   const evidence = source.evidence.filter((item) => item.entity === id || item.value?.services?.includes(id));
   const nodeStates = liveIncidentNodeStates({ mode: state.mode, events: state.events, source });
   return { node, profile: sourceComponentProfile(node), incoming, outgoing, evidence, status: node.connectivity === "unlinked" ? "unlinked" : nodeStates[id] || "dormant", source };
+}
+
+function architectureComponentContext(id) {
+  const view = architectureView();
+  const topology = view?.graph;
+  const node = topology?.nodes.find((item) => item.id === id);
+  if (!node) return null;
+  const incoming = topology.edges.filter((edge) => edge.to === id).map((edge) => topology.nodes.find((item) => item.id === edge.from)).filter(Boolean);
+  const outgoing = topology.edges.filter((edge) => edge.from === id).map((edge) => topology.nodes.find((item) => item.id === edge.to)).filter(Boolean);
+  return {
+    architecture: true,
+    node,
+    profile: architectureComponentProfile(node),
+    incoming,
+    outgoing,
+    evidence: [],
+    status: node.status,
+    source: architectureSource(view)
+  };
 }
 
 function sourceComponentProfile(node) {
@@ -1928,6 +1986,17 @@ function sourceComponentProfile(node) {
     language,
     signals,
     attributes: observed
+  };
+}
+
+function architectureComponentProfile(node) {
+  return {
+    capability: `${node.plane} / ${node.layer}`,
+    runtimeIdentity: node.id,
+    runtimeSummary: node.signal_types.join(" + "),
+    language: "",
+    signals: [...node.signal_types],
+    attributes: {}
   };
 }
 
@@ -1959,6 +2028,15 @@ function renderSourceComponentContext(context) {
   </section>`;
 }
 
+function renderArchitectureComponentContext(context) {
+  const { node, incoming, outgoing, source } = context;
+  return `<section class="component-context is-${escapeHtml(node.status)}">
+    <header><div><span>${escapeHtml(kindLabel(node.kind))}</span><strong>${escapeHtml(node.label)}</strong></div><span class="component-health">${escapeHtml(statusLabel(node.status))}</span></header>
+    <dl><div><dt>Plane</dt><dd>${escapeHtml(node.plane)}</dd></div><div><dt>Layer</dt><dd>${escapeHtml(node.layer)}</dd></div><div><dt>Source truth</dt><dd>${escapeHtml(source.label)}</dd></div><div><dt>Relations</dt><dd>${incoming.length} in · ${outgoing.length} out</dd></div></dl>
+    <div class="component-runtime"><code>${escapeHtml(node.id)}</code><span>${node.signal_types.length ? escapeHtml(node.signal_types.join(" + ")) : "No signal summary"}</span></div>
+  </section>`;
+}
+
 function renderSourceSignalSummary(context) {
   const groups = new Map();
   for (const item of context.evidence) {
@@ -1972,6 +2050,16 @@ function renderSourceSignalSummary(context) {
     const newest = [...records].sort((a, b) => String(b.at || "").localeCompare(String(a.at || "")))[0];
     return `<article><header><strong>${escapeHtml(signal)}</strong><span>${records.length} record${records.length === 1 ? "" : "s"}</span></header><p>${escapeHtml(newest?.fact || newest?.title || "Captured signal")}</p><small>${escapeHtml(newest?.at ? formatTime(newest.at) : "Capture time unavailable")}</small></article>`;
   }).join("")}</section>`;
+}
+
+function renderArchitectureSignalSummary(context) {
+  const signals = context.node.signal_types;
+  if (!signals.length) return emptyDetail("No bounded signal summary is available for this component.");
+  return `<section class="signal-summary">${signals.map((signal) => `<article><header><strong>${escapeHtml(signal)}</strong><span>Projected summary</span></header><p>Evidence-derived signal type from the backend topology view.</p><small>${escapeHtml(context.source.label)}</small></article>`).join("")}</section>`;
+}
+
+function renderArchitectureProvenance(context) {
+  return `<section class="signal-summary">${context.node.provenance_refs.map((reference) => `<article><header><strong>Provenance</strong><span>Bounded reference</span></header><p><code>${escapeHtml(reference)}</code></p><small>${escapeHtml(context.source.label)}</small></article>`).join("")}</section>`;
 }
 
 function renderSourceDependencies(context) {
@@ -1988,28 +2076,26 @@ function displayRuntimeLanguage(value) {
 }
 
 function architectureTopology() {
-  const sourceTopology = topologyIntegrity(sourceState().topology);
-  if (sourceTopology.nodes.length) return sourceTopology;
-  const runtimeNodes = TWIN_NODES.filter((node) => node.plane === "runtime").map((node) => ({
-    id: node.id,
-    label: node.label,
-    detail: node.detail,
-    kind: node.kind
-  }));
-  const ids = new Set(runtimeNodes.map((node) => node.id));
+  return architectureViewTopology(state?.topology_views)?.graph || null;
+}
+
+function architectureView() {
+  return architectureViewTopology(state?.topology_views);
+}
+
+function architectureSource(view) {
   return {
-    nodes: runtimeNodes,
-    edges: TWIN_EDGES.filter((edge) => !edge.control && !edge.evidence && ids.has(edge.from) && ids.has(edge.to)).map((edge) => ({
-      id: edge.id,
-      from: edge.from,
-      to: edge.to,
-      label: edge.label
-    }))
+    status: view?.truth.source_health || "unavailable",
+    label: view?.truth.label || "UNAVAILABLE",
+    topology: view?.graph || { nodes: [], edges: [] },
+    evidence: [],
+    counts: {},
+    freshness_ms: null
   };
 }
 
 function captureLabel() {
-  if (mode === "architecture") return sourceState().status === "live" ? "Live architecture" : "Captured architecture";
+  if (mode === "architecture") return architectureView()?.truth.label || "Architecture unavailable";
   if (mode === "live") return sourceState().status === "live" ? "Live OTLP" : sourceState().status === "captured" ? "Captured replay" : "Last-known OTLP";
   if (mode === "agents") return agentControl().langfuse === "observing" ? "Agent traces live" : "Ledger agent view";
   if (mode === "compare") return compareProvenance(state.events).label;
@@ -2017,6 +2103,7 @@ function captureLabel() {
 }
 
 function sourceOrigin(layout) {
+  if (layout === "architecture") return architectureView()?.truth.label || "UNAVAILABLE";
   const source = sourceState();
   if (!source.topology?.nodes?.length) return "CAPTURED INCIDENT";
   if (source.status === "live") return "LIVE OTLP";
@@ -2065,11 +2152,12 @@ function closeWorkspaceMenu() {
 
 function iconForLive(node) {
   const known = { frontend: "browser", "frontend-proxy": "arrows-left-right", checkout: "shopping-cart-simple", payment: "credit-card", kafka: "queue", accounting: "calculator", "fraud-detection": "shield-check", cart: "shopping-bag", shipping: "truck", currency: "currency-circle-dollar" };
-  return known[node.id] || ({ client: "browser", api: "plugs-connected", stream: "queue", worker: "gear", database: "database" })[node.kind] || "cube";
+  const displayClass = node.display_class || node.kind;
+  return known[node.id] || ({ client: "browser", api: "plugs-connected", stream: "queue", worker: "gear", change: "git-commit", agent: "robot", evaluator: "scales", ledger: "database", deployment: "git-commit", dataset: "database", topic: "queue", job: "gear", database: "database" })[displayClass] || "cube";
 }
 
 function statusLabel(status) {
-  return ({ healthy: "Healthy", observed: "Observed", quiet: "Standby", dormant: "Not active", recording: "Recording", warning: "Change pending", change: "Deployment change", impact: "Impact", root: "Root cause", rejected: "Rejected", active: "Investigating", approval: "Approval required", verified: "Verified", learned: "Learning recorded" })[status] || status;
+  return ({ healthy: "Healthy", observed: "Observed", idle: "Idle", quiet: "Standby", dormant: "Not active", recording: "Recording", warning: "Change pending", change: "Deployment change", impact: "Impact", root: "Root cause", rejected: "Rejected", accepted: "Accepted", active: "Investigating", approval: "Approval required", verified: "Verified", learned: "Learning recorded" })[status] || status;
 }
 
 function sourceStatusLabel(status, sourceStatus) {
