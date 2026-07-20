@@ -11,6 +11,46 @@ const MAX_SERIALIZED_BYTES = 64 * 1024;
 const ID = /^[a-z0-9][a-z0-9-]{0,79}$/;
 const HASH = /^[a-f0-9]{64}$/;
 const CONTROL_IDS = new Set(["observer", "orchestrator", "investigator", "evaluator", "ledger"]);
+const CONTROL_ACTIVITY_STAGES = new Set(["collecting", "evaluating", "replanning", "blocked", "waiting_for_owner", "approved", "executing", "verified", "legacy_detail_unavailable", "non_actionable"]);
+const CONTROL_ACTIVITY_GATES = new Set(["unavailable", "pending", "rejected", "accepted"]);
+const CONTROL_SOURCE_MODES = new Set(["captured", "frozen", "live", "stale", "disconnected", "unavailable"]);
+const CONTROL_DETAIL_CATALOG = Object.freeze({
+  observer: Object.freeze({
+    summary: "Collects bounded source evidence and freshness",
+    inputs: Object.freeze(["Connector receipts", "Source health", "Telemetry summaries"]),
+    outputs: Object.freeze(["Bounded evidence references", "Source truth axes"]),
+    authority: "Cannot approve execute or verify repairs",
+    provenance_refs: Object.freeze(["code://flowpulse/connector-manifest", "code://flowpulse/evidence-source", "code://flowpulse/live-source"])
+  }),
+  orchestrator: Object.freeze({
+    summary: "Projects ledger-derived workflow state and dispatch context",
+    inputs: Object.freeze(["Append-only ledger state", "Canonical incident projection"]),
+    outputs: Object.freeze(["Agent control projection", "Readiness projection"]),
+    authority: "Cannot approve execute or verify repairs",
+    provenance_refs: Object.freeze(["code://flowpulse/agent-control-service", "code://flowpulse/agent-team-harness", "code://flowpulse/runtime"])
+  }),
+  investigator: Object.freeze({
+    summary: "Collects cited evidence and tests bounded hypotheses",
+    inputs: Object.freeze(["Bounded evidence references", "Canonical incident context"]),
+    outputs: Object.freeze(["Cited hypotheses", "Diagnosis gate inputs"]),
+    authority: "Cannot approve or execute remediation",
+    provenance_refs: Object.freeze(["code://flowpulse/development-runtime", "code://flowpulse/incident-projection", "code://flowpulse/runtime"])
+  }),
+  evaluator: Object.freeze({
+    summary: "Checks causal evidence and remediation quality gates",
+    inputs: Object.freeze(["Cited hypotheses", "Evidence references"]),
+    outputs: Object.freeze(["Causal gate result", "Quality verdict"]),
+    authority: "Cannot grant owner approval or execute remediation",
+    provenance_refs: Object.freeze(["code://flowpulse/agent-team-harness", "code://flowpulse/autonomy-policy", "code://flowpulse/runtime"])
+  }),
+  ledger: Object.freeze({
+    summary: "Records immutable evidence and bounded replay history",
+    inputs: Object.freeze(["Bound evidence references", "Typed ledger events"]),
+    outputs: Object.freeze(["Ordered provenance records", "Replay-safe event history"]),
+    authority: "Records truth but does not execute remediation",
+    provenance_refs: Object.freeze(["code://flowpulse/server", "ledger://append-only"])
+  })
+});
 const VIEW_READY_STAGES = new Set(["evaluating", "replanning", "blocked", "waiting_for_owner", "approved", "executing", "verified"]);
 const AGENT_READY_STAGES = new Set(["evaluating", "replanning", "blocked"]);
 const DEMO_SCENARIO_ID = "astronomy-checkout-payment-captured-v1";
@@ -117,6 +157,7 @@ function incidentState(projection) {
 }
 
 function controlSystem(controls, incident) {
+  const facts = controlFacts(controls);
   const observerStatus = controlStatus(controls?.observer_status, "idle");
   const observerHealth = sourceHealth(controls?.observer_source_health);
   const orchestratorStatus = AGENT_READY_STAGES.has(incident.stage_status) ? "active" : "idle";
@@ -124,11 +165,11 @@ function controlSystem(controls, incident) {
   const evaluatorStatus = incident.evaluator === "rejected" ? "rejected" : incident.evaluator === "accepted" ? "accepted" : "idle";
   const ledgerStatus = Number.isSafeInteger(controls?.ledger_event_count) && controls.ledger_event_count > 0 ? "recording" : "idle";
   const nodes = [
-    controlNode("observer", "service", "observer", "control", "observation", "Observer", observerStatus, observerHealth, ["code://flowpulse/observer"]),
-    controlNode("orchestrator", "service", "orchestrator", "control", "orchestration", "Orchestrator", orchestratorStatus, "unavailable", ["ledger://orchestration"]),
-    controlNode("investigator", "service", "agent", "control", "investigation", "Investigator", investigatorStatus, "unavailable", ["code://flowpulse/investigator"]),
-    controlNode("evaluator", "service", "evaluator", "control", "evaluation", "Evaluator", evaluatorStatus, "unavailable", ["code://flowpulse/evaluator"]),
-    controlNode("ledger", "dataset", "ledger", "evidence", "evidence", "Evidence Ledger", ledgerStatus, "unavailable", ["ledger://append-only"])
+    controlNode("observer", "service", "observer", "control", "observation", "Observer", observerStatus, observerHealth, ["code://flowpulse/observer"], controlDetail("observer", facts, incident, observerHealth)),
+    controlNode("orchestrator", "service", "orchestrator", "control", "orchestration", "Orchestrator", orchestratorStatus, "unavailable", ["ledger://orchestration"], controlDetail("orchestrator", facts, incident)),
+    controlNode("investigator", "service", "agent", "control", "investigation", "Investigator", investigatorStatus, "unavailable", ["code://flowpulse/investigator"], controlDetail("investigator", facts, incident)),
+    controlNode("evaluator", "service", "evaluator", "control", "evaluation", "Evaluator", evaluatorStatus, "unavailable", ["code://flowpulse/evaluator"], controlDetail("evaluator", facts, incident)),
+    controlNode("ledger", "dataset", "ledger", "evidence", "evidence", "Evidence Ledger", ledgerStatus, "unavailable", ["ledger://append-only"], controlDetail("ledger", facts, incident))
   ];
   const edges = [];
   if (evaluatorStatus !== "idle") {
@@ -147,8 +188,76 @@ function controlSystem(controls, incident) {
   };
 }
 
-function controlNode(id, kind, display_class, plane, layer, label, status, source_health, provenance_refs) {
-  return { id, kind, display_class, plane, layer, label, status, source_health, signal_types: [], provenance_refs };
+function controlNode(id, kind, display_class, plane, layer, label, status, source_health, provenance_refs, detail) {
+  return { id, kind, display_class, plane, layer, label, status, source_health, signal_types: [], provenance_refs, detail };
+}
+
+function controlFacts(controls) {
+  const observerMode = controls?.observer_mode == null ? "unavailable" : controls.observer_mode;
+  const latest = controls?.ledger_latest_event == null ? null : controls.ledger_latest_event;
+  if (!CONTROL_SOURCE_MODES.has(observerMode)) fail("topology_view_control_detail_invalid");
+  if (latest === null) return { observer_mode: observerMode, ledger_latest_event: null };
+  const fields = ["sequence", "recorded_at", "evidence_refs"];
+  if (!plain(latest) || !sameKeys(latest, fields) || !Number.isSafeInteger(latest.sequence) || latest.sequence < 1 || latest.sequence > 1_000_000_000 || !safeTimestamp(latest.recorded_at) || !Array.isArray(latest.evidence_refs) || latest.evidence_refs.length > 4 || new Set(latest.evidence_refs).size !== latest.evidence_refs.length || !latest.evidence_refs.every(safeId) || !sameOrdered(latest.evidence_refs, [...latest.evidence_refs].sort())) fail("topology_view_control_detail_invalid");
+  return { observer_mode: observerMode, ledger_latest_event: { sequence: latest.sequence, recorded_at: latest.recorded_at, evidence_refs: [...latest.evidence_refs] } };
+}
+
+function controlDetail(id, facts, incident, observerHealth = "unavailable") {
+  const catalog = CONTROL_DETAIL_CATALOG[id];
+  if (!catalog) fail("topology_view_control_detail_invalid");
+  const latest = facts.ledger_latest_event;
+  const stage = incident.available && CONTROL_ACTIVITY_STAGES.has(incident.stage_status) && incident.stage_status !== "non_actionable" ? incident.stage_status : null;
+  const gate = CONTROL_ACTIVITY_GATES.has(incident.evaluator) ? incident.evaluator : "unavailable";
+  const activity = { summary: null, stage: null, last_sequence: null, last_recorded_at: null, evidence_refs: [], gate: "unavailable", source_health: "unavailable" };
+  if (id === "observer") {
+    activity.summary = ({ captured: "Captured source intake", frozen: "Frozen source intake", live: "Live source intake", stale: "Source freshness stale", disconnected: "Source disconnected" })[facts.observer_mode] || null;
+    activity.source_health = observerHealth;
+  }
+  if (id === "orchestrator" && stage) {
+    activity.summary = `Workflow ${stage}`;
+    activity.stage = stage;
+    activity.last_sequence = latest?.sequence ?? null;
+    activity.last_recorded_at = latest?.recorded_at ?? null;
+  }
+  if (id === "investigator") {
+    activity.evidence_refs = latest?.evidence_refs || [];
+    activity.summary = activity.evidence_refs.length ? `${activity.evidence_refs.length} cited evidence` : null;
+    activity.stage = stage;
+  }
+  if (id === "evaluator") {
+    activity.gate = gate;
+    activity.evidence_refs = latest?.evidence_refs || [];
+    activity.summary = gate === "unavailable" ? null : `Gate ${gate}`;
+  }
+  if (id === "ledger" && latest) {
+    activity.summary = `Recorded event ${latest.sequence}`;
+    activity.last_sequence = latest.sequence;
+    activity.last_recorded_at = latest.recorded_at;
+    activity.evidence_refs = [...latest.evidence_refs];
+  }
+  if (!safeControlDetail({ ...catalog, activity })) fail("topology_view_control_detail_invalid");
+  return {
+    summary: catalog.summary,
+    inputs: [...catalog.inputs],
+    outputs: [...catalog.outputs],
+    authority: catalog.authority,
+    provenance_refs: [...catalog.provenance_refs],
+    activity
+  };
+}
+
+function safeControlDetail(value) {
+  const fields = ["summary", "inputs", "outputs", "authority", "provenance_refs", "activity"];
+  const activityFields = ["summary", "stage", "last_sequence", "last_recorded_at", "evidence_refs", "gate", "source_health"];
+  return plain(value) && sameKeys(value, fields) && safeText(value.summary, 160) && safeText(value.authority, 160)
+    && safeTextList(value.inputs, 4, 120) && safeTextList(value.outputs, 4, 120) && provenance(value.provenance_refs)
+    && plain(value.activity) && sameKeys(value.activity, activityFields)
+    && (value.activity.summary === null || safeText(value.activity.summary, 120))
+    && (value.activity.stage === null || CONTROL_ACTIVITY_STAGES.has(value.activity.stage))
+    && (value.activity.last_sequence === null || Number.isSafeInteger(value.activity.last_sequence) && value.activity.last_sequence > 0 && value.activity.last_sequence <= 1_000_000_000)
+    && (value.activity.last_recorded_at === null || safeTimestamp(value.activity.last_recorded_at))
+    && Array.isArray(value.activity.evidence_refs) && value.activity.evidence_refs.length <= 4 && new Set(value.activity.evidence_refs).size === value.activity.evidence_refs.length && value.activity.evidence_refs.every(safeId) && sameOrdered(value.activity.evidence_refs, [...value.activity.evidence_refs].sort())
+    && CONTROL_ACTIVITY_GATES.has(value.activity.gate) && sourceHealth(value.activity.source_health) === value.activity.source_health;
 }
 
 function controlEdge(id, from, to, kind, plane, label, status, provenance_refs) {
@@ -317,6 +426,8 @@ function provenance(value) {
 
 function safeId(value) { return typeof value === "string" && ID.test(value); }
 function safeText(value, maximum) { return typeof value === "string" && value.length > 0 && Buffer.byteLength(value, "utf8") <= maximum && /^[A-Za-z0-9][A-Za-z0-9 .()/_+-]*$/.test(value); }
+function safeTextList(value, maximumCount, maximumBytes) { return Array.isArray(value) && value.length > 0 && value.length <= maximumCount && new Set(value).size === value.length && value.every((item) => safeText(item, maximumBytes)) && sameOrdered(value, [...value].sort()); }
+function safeTimestamp(value) { return typeof value === "string" && value.length >= 20 && value.length <= 40 && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(value) && Number.isFinite(Date.parse(value)); }
 function sameOrdered(actual, expected) { return actual.length === expected.length && actual.every((value, index) => value === expected[index]); }
 function sameKeys(value, expected) { return Object.keys(value).sort().join(",") === [...expected].sort().join(","); }
 function plain(value) { return Boolean(value) && typeof value === "object" && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype; }

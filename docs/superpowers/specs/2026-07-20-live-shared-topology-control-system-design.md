@@ -115,7 +115,7 @@ Architecture remains a structural, no-edge overview. It uses only `topology_view
 
 ### Consistent disclosure choice
 
-Architecture uses an **in-place expanded component face** for both observed and Control System components. It replaces the selected component's local tile region inside its existing macro module or Control System surface; it does not open a right drawer, route, modal, or a second disconnected card hierarchy.
+Architecture uses an **in-place expanded component face** for both observed and Control System components. An observed component replaces the selected component's macro-module region; a Control System component replaces the complete existing FlowPulse Control System surface with one white bounded detail canvas. Repeat click on that canvas or Escape returns to the compact controls. It does not open a right drawer, route, modal, or a second disconnected card hierarchy.
 
 The expanded face may show only fields supplied by the valid projection:
 
@@ -129,19 +129,18 @@ Absent facts are omitted rather than filled with guessed business prose. Escape 
 
 ## 5. Live information model
 
-Live consumes only `topology_views.live` with the matching v2 revision. It shares observed and Control System node identities with Architecture but renders a single operating canvas.
+Live consumes only `topology_views.live` with the matching v2 revision. It renders the observed runtime/data system as a single operating canvas. The v2 envelope retains matching Control System identities for revision and contract parity, but Live intentionally does **not** render a Control System surface in this design. This preserves Live as the concise operating topology; Control System progressive disclosure remains Architecture-only unless a later owner-reviewed checkpoint changes that decision.
 
 ### Default surface
 
 - All 22 observed components retain their exact IDs, labels, icons, and safe status dots while occupying deterministic upstream/downstream runtime positions.
-- The five Control System capabilities remain in their distinct FlowPulse surface. They do not join the monitored runtime dataflow.
+- The five Control System capabilities remain server-projected and semantically separate, but are not rendered in the Live canvas or a Live sidebar. They never join the monitored runtime dataflow.
 - Runtime edges appear only after the node relayout and only from the 22 backend-projected runtime dependencies.
-- At most one concise dynamic activity line is visible below a Control System name when its canonical projection supplies meaningful activity. Otherwise only icon, name, and status dot appear.
 - Cross-boundary deployment/change evidence appears only as a safe external evidence annotation tied to affected observed IDs. It is not a permanent FlowPulse node or broad arrow fan-out.
 
 ### Live disclosure
 
-The same local expansion pattern is used for Control System nodes; observed runtime nodes retain their existing safe detail interaction. An expanded Control System face may display current activity/stage, last safe action with sequence or timestamp, cited evidence count and references, canonical current gate/result, and source freshness/connectivity when those facts exist. It does not display raw logs, trace bodies, prompts, provider payloads, secrets, arbitrary action controls, or a browser-created diagnosis.
+Observed runtime nodes retain their existing safe detail interaction. Live does not add a Control System expansion face. Control details remain Architecture-only and cannot display raw logs, trace bodies, prompts, provider payloads, secrets, arbitrary action controls, or a browser-created diagnosis.
 
 ## 6. Shared Architecture-to-Live choreography
 
@@ -151,7 +150,7 @@ The same local expansion pattern is used for Control System nodes; observed runt
 | --- | --- | --- | --- |
 | `architecture_stable` | Valid v2 Architecture read model | Macro layers visible, no paths/pulses, local disclosure allowed | User selects Live with a valid matching Live model. |
 | `to_live` | Last requested mode is Live | Freeze current node rectangles; preserve keyed DOM identities; close architecture-only local detail after returning focus to the selected node; merge boundaries and animate nodes to live positions | Finish node relayout, or reverse/cancel according to latest request. |
-| `live_stable` | Live node relayout complete | Draw valid runtime paths progressively, then play truthful pulses; Live disclosure allowed | User selects Architecture or projection becomes unavailable. |
+| `live_stable` | Live node relayout complete | Draw valid runtime paths progressively, then play truthful pulses; only observed runtime-node detail is available | User selects Architecture or projection becomes unavailable. |
 | `to_architecture` | Last requested mode is Architecture | Stop pulses, withdraw paths, preserve node identity, return nodes to macro-layer positions, then restore layer boundaries | Finish relayout or reverse/cancel according to latest request. |
 | `unavailable` | Missing, mismatched, invalid, stale beyond usable contract, or scoped revision mismatch | Render bounded non-actionable unavailable surface. Preserve fixed navigation and truthful source label. | A new valid matching projection arrives. |
 
@@ -159,11 +158,11 @@ Repeated clicks are deterministic: the latest requested mode wins. During a tran
 
 ### 6.2 Shared-element strategy
 
-The browser keeps one keyed DOM element per canonical observed and Control System identity for the lifetime of a valid projection. In the existing vanilla frontend, this means one renderer path with stable `data-topology-node-id` and `data-control-node-id` attributes, a per-ID layout map, and `Element.animate` or CSS transforms for FLIP inversion/playback. Macro layer containers and the Live runtime canvas are layout parents, not duplicate card trees.
+The browser keeps one keyed DOM element per canonical **observed** identity for the lifetime of a valid Architecture/Live projection. In the existing vanilla frontend, this means one renderer path with stable `data-topology-node-id` attributes, a per-ID layout map, and `Element.animate` or CSS transforms for FLIP inversion/playback. Architecture Control System tiles retain stable `data-control-node-id` identities only inside the Architecture control surface; they do not create a second Live card tree. Macro layer containers and the Live runtime canvas are layout parents, not duplicate card trees.
 
 The sequence is:
 
-1. Record source rectangles for each stable node and keep the header, source badge, navigation, outer glass workspace, and FlowPulse Control System frame fixed.
+1. Record source rectangles for each stable observed node and keep the header, source badge, navigation, and outer glass workspace fixed.
 2. Update only layout classes/positions to the deterministic Live target, record destination rectangles, apply inverse transforms, and animate transform/opacity for 420–520 ms.
 3. At node relayout completion, reveal only valid runtime edge paths in a short ordered draw sequence.
 4. Start bounded repeated packets only on paths with backend-projected runtime activity or deterministic captured/demo frames.
@@ -175,7 +174,7 @@ The implementation changes no graph geometry during the animation frame itself. 
 
 Architecture retains its four macro-layer membership groups. Live uses deterministic render-only topology lanes derived from the server-projected graph: upstream/entry, commerce/core, async/stream/data, and downstream/warehouse/consumers. These are layout lanes, not client-owned topology truth. Node order is stable by canonical server order then ID.
 
-Nodes have minimum readable dimensions and collision padding. When a 1440x900 or 1280x800 viewport cannot accommodate a lane without overlap, the unified Live canvas remains pannable/zoomable within bounded transform limits rather than shrinking text or routing edges through cards. Edge routing must avoid cards, labels, controls, group titles, and the separate FlowPulse surface. If a valid endpoint cannot be laid out safely within caps, that path is withheld and the view reports its bounded unavailable/partial reason; the browser never invents an alternate relationship.
+Nodes have minimum readable dimensions and collision padding. When a 1440x900 or 1280x800 viewport cannot accommodate a lane without overlap, the unified Live canvas remains pannable/zoomable within bounded transform limits rather than shrinking text or routing edges through cards. Edge routing must avoid cards, labels, controls, and group titles. If a valid endpoint cannot be laid out safely within caps, that path is withheld and the view reports its bounded unavailable/partial reason; the browser never invents an alternate relationship.
 
 ## 7. Runtime edge, status, and pulse truth
 
@@ -236,7 +235,7 @@ Stage A changes and extends `test/topology-projection.test.mjs`, `test/server.te
 The test suite must prove all of the following:
 
 1. Server and `/api/source` return the same valid scoped v2 revision or explicitly unavailable; 22 observed nodes and 22 runtime edges remain endpoint-valid.
-2. Architecture and Live expose exactly five canonical Control System IDs, never a Deployment control node; unsupported/extra control IDs fail closed.
+2. The strict v2 Architecture and Live projections expose exactly five canonical Control System IDs, never a Deployment control node; unsupported/extra control IDs fail closed. Architecture renders the five controls; Live deliberately does not render a Control System surface.
 3. Deployment/change evidence is an external bounded record with actual affected observed IDs, or absent; it is not a node/arrow invented by the browser.
 4. Current source, activity, gate, evidence, and readiness facts can only weaken to unavailable, never be strengthened by compatibility fields, local selection, cursor, animation timing, or browser input.
 5. Architecture renders four layer modules, 22 observed component tiles, five independent control tiles, zero Architecture paths/arrowheads/pulses, and no visible redundant role/count prose.
@@ -248,7 +247,7 @@ Run focused projection/server/twin/frontend tests first, then `npm test` once wi
 
 ### Screenshot and browser review gate
 
-At each visual stage inspect both **1440x900** and **1280x800** with no clipped controls, node text, FlowPulse surface, or detail. Required final evidence includes:
+At each visual stage inspect both **1440x900** and **1280x800** with no clipped controls, node text, Architecture FlowPulse surface, or detail. Required final evidence includes:
 
 - Architecture structural overview with no paths and an independently readable five-capability FlowPulse surface.
 - Architecture local control/observed component disclosure with only safe bounded facts.
@@ -267,7 +266,7 @@ Implement `flowpulse.topology-views.v2` in `src/topology-projection.mjs` and `sr
 
 ### B. Progressive-disclosure Control System
 
-Update Architecture and Live consumer components only after stage A is approved. Render five canonical controls with default compact identity/status and consistent in-place safe disclosure. Remove visible redundant copy without losing accessible meaning. Stop for visual and accessibility review.
+Update the Architecture consumer only after stage A is approved. Render five canonical controls with default compact identity/status and consistent in-place safe disclosure. Live remains Control-System-free; its v2 data is validated for parity but is not given a temporary sidebar or alternate visual language. Remove visible redundant copy without losing accessible meaning. Stop for visual and accessibility review.
 
 ### C. Shared Architecture-to-Live re-layout
 
@@ -292,8 +291,9 @@ Rollback is a normal revert of the most recent approved stage commit. No stage r
 ## 14. Recorded decisions
 
 - Architecture is structural and renders no dependency edges; Live is the operating canvas for the same canonical identities.
-- Live transition preserves node identity through a single keyed DOM path and reversible FLIP strategy.
+- Live transition preserves observed-node identity through a single keyed DOM path and reversible FLIP strategy.
 - The FlowPulse Control System is exactly Observer, Orchestrator, Investigator, Evaluator, and Evidence Ledger.
+- The Control System is Architecture-only in this design; Live deliberately omits its visible surface while retaining strict v2 projection parity.
 - Deployment is external bounded change evidence, not a FlowPulse component.
 - All dynamic, health, gate, readiness, evidence, and recovery claims remain server-derived and fail closed when invalid or unavailable.
 - No product decision blocks stage A. The first next action, after owner review, is only the strict backend projection correction.

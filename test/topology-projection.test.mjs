@@ -22,6 +22,9 @@ test("topology views compose deterministic captured Architecture, Live, and Diag
   assert.equal(first.architecture.runtime_data.edge_count, 22);
   assert.equal(first.architecture.runtime_data.graph.edges.every(({ from, to }) => runtimeIds.has(from) && runtimeIds.has(to)), true);
   assert.deepEqual(first.architecture.control_system.nodes.map(({ id }) => id), ["observer", "orchestrator", "investigator", "evaluator", "ledger"]);
+  assert.equal(first.architecture.control_system.nodes.every((node) => node.detail && Array.isArray(node.detail.inputs) && Array.isArray(node.detail.outputs) && Array.isArray(node.detail.provenance_refs)), true);
+  assert.equal(first.architecture.control_system.nodes.every((node) => node.detail.activity && Object.keys(node.detail.activity).length === 7), true);
+  assert.deepEqual(first.live.control_system.nodes.map(({ id, detail }) => ({ id, detail })), first.architecture.control_system.nodes.map(({ id, detail }) => ({ id, detail })));
   assert.equal(first.architecture.control_system.relation_count, 0);
   assert.equal(first.architecture.external_change_evidence.relation_count, 1);
   assert.deepEqual(first.architecture.external_change_evidence.records[0].affected_node_ids, ["checkout"]);
@@ -89,6 +92,30 @@ test("five control identities remain while deployment change evidence is bounded
   assert.equal(JSON.stringify(overlay), before);
 });
 
+test("control detail is bounded server-owned data and malformed activity fails closed", () => {
+  const view = composeTopologyViews({
+    manifest,
+    incidentProjection: projection({ stage: { id: "agent_workbench" }, stage_status: "replanning", investigation: investigation("rejected") }),
+    overlay,
+    controls: controls({
+      observer_mode: "captured",
+      ledger_latest_event: { sequence: 7, recorded_at: "2026-07-20T12:00:00.000Z", evidence_refs: ["ev-metric-checkout-errors", "ev-trace-payment-refused"] }
+    })
+  });
+  const observer = view.architecture.control_system.nodes.find(({ id }) => id === "observer");
+  const orchestrator = view.architecture.control_system.nodes.find(({ id }) => id === "orchestrator");
+  const ledger = view.architecture.control_system.nodes.find(({ id }) => id === "ledger");
+  assert.deepEqual(observer.detail.provenance_refs, ["code://flowpulse/connector-manifest", "code://flowpulse/evidence-source", "code://flowpulse/live-source"]);
+  assert.equal(observer.detail.activity.summary, "Captured source intake");
+  assert.equal(orchestrator.detail.activity.stage, "replanning");
+  assert.equal(ledger.detail.activity.last_sequence, 7);
+  assert.deepEqual(ledger.detail.activity.evidence_refs, ["ev-metric-checkout-errors", "ev-trace-payment-refused"]);
+  assert.throws(
+    () => composeTopologyViews({ manifest, incidentProjection: projection(), overlay, controls: controls({ ledger_latest_event: { sequence: 7, recorded_at: "unsafe raw prompt", evidence_refs: [] } }) }),
+    (error) => error instanceof TopologyProjectionError && error.code === "topology_view_control_detail_invalid"
+  );
+});
+
 test("view revisions bind projection semantics and invalid incident overlays fail closed", () => {
   const baseline = composeTopologyViews({ manifest, incidentProjection: projection(), overlay, controls: controls() });
   const semanticDrift = composeTopologyViews({ manifest, incidentProjection: projection({ projection_revision: "b".repeat(64) }), overlay, controls: controls() });
@@ -143,8 +170,10 @@ function controls(overrides = {}) {
   return {
     observer_status: "observed",
     observer_source_health: "unavailable",
+    observer_mode: "captured",
     external_change_evidence: [changeEvidence("checkout")],
     ledger_event_count: 2,
+    ledger_latest_event: { sequence: 2, recorded_at: "2026-07-20T11:00:00.000Z", evidence_refs: ["ev-deploy-checkout"] },
     ...overrides
   };
 }

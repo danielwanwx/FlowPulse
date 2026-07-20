@@ -631,11 +631,29 @@ function validControlNode(node) {
     ledger: ["dataset", "ledger", "evidence", "evidence", "Evidence Ledger"]
   };
   const shape = expected[node?.id];
-  return validArchitectureNode(node) && Boolean(shape)
+  const { detail, ...identity } = node || {};
+  return validArchitectureNode(identity) && Boolean(shape) && validControlDetail(detail)
     && node.kind === shape[0] && node.display_class === shape[1] && node.plane === shape[2] && node.layer === shape[3] && node.label === shape[4]
     && ["observed", "idle", "recording", "active", "rejected", "accepted"].includes(node.status)
     && (node.id === "observer" || node.source_health === "unavailable")
     && node.signal_types.length === 0;
+}
+
+function validControlDetail(value) {
+  const fields = ["summary", "inputs", "outputs", "authority", "provenance_refs", "activity"];
+  const activityFields = ["summary", "stage", "last_sequence", "last_recorded_at", "evidence_refs", "gate", "source_health"];
+  return plainRecord(value) && sameKeys(value, fields)
+    && validTopologyText(value.summary, 160) && validTopologyText(value.authority, 160)
+    && validTopologyTextList(value.inputs, 4, 120) && validTopologyTextList(value.outputs, 4, 120)
+    && Array.isArray(value.provenance_refs) && value.provenance_refs.length > 0 && value.provenance_refs.length <= 4 && new Set(value.provenance_refs).size === value.provenance_refs.length && value.provenance_refs.every(validProvenanceRef) && sameOrdered(value.provenance_refs, [...value.provenance_refs].sort())
+    && plainRecord(value.activity) && sameKeys(value.activity, activityFields)
+    && (value.activity.summary === null || validTopologyText(value.activity.summary, 120))
+    && (value.activity.stage === null || ["collecting", "evaluating", "replanning", "blocked", "waiting_for_owner", "approved", "executing", "verified", "legacy_detail_unavailable", "non_actionable"].includes(value.activity.stage))
+    && (value.activity.last_sequence === null || Number.isInteger(value.activity.last_sequence) && value.activity.last_sequence > 0 && value.activity.last_sequence <= 1_000_000_000)
+    && (value.activity.last_recorded_at === null || validTopologyTimestamp(value.activity.last_recorded_at))
+    && Array.isArray(value.activity.evidence_refs) && value.activity.evidence_refs.length <= 4 && new Set(value.activity.evidence_refs).size === value.activity.evidence_refs.length && value.activity.evidence_refs.every(safeTopologyId) && sameOrdered(value.activity.evidence_refs, [...value.activity.evidence_refs].sort())
+    && ["unavailable", "pending", "rejected", "accepted"].includes(value.activity.gate)
+    && ["live", "stale", "disconnected", "unavailable"].includes(value.activity.source_health);
 }
 
 function validControlRelation(edge) {
@@ -680,6 +698,18 @@ function safeTopologyId(value) { return typeof value === "string" && /^[a-z0-9][
 
 function validProvenanceRef(value) {
   return typeof value === "string" && value.length > 0 && value.length <= 200 && /^(capture|code|ledger|evidence):\/\/[A-Za-z0-9._:/#-]+$/.test(value);
+}
+
+function validTopologyText(value, maximum) {
+  return typeof value === "string" && value.length > 0 && value.length <= maximum && /^[A-Za-z0-9][A-Za-z0-9 .()/_+-]*$/.test(value);
+}
+
+function validTopologyTextList(value, maximumCount, maximumLength) {
+  return Array.isArray(value) && value.length > 0 && value.length <= maximumCount && new Set(value).size === value.length && value.every((item) => validTopologyText(item, maximumLength)) && sameOrdered(value, [...value].sort());
+}
+
+function validTopologyTimestamp(value) {
+  return typeof value === "string" && value.length >= 20 && value.length <= 40 && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(value) && Number.isFinite(Date.parse(value));
 }
 
 function plainRecord(value) {

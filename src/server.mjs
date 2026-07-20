@@ -1159,9 +1159,16 @@ function topologyControlInputs(projected, sourceState) {
   const observerSourceHealth = ["live", "stale", "disconnected"].includes(sourceState?.live_status)
     ? sourceState.live_status
     : "unavailable";
+  const latestEvent = Array.isArray(projected?.events)
+    ? [...projected.events].filter((event) => Number.isSafeInteger(event?.sequence) && event.sequence > 0 && typeof event?.recorded_at === "string" && Array.isArray(event?.evidence_refs)).at(-1)
+    : null;
+  const latestEvidenceRefs = latestEvent
+    ? [...new Set(latestEvent.evidence_refs.filter(safeBrowserId))].sort().slice(0, 4)
+    : [];
   return {
     observer_status: observerStatus,
     observer_source_health: observerSourceHealth,
+    observer_mode: ["captured", "frozen", "live", "stale", "disconnected"].includes(sourceState?.status) ? sourceState.status : "unavailable",
     external_change_evidence: deploymentEvidence
       ? [{
           id: "ev-deploy-checkout",
@@ -1171,7 +1178,10 @@ function topologyControlInputs(projected, sourceState) {
           provenance_refs: ["evidence://ev-deploy-checkout"]
         }]
       : [],
-    ledger_event_count: Array.isArray(projected?.events) ? Math.min(projected.events.length, INCIDENT_PROJECTION_LIMITS.max_input_events) : 0
+    ledger_event_count: Array.isArray(projected?.events) ? Math.min(projected.events.length, INCIDENT_PROJECTION_LIMITS.max_input_events) : 0,
+    ledger_latest_event: latestEvent
+      ? { sequence: latestEvent.sequence, recorded_at: latestEvent.recorded_at, evidence_refs: latestEvidenceRefs }
+      : null
   };
 }
 

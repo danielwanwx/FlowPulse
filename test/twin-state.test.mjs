@@ -54,11 +54,11 @@ function runtimeNodes(status) {
 
 function backendArchitectureView() {
   const controls = [
-    { id: "observer", kind: "service", display_class: "observer", plane: "control", layer: "observation", label: "Observer", status: "observed", source_health: "unavailable", signal_types: [], provenance_refs: ["code://flowpulse/observer"] },
-    { id: "orchestrator", kind: "service", display_class: "orchestrator", plane: "control", layer: "orchestration", label: "Orchestrator", status: "idle", source_health: "unavailable", signal_types: [], provenance_refs: ["ledger://orchestration"] },
-    { id: "investigator", kind: "service", display_class: "agent", plane: "control", layer: "investigation", label: "Investigator", status: "idle", source_health: "unavailable", signal_types: [], provenance_refs: ["code://flowpulse/investigator"] },
-    { id: "evaluator", kind: "service", display_class: "evaluator", plane: "control", layer: "evaluation", label: "Evaluator", status: "idle", source_health: "unavailable", signal_types: [], provenance_refs: ["code://flowpulse/evaluator"] },
-    { id: "ledger", kind: "dataset", display_class: "ledger", plane: "evidence", layer: "evidence", label: "Evidence Ledger", status: "recording", source_health: "unavailable", signal_types: [], provenance_refs: ["ledger://append-only"] }
+    { id: "observer", kind: "service", display_class: "observer", plane: "control", layer: "observation", label: "Observer", status: "observed", source_health: "unavailable", signal_types: [], provenance_refs: ["code://flowpulse/observer"], detail: controlDetail("observer") },
+    { id: "orchestrator", kind: "service", display_class: "orchestrator", plane: "control", layer: "orchestration", label: "Orchestrator", status: "idle", source_health: "unavailable", signal_types: [], provenance_refs: ["ledger://orchestration"], detail: controlDetail("orchestrator") },
+    { id: "investigator", kind: "service", display_class: "agent", plane: "control", layer: "investigation", label: "Investigator", status: "idle", source_health: "unavailable", signal_types: [], provenance_refs: ["code://flowpulse/investigator"], detail: controlDetail("investigator") },
+    { id: "evaluator", kind: "service", display_class: "evaluator", plane: "control", layer: "evaluation", label: "Evaluator", status: "idle", source_health: "unavailable", signal_types: [], provenance_refs: ["code://flowpulse/evaluator"], detail: controlDetail("evaluator") },
+    { id: "ledger", kind: "dataset", display_class: "ledger", plane: "evidence", layer: "evidence", label: "Evidence Ledger", status: "recording", source_health: "unavailable", signal_types: [], provenance_refs: ["ledger://append-only"], detail: controlDetail("ledger") }
   ];
   const runtime = (status) => ({
     graph: {
@@ -108,6 +108,24 @@ function backendArchitectureView() {
   };
 }
 
+function controlDetail(id) {
+  const provenance = {
+    observer: ["code://flowpulse/connector-manifest", "code://flowpulse/evidence-source", "code://flowpulse/live-source"],
+    orchestrator: ["code://flowpulse/agent-control-service", "code://flowpulse/agent-team-harness", "code://flowpulse/runtime"],
+    investigator: ["code://flowpulse/development-runtime", "code://flowpulse/incident-projection", "code://flowpulse/runtime"],
+    evaluator: ["code://flowpulse/agent-team-harness", "code://flowpulse/autonomy-policy", "code://flowpulse/runtime"],
+    ledger: ["code://flowpulse/server", "ledger://append-only"]
+  };
+  return {
+    summary: `${id} bounded capability`,
+    inputs: ["Bounded input"],
+    outputs: ["Bounded output"],
+    authority: "Cannot approve execute or verify repairs",
+    provenance_refs: provenance[id],
+    activity: { summary: id === "observer" ? "Captured source intake" : null, stage: null, last_sequence: id === "ledger" ? 4 : null, last_recorded_at: id === "ledger" ? "2026-07-20T11:00:00.000Z" : null, evidence_refs: [], gate: "unavailable", source_health: "unavailable" }
+  };
+}
+
 test("Architecture accepts only the strict v2 backend topology view and retains separate control evidence", () => {
   const view = architectureViewTopology(backendArchitectureView());
   assert.ok(view);
@@ -116,11 +134,14 @@ test("Architecture accepts only the strict v2 backend topology view and retains 
   assert.equal(view.runtime_data.edge_count, 22);
   assert.equal(view.control_system.node_count, 5);
   assert.equal(view.control_system.relation_count, 0);
+  assert.equal(view.control_system.nodes.every((node) => Object.keys(node.detail).sort().join(",") === "activity,authority,inputs,outputs,provenance_refs,summary"), true);
+  assert.equal(view.control_system.nodes.every((node) => node.detail.provenance_refs.every((ref) => /^(code|ledger):\/\//.test(ref))), true);
   assert.equal(view.external_change_evidence.relation_count, 1);
   const live = liveViewTopology(backendArchitectureView());
   assert.ok(live);
   assert.equal(live.runtime_data.graph.nodes.length, 22);
   assert.deepEqual(live.control_system.nodes.map(({ id }) => id), ["observer", "orchestrator", "investigator", "evaluator", "ledger"]);
+  assert.deepEqual(live.control_system.nodes.map(({ id, detail }) => ({ id, detail })), view.control_system.nodes.map(({ id, detail }) => ({ id, detail })));
   assert.equal(live.external_change_evidence.relation_count, 1);
   assert.deepEqual(view.graph.nodes.filter((node) => ["control", "evidence"].includes(node.plane)).map((node) => node.id).sort(), ["evaluator", "investigator", "ledger", "observer", "orchestrator"]);
   assert.equal(view.graph.edges.filter((edge) => edge.plane === "runtime").length, 22);
@@ -151,6 +172,13 @@ test("Architecture accepts only the strict v2 backend topology view and retains 
   extraControl.architecture.control_system.nodes.push({ ...extraControl.architecture.control_system.nodes[0], id: "extra-control" });
   extraControl.architecture.control_system.node_count = 6;
   assert.equal(architectureViewTopology(extraControl), null);
+  const unsafeControlDetail = backendArchitectureView();
+  unsafeControlDetail.architecture.control_system.nodes[0].detail.summary = "<img src=x onerror=alert(1)>";
+  assert.equal(architectureViewTopology(unsafeControlDetail), null);
+  const mismatchedControlDetail = backendArchitectureView();
+  mismatchedControlDetail.live.control_system = structuredClone(mismatchedControlDetail.live.control_system);
+  mismatchedControlDetail.live.control_system.nodes[0].detail.activity.summary = "Forged activity";
+  assert.equal(architectureViewTopology(mismatchedControlDetail), null);
   const mismatchedLive = backendArchitectureView();
   mismatchedLive.live.runtime_data.graph.nodes[0] = { ...mismatchedLive.live.runtime_data.graph.nodes[0], label: "Forged" };
   assert.equal(architectureViewTopology(mismatchedLive), null);
@@ -172,7 +200,7 @@ test("Architecture accepts only the strict v2 backend topology view and retains 
   assert.match(appJs, /architecture-flowpulse-system/);
   assert.match(appJs, /architectureBoundaries\(topology\)/);
   assert.match(appJs, /architectureThumbnailMarkup/);
-  assert.match(appJs, /architectureStaticNodeMarkup/);
+  assert.match(appJs, /controlSystemTileMarkup/);
   assert.doesNotMatch(appJs, /Cross-boundary evidence summary|architectureComponentContext/);
 });
 
@@ -232,13 +260,17 @@ test("architecture is a static four-layer overview with backend-owned status dot
   assert.doesNotMatch(appJs, /layer\.members\.slice\(0, 4\)/);
   assert.match(appJs, /data-architecture-layer="\$\{escapeHtml\(layer\.id\)\}"/);
   assert.match(appJs, /function architectureLayerStatus\(/);
-  assert.match(appJs, /const ARCHITECTURE_LAYER_SUMMARIES = Object\.freeze/);
-  assert.match(appJs, /experience: "Browser entry, storefront composition, and traffic intake"/);
-  assert.match(appJs, /function architectureLayerStatusSummary\(nodes\)/);
-  assert.match(appJs, /\$\{total\}\/\$\{total\} healthy/);
-  assert.match(appJs, /architecture-layer-role/);
-  assert.match(appJs, /data-architecture-layer-status-summary/);
-  assert.match(appJs, /function architectureStaticNodeMarkup\(/);
+  assert.doesNotMatch(appJs, /ARCHITECTURE_LAYER_SUMMARIES|architectureLayerStatusSummary|architecture-layer-role|data-architecture-layer-status-summary/);
+  assert.match(appJs, /function controlSystemTileMarkup\(/);
+  assert.match(appJs, /data-control-node-id/);
+  assert.match(appJs, /node-status-dot is-\$\{escapeHtml\(node\.status \|\| "idle"\)\}/);
+  assert.match(appJs, /function openControlDetail\(id, \{ focus = false \} = \{\}\)/);
+  assert.match(appJs, /openControlDetail\(event\.target\.dataset\.controlNodeId, \{ focus: true \}\)/);
+  assert.match(appJs, /data-control-detail-id/);
+  assert.match(appJs, /architecture-flowpulse-nodes\$\{selectedControlDetail \? " is-detail" : ""\}/);
+  assert.match(appJs, /architectureDetail\?\.scope === mode && event\.key === "Escape"/);
+  assert.match(appJs, /function controlComponentDetailMarkup\(/);
+  assert.doesNotMatch(appJs, /live-control-system|data-live-control|data-control-scope|liveViewTopology/);
   assert.match(appJs, /architecture-status-dot/);
   assert.match(appJs, /data-architecture-control-id/);
   assert.match(appJs, /let architectureDetail = null;/);
@@ -248,13 +280,15 @@ test("architecture is a static four-layer overview with backend-owned status dot
   assert.match(appJs, /data-architecture-detail-id/);
   assert.doesNotMatch(appJs, /data-architecture-back|Back to components/);
   assert.match(appJs, /if \(architectureDetailSurface\) \{/);
-  assert.match(appJs, /architectureDetail && event\.key === "Escape"/);
+  assert.match(appJs, /closeArchitectureDetail\(\{ restoreFocus: false \}\)/);
+  assert.match(appJs, /closeArchitectureDetail\(\{ restoreFocus: true \}\)/);
+  assert.match(appJs, /architectureDetail\?\.scope === mode && event\.key === "Escape"/);
   assert.match(appJs, /data-architecture-detail-id="\$\{escapeHtml\(node\.id\)\}" tabindex="-1"/);
   assert.match(appJs, /function openArchitectureDetail\(id\)/);
-  assert.match(appJs, /function closeArchitectureDetail\(\)/);
+  assert.match(appJs, /function closeArchitectureDetail\(\{ restoreFocus = false \} = \{\}\)/);
   assert.match(appJs, /event\.target\.matches\("\[data-architecture-thumbnail-id\]"\)/);
   assert.match(appJs, /mode === "architecture" \|\| !selected/);
-  assert.match(appJs, /item\?\.id === id && item\.plane === "runtime"/);
+  assert.match(appJs, /item\?\.id === id && \["runtime", "data"\]\.includes\(item\.plane\)/);
   assert.match(appJs, /nodeById\.has\(edge\.from\) && nodeById\.has\(edge\.to\)/);
   assert.match(appJs, /edge\.from === id \|\| edge\.to === id/);
   assert.match(appJs, /slice\(0, 8\)/);
@@ -271,9 +305,18 @@ test("architecture is a static four-layer overview with backend-owned status dot
   assert.match(architectureRefinementCss, /--architecture-vector: #58758e;/);
   assert.match(architectureRefinementCss, /\.architecture-observed-system \{[^}]+background: transparent;[^}]+box-shadow: none;[^}]+backdrop-filter: none;/s);
   assert.match(architectureRefinementCss, /\.architecture-thumbnail-node \{[^}]+min-height: 54px;[^}]+grid-template-columns: 32px minmax\(0, 1fr\);[^}]+border-radius: var\(--architecture-node-radius\);/s);
-  assert.match(architectureRefinementCss, /\.architecture-flowpulse-nodes \.source-node\.is-architecture-compact \{[^}]+height: 54px;[^}]+min-height: 54px;[^}]+grid-template-columns: 32px minmax\(0, 1fr\);/s);
+  assert.match(stylesCss, /\.control-system-tile \{[\s\S]+?height: 54px;[\s\S]+?grid-template-columns: 32px minmax\(0, 1fr\) auto;/);
+  assert.match(stylesCss, /\.is-architecture-source \{[\s\S]+?--control-system-surface:/);
+  assert.match(stylesCss, /:root\[data-theme="dark"\] \.is-architecture-source \{/);
+  assert.doesNotMatch(stylesCss, /live-control-system/);
+  assert.match(stylesCss, /\.control-component-detail:focus-visible \{ outline: 2px solid var\(--blue\);/);
+  assert.match(stylesCss, /\.control-system-tile \.node-status-dot\.is-recording,[\s\S]+?--control-status: var\(--green\);/);
+  assert.match(appJs, /architecture-flowpulse-system\$\{selectedControlDetail \? " is-detail" : ""\}/);
+  assert.match(stylesCss, /\.architecture-flowpulse-system\.is-detail \{[\s\S]+?background: rgba\(255, 255, 255, \.88\);/);
+  assert.match(stylesCss, /\.architecture-flowpulse-nodes\.is-detail \{[\s\S]+?flex: 1;/);
+  assert.match(stylesCss, /\.control-component-detail \{[\s\S]+?height: 100%;[\s\S]+?background: transparent;/);
   assert.match(architectureRefinementCss, /@media \(max-width: 1320px\) \{[\s\S]+?\.architecture-layer-anatomy \{ grid-template-columns: repeat\(3, minmax\(0, 1fr\)\); gap: 7px; \}/);
-  assert.match(architectureRefinementCss, /\.architecture-thumbnail-icon,\s*\.is-architecture-source \.source-node\.is-architecture-compact \.node-icon \{[^}]+color: var\(--architecture-vector\);/s);
+  assert.match(stylesCss, /\.control-system-tile \.node-icon,[\s\S]+?color: var\(--architecture-vector\);/s);
   assert.match(architectureDetailCss, /--architecture-vector: #111827;/);
   assert.match(architectureDetailCss, /\.architecture-thumbnail-node,[\s\S]+?\.source-node\.is-architecture-compact \{[\s\S]+?background: rgba\(255, 255, 255, \.9\);/);
   assert.match(architectureRefinementCss, /\.app-shell\[data-mode="architecture"\] \.workspace-menu-panel,[\s\S]+?\.state-key \{[^}]+border: 0;[^}]+background: rgba\(255, 255, 255, \.3\);/s);

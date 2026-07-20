@@ -526,6 +526,11 @@ test("judge API serves state and advances the replay", async (context) => {
   assert.equal(initial.topology_views.architecture.runtime_data.node_count, 22);
   assert.equal(initial.topology_views.architecture.runtime_data.edge_count, 22);
   assert.deepEqual(initial.topology_views.architecture.control_system.nodes.map(({ id }) => id), ["observer", "orchestrator", "investigator", "evaluator", "ledger"]);
+  const controlDetails = initial.topology_views.architecture.control_system.nodes.map(({ id, detail }) => ({ id, detail }));
+  assert.equal(controlDetails.every(({ detail }) => Object.keys(detail).sort().join(",") === "activity,authority,inputs,outputs,provenance_refs,summary"), true);
+  assert.equal(controlDetails.every(({ detail }) => Object.keys(detail.activity).sort().join(",") === "evidence_refs,gate,last_recorded_at,last_sequence,source_health,stage,summary"), true);
+  assert.equal(controlDetails.every(({ detail }) => detail.provenance_refs.every((ref) => ref.startsWith("code://") || ref === "ledger://append-only")), true);
+  assert.deepEqual(initial.topology_views.live.control_system.nodes.map(({ id, detail }) => ({ id, detail })), controlDetails);
   assert.equal(initial.topology_views.architecture.control_system.relation_count, 0);
   assert.equal(initial.topology_views.architecture.control_system.nodes.some(({ id }) => id === "deployment"), false);
   assert.equal(initial.topology_views.architecture.external_change_evidence.relation_count, 1);

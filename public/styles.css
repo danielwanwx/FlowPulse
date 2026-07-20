@@ -1602,6 +1602,115 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
   background: var(--architecture-node-surface);
   box-shadow: none;
 }
+
+/* Stage B: Architecture control disclosure uses the same bounded material and
+   full-region detail interaction as an observed component. The tokens remain
+   local and reusable for the later Stage C shared workspace. */
+.is-architecture-source {
+  --control-system-surface: rgba(211, 220, 226, .66);
+  --control-node-surface: rgba(255, 255, 255, .9);
+  --control-copy: #111827;
+  --control-muted: #64748b;
+}
+:root[data-theme="dark"] .is-architecture-source {
+  --control-system-surface: rgba(20, 27, 33, .76);
+  --control-node-surface: rgba(46, 53, 61, .88);
+  --control-copy: #f5f7fa;
+  --control-muted: #c0c8d2;
+}
+.is-architecture-source .architecture-flowpulse-system {
+  display: flex;
+  flex-direction: column;
+  border: 0;
+  border-radius: var(--architecture-system-radius);
+  background: var(--control-system-surface);
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.is-architecture-source .architecture-control-heading {
+  min-height: auto;
+  padding: 13px 15px 7px;
+  background: transparent;
+  box-shadow: none;
+}
+.is-architecture-source .architecture-control-heading span,
+.is-architecture-source .architecture-control-heading strong { color: var(--control-copy); }
+.is-architecture-source .architecture-control-heading > div { display: grid; gap: 2px; }
+.is-architecture-source .architecture-control-heading span { font-size: 11px; font-weight: 500; }
+.is-architecture-source .architecture-control-heading strong { font-size: 16px; font-weight: 600; letter-spacing: -.02em; }
+.is-architecture-source .architecture-flowpulse-nodes { gap: 8px; padding: 7px 12px 12px; }
+.is-architecture-source .control-system-tile {
+  position: relative;
+  left: auto !important;
+  top: auto !important;
+  width: 100%;
+  min-width: 0;
+  height: 54px;
+  min-height: 54px;
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  margin: 0;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: var(--architecture-node-radius);
+  color: var(--control-copy);
+  background: var(--control-node-surface);
+  box-shadow: none;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.is-architecture-source .control-system-tile .node-icon,
+.is-architecture-source .control-component-detail .node-icon {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: var(--architecture-node-radius);
+  color: var(--architecture-vector);
+  background: rgba(211, 220, 226, .58);
+  font-size: 16px;
+}
+.is-architecture-source .control-system-tile .node-copy { min-width: 0; display: grid; gap: 2px; }
+.is-architecture-source .control-system-tile strong { overflow: hidden; color: var(--control-copy); font-size: 13px; font-weight: 600; line-height: 1.15; text-overflow: ellipsis; white-space: nowrap; }
+.is-architecture-source .control-system-tile:hover,
+.is-architecture-source .control-system-tile:focus-visible { transform: translateY(-2px); border: 0; outline: 2px solid var(--blue); outline-offset: 2px; background: var(--control-node-surface); box-shadow: none; }
+.is-architecture-source .control-component-detail {
+  min-height: 0;
+  max-height: 430px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  touch-action: pan-y;
+  cursor: pointer;
+}
+.is-architecture-source .control-component-detail:focus { outline: 0; }
+.is-architecture-source .control-component-detail:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
+.is-architecture-source .control-detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.is-architecture-source .control-detail-list { min-width: 0; display: grid; gap: 5px; }
+.is-architecture-source .control-detail-list > span { color: var(--control-muted); font-size: 11px; font-weight: 500; }
+.is-architecture-source .control-detail-list > div { display: grid; gap: 4px; }
+.is-architecture-source .control-detail-list small { overflow-wrap: anywhere; color: var(--control-copy); font-size: 11px; line-height: 1.35; }
+@media (max-width: 1320px) {
+  .is-architecture-source .control-system-tile { height: 48px; min-height: 48px; }
+  .is-architecture-source .control-detail-grid { grid-template-columns: 1fr; }
+}
+@media (prefers-reduced-transparency: reduce) {
+  .is-architecture-source .architecture-flowpulse-system { background: #d3dce2; }
+  .is-architecture-source .control-system-tile { background: #ffffff; }
+  :root[data-theme="dark"] .is-architecture-source .architecture-flowpulse-system { background: #141b21; }
+  :root[data-theme="dark"] .is-architecture-source .control-system-tile { background: #2e353d; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .is-architecture-source .control-system-tile:hover,
+  .is-architecture-source .control-system-tile:focus-visible { transform: none; }
+}
 @media (prefers-reduced-motion: reduce) {
   .is-architecture-source .architecture-thumbnail-node,
   .is-architecture-source .source-node.is-architecture-compact { transition: none; }
@@ -2532,3 +2641,56 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
   background: rgba(255, 255, 255, .9);
   box-shadow: none;
 }
+
+/* Control disclosure uses the same full-region swap as an observed component. */
+.is-architecture-source .architecture-flowpulse-system { overflow: hidden; }
+.is-architecture-source .architecture-flowpulse-system.is-detail {
+  background: rgba(255, 255, 255, .88);
+}
+.is-architecture-source .architecture-flowpulse-nodes.is-detail {
+  min-height: 0;
+  flex: 1;
+  display: grid;
+  padding: 12px;
+}
+.is-architecture-source .control-component-detail {
+  height: 100%;
+  max-height: none;
+  overflow-x: hidden;
+  overflow-y: auto;
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  padding: 12px 13px;
+  color: var(--control-copy);
+  background: transparent;
+  font-family: var(--architecture-font, -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", sans-serif);
+}
+.is-architecture-source .control-component-detail .architecture-detail-title {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+}
+.is-architecture-source .control-component-detail .architecture-detail-title strong { color: var(--control-copy); font-size: 15px; font-weight: 600; }
+.is-architecture-source .control-component-detail .architecture-detail-purpose { display: grid; gap: 2px; }
+.is-architecture-source .control-component-detail .architecture-detail-purpose > span { color: var(--control-muted); font-size: 11px; font-weight: 500; }
+.is-architecture-source .control-component-detail .architecture-detail-purpose strong { color: var(--control-copy); font-size: 12px; font-weight: 600; line-height: 1.35; }
+.is-architecture-source .control-component-detail .control-detail-grid { gap: 8px; }
+.is-architecture-source .control-component-detail .control-detail-list { gap: 3px; }
+.is-architecture-source .control-component-detail .control-detail-list > div { gap: 2px; }
+.is-architecture-source .control-component-detail .control-detail-list small { font-size: 10px; line-height: 1.25; }
+.is-architecture-source .control-system-tile .node-status-dot { --control-status: var(--faint); }
+.is-architecture-source .control-system-tile .node-status-dot,
+.is-architecture-source .control-component-detail .node-status-dot { background: var(--control-status); }
+.is-architecture-source .control-component-detail .node-status-dot { position: static; width: 7px; height: 7px; }
+.is-architecture-source .control-system-tile .node-status-dot.is-observed,
+.is-architecture-source .control-system-tile .node-status-dot.is-recording,
+.is-architecture-source .control-system-tile .node-status-dot.is-active,
+.is-architecture-source .control-system-tile .node-status-dot.is-accepted,
+.is-architecture-source .control-component-detail .node-status-dot.is-observed,
+.is-architecture-source .control-component-detail .node-status-dot.is-recording,
+.is-architecture-source .control-component-detail .node-status-dot.is-active,
+.is-architecture-source .control-component-detail .node-status-dot.is-accepted { --control-status: var(--green); }
+.is-architecture-source .control-system-tile .node-status-dot.is-rejected,
+.is-architecture-source .control-component-detail .node-status-dot.is-rejected { --control-status: var(--red); }
