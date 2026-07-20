@@ -392,10 +392,77 @@ test("deterministic demo lifecycle starts healthy, injects one bounded incident,
   assert.equal((await postJson(port, "/api/approve", { owner: "Demo bypass" })).status, 409);
 });
 
+test("an active demo centrally blocks every non-demo write before side effects", async (context) => {
+  const port = await freshPort();
+  const dbPath = join(mkdtempSync(join(tmpdir(), "flowpulse-server-demo-isolation-")), "ledger.db");
+  const child = spawn(process.execPath, ["src/server.mjs"], {
+    cwd: new URL("..", import.meta.url),
+    env: { ...process.env, PORT: String(port), FLOWPULSE_DB: dbPath, FLOWPULSE_OTLP_DIR: join(tmpdir(), "missing-demo-otel"), OPENAI_API_KEY: "" },
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  context.after(() => stopTestServer(child));
+  await waitForHealth(child, port);
+
+  const before = await fetch(`http://127.0.0.1:${port}/api/state`).then((response) => response.json());
+  const ledger = new Ledger(dbPath);
+  const beforeEvents = ledger.listIncident(before.incident.id);
+  const blockedWrites = [
+    ["POST", "/api/reset", {}],
+    ["POST", "/api/next", {}],
+    ["POST", "/api/approve", { owner: "bypass" }],
+    ["POST", "/api/live", {}],
+    ["POST", "/api/development/setup", {}],
+    ["POST", "/api/development/start", {}],
+    ["POST", "/api/development/case", {}],
+    ["POST", "/api/development/investigate", {}],
+    ["POST", "/api/development/approve", { owner: "bypass" }],
+    ["POST", "/api/development/verify", {}],
+    ["POST", "/api/agent-control/message", { message: "bypass", collaborator_id: "manager" }],
+    ["POST", "/api/agent-control/action", { action: "delegate_task", input: {} }],
+    ["POST", "/api/not-a-route", {}],
+    ["PATCH", "/api/state", {}],
+    ["DELETE", "/api/state", {}]
+  ];
+
+  for (const [method, pathname, body] of blockedWrites) {
+    const response = await fetch(`http://127.0.0.1:${port}${pathname}`, {
+      method,
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    assert.equal(response.status, 409, `${method} ${pathname}`);
+    assert.deepEqual(await response.json(), { error: "demo_mode_active" }, `${method} ${pathname}`);
+    const after = await fetch(`http://127.0.0.1:${port}/api/state`).then((state) => state.json());
+    assert.equal(after.run_id, before.run_id, `${method} ${pathname}`);
+    assert.equal(after.topology_views.projection_revision, before.topology_views.projection_revision, `${method} ${pathname}`);
+    assert.deepEqual(ledger.listIncident(before.incident.id), beforeEvents, `${method} ${pathname}`);
+  }
+
+  for (const pathname of ["/api/health", "/api/state", "/api/source", "/api/evidence", "/api/agent-control", "/api/development/status", "/"]) {
+    assert.equal((await fetch(`http://127.0.0.1:${port}${pathname}`)).status, 200, pathname);
+  }
+  const eventStream = await fetch(`http://127.0.0.1:${port}/api/agent-control/events?after=999999`);
+  assert.equal(eventStream.status, 200);
+  await eventStream.body.cancel();
+
+  const scenario_id = "astronomy-checkout-payment-captured-v1";
+  const inject = await postJson(port, "/api/demo/inject", {
+    scenario_id,
+    run_id: before.run_id,
+    projection_revision: before.topology_views.projection_revision,
+    idempotency_key: "demo-isolation-allowed-inject"
+  });
+  assert.equal(inject.status, 201, JSON.stringify(inject.body));
+  const reset = await postJson(port, "/api/demo/reset");
+  assert.equal(reset.status, 201, JSON.stringify(reset.body));
+  assert.notEqual(reset.body.run_id, before.run_id);
+});
+
 test("judge API serves state and advances the replay", async (context) => {
   const port = await freshPort();
   const dbPath = join(mkdtempSync(join(tmpdir(), "flowpulse-server-")), "ledger.db");
   const missingSource = join(mkdtempSync(join(tmpdir(), "flowpulse-source-failure-secret-")), "missing-otel");
+  new IncidentRuntime({ ledger: new Ledger(dbPath), bundle: loadBundle() }).startRun();
   const child = spawn(process.execPath, ["src/server.mjs"], {
     cwd: new URL("..", import.meta.url),
     env: { ...process.env, PORT: String(port), FLOWPULSE_DB: dbPath, FLOWPULSE_OTLP_DIR: missingSource, OPENAI_API_KEY: "" },

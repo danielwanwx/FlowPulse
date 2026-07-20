@@ -78,6 +78,9 @@ const server = createServer(async (request, response) => {
   if (request.method === "OPTIONS") return send(response, 204, "");
   try {
     const url = new URL(request.url, `http://${request.headers.host || "localhost"}`);
+    if (activeDemoWriteBlocked(request.method, url.pathname)) {
+      return json(response, 409, { error: "demo_mode_active" });
+    }
     if (url.pathname === "/api/state" && request.method === "GET") {
       return json(response, 200, await stateWithSource(browserRunId(), { cursor: url.searchParams.get("projection_cursor") }));
     }
@@ -108,7 +111,6 @@ const server = createServer(async (request, response) => {
       requireJson(request);
       const body = await readJson(request);
       const runId = browserRunId();
-      if (isDemoRun(runId)) return json(response, 409, { error: "Demo lifecycle does not accept agent-control messages" });
       return json(response, 200, await withAgentControlTrace({
         runId,
         incidentId: runtime.bundle.incident.id,
@@ -132,7 +134,6 @@ const server = createServer(async (request, response) => {
       requireJson(request);
       const body = await readJson(request);
       const runId = browserRunId();
-      if (isDemoRun(runId)) return json(response, 409, { error: "Demo lifecycle does not accept agent-control actions" });
       return json(response, 200, await withAgentControlTrace({
         runId,
         incidentId: runtime.bundle.incident.id,
@@ -167,7 +168,6 @@ const server = createServer(async (request, response) => {
       requireJson(request);
       const body = await readJson(request);
       if (!isEmptyObject(body)) return json(response, 409, { error: "Development investigation accepts no caller authority input" });
-      if (isDemoRun(browserRunId())) return json(response, 409, { error: "Demo lifecycle must reach a later Diagnose checkpoint" });
       const runId = runtime.ensureRun();
       try {
         await singleFlightDevelopmentInvestigation(runId);
@@ -186,7 +186,6 @@ const server = createServer(async (request, response) => {
     if (url.pathname === "/api/development/approve" && request.method === "POST") {
       requireJson(request);
       const body = await readJson(request);
-      if (isDemoRun(browserRunId())) return json(response, 409, { error: "Demo lifecycle cannot use development approval" });
       const runId = runtime.ensureRun();
       const owner = approvalOwner(body);
       if (!owner) return json(response, 409, { error: "An explicit bounded owner is required" });
@@ -195,26 +194,25 @@ const server = createServer(async (request, response) => {
     }
     if (url.pathname === "/api/development/verify" && request.method === "POST") {
       requireJson(request);
-      if (isDemoRun(browserRunId())) return json(response, 409, { error: "Demo lifecycle cannot use development verification" });
       const runId = runtime.ensureRun();
       await development.verify(runId);
       return json(response, 200, await stateWithSource(runId));
     }
     if (url.pathname === "/api/reset" && request.method === "POST") {
+      // Compatibility replay reset. Active deterministic demos must use the
+      // bounded /api/demo/reset route, enforced at the routing boundary.
       activeDemoRunId = null;
       const runId = runtime.startRun();
       return json(response, 201, await stateWithSource(runId));
     }
     if (url.pathname === "/api/next" && request.method === "POST") {
       const runId = runtime.ensureRun();
-      if (isDemoRun(runId)) return json(response, 409, { error: "Demo lifecycle requires a bounded demo injection" });
       agentControl.advance(runId, "timeline-advance");
       return json(response, 200, await stateWithSource(runId));
     }
     if (url.pathname === "/api/approve" && request.method === "POST") {
       const body = await readJson(request);
       const runId = runtime.ensureRun();
-      if (isDemoRun(runId)) return json(response, 409, { error: "Demo lifecycle cannot use compatibility approval" });
       if (runMode(runId) === "development") return json(response, 409, { error: "Development approval requires the canonical development Owner Gate" });
       runtime.approve(runId, body.owner || "Incident owner");
       return json(response, 200, await stateWithSource(runId));
@@ -849,7 +847,10 @@ function injectDemoIncident({ runId, body, current }) {
     ? { ok: true, inserted: false }
     : { ok: false, code: "demo_injection_conflict" };
 }
-function isDemoRun(runId) { return demoLifecycleFor(runId).ok; }
+function activeDemoWriteBlocked(method, pathname) {
+  if (!activeDemoRunId || !["POST", "PUT", "PATCH", "DELETE"].includes(method)) return false;
+  return !(method === "POST" && (pathname === "/api/demo/inject" || pathname === "/api/demo/reset"));
+}
 function autonomyFailure(code, field_path) { const error = new InsufficientEvidenceError("Autonomy authority boundary rejected the run"); error.code = code; error.metadata = { stage: "authority_decision", validator_id: "server_authority_closure", reason_code: code, field_path, next_precondition: "produce_a_matching_frozen_diagnosis_gate" }; return error; }
 
 async function serveStatic(pathname, response) {
