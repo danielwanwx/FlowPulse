@@ -80,6 +80,12 @@ const COMPONENT_EXPLANATIONS = Object.freeze({
   "otelcol-contrib": "Collects and forwards observed telemetry signals.",
   "astronomy-db": "Stores operational application data for the captured system."
 });
+const ARCHITECTURE_LAYER_SUMMARIES = Object.freeze({
+  experience: "Browser entry, storefront composition, and traffic intake",
+  commerce: "Cart, checkout, catalogue, pricing, and fulfillment requests",
+  processing: "Order event processing, risk screening, and financial posting",
+  platform: "Event transport, configuration, telemetry collection, and operational data"
+});
 const COLLABORATOR_ACTIONS = Object.freeze({
   commander: ["advance", "delegate_task", "draft_jira", "approve_jira_draft"],
   observer: ["advance", "delegate_task"],
@@ -397,13 +403,15 @@ function renderSourceCanvas(layout) {
     }));
     const layerModules = layerGroups.map((layer) => {
       const layerStatus = architectureLayerStatus(layer.members);
+      const layerRole = ARCHITECTURE_LAYER_SUMMARIES[layer.id] || "";
+      const layerStatusSummary = architectureLayerStatusSummary(layer.members);
       const detail = selectedArchitectureDetail?.node.layer === layer.id ? selectedArchitectureDetail : null;
       const anatomy = layer.members.map((node) => architectureThumbnailMarkup(node, nodeStates[node.id])).join("");
       const content = detail
         ? architectureComponentDetailMarkup(detail)
-        : `<span class="architecture-layer-copy"><strong>${escapeHtml(layer.label)}</strong><span class="architecture-layer-count">${layer.members.length} components</span></span>
+        : `<span class="architecture-layer-copy"><span class="architecture-layer-title"><strong>${escapeHtml(layer.label)}</strong><span class="architecture-layer-count">${layer.members.length} components</span></span><span class="architecture-layer-summary"><span class="architecture-layer-role">${escapeHtml(layerRole)}</span><span class="architecture-layer-status-summary" data-architecture-layer-status-summary="${escapeHtml(layerStatusSummary)}">${escapeHtml(layerStatusSummary)}</span></span></span>
           <span class="architecture-layer-anatomy" role="list" aria-label="${escapeHtml(layer.label)} components" data-architecture-member-count="${layer.members.length}">${anatomy}</span>`;
-      return `<article class="architecture-layer-module is-${escapeHtml(layerStatus)}${detail ? " is-detail" : ""}" data-architecture-layer="${escapeHtml(layer.id)}" aria-label="${escapeHtml(detail ? `${detail.node.label} component detail` : `${layer.label}, ${layer.members.length} components, ${statusLabel(layerStatus)}`)}">${content}${detail ? "" : '<span class="architecture-status-dot" aria-hidden="true"></span>'}</article>`;
+      return `<article class="architecture-layer-module is-${escapeHtml(layerStatus)}${detail ? " is-detail" : ""}" data-architecture-layer="${escapeHtml(layer.id)}" aria-label="${escapeHtml(detail ? `${detail.node.label} component detail` : `${layer.label}, ${layer.members.length} components. ${layerRole}. ${layerStatusSummary}`)}">${content}${detail ? "" : '<span class="architecture-status-dot" aria-hidden="true"></span>'}</article>`;
     }).join("");
     const controlNodes = boundaries.flowpulse.nodes.map((node) => architectureStaticNodeMarkup(node, nodeStates[node.id])).join("");
     els["canvas-layers"].innerHTML = `<div class="twin-layer layer-current architecture-systems is-complete-topology">
@@ -465,6 +473,34 @@ function architectureLayerStatus(nodes) {
     return index === -1 ? rank.length : index;
   };
   return [...nodes].map((node) => node.status || "observed").sort((left, right) => order(left) - order(right))[0] || "observed";
+}
+
+function architectureLayerStatusSummary(nodes) {
+  if (!nodes.length) return "Status unavailable";
+  const buckets = new Map(["fault", "pending", "sleeping", "healthy", "unavailable"].map((status) => [status, 0]));
+  for (const node of nodes) {
+    const status = String(node.status || "observed");
+    const bucket = ["root", "impact", "rejected", "fault"].includes(status)
+      ? "fault"
+      : ["pending", "warning", "change", "approval", "active", "recording"].includes(status)
+        ? "pending"
+        : ["idle", "quiet", "dormant", "sleeping"].includes(status)
+          ? "sleeping"
+          : ["healthy", "verified", "learned", "observed", "accepted"].includes(status)
+            ? "healthy"
+            : "unavailable";
+    buckets.set(bucket, buckets.get(bucket) + 1);
+  }
+  const total = nodes.length;
+  if (buckets.get("healthy") === total) return `${total}/${total} healthy`;
+  if (buckets.get("unavailable") === total) return "Status unavailable";
+  return [
+    ["fault", "fault"],
+    ["pending", "pending"],
+    ["sleeping", "sleeping"],
+    ["healthy", "healthy"],
+    ["unavailable", "unavailable"]
+  ].filter(([bucket]) => buckets.get(bucket)).map(([bucket, label]) => `${buckets.get(bucket)} ${label}`).join(", ");
 }
 
 function architectureThumbnailMarkup(node, status = "observed") {

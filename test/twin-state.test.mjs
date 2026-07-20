@@ -166,6 +166,12 @@ test("architecture is a static four-layer overview with backend-owned status dot
   assert.doesNotMatch(appJs, /layer\.members\.slice\(0, 4\)/);
   assert.match(appJs, /data-architecture-layer="\$\{escapeHtml\(layer\.id\)\}"/);
   assert.match(appJs, /function architectureLayerStatus\(/);
+  assert.match(appJs, /const ARCHITECTURE_LAYER_SUMMARIES = Object\.freeze/);
+  assert.match(appJs, /experience: "Browser entry, storefront composition, and traffic intake"/);
+  assert.match(appJs, /function architectureLayerStatusSummary\(nodes\)/);
+  assert.match(appJs, /\$\{total\}\/\$\{total\} healthy/);
+  assert.match(appJs, /architecture-layer-role/);
+  assert.match(appJs, /data-architecture-layer-status-summary/);
   assert.match(appJs, /function architectureStaticNodeMarkup\(/);
   assert.match(appJs, /architecture-status-dot/);
   assert.match(appJs, /data-architecture-control-id/);
@@ -215,6 +221,11 @@ test("architecture is a static four-layer overview with backend-owned status dot
   assert.match(architectureStaticCss, /is-fault[\s\S]+?--architecture-status: var\(--red\);/);
   assert.match(architectureStaticCss, /is-pending[\s\S]+?--architecture-status: var\(--amber\);/);
   assert.match(architectureStaticCss, /is-sleeping[\s\S]+?--architecture-status: var\(--faint\);/);
+  assert.match(architectureStaticCss, /Architecture interaction: flat selection feedback and bounded layer summaries/);
+  assert.match(architectureStaticCss, /\.architecture-layer-role \{ max-width: 78%; \}/);
+  assert.match(architectureStaticCss, /\.architecture-thumbnail-node:hover,[\s\S]+?\.source-node\.is-architecture-compact\.is-selected \{[\s\S]+?transform: translateY\(-2px\);[\s\S]+?background: var\(--architecture-node-surface\);[\s\S]+?box-shadow: none;/);
+  assert.match(architectureStaticCss, /\.architecture-thumbnail-node:focus-visible,[\s\S]+?outline: 2px solid var\(--blue\);/);
+  assert.match(architectureStaticCss, /@media \(prefers-reduced-motion: reduce\)[\s\S]+?\.architecture-thumbnail-node:hover,[\s\S]+?transform: none;/);
   assert.match(appJs, /"fault", "pending", "warning"/);
   assert.match(architectureDetailCss, /\.app-shell\[data-mode="architecture"\] \{[\s\S]+?background: #e9eef1;/);
   assert.match(architectureDetailCss, /\.twin-workspace,[\s\S]+?\.twin-scroll \{ background: #e9eef1; \}/);

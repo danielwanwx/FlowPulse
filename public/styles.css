@@ -1552,6 +1552,65 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
   .is-architecture-source .source-node.is-architecture-compact,
   .is-architecture-source .architecture-evidence-summary { background: #f5f8fa; backdrop-filter: none; -webkit-backdrop-filter: none; }
 }
+
+/* Architecture interaction: flat selection feedback and bounded layer summaries. */
+.is-architecture-source .architecture-layer-copy {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 5px;
+}
+.is-architecture-source .architecture-layer-title,
+.is-architecture-source .architecture-layer-summary {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+.is-architecture-source .architecture-layer-summary {
+  align-items: flex-start;
+  color: var(--architecture-muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+.is-architecture-source .architecture-layer-role { max-width: 78%; }
+.is-architecture-source .architecture-layer-status-summary {
+  flex: 0 0 auto;
+  color: var(--architecture-copy);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.is-architecture-source .architecture-thumbnail-node,
+.is-architecture-source .source-node.is-architecture-compact {
+  transition: transform 160ms ease;
+  border: 0;
+  box-shadow: none;
+}
+.is-architecture-source .architecture-thumbnail-node:hover,
+.is-architecture-source .source-node.is-architecture-compact:hover,
+.is-architecture-source .source-node.is-architecture-compact.is-selected {
+  transform: translateY(-2px);
+  border: 0;
+  background: var(--architecture-node-surface);
+  box-shadow: none;
+}
+.is-architecture-source .architecture-thumbnail-node:focus-visible,
+.is-architecture-source .source-node.is-architecture-compact:focus-visible {
+  transform: translateY(-2px);
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
+  border: 0;
+  background: var(--architecture-node-surface);
+  box-shadow: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .is-architecture-source .architecture-thumbnail-node,
+  .is-architecture-source .source-node.is-architecture-compact { transition: none; }
+  .is-architecture-source .architecture-thumbnail-node:hover,
+  .is-architecture-source .architecture-thumbnail-node:focus-visible,
+  .is-architecture-source .source-node.is-architecture-compact:hover,
+  .is-architecture-source .source-node.is-architecture-compact:focus-visible,
+  .is-architecture-source .source-node.is-architecture-compact.is-selected { transform: none; }
+}
 .is-live-source .live-column-0 { left: 10%; }
 .is-live-source .live-column-1 { left: 30%; }
 .is-live-source .live-column-2 { left: 50%; }
