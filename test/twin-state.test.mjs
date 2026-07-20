@@ -101,7 +101,7 @@ test("Architecture accepts only the complete backend topology view and retains s
   assert.match(appJs, /architecture-observed-system/);
   assert.match(appJs, /architecture-flowpulse-system/);
   assert.match(appJs, /architectureBoundaries\(topology\)/);
-  assert.match(appJs, /Cross-boundary evidence relation/);
+  assert.match(appJs, /Cross-boundary evidence summary/);
 });
 
 test("light and pure-black themes have a persisted accessible toggle", () => {
@@ -125,7 +125,7 @@ test("the product opens on architecture and keeps advanced actions in an accessi
   assert.match(stylesCss, /\.stage-readout \{ display: none;/);
 });
 
-test("architecture layout is deterministic, layered, and leaves room for complete cards", () => {
+test("architecture uses a four-layer overview and a bounded Experience detail face", () => {
   const observed = new Set(["load-generator", "frontend-web", "frontend-proxy", "frontend", "checkout", "cart", "payment", "currency", "shipping", "product-catalog", "recommendation", "ad", "email", "kafka", "accounting", "fraud-detection", "quote", "image-provider", "flagd", "telemetry-docs", "otelcol-contrib", "astronomy-db"]);
   const nodes = ARCHITECTURE_LAYERS.flatMap((layer) => layer.ids.filter((id) => observed.has(id)).map((id, index) => ({ id, label: id, kind: index === 0 ? "client" : "service" })));
   const first = architecturePositions(nodes);
@@ -141,38 +141,43 @@ test("architecture layout is deterministic, layered, and leaves room for complet
     for (let index = 1; index < xs.length; index++) assert.ok((xs[index] - xs[index - 1]) * 12.8 >= 116);
   }
   assert.equal(architecturePositions([...nodes, { id: "agent", label: "Investigator", kind: "service", plane: "control", layer: "investigation" }]).some((node) => node.id === "agent"), false);
+  assert.deepEqual(Object.fromEntries(ARCHITECTURE_LAYERS.map((layer) => [layer.id, topologyManifest.nodes.filter((node) => node.layer === layer.id).length])), {
+    experience: 6,
+    commerce: 9,
+    processing: 3,
+    platform: 4
+  });
   assert.match(appJs, /if \(layout === "architecture"\) \{[\s\S]+architecture-systems/);
   assert.match(appJs, /architecture-observed-system/);
   assert.match(appJs, /architecture-flowpulse-system/);
-  assert.match(appJs, /architecture-cross-boundary/);
-  assert.match(appJs, /cross-boundary-evidence/);
+  assert.match(appJs, /architecture-layer-grid/);
+  assert.match(appJs, /data-architecture-layer="experience"/);
+  assert.match(appJs, /data-architecture-back/);
+  assert.match(appJs, /node\.layer === layer\.id/);
+  assert.match(appJs, /architectureFace === "experience"/);
+  assert.match(appJs, /function setArchitectureFace\(/);
+  assert.match(appJs, /window\.matchMedia\("\(prefers-reduced-motion: reduce\)"\)/);
   assert.match(appJs, /dataset\.runtimeEdges/);
   assert.match(appJs, /dataset\.controlRelations/);
-  assert.match(appJs.match(/if \(layout === "architecture"\) \{[\s\S]+?return;/)?.[0] || "", /architecture-edge-map/);
-  assert.match(appJs, /queueArchitectureRelationRender\(boundaries\.observed\.relations\)/);
-  assert.match(appJs, /function architectureRelationPath\(/);
-  assert.match(appJs, /data-edge-id="\$\{escapeHtml\(relation\.id\)\}"/);
-  assert.match(appJs, /data-architecture-edge-from="\$\{escapeHtml\(relation\.from\)\}"/);
-  assert.match(appJs, /isConnectedToSelectedNode/);
-  assert.doesNotMatch(appJs, /style="left:\$\{node\.x\}/);
-  assert.match(stylesCss, /\.architecture-tier-row \{[^}]+min-height: 68px;[^}]+grid-template-columns: repeat\(auto-fit, var\(--architecture-card-width\)\)/s);
-  assert.match(stylesCss, /\.architecture-tier \{[^}]+z-index: 1;[^}]+width: 100%;[^}]+display: block/s);
-  assert.match(stylesCss, /\.is-architecture-source \.source-node \{[^}]+min-height: 68px;[^}]+border-radius: var\(--architecture-node-radius\)/s);
-  assert.match(stylesCss, /\.architecture-tier \.source-node \{[^}]+position: relative;[^}]+z-index: 2;[^}]+height: 68px;/s);
-  assert.match(stylesCss, /--architecture-card-width: clamp\(92px, 7vw, 118px\)/);
-  assert.match(stylesCss, /\.architecture-tier \.source-node strong \{[^}]+font-size: 14px/s);
+  assert.doesNotMatch(appJs, /architecture-edge-map|queueArchitectureRelationRender|architectureRelationPath|data-architecture-edge/);
+  assert.doesNotMatch(stylesCss, /\.architecture-edge-map|\.architecture-edge-line|\.architecture-edge-group/);
+  assert.match(stylesCss, /\.architecture-layer-grid \{[^}]+grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/s);
+  assert.match(stylesCss, /\.architecture-workspace-turn \{[^}]+transform-style: preserve-3d;[^}]+240ms/s);
+  assert.match(stylesCss, /\.architecture-workspace-turn\.is-turning-forward,[^}]+rotateY\(88deg\)/s);
+  assert.match(stylesCss, /\.architecture-workspace-turn\.is-turning-back,[^}]+rotateY\(-88deg\)/s);
+  assert.match(stylesCss, /\.architecture-workspace-face \{[^}]+backface-visibility: hidden;/s);
+  assert.match(stylesCss, /\.architecture-experience-nodes \{[^}]+grid-template-columns: repeat\(3, minmax\(0, 1fr\)\)/s);
+  assert.match(stylesCss, /\.architecture-layer-module \{[^}]+border: 0;[^}]+border-radius: var\(--architecture-system-radius\)/s);
+  assert.match(stylesCss, /\.is-architecture-source \.source-node \{[^}]+border: 0;[^}]+background: var\(--architecture-node-surface\)/s);
   assert.match(stylesCss, /\.twin-canvas\.is-architecture-source \{[^}]+--architecture-page-radius: 24px;[^}]+--architecture-system-radius: 20px;[^}]+--architecture-node-radius: 16px;[^}]+--architecture-control-radius: 12px;[^}]+min-width: 0;/s);
-  assert.match(stylesCss, /\.is-architecture-source \.architecture-system \{[^}]+border-radius: var\(--architecture-system-radius\);[^}]+background: var\(--architecture-surface\);/s);
-  assert.match(stylesCss, /\.is-architecture-source \.architecture-flowpulse-system \{[^}]+border-color: color-mix\(in srgb, var\(--blue\)/s);
-  assert.match(stylesCss, /\.is-architecture-source \.architecture-edge-map \{[^}]+z-index: 0;[^}]+pointer-events: none;/s);
-  assert.match(stylesCss, /\.is-architecture-source \.architecture-tier-label \{[^}]+display: flex;[^}]+border: 0;/s);
+  assert.match(stylesCss, /\.is-architecture-source \.architecture-system \{[^}]+border: 0;[^}]+background: var\(--architecture-surface\);/s);
+  assert.match(stylesCss, /\.is-architecture-source \.architecture-flowpulse-system \{[^}]+border: 0;[^}]+rgba\(241, 248, 255, \.54\)/s);
   assert.match(stylesCss, /@media \(prefers-reduced-transparency: reduce\)[\s\S]+backdrop-filter: none;/s);
   assert.match(stylesCss, /@supports not \(\(backdrop-filter: blur\(1px\)\)/);
-  assert.match(appJs, /architecture-tier-label[^\n]+layer\.description/);
+  assert.match(stylesCss, /@media \(prefers-reduced-motion: reduce\)[\s\S]+architecture-workspace-turn\.is-turning-forward/);
   assert.match(appJs, /service\.name=\$\{node\.id\}/);
   assert.match(appJs, /telemetry\.sdk\.language/);
   assert.match(appJs, /const origin = architecture \? `\$\{kindLabel\(node\.kind\)\} · \$\{node\.plane\} \/ \$\{node\.layer\}`/);
-  assert.match(stylesCss, /@media \(max-width: 1080px\)[\s\S]+\.architecture-tier-row \{ grid-template-columns: repeat\(auto-fit, minmax\(96px, 112px\)\); \}/);
 });
 
 test("live layout keeps the same deterministic layers with more room for dependency pulses", () => {
