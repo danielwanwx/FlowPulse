@@ -429,7 +429,7 @@ function renderSourceCanvas(layout) {
 }
 
 function architectureLayerStatus(nodes) {
-  const rank = ["root", "impact", "rejected", "warning", "change", "approval", "active", "recording", "healthy", "verified", "learned", "observed", "idle", "quiet", "dormant"];
+  const rank = ["root", "impact", "rejected", "fault", "pending", "warning", "change", "approval", "active", "recording", "healthy", "verified", "learned", "observed", "sleeping", "idle", "quiet", "dormant"];
   const order = (status) => {
     const index = rank.indexOf(status);
     return index === -1 ? rank.length : index;

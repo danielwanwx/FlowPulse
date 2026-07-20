@@ -1383,17 +1383,15 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 }
 .app-shell[data-mode="architecture"] .topbar,
 .app-shell[data-mode="architecture"] .mission-bar {
-  background: rgba(247, 250, 252, .34);
+  background: transparent;
 }
 .twin-canvas.is-architecture-source {
   --architecture-shadow: none;
-  --architecture-surface: rgba(255, 255, 255, .10);
-  --architecture-surface-muted: rgba(235, 244, 252, .14);
-  --architecture-node-surface: rgba(255, 255, 255, .18);
-  background:
-    radial-gradient(ellipse 55% 58% at 2% 4%, rgba(255, 255, 255, .34), transparent 78%),
-    radial-gradient(ellipse 44% 56% at 100% 100%, rgba(151, 169, 184, .35), transparent 78%),
-    rgba(190, 201, 210, .46);
+  --architecture-surface: rgba(255, 255, 255, .11);
+  --architecture-surface-muted: rgba(235, 244, 252, .16);
+  --architecture-node-surface: rgba(255, 255, 255, .32);
+  border-radius: 0;
+  background: transparent;
 }
 .is-architecture-source .architecture-system,
 .is-architecture-source .architecture-flowpulse-system,
@@ -1415,7 +1413,7 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 }
 .is-architecture-source .architecture-layer-module {
   position: relative;
-  background: rgba(255, 255, 255, .19);
+  background: rgba(255, 255, 255, .15);
 }
 .is-architecture-source .architecture-thumbnail-node,
 .is-architecture-source .source-node.is-architecture-compact {
@@ -1448,7 +1446,7 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 }
 .is-architecture-source .architecture-status-dot,
 .is-architecture-source .source-node.is-architecture-compact .node-status-dot {
-  --architecture-status: var(--blue);
+  --architecture-status: var(--green);
   position: absolute;
   top: 11px;
   right: 11px;
@@ -1471,12 +1469,18 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .is-architecture-source .architecture-layer-module.is-root .architecture-status-dot,
 .is-architecture-source .architecture-layer-module.is-impact .architecture-status-dot,
 .is-architecture-source .architecture-layer-module.is-rejected .architecture-status-dot,
+.is-architecture-source .architecture-layer-module.is-fault .architecture-status-dot,
 .is-architecture-source .architecture-thumbnail-node.is-root .architecture-status-dot,
 .is-architecture-source .architecture-thumbnail-node.is-impact .architecture-status-dot,
 .is-architecture-source .architecture-thumbnail-node.is-rejected .architecture-status-dot,
+.is-architecture-source .architecture-thumbnail-node.is-fault .architecture-status-dot,
 .is-architecture-source .source-node.is-architecture-compact.is-root .node-status-dot,
 .is-architecture-source .source-node.is-architecture-compact.is-impact .node-status-dot,
-.is-architecture-source .source-node.is-architecture-compact.is-rejected .node-status-dot { --architecture-status: var(--red); }
+.is-architecture-source .source-node.is-architecture-compact.is-rejected .node-status-dot,
+.is-architecture-source .source-node.is-architecture-compact.is-fault .node-status-dot { --architecture-status: var(--red); }
+.is-architecture-source .architecture-layer-module.is-pending .architecture-status-dot,
+.is-architecture-source .architecture-thumbnail-node.is-pending .architecture-status-dot,
+.is-architecture-source .source-node.is-architecture-compact.is-pending .node-status-dot,
 .is-architecture-source .architecture-layer-module.is-warning .architecture-status-dot,
 .is-architecture-source .architecture-layer-module.is-change .architecture-status-dot,
 .is-architecture-source .architecture-layer-module.is-approval .architecture-status-dot,
@@ -1489,12 +1493,36 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .is-architecture-source .architecture-layer-module.is-idle .architecture-status-dot,
 .is-architecture-source .architecture-layer-module.is-quiet .architecture-status-dot,
 .is-architecture-source .architecture-layer-module.is-dormant .architecture-status-dot,
+.is-architecture-source .architecture-layer-module.is-sleeping .architecture-status-dot,
 .is-architecture-source .architecture-thumbnail-node.is-idle .architecture-status-dot,
 .is-architecture-source .architecture-thumbnail-node.is-quiet .architecture-status-dot,
 .is-architecture-source .architecture-thumbnail-node.is-dormant .architecture-status-dot,
+.is-architecture-source .architecture-thumbnail-node.is-sleeping .architecture-status-dot,
 .is-architecture-source .source-node.is-architecture-compact.is-idle .node-status-dot,
 .is-architecture-source .source-node.is-architecture-compact.is-quiet .node-status-dot,
-.is-architecture-source .source-node.is-architecture-compact.is-dormant .node-status-dot { --architecture-status: var(--faint); }
+.is-architecture-source .source-node.is-architecture-compact.is-dormant .node-status-dot,
+.is-architecture-source .source-node.is-architecture-compact.is-sleeping .node-status-dot { --architecture-status: var(--faint); }
+.app-shell[data-mode="architecture"],
+.app-shell[data-mode="architecture"] main,
+.app-shell[data-mode="architecture"] .twin-workspace,
+.app-shell[data-mode="architecture"] .canvas-shell,
+.app-shell[data-mode="architecture"] .twin-scroll {
+  background: #d9e0e5;
+}
+.app-shell[data-mode="architecture"] .topbar,
+.app-shell[data-mode="architecture"] .mission-bar,
+.app-shell[data-mode="architecture"] .twin-workspace,
+.app-shell[data-mode="architecture"] .canvas-shell,
+.app-shell[data-mode="architecture"] .twin-scroll {
+  background: transparent;
+}
+.is-architecture-source .architecture-system-heading,
+.is-architecture-source .architecture-relation-summary,
+.is-architecture-source .architecture-flowpulse-relations,
+.is-architecture-source .architecture-system-heading[data-system="flowpulse"] {
+  background: transparent;
+  box-shadow: none;
+}
 .app-shell[data-mode="architecture"] .context-drawer {
   background: rgba(249, 251, 252, .28);
 }

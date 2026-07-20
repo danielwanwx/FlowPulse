@@ -189,8 +189,15 @@ test("architecture is a static four-layer overview with backend-owned status dot
   assert.match(architectureStaticCss, /\.architecture-thumbnail-node,[\s\S]+?\.source-node\.is-architecture-compact \{[\s\S]+?background: var\(--architecture-node-surface\);/);
   assert.match(architectureStaticCss, /\.architecture-thumbnail-icon,[\s\S]+?\.node-icon \{[\s\S]+?color: var\(--architecture-vector\);/);
   assert.match(architectureStaticCss, /\.architecture-status-dot,[\s\S]+?\.node-status-dot \{[\s\S]+?background: var\(--architecture-status\);/);
+  assert.match(architectureStaticCss, /--architecture-status: var\(--green\);/);
   assert.match(architectureStaticCss, /is-healthy[\s\S]+?--architecture-status: var\(--green\);/);
   assert.match(architectureStaticCss, /is-impact[\s\S]+?--architecture-status: var\(--red\);/);
+  assert.match(architectureStaticCss, /is-fault[\s\S]+?--architecture-status: var\(--red\);/);
+  assert.match(architectureStaticCss, /is-pending[\s\S]+?--architecture-status: var\(--amber\);/);
+  assert.match(architectureStaticCss, /is-sleeping[\s\S]+?--architecture-status: var\(--faint\);/);
+  assert.match(appJs, /"fault", "pending", "warning"/);
+  assert.match(architectureStaticCss, /\.app-shell\[data-mode="architecture"\] main,[\s\S]+?\.twin-scroll \{[\s\S]+?background: #d9e0e5;/);
+  assert.match(architectureStaticCss, /\.twin-canvas\.is-architecture-source \{[\s\S]+?--architecture-node-surface: rgba\(255, 255, 255, \.32\);[\s\S]+?border-radius: 0;[\s\S]+?background: transparent;/);
   assert.match(architectureStaticCss, /\.is-architecture-compact \{[\s\S]+?display: grid;/);
   assert.match(stylesCss, /\.is-architecture-source \.source-node\.is-architecture-compact \{[^}]+border: 0;[^}]+border-radius: var\(--architecture-node-radius\);/s);
   assert.match(stylesCss, /--architecture-page-radius: 22px;[\s\S]+--architecture-system-radius: 22px;[\s\S]+--architecture-node-radius: 14px;[\s\S]+--architecture-control-radius: 14px;/);

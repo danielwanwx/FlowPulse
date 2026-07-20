@@ -12,7 +12,7 @@
 
 The Architecture page must stop reading as a line-art diagram while remaining an honest engineering topology and evidence-control product. Architecture is one static layered technology-stack overview, not a connected graph view or a drill-down workspace. The observed stack must be easy to scan, FlowPulse itself must remain visibly separate, and the canonical component inventory must be visible directly in each layer without a second face, node flip, or right-side component drawer.
 
-This is redesign-preserve work. Existing navigation, canonical backend topology contracts, graph identity and counts, lifecycle logic, keyboard behavior, and theme-toggle behavior remain intact. Header, navigation, source status, and the FlowPulse control surface remain fixed around one static central workspace. Architecture child nodes are display surfaces, not click targets; the browser remains read-only and does not acquire authority.
+This is redesign-preserve work. Existing navigation, canonical backend topology contracts, graph identity and counts, lifecycle logic, keyboard behavior, and theme-toggle behavior remain intact. Header, navigation, source status, and the FlowPulse control surface remain fixed around one static central workspace. Header, mode navigation, and the Architecture canvas share one continuous cool-gray page field rather than separate visual layers. Architecture child nodes are display surfaces, not click targets; the browser remains read-only and does not acquire authority.
 
 ## Locked design dials
 
@@ -69,7 +69,7 @@ Architecture is one static, non-editable summary surface. It has no local face s
 - Four large translucent modules represent **Client applications**, **Commerce edge & APIs**, **Core services**, and **Async data & platform**.
 - Each module derives its canonical technical name, count, and compact member anatomy from the backend Architecture projection. All 22 members remain visible as consistent icon-and-name mini modules, so the user can identify the whole stack without drilling in.
 - A mini module is an information surface, not a button: no flip, nested page, keyboard activation, node selection, or duplicate detail drawer is rendered in Architecture.
-- Each layer and each FlowPulse control node receives a small upper-right status dot from its exact backend-projected status. Green means an explicit healthy/verified state, red means a proven fault/impact, amber means a projected warning/change/approval state, blue means observed/active/recording, and muted gray means idle/quiet/dormant. Captured `observed` data must stay blue rather than being falsely labelled healthy.
+- Each layer and each FlowPulse control node receives a small upper-right status dot from its exact backend-projected status. Green is the normal projected baseline, including captured `observed` state; red means a proven fault/impact; amber means pending/warning/change/approval; muted gray means sleeping/idle/quiet/dormant. This compact visual mapping never claims a captured source is fresh production LIVE and never authorizes lifecycle state.
 - FlowPulse Control System remains an independent translucent side surface containing exactly Deployment, Investigator, Evaluator, and Evidence Ledger. It is not a fifth layer.
 - Architecture renders no dependency line, SVG edge map, arrowhead, pulse, node-to-node line, cross-boundary line, internal relation diagram, or relation selection. Backend relation data remains available to Live, diagnosis, and safe detail elsewhere.
 
@@ -79,11 +79,11 @@ Use Architecture-scoped CSS variables and existing stack primitives. These value
 
 | Token family | Intent | Light spatial rule and fallback |
 | --- | --- | --- |
-| Spatial background | Establish quiet depth behind the workspace | Cool neutral field with a subtle, low-saturation tonal atmosphere and minimal noise. No multicolor marketing mesh. Fallback is a solid off-white neutral. |
-| Page glass | Contain the Architecture workspace | 22px radius; translucent light-neutral material over a visible cool-gray canvas. Fallback uses an opaque off-white surface and normal contrast. |
+| Spatial background | Establish quiet depth behind the workspace | One continuous cool-gray page field behind fixed navigation and the Architecture canvas. No multicolor marketing mesh. Fallback is a solid off-white neutral. |
+| Page glass | Contain the Architecture workspace | Navigation and workspace share the same continuous page field; only semantic modules receive translucent light-neutral material. Fallback uses an opaque off-white surface and normal contrast. |
 | Observed-system matte glass | Make the monitored system the primary plane | One transparent workspace, not a second raised shell. Spacing and alpha-separated layer modules do the grouping. |
 | FlowPulse control glass | Distinguish the control plane without treating it as runtime | 22px radius; separate translucent surface with a restrained FlowPulse-blue tint and slightly higher alpha. The tint never means incident severity. |
-| Nested node glass | Make member anatomy clear without creating a card wall | 14px radius; consistent translucent white face, readable text, no ordinary border, highlight, blur, or shadow. |
+| Nested node glass | Make member anatomy clear without creating a card wall | 14px radius; consistent, visibly lighter translucent white face than its containing layer, readable text, no ordinary border, highlight, blur, or shadow. |
 | Floating controls | Give menus/toolbar highest interaction priority | Compact, pill-shaped only where status or navigation semantics call for it; otherwise use the same 14px nested-control geometry, contrast, and visible focus ring. |
 | Static node anatomy | Make the stack inventory visible without another interaction layer | Every layer shows the same 14px mini component module: icon, canonical short name, and truthfully projected status dot. |
 | Run-level drawer | Keep non-Architecture inspection coherent without a dark modal | 22px radius; translucent matte glass with alpha separation only. Architecture does not open this drawer for component mini modules. |
@@ -106,8 +106,8 @@ Decorative borders, top highlights, shadow effects, and separator hairlines are 
 
 The view must retain these levels from back to front:
 
-1. **Cool-gray spatial canvas**: quiet neutral depth visible through all Architecture modules.
-2. **Observed System field**: one transparent workspace containing the four macro layer modules.
+1. **Continuous cool-gray page field**: one neutral background behind fixed navigation, mode controls, and the Architecture canvas.
+2. **Observed System field**: one transparent workspace containing the four macro layer modules, without a second canvas shell.
 3. **FlowPulse Control surface**: a visibly separate, restrained blue-tinted translucent module.
 4. **Layer and component modules**: higher-alpha 22px and 14px surfaces, respectively, with no shadow, highlight, border, or nested glass shell.
 5. **Fixed navigation and controls**: use the same alpha-only material where Architecture styling applies.
@@ -200,7 +200,7 @@ Implementation review must show:
 3. Architecture contains four macro layers with canonical counts 6/9/3/4, a compact icon-and-label anatomy for every member, zero Architecture edge paths, and zero arrowheads.
 4. Architecture has exactly 22 observed mini modules and four separately represented FlowPulse control/evidence modules. No mini module opens an Architecture component face or component drawer.
 5. FlowPulse nodes never render inside observed-system layers; no relation is drawn.
-6. Each layer and FlowPulse node presents an upper-right status dot from its backend-projected status. The browser never converts captured `observed` into healthy.
+6. Each layer and FlowPulse node presents an upper-right status dot from its backend-projected status: normal baseline green, pending amber, fault red, sleeping gray. The browser never treats a dot as source freshness, authority, or lifecycle truth.
 7. Redundant visible labels are absent while accessibility labels retain the observed-system and control-plane meaning. Architecture modules are not keyboard controls; actual page controls keep visible focus contrast.
 8. Reduced-motion and reduced-transparency fallbacks preserve meaning and readability. Architecture material levels differ by alpha only, never cast shadow, inner highlight, white edge, or blur on nested modules.
 8. No browser console error, failed API request, or raw/sensitive content reaches the page.
