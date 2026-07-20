@@ -22,6 +22,7 @@ const NODE_KINDS = new Set(["service", "job", "topic"]);
 const DISPLAY_CLASSES = new Set(["client", "service", "api", "stream", "worker"]);
 const PLANES = new Set(["runtime", "data"]);
 const LAYERS = new Set(["experience", "commerce", "processing", "platform"]);
+const SIGNAL_TYPES = ["trace", "metric", "log"];
 const EXPECTED_EXCLUSIONS = Object.freeze([
   "credentials",
   "customer_identifiers",
@@ -175,10 +176,10 @@ function validateDerivation(value, capturedAt) {
 }
 
 function normalizeNode(value) {
-  const fields = ["id", "kind", "display_class", "plane", "layer", "label", "status", "source_health", "provenance_refs"];
-  if (!plain(value) || !exactKeys(value, fields) || !ID.test(value.id) || !NODE_KINDS.has(value.kind) || !DISPLAY_CLASSES.has(value.display_class) || !PLANES.has(value.plane) || !LAYERS.has(value.layer) || !safeLabel(value.label) || value.status !== "observed" || value.source_health !== "unavailable" || !provenanceRefs(value.provenance_refs, `node-${value.id}`)) fail("topology_manifest_node_invalid");
+  const fields = ["id", "kind", "display_class", "plane", "layer", "label", "status", "source_health", "signal_types", "provenance_refs"];
+  if (!plain(value) || !exactKeys(value, fields) || !ID.test(value.id) || !NODE_KINDS.has(value.kind) || !DISPLAY_CLASSES.has(value.display_class) || !PLANES.has(value.plane) || !LAYERS.has(value.layer) || !safeLabel(value.label) || value.status !== "observed" || value.source_health !== "unavailable" || !signalTypes(value.signal_types) || !provenanceRefs(value.provenance_refs, `node-${value.id}`)) fail("topology_manifest_node_invalid");
   if ((value.kind === "job" || value.kind === "topic") !== (value.plane === "data")) fail("topology_manifest_node_invalid");
-  return { ...value, provenance_refs: [...value.provenance_refs] };
+  return { ...value, signal_types: [...value.signal_types], provenance_refs: [...value.provenance_refs] };
 }
 
 function normalizeEdge(value, nodeIds) {
@@ -190,6 +191,12 @@ function normalizeEdge(value, nodeIds) {
 
 function provenanceRefs(value, fragment) {
   return Array.isArray(value) && value.length === 1 && value.length <= TOPOLOGY_MANIFEST_LIMITS.max_provenance_refs && value[0] === `capture://otel-demo-system-v1#${fragment}`;
+}
+
+function signalTypes(value) {
+  if (!Array.isArray(value) || value.length === 0 || value.length > SIGNAL_TYPES.length) return false;
+  if (!value.every((type) => SIGNAL_TYPES.includes(type)) || new Set(value).size !== value.length) return false;
+  return sameArray(value, [...value].sort((left, right) => SIGNAL_TYPES.indexOf(left) - SIGNAL_TYPES.indexOf(right)));
 }
 
 function safeLabel(value) {

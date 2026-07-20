@@ -38,6 +38,42 @@ test("manifest canonicalization is byte-identical across key order and repeated 
   assert.equal(topologyManifestContentSha256(first), first.content_sha256);
 });
 
+test("node signal-type summaries are evidence-derived, bounded, and canonically ordered", () => {
+  const manifest = loadTopologyManifest(manifestPath);
+  const signalTypes = Object.fromEntries(manifest.nodes.map(({ id, signal_types }) => [id, signal_types]));
+
+  assert.deepEqual(signalTypes, {
+    "accounting": ["log"],
+    "ad": ["log"],
+    "cart": ["log"],
+    "checkout": ["log"],
+    "currency": ["log"],
+    "email": ["log"],
+    "flagd": ["trace"],
+    "flagd-ui": ["trace"],
+    "fraud-detection": ["log"],
+    "frontend": ["metric"],
+    "frontend-proxy": ["log"],
+    "frontend-web": ["trace"],
+    "image-provider": ["trace"],
+    "kafka": ["log"],
+    "load-generator": ["log"],
+    "otelcol-contrib": ["log"],
+    "payment": ["log"],
+    "product-catalog": ["log"],
+    "quote": ["log"],
+    "recommendation": ["log"],
+    "shipping": ["log"],
+    "telemetry-docs": ["trace"]
+  });
+
+  for (const [code, mutate] of [
+    ["topology_manifest_node_invalid", (value) => { value.nodes[0].signal_types = ["event"]; }],
+    ["topology_manifest_node_invalid", (value) => { value.nodes[0].signal_types = ["log", "log"]; }],
+    ["topology_manifest_node_invalid", (value) => { value.nodes[0].signal_types = ["metric", "trace"]; }]
+  ]) assertCode(() => parseTopologyManifest(resigned(mutate)), code);
+});
+
 test("manifest content hash binds every topology truth provenance and derivation field", () => {
   const mutations = [
     (value) => { value.source_version = value.source_version.replace(/^./, "0"); },
@@ -50,6 +86,7 @@ test("manifest content hash binds every topology truth provenance and derivation
     (value) => { value.derivation.inputs[0].sha256 = "a".repeat(64); },
     (value) => { value.derivation.exclusions[0] = "arbitrary"; },
     (value) => { value.nodes[0].label = "Changed label"; },
+    (value) => { value.nodes[0].signal_types = ["trace"]; },
     (value) => { value.nodes[0].provenance_refs[0] = "capture://otel-demo-system-v1#node-altered"; },
     (value) => { value.edges[0].label = "Changed dependency"; },
     (value) => { value.edges[0].provenance_refs[0] = "capture://otel-demo-system-v1#edge-altered"; }
