@@ -39,6 +39,7 @@ const architectureRefinementCss = stylesCss.slice(stylesCss.lastIndexOf("/* Arch
 const architectureMaterialCss = architectureRefinementCss.slice(0, architectureRefinementCss.indexOf("@media (max-width: 1320px)"));
 const architectureStaticCss = stylesCss.slice(stylesCss.lastIndexOf("/* Architecture static overview: flat alpha-only material. */"));
 const architectureDetailCss = stylesCss.slice(stylesCss.lastIndexOf("/* Architecture component detail: one flat four-level material scale. */"));
+const architectureHoverCss = stylesCss.slice(stylesCss.lastIndexOf("/* Hover confirms an available component detail without a blue selection frame. */"));
 const architectureComponentDetailSource = appJs.slice(appJs.indexOf("function architectureComponentDetailMarkup"), appJs.indexOf("function openArchitectureDetail"));
 const topologyManifest = JSON.parse(readFileSync(new URL("../data/topology/otel-demo-system-v1.json", import.meta.url), "utf8"));
 
@@ -226,6 +227,8 @@ test("architecture is a static four-layer overview with backend-owned status dot
   assert.match(architectureStaticCss, /\.architecture-thumbnail-node:hover,[\s\S]+?\.source-node\.is-architecture-compact\.is-selected \{[\s\S]+?transform: translateY\(-2px\);[\s\S]+?background: var\(--architecture-node-surface\);[\s\S]+?box-shadow: none;/);
   assert.match(architectureStaticCss, /\.architecture-thumbnail-node:focus-visible,[\s\S]+?outline: 2px solid var\(--blue\);/);
   assert.match(architectureStaticCss, /@media \(prefers-reduced-motion: reduce\)[\s\S]+?\.architecture-thumbnail-node:hover,[\s\S]+?transform: none;/);
+  assert.match(architectureHoverCss, /\.architecture-thumbnail-node:hover,[\s\S]+?\.source-node\.is-architecture-compact:hover \{[\s\S]+?outline: none;[\s\S]+?background: rgba\(255, 255, 255, \.9\);[\s\S]+?box-shadow: none;/);
+  assert.match(architectureHoverCss, /\.architecture-thumbnail-node:focus-visible,[\s\S]+?outline: 2px solid var\(--blue\);/);
   assert.match(appJs, /"fault", "pending", "warning"/);
   assert.match(architectureDetailCss, /\.app-shell\[data-mode="architecture"\] \{[\s\S]+?background: #e9eef1;/);
   assert.match(architectureDetailCss, /\.twin-workspace,[\s\S]+?\.twin-scroll \{ background: #e9eef1; \}/);

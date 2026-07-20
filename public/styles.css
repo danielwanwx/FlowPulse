@@ -2521,3 +2521,22 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .is-architecture-source .architecture-layer-module,
 .is-architecture-source .architecture-flowpulse-system { background: rgba(211, 220, 226, .66); }
 .is-architecture-source .architecture-layer-module.is-detail { background: rgba(255, 255, 255, .78); }
+
+/* Hover confirms an available component detail without a blue selection frame. */
+.is-architecture-source .architecture-thumbnail-node:hover,
+.is-architecture-source .source-node.is-architecture-compact:hover {
+  transform: translateY(-2px);
+  border: 0;
+  outline: none;
+  background: rgba(255, 255, 255, .9);
+  box-shadow: none;
+}
+.is-architecture-source .architecture-thumbnail-node:focus-visible,
+.is-architecture-source .source-node.is-architecture-compact:focus-visible {
+  transform: translateY(-2px);
+  border: 0;
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
+  background: rgba(255, 255, 255, .9);
+  box-shadow: none;
+}
