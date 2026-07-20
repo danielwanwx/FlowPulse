@@ -12,7 +12,7 @@
 
 The Architecture page must stop reading as a line-art diagram while remaining an honest engineering topology and evidence-control product. Architecture is a static layered technology-stack overview, not a connected graph view. Its central glass workspace has two faces: a high-level layer overview and one selected layer's internal node anatomy. The observed stack must be easy to scan, FlowPulse itself must remain visibly separate, and selected detail must feel elevated without turning the product into a flowchart editor, marketing page, or generic card grid.
 
-This is redesign-preserve work. Existing navigation, canonical backend topology contracts, graph identity and counts, lifecycle logic, node selection, keyboard behavior, drawer behavior, and theme-toggle behavior remain intact. Header, navigation, and source status remain fixed while only the central workspace changes face. The browser remains read-only and does not acquire authority.
+This is redesign-preserve work. Existing navigation, canonical backend topology contracts, graph identity and counts, lifecycle logic, keyboard behavior, and theme-toggle behavior remain intact. Header, navigation, source status, and the FlowPulse control surface remain fixed while only the central workspace changes face. Architecture component selection uses that workspace rather than a duplicate right-side component drawer. The browser remains read-only and does not acquire authority.
 
 ## Locked design dials
 
@@ -52,7 +52,7 @@ This is a separately bounded control surface containing exactly the backend-proj
 
 ### Cross-boundary evidence summary
 
-Cross-boundary relations remain available only if supplied by the backend and evidence-grounded by projection provenance. Architecture summarizes their count and safe metadata in the FlowPulse surface or detail drawer. It does not draw a line through the canvas. The client does not connect FlowPulse to monitored components to make the page look complete.
+Cross-boundary relations remain available only if supplied by the backend and evidence-grounded by projection provenance. Architecture summarizes their count and safe metadata in the FlowPulse surface or component detail face. It does not draw a line through the canvas. The client does not connect FlowPulse to monitored components to make the page look complete.
 
 ### Contract and authority invariants
 
@@ -64,7 +64,7 @@ Cross-boundary relations remain available only if supplied by the backend and ev
 
 ## Central workspace interaction model
 
-The central Architecture glass workspace has two bounded faces. This is local presentation state only and cannot strengthen backend readiness, authority, or source truth.
+The central Architecture glass workspace has three bounded faces. This is local presentation state only and cannot strengthen backend readiness, authority, or source truth.
 
 ### Overview front
 
@@ -78,16 +78,23 @@ The central Architecture glass workspace has two bounded faces. This is local pr
 
 - The detail face occupies the same central workspace bounds and material as Overview.
 - It renders exactly the six canonical Experience nodes and no observed node from another layer.
-- Existing icons and projected label provide the readable internal anatomy. Kind, layer, status, signal type, provenance, and evidence references remain available through the existing safe detail drawer where the projection supplies them. The browser adds no causal or authority claims.
+- Existing icons and projected label provide the readable internal anatomy. Kind, layer, status, signal type, provenance, and evidence references are available through the bounded component detail face where the projection supplies them. The browser adds no causal or authority claims.
 - A clear Back to overview control and breadcrumb/context title restore the Overview face.
-- Node click, Enter, or Space opens the existing safe detail drawer.
+- Node click, Enter, or Space turns the same workspace to the selected component detail face. It must not also open a duplicate right-side component drawer.
 - The other three layer detail faces are explicitly deferred until the owner approves this sample.
+
+### Component detail face
+
+- The selected Experience component occupies the existing central workspace bounds. FlowPulse Control System remains independently visible on the right.
+- A clear Back to Experience control restores the six-node anatomy; Back to overview remains one step earlier in the path.
+- The face uses only bounded, backend-projected component fields: identity, kind, plane, layer, truthful source label, status, signal-type summary, direct dependency labels, and provenance references. It does not expose raw logs, traces, prompts, credentials, or browser-inferred causal claims.
+- Identity, signal, relation, and provenance sections use the same 14px translucent node-card material as layer thumbnails and FlowPulse control nodes. The context drawer remains available for non-Architecture and run-level inspection, but does not duplicate Architecture component detail.
 
 ### Transition and focus
 
-- A 420-520ms 3D workspace turn communicates moving from overview into a layer. Front and back use proper `backface-visibility` so mirrored text is never visible.
+- A 420-520ms 3D workspace turn communicates moving from overview into a layer or from a layer into a component. Front and back use proper `backface-visibility` so mirrored text is never visible.
 - Only transform and opacity animate. Header, navigation, source status, system counts, and FlowPulse Control System remain spatially fixed.
-- Focus moves to the Experience heading or Back control after entering detail and returns to the Experience module after leaving.
+- Focus moves to the relevant Back control after entering a face, returns to the activating component after leaving component detail, and returns to the Experience module after leaving the layer.
 - `prefers-reduced-motion: reduce` replaces the turn with a short opacity transition or instant swap.
 - Browser history and refresh do not receive a new route in this sample. Face state remains bounded local presentation state.
 
@@ -103,7 +110,8 @@ Use Architecture-scoped CSS variables and existing stack primitives. These value
 | FlowPulse control glass | Distinguish the control plane without treating it as runtime | 22px radius; separate surface with a restrained FlowPulse-blue refraction/tint and slightly higher contrast. The tint never means incident severity. |
 | Nested node glass | Make member anatomy clear without creating a card wall | 14px radius; suspended translucent white face, readable text, minimal local shadow, and no ordinary border. |
 | Floating controls | Give menus/toolbar highest interaction priority | Compact, pill-shaped only where status or navigation semantics call for it; otherwise use the same 14px nested-control geometry, contrast, and visible focus ring. |
-| Detail drawer | Elevate inspection without a dark modal | 22px radius; highest local elevation, readable matte glass, bounded blur, and a stronger but tinted shadow. |
+| Component detail face | Inspect a selected component without duplicate side content | Same central workspace material with 14px translucent nested cards, one clear Back control, and no dark modal. |
+| Run-level drawer | Elevate non-component inspection without a dark modal | 22px radius; translucent matte glass, bounded blur, and a stronger but tinted shadow. |
 | Text | Preserve readability on translucent material | Near-black primary, dark neutral secondary, WCAG-readable metadata. Never use low-contrast gray text merely to look glassy. |
 | Accent and status | Encode intent, not material | FlowPulse blue for selected/active/control treatment. Red=fault only, amber=caution, green=verified recovery. Category color is limited to icon bases or compact glyph detail. |
 | Shape scale | Make the system coherent | 22px primary glass, 14px nested nodes and controls, pills only for compact status/navigation. Icon bases are circular or 12px rounded squares. |
@@ -114,7 +122,7 @@ Decorative borders and separator hairlines are removed where material contrast, 
 
 ### Shape rules
 
-- Primary glass boundaries and the detail drawer use 22px. Nested nodes and ordinary controls use 14px. Do not introduce another radius tier.
+- Primary glass boundaries and any run-level drawer use 22px. Nested nodes, component-detail cards, and ordinary controls use 14px. Do not introduce another radius tier.
 - Avoid ad hoc pills and mixed square/rounded corners. Pills remain limited to compact navigation or status semantics.
 - Icons sit on a circular or 12px rounded-square base. The base identifies category; it cannot imply authority or severity.
 - Status/toggle controls may be pill-shaped because their compact state semantics benefit from it. Node cards and system boundaries may not become pills.
@@ -128,7 +136,7 @@ The view must retain these levels from back to front:
 3. **FlowPulse Control glass surface**: clearly separate, with a restrained blue refraction/tint and its own nested control nodes.
 4. **Layer thumbnail anatomy and active component nodes**: clearer, higher-opacity objects suspended inside their parent glass surface.
 5. **Floating toolbar and menu controls**: highest operational affordance above the workspace.
-6. **Elevated detail drawer**: strongest inspection level, never an opaque black overlay.
+6. **Component detail cards or an elevated run-level drawer**: strongest inspection level, never an opaque black overlay.
 
 Blur is used only on page, system-boundary, control, and drawer surfaces. Node cards use the lowest practical blur or a higher-opacity fallback. Nested high-radius blurs are forbidden. The implementation budget is one full-page spatial background treatment plus bounded, non-overlapping blur surfaces; it must avoid placing a backdrop-filter on every node, edge, or label.
 
@@ -137,7 +145,7 @@ Blur is used only on page, system-boundary, control, and drawer surfaces. Node c
 At desktop sizes the page has three clear semantic zones:
 
 1. A compact, floating source/status toolbar establishes backend truth and the split system counts.
-2. The **Observed System / Data Source Architecture** occupies the largest matte-glass workspace. Its Overview face presents four large layer modules. Its Experience face presents only that layer's six internal nodes.
+2. The **Observed System / Data Source Architecture** occupies the largest matte-glass workspace. Its Overview face presents four large layer modules. Its Experience face presents only that layer's six internal nodes. Its Component face presents the selected node's bounded safe detail in the same workspace.
 3. The **FlowPulse Control System** occupies a distinct, spatially fixed side surface. Safe projected cross-boundary evidence is summarized as compact metadata instead of a route.
 
 Runtime dependencies are retained as backend truth but are not drawn in Architecture. Live owns connection animation and runtime flow. The Architecture legend explains layer membership, source truth, retained dependency count, and FlowPulse's separate control role without displaying relation paths.
@@ -164,7 +172,7 @@ Every backend-projected node uses a consistent anatomy:
 | Investigator/evaluator | Existing robot/scales glyph | FlowPulse control base |
 | Evidence ledger | Existing database/evidence glyph | FlowPulse evidence base |
 
-Selection uses a slightly clearer, raised glass state and restrained FlowPulse-blue accent plus existing detail behavior. It never relies on a border glow. The selected node may reveal projected provenance; it cannot generate causal narrative in the browser.
+Selection uses a slightly clearer, raised glass state and restrained FlowPulse-blue accent plus the component detail face. It never relies on a border glow. The selected node may reveal projected provenance; it cannot generate causal narrative in the browser.
 
 ## Architecture relation and legend rules
 
@@ -180,17 +188,17 @@ The Architecture legend is text-first and concise:
 ## Typography, spacing, and density
 
 - Use the native Apple system stack: `-apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", sans-serif`. Use body weights 400-500 and heading weights no heavier than 600.
-- Remove visible runtime/kind/layer metadata from Overview and use it only as accessibility meaning or safe drawer content. Do not use monospace as a default visual texture.
+- Remove visible runtime/kind/layer metadata from Overview and use it only as accessibility meaning or safe component-detail content. Do not use monospace as a default visual texture.
 - The sole visible page title is **Architecture**. Remove redundant visible copy such as Observed architecture, Observed System, Data Source Architecture, CAPTURED runtime and data source projection, and explanatory paragraphs that do not improve immediate scanning. Preserve semantic labels with `aria-label` or visually-hidden text.
 - System titles, count copy, source truth, controls, and legend remain readable at 1280x800.
 - Prefer deliberate 12-24px internal spacing over artificial empty canvas. Surface depth, alignment, and layer rhythm should help users parse the system before they inspect a layer.
-- Details truncate only after retaining a meaningful accessible name. Full safe projected text remains available through the existing detail behavior.
+- Details truncate only after retaining a meaningful accessible name. Full safe projected text remains available through the component detail face or appropriate run-level drawer.
 
 ## Interaction, accessibility, and motion
 
-- Preserve existing navigation, node selection, keyboard activation, and detail drawer behavior. Architecture remains structured and calm, never an editable flowchart. Live retains its own graph pan, zoom, route selection, and flow animation behavior unchanged.
+- Preserve existing navigation and keyboard activation. Architecture component selection moves to the component detail face; non-Architecture and run-level inspection retain their appropriate drawer behavior. Architecture remains structured and calm, never an editable flowchart. Live retains its own graph pan, zoom, route selection, and flow animation behavior unchanged.
 - Pointer hover and keyboard focus provide direct, high-contrast feedback. Focus stays visible on layer modules, nodes, controls, menu items, and legend interactions in both transparency and fallback modes.
-- Click or Enter/Space opens the existing safe detail surface using only projected fields.
+- Click or Enter/Space on an Experience component opens the safe component detail face using only projected fields. It must not also show the right-side component drawer.
 - `prefers-reduced-motion: reduce` turns the workspace transition into an immediate or short-opacity state change.
 - `prefers-reduced-transparency: reduce` or a no-`backdrop-filter` environment replaces translucent/blurred materials with high-contrast opaque off-white surfaces, essential borders, and the same semantic hierarchy.
 - Animations may change only transform and opacity. They must not animate layout geometry, alter reading order, or create decorative perpetual motion.
@@ -200,14 +208,14 @@ The Architecture legend is text-first and concise:
 ### 1440x900
 
 - The source/status toolbar, both named system boundaries, four observed layer modules, FlowPulse control surface, legend, and current face context are visible without browser zoom.
-- Overview shows four macro surfaces with compact thumbnail anatomy for 6/9/3/4 canonical members, zero Architecture edges, and no expanded observed-node grid. Experience detail shows six readable canonical nodes. No count, label, drawer, or control is clipped.
+- Overview shows four macro surfaces with compact thumbnail anatomy for 6/9/3/4 canonical members, zero Architecture edges, and no expanded observed-node grid. Experience detail shows six readable canonical nodes. Component detail shows only one selected canonical component with bounded safe cards and no duplicate right-side component drawer. No count, label, control, or detail card is clipped.
 - The material hierarchy is obvious: observed system is the primary workspace; FlowPulse is a separate blue-tinted control surface; selected detail is elevated.
 
 ### 1280x800
 
 - The observed/control split remains unmistakable even if the control surface or evidence summary reflows.
 - Layer modules compact only within their backend-projected bounds; no title or component count becomes unreadably small.
-- Toolbar, module activation, Back, node selection, drawer, legend, and fallback unavailable state remain keyboard reachable and unclipped.
+- Toolbar, module activation, both Back controls, node selection, component detail, run-level drawer, legend, and fallback unavailable state remain keyboard reachable and unclipped.
 
 ## Architecture-only non-goals
 
@@ -224,9 +232,9 @@ Implementation review must show:
 1. Architecture renders only the valid canonical projection and keeps the 22 runtime/data + 22 retained runtime dependency + four FlowPulse split.
 2. The client does not use `source.topology` as an Architecture fallback.
 3. Overview contains four macro layers with canonical counts 6/9/3/4, a compact icon-and-label anatomy for each member, zero expanded observed-node grid, zero Architecture edge paths, and zero arrowheads.
-4. Experience detail contains exactly six canonical Experience nodes, no observed node from another layer, and four separately represented FlowPulse nodes.
+4. Experience detail contains exactly six canonical Experience nodes, no observed node from another layer, and four separately represented FlowPulse nodes. Selecting one node opens an inline component face with bounded projected fields and no Architecture component drawer.
 5. FlowPulse nodes never render inside observed-system layers; no relation is drawn.
-6. Redundant visible labels are absent while accessibility labels retain the observed-system and control-plane meaning. Layer/module and node focus, Enter/Space activation, Back behavior, drawer content, and visible focus contrast remain accessible.
+6. Redundant visible labels are absent while accessibility labels retain the observed-system and control-plane meaning. Layer/module and node focus, Enter/Space activation, both Back behaviors, inline component detail, and visible focus contrast remain accessible.
 7. Reduced-motion and reduced-transparency fallbacks preserve meaning and readability.
 8. No browser console error, failed API request, or raw/sensitive content reaches the page.
 
@@ -234,7 +242,7 @@ Required screenshots:
 
 - Architecture Overview at 1440x900.
 - Architecture Experience detail at 1440x900.
-- Architecture selected Experience node and detail drawer at 1440x900.
+- Architecture selected Experience component detail face at 1440x900.
 - Architecture Overview at 1280x800.
 - Architecture with reduced motion enabled.
 - Architecture with reduced transparency or blur fallback enabled.
@@ -244,10 +252,10 @@ Required screenshots:
 
 Each step is a separate reviewable commit. Stop after every step for owner review. Do not automatically continue.
 
-1. **Spatial-glass anatomy refinement**: add compact canonical thumbnail anatomy to all four Overview modules; simplify visible hierarchy to one Architecture title; update typography/material scale; restyle FlowPulse with matching nested glass. Preserve the 420-520ms workspace turn, Back control, node selection, toolbar, legend, and drawer treatment.
+1. **Spatial-glass anatomy refinement**: add compact canonical thumbnail anatomy to all four Overview modules; simplify visible hierarchy to one Architecture title; update typography/material scale; restyle FlowPulse with matching nested glass. Preserve the 420-520ms workspace turn, Back control, node selection, toolbar, and legend treatment.
 2. **Owner screenshot gate**: review 1440x900 and 1280x800 Overview, Experience, and selected-node evidence before implementing another detail face.
 3. **Deferred layer details**: implement Edge & Commerce, Core Services, and Async, Data & Platform only after explicit owner approval, reusing the validated face transition and canonical layer membership.
-4. **Final density and accessibility pass**: verify fallback materials, reduced motion/transparency, focus restoration, console/network cleanliness, and no Architecture edge renderer.
+4. **Component-detail and final density pass**: replace Architecture component drawer duplication with the bounded inline component detail face; unify it, the FlowPulse side surface, menu, legend, and run-level sidebar under one translucent material system; verify fallback materials, reduced motion/transparency, focus restoration, console/network cleanliness, and no Architecture edge renderer.
 
 The old `b1fefe3` CSS is not an implementation base by default. A future owner-approved implementation may reuse individual safe layout or token mechanics only after confirming that they satisfy this Spatial Glass material hierarchy; otherwise it supersedes them in a new explicit change. Rollback for any new implementation step is its own revert commit. If the work requires a backend contract change, new graph data, authority change, or another-page redesign, stop and return to owner review.
 
@@ -258,5 +266,6 @@ The old `b1fefe3` CSS is not an implementation base by default. A future owner-a
 - The product may borrow high-level spatial-interface cues but must not claim native Apple material behavior or copy an Apple product surface.
 - Architecture is a layered stack overview, not a connected graph. Live owns connection animation.
 - The first implementation sample includes only Overview and Experience detail. The other three details require a later owner gate.
+- Architecture component detail is a third central-workspace face. It uses only canonical projected fields and replaces, rather than duplicates, the right-side component drawer.
 - The remaining owner gate is review of that complete Overview/Experience sample before any other layer face or page receives the system.
 - The approved refinement adds compact Overview anatomy and a simplified visible hierarchy. It does not change any backend contract, graph count, lifecycle state, or non-Architecture page.
