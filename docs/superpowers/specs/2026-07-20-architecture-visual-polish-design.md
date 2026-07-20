@@ -135,13 +135,12 @@ Blur is used only on page, system-boundary, control, and drawer surfaces. Node c
 
 ## Page composition and system-boundary hierarchy
 
-At desktop sizes the page has three clear semantic zones:
+At desktop sizes the page has two clear semantic zones:
 
-1. A compact source/status toolbar establishes backend truth and the split system counts. Architecture does not repeat a second visible page title or explanatory caption inside this toolbar.
-2. The **Observed System / Data Source Architecture** occupies the largest matte-glass workspace. Its Overview face presents four large layer modules. Its Client applications face presents only that layer's six internal nodes with all bounded safe detail directly visible.
-3. The **FlowPulse Control System** occupies a distinct, spatially fixed side surface. Safe projected cross-boundary evidence is summarized as compact metadata instead of a route.
+1. The **Observed System / Data Source Architecture** occupies the largest matte-glass workspace. Its Overview face presents four large layer modules. Its Client applications face presents only that layer's six internal nodes with all bounded safe detail directly visible.
+2. The **FlowPulse Control System** occupies a distinct, spatially fixed side surface. Safe projected cross-boundary evidence is summarized as compact metadata instead of a route.
 
-Runtime dependencies are retained as backend truth but are not drawn in Architecture. Live owns connection animation and runtime flow. The Architecture legend explains layer membership, source truth, retained dependency count, and FlowPulse's separate control role without displaying relation paths.
+Architecture has no in-canvas source/status toolbar, metric cluster, or legend control. Canonical counts, source truth, and relations remain backend-owned and available to other views or accessible metadata, but are not repeated as a separate visual strip. Runtime dependencies are retained as backend truth but are not drawn in Architecture. Live owns connection animation and runtime flow.
 
 At 1440px, the two boundaries and principal topology are visible without browser zoom. At 1280px, the control surface may reposition below or beside the observed workspace, but it must preserve its independent boundary, readable title, and explicit evidence summary.
 
@@ -171,26 +170,21 @@ Architecture child nodes are not selectable: each presents its bounded projected
 
 Architecture has no SVG dependency renderer, edge selection, arrowheads, relation pulses, ports, join/split diamonds, or node-to-node lines. Backend relation arrays remain untouched. Runtime connections and animated flow belong to Live; diagnosis may use the bounded incident overlay; detail may summarize safe relation metadata.
 
-The Architecture legend is text-first and concise:
-
-- Four modules are observed-system architectural layers.
-- FlowPulse is a separate control system.
-- The runtime dependency count is retained from the canonical backend projection but not drawn here.
-- Cross-boundary evidence count and safe provenance metadata are backend-projected and summarized, never inferred or connected client-side.
+The Architecture surface does not render a legend. Four macro modules and the visually separate FlowPulse control surface communicate the system split directly; safe provenance remains bounded backend-projected metadata, never inferred or connected client-side.
 
 ## Typography, spacing, and density
 
 - Use the native Apple system stack: `-apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", sans-serif`. Use body weights 400-500 and heading weights no heavier than 600.
 - Remove visible runtime/kind/layer metadata from Overview and use it only as accessibility meaning or safe inline layer-detail content. Do not use monospace as a default visual texture.
-- The sole visible page title is **Architecture**. Remove redundant visible copy such as Observed architecture, Observed System, Data Source Architecture, CAPTURED runtime and data source projection, and explanatory paragraphs that do not improve immediate scanning. The compact counts and legend remain visible; semantic labels remain available through `aria-label` or visually-hidden text.
-- System titles, count copy, source truth, controls, and legend remain readable at 1280x800.
+- The sole visible page title is **Architecture**. Remove redundant visible copy such as Observed architecture, Observed System, Data Source Architecture, CAPTURED runtime and data source projection, explanatory paragraphs, metric clusters, and Legend controls that do not improve immediate scanning. Semantic labels remain available through `aria-label` or visually-hidden text.
+- System titles, layer counts, controls, and bounded source truth in their owning locations remain readable at 1280x800.
 - Prefer deliberate 12-24px internal spacing over artificial empty canvas. Surface depth, alignment, and layer rhythm should help users parse the system before they inspect a layer.
 - Details truncate only after retaining a meaningful accessible name. Full safe projected text remains visible within the Client applications cards or through an appropriate run-level drawer in another view.
 
 ## Interaction, accessibility, and motion
 
 - Preserve existing navigation and keyboard activation. The Client applications module turns to the inline detail face; non-Architecture and run-level inspection retain their appropriate drawer behavior. Architecture remains structured and calm, never an editable flowchart. Live retains its own graph pan, zoom, route selection, and flow animation behavior unchanged.
-- Pointer hover and keyboard focus provide direct, high-contrast feedback. Focus stays visible on layer modules, controls, menu items, and legend interactions in both transparency and fallback modes. Inline child-node cards are static, readable information surfaces rather than hidden interaction targets.
+- Pointer hover and keyboard focus provide direct, high-contrast feedback. Focus stays visible on layer modules, controls, and menu items in both transparency and fallback modes. Inline child-node cards are static, readable information surfaces rather than hidden interaction targets.
 - Click or Enter/Space on Client applications opens the safe inline layer detail using only projected fields. It must not show a right-side component drawer.
 - `prefers-reduced-motion: reduce` turns the workspace transition into an immediate or short-opacity state change.
 - `prefers-reduced-transparency: reduce` or a no-`backdrop-filter` environment replaces translucent/blurred materials with high-contrast opaque off-white surfaces, essential borders, and the same semantic hierarchy.
@@ -200,7 +194,7 @@ The Architecture legend is text-first and concise:
 
 ### 1440x900
 
-- The source/status toolbar, both named system boundaries, four observed layer modules, FlowPulse control surface, legend, and current face context are visible without browser zoom.
+- Both named system boundaries, four observed layer modules, FlowPulse control surface, and current face context are visible without browser zoom; no Architecture metric/Legend strip consumes canvas height.
 - Overview shows four macro surfaces with compact thumbnail anatomy for 6/9/3/4 canonical members, zero Architecture edges, and no expanded observed-node grid. Client applications detail shows six readable canonical nodes with their safe direct facts. No count, label, control, or detail card is clipped.
 - The material hierarchy is obvious: observed system is the primary workspace; FlowPulse is a separate blue-tinted control surface; inline details are readable without a third face or drawer.
 
@@ -208,7 +202,7 @@ The Architecture legend is text-first and concise:
 
 - The observed/control split remains unmistakable even if the control surface or evidence summary reflows.
 - Layer modules compact only within their backend-projected bounds; no title or component count becomes unreadably small.
-- Toolbar, module activation, Back to overview, inline detail, run-level drawer in its owning view, legend, and fallback unavailable state remain keyboard reachable and unclipped.
+- Module activation, Back to overview, inline detail, run-level drawer in its owning view, and fallback unavailable state remain keyboard reachable and unclipped.
 
 ## Architecture-only non-goals
 
@@ -244,10 +238,10 @@ Required screenshots:
 
 Each step is a separate reviewable commit. Stop after every step for owner review. Do not automatically continue.
 
-1. **Spatial-glass anatomy refinement**: add compact canonical thumbnail anatomy to all four Overview modules; simplify visible hierarchy to one Architecture title; update typography/material scale; restyle FlowPulse with matching nested glass. Preserve the 420-520ms workspace turn, Back control, direct inline node facts, toolbar, and legend treatment.
+1. **Spatial-glass anatomy refinement**: add compact canonical thumbnail anatomy to all four Overview modules; simplify visible hierarchy to one Architecture title; remove the in-canvas metric/Legend toolbar; update typography/material scale; restyle FlowPulse with matching nested glass. Preserve the 420-520ms workspace turn, Back control, and direct inline node facts.
 2. **Owner screenshot gate**: review 1440x900 and 1280x800 Overview and Client applications evidence before implementing another detail face.
 3. **Deferred layer details**: implement Edge & Commerce, Core Services, and Async, Data & Platform only after explicit owner approval, reusing the validated face transition and canonical layer membership.
-4. **Final density pass**: keep all Client applications detail direct and inline; unify it, the FlowPulse side surface, menu, legend, and run-level sidebar under one translucent material system; verify fallback materials, reduced motion/transparency, focus restoration, console/network cleanliness, and no Architecture edge renderer.
+4. **Final density pass**: keep all Client applications detail direct and inline; unify it, the FlowPulse side surface, menu, and run-level sidebar under one translucent material system; verify fallback materials, reduced motion/transparency, focus restoration, console/network cleanliness, and no Architecture edge renderer.
 
 The old `b1fefe3` CSS is not an implementation base by default. A future owner-approved implementation may reuse individual safe layout or token mechanics only after confirming that they satisfy this Spatial Glass material hierarchy; otherwise it supersedes them in a new explicit change. Rollback for any new implementation step is its own revert commit. If the work requires a backend contract change, new graph data, authority change, or another-page redesign, stop and return to owner review.
 
