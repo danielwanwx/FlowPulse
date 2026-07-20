@@ -90,6 +90,8 @@ let liveSignalTimers = [];
 let liveSignalIndex = 0;
 let liveSignalFrame = null;
 let liveSignalGeneration = 0;
+let architectureRelationFrame = null;
+let architectureRelationObserver = null;
 let componentCatalogSource = null;
 let componentCatalogCache = new Map();
 let selectedCollaboratorId = "commander";
@@ -343,6 +345,7 @@ function renderCanvas() {
 }
 
 function renderSourceCanvas(layout) {
+  clearArchitectureRelationRenderer();
   const architecture = layout === "architecture" ? architectureView() : null;
   const source = architecture ? architectureSource(architecture) : sourceState();
   const topology = architecture ? architecture.graph : topologyIntegrity(source.topology);
@@ -370,7 +373,7 @@ function renderSourceCanvas(layout) {
       const members = observedPositions.filter((node) => node.layerIndex === layerIndex);
       if (!members.length) return "";
       return `<section class="architecture-tier architecture-tier-${layerIndex}" aria-label="${escapeHtml(layer.label)}">
-        <header class="architecture-tier-label"><b aria-hidden="true">${String(layerIndex + 1).padStart(2, "0")}</b><span><strong>${escapeHtml(layer.label)}</strong><small>${escapeHtml(layer.description || "Observed services")}</small></span><em>${members.length} component${members.length === 1 ? "" : "s"}</em></header>
+        <header class="architecture-tier-label"><span><strong>${escapeHtml(layer.label)}</strong><small>${escapeHtml(layer.description || "Observed services")}</small></span><em>${members.length} component${members.length === 1 ? "" : "s"}</em></header>
         <div class="architecture-tier-row">${members.map((node) => sourceNodeMarkup(node, { layout, source, nodeStates })).join("")}</div>
       </section>`;
     }).join("");
@@ -381,7 +384,7 @@ function renderSourceCanvas(layout) {
     els["canvas-layers"].innerHTML = `<div class="twin-layer layer-current architecture-systems is-complete-topology">
       <section class="architecture-system architecture-observed-system" aria-label="Observed System Data Source Architecture">
         <header class="architecture-system-heading" data-system="observed"><span>Observed System</span><div><strong>Data Source Architecture</strong><small>${escapeHtml(architecture.truth.label)} runtime and data source projection</small></div><em>${boundaries.observed.nodes.length} components · ${boundaries.observed.relations.length} dependencies</em></header>
-        <div class="architecture-stack architecture-observed-stack">${tiers}</div>
+        <div class="architecture-stack architecture-observed-stack"><svg class="architecture-edge-map" aria-label="${boundaries.observed.relations.length} backend-projected runtime dependencies"></svg>${tiers}</div>
         <footer class="architecture-relation-summary" data-relation-category="runtime-data"><strong>Runtime/data dependencies</strong><span>${boundaries.observed.relations.length} backend-projected relations remain inside the observed-system boundary.</span></footer>
       </section>
       <aside class="architecture-system architecture-flowpulse-system" aria-label="FlowPulse Control System">
@@ -397,6 +400,7 @@ function renderSourceCanvas(layout) {
     els["twin-canvas"].dataset.controlRelations = String(architecture.control_evidence.relation_count);
     els["twin-canvas"].dataset.crossBoundaryRelations = String(boundaries.cross_boundary_relations.length);
     els["twin-canvas"].setAttribute("aria-label", `Observed System Data Source Architecture with ${boundaries.observed.nodes.length} runtime/data components and ${boundaries.observed.relations.length} runtime dependencies, separate from the FlowPulse Control System with ${boundaries.flowpulse.nodes.length} control/evidence components and ${boundaries.cross_boundary_relations.length} cross-boundary evidence relations.`);
+    queueArchitectureRelationRender(boundaries.observed.relations);
     return;
   }
   const positions = new Map(positioned.map((node) => [node.id, node]));
@@ -430,6 +434,76 @@ function renderSourceCanvas(layout) {
   els["twin-canvas"].dataset.displayedEdges = String(primaryEdges.length);
   setAnnotations(mode === "replay" ? developmentAnnotations(cursor) : []);
   els["twin-canvas"].setAttribute("aria-label", `Runtime topology with ${positioned.length} observed services. ${primaryEdges.length} primary paths are shown from ${topology.edges.length} authoritative dependencies, with ${topology.unlinked_node_ids.length} components lacking dependency evidence from ${sourceOrigin(layout)}`);
+}
+
+function clearArchitectureRelationRenderer() {
+  if (architectureRelationFrame) cancelAnimationFrame(architectureRelationFrame);
+  architectureRelationFrame = null;
+  architectureRelationObserver?.disconnect();
+  architectureRelationObserver = null;
+}
+
+function queueArchitectureRelationRender(relations) {
+  const stack = els["canvas-layers"].querySelector(".architecture-observed-stack");
+  const map = stack?.querySelector(".architecture-edge-map");
+  if (!stack || !map) return;
+
+  const draw = () => {
+    const bounds = stack.getBoundingClientRect();
+    if (bounds.width < 1 || bounds.height < 1) return;
+    const nodes = new Map([...stack.querySelectorAll("[data-node-id]")].map((node) => [node.dataset.nodeId, node.getBoundingClientRect()]));
+    const validRelations = relations.filter((relation) => nodes.has(relation.from) && nodes.has(relation.to));
+    map.setAttribute("viewBox", `0 0 ${Math.round(bounds.width)} ${Math.round(bounds.height)}`);
+    map.setAttribute("data-edge-count", String(validRelations.length));
+    map.innerHTML = `<defs><marker id="architecture-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="5" markerHeight="5" orient="auto"><path d="M 0 1 L 7 4 L 0 7 z"/></marker></defs>${validRelations.map((relation) => {
+      const path = architectureRelationPath(nodes.get(relation.from), nodes.get(relation.to), bounds);
+      const selectedState = selected?.type === "edge" && selected.id === relation.id ? " is-selected" : "";
+      return `<g class="architecture-edge-group${selectedState}" data-architecture-edge-id="${escapeHtml(relation.id)}" data-architecture-edge-from="${escapeHtml(relation.from)}" data-architecture-edge-to="${escapeHtml(relation.to)}"><path class="architecture-edge-line" d="${path}" marker-end="url(#architecture-arrow)"/><path class="edge-hit" d="${path}" role="button" tabindex="0" aria-label="${escapeHtml(relation.label || relation.kind)} from ${escapeHtml(relation.from)} to ${escapeHtml(relation.to)}" data-edge-id="${escapeHtml(relation.id)}" data-edge-from="${escapeHtml(relation.from)}" data-edge-to="${escapeHtml(relation.to)}"/></g>`;
+    }).join("")}`;
+    syncArchitectureSelection();
+  };
+
+  const schedule = () => {
+    if (architectureRelationFrame) cancelAnimationFrame(architectureRelationFrame);
+    architectureRelationFrame = requestAnimationFrame(draw);
+  };
+  schedule();
+  if (typeof ResizeObserver !== "undefined") {
+    architectureRelationObserver = new ResizeObserver(schedule);
+    architectureRelationObserver.observe(stack);
+  }
+}
+
+function architectureRelationPath(from, to, bounds) {
+  const fromCenter = from.left - bounds.left + from.width / 2;
+  const toCenter = to.left - bounds.left + to.width / 2;
+  const verticalDirection = to.top >= from.top ? 1 : -1;
+  const fromY = verticalDirection > 0 ? from.bottom - bounds.top + 2 : from.top - bounds.top - 2;
+  const toY = verticalDirection > 0 ? to.top - bounds.top - 2 : to.bottom - bounds.top + 2;
+  const deltaY = Math.abs(toY - fromY);
+  if (deltaY > 24) {
+    const curve = Math.max(22, Math.min(88, deltaY * .42));
+    return `M ${fromCenter.toFixed(1)} ${fromY.toFixed(1)} C ${fromCenter.toFixed(1)} ${(fromY + verticalDirection * curve).toFixed(1)} ${toCenter.toFixed(1)} ${(toY - verticalDirection * curve).toFixed(1)} ${toCenter.toFixed(1)} ${toY.toFixed(1)}`;
+  }
+  const horizontalDirection = toCenter >= fromCenter ? 1 : -1;
+  const lift = Math.max(24, Math.min(48, Math.abs(toCenter - fromCenter) * .22));
+  const fromX = horizontalDirection > 0 ? from.right - bounds.left + 2 : from.left - bounds.left - 2;
+  const toX = horizontalDirection > 0 ? to.left - bounds.left - 2 : to.right - bounds.left + 2;
+  const fromMidY = from.top - bounds.top + from.height / 2;
+  const toMidY = to.top - bounds.top + to.height / 2;
+  return `M ${fromX.toFixed(1)} ${fromMidY.toFixed(1)} C ${(fromX + horizontalDirection * lift).toFixed(1)} ${(fromMidY - lift).toFixed(1)} ${(toX - horizontalDirection * lift).toFixed(1)} ${(toMidY - lift).toFixed(1)} ${toX.toFixed(1)} ${toMidY.toFixed(1)}`;
+}
+
+function syncArchitectureSelection() {
+  if (mode !== "architecture") return;
+  const selectedNodeId = selected?.type === "node" ? selected.id : null;
+  const selectedEdgeId = selected?.type === "edge" ? selected.id : null;
+  for (const node of els["canvas-layers"].querySelectorAll("[data-node-id]")) node.classList.toggle("is-selected", node.dataset.nodeId === selectedNodeId);
+  for (const relation of els["canvas-layers"].querySelectorAll("[data-architecture-edge-id]")) {
+    const isSelectedEdge = relation.dataset.architectureEdgeId === selectedEdgeId;
+    const isConnectedToSelectedNode = selectedNodeId && (relation.dataset.architectureEdgeFrom === selectedNodeId || relation.dataset.architectureEdgeTo === selectedNodeId);
+    relation.classList.toggle("is-selected", Boolean(isSelectedEdge || isConnectedToSelectedNode));
+  }
 }
 
 function sourceNodeMarkup(node, { layout, source, nodeStates }) {
@@ -1427,11 +1501,13 @@ function openDrawer(focus, tab = "evidence") {
   managerOpen = false;
   selected = focus;
   activeTab = tab;
+  syncArchitectureSelection();
   renderDrawer();
 }
 
 function closeDrawer() {
   selected = null;
+  syncArchitectureSelection();
   renderDrawer();
   els["details-button"].focus();
 }
