@@ -411,7 +411,7 @@ function renderSourceCanvas(layout) {
         ? architectureComponentDetailMarkup(detail)
         : `<span class="architecture-layer-copy"><span class="architecture-layer-title"><strong>${escapeHtml(layer.label)}</strong><span class="architecture-layer-count">${layer.members.length} components</span></span><span class="architecture-layer-summary"><span class="architecture-layer-role">${escapeHtml(layerRole)}</span><span class="architecture-layer-status-summary" data-architecture-layer-status-summary="${escapeHtml(layerStatusSummary)}">${escapeHtml(layerStatusSummary)}</span></span></span>
           <span class="architecture-layer-anatomy" role="list" aria-label="${escapeHtml(layer.label)} components" data-architecture-member-count="${layer.members.length}">${anatomy}</span>`;
-      return `<article class="architecture-layer-module is-${escapeHtml(layerStatus)}${detail ? " is-detail" : ""}" data-architecture-layer="${escapeHtml(layer.id)}" aria-label="${escapeHtml(detail ? `${detail.node.label} component detail` : `${layer.label}, ${layer.members.length} components. ${layerRole}. ${layerStatusSummary}`)}">${content}${detail ? "" : '<span class="architecture-status-dot" aria-hidden="true"></span>'}</article>`;
+      return `<article class="architecture-layer-module is-${escapeHtml(layerStatus)}${detail ? " is-detail" : ""}" data-architecture-layer="${escapeHtml(layer.id)}" aria-label="${escapeHtml(detail ? `${detail.node.label} component detail. Click open space or press Escape to return to components.` : `${layer.label}, ${layer.members.length} components. ${layerRole}. ${layerStatusSummary}`)}">${content}${detail ? "" : '<span class="architecture-status-dot" aria-hidden="true"></span>'}</article>`;
     }).join("");
     const controlNodes = boundaries.flowpulse.nodes.map((node) => architectureStaticNodeMarkup(node, nodeStates[node.id])).join("");
     els["canvas-layers"].innerHTML = `<div class="twin-layer layer-current architecture-systems is-complete-topology">
@@ -1464,8 +1464,8 @@ function selectionEntities() {
 }
 
 function handleCanvasSelection(event) {
-  const back = event.target.closest("[data-architecture-back]");
-  if (back) {
+  const architectureDetailSurface = event.target.closest("[data-architecture-detail-id]");
+  if (architectureDetailSurface === event.target) {
     closeArchitectureDetail();
     return;
   }
@@ -1483,14 +1483,14 @@ function handleCanvasSelection(event) {
 }
 
 function handleCanvasKeydown(event) {
+  if (mode === "architecture" && architectureDetail && event.key === "Escape") {
+    event.preventDefault();
+    closeArchitectureDetail();
+    return;
+  }
   if (event.target.matches("[data-architecture-thumbnail-id]") && (event.key === "Enter" || event.key === " ")) {
     event.preventDefault();
     openArchitectureDetail(event.target.dataset.architectureThumbnailId);
-    return;
-  }
-  if (event.target.matches("[data-architecture-back]") && (event.key === "Enter" || event.key === " ")) {
-    event.preventDefault();
-    closeArchitectureDetail();
     return;
   }
   if (event.target.matches("[data-collaborator-id]") && ["ArrowRight", "ArrowDown", "ArrowLeft", "ArrowUp"].includes(event.key)) {
@@ -2108,12 +2108,8 @@ function architectureComponentDetailMarkup(context) {
     signals ? ["Signals", signals] : null,
     provenance ? ["Provenance", provenance] : null
   ].filter(Boolean);
-  return `<section class="architecture-component-detail" data-architecture-detail-id="${escapeHtml(node.id)}">
-    <header class="architecture-detail-header">
-      <button class="architecture-detail-back" type="button" data-architecture-back aria-label="Back to ${escapeHtml(node.layer)} component overview"><i class="ph ph-arrow-left" aria-hidden="true"></i>Back to components</button>
-      <span class="architecture-status-dot is-${escapeHtml(node.status)}" aria-label="${escapeHtml(statusLabel(node.status))}"></span>
-    </header>
-    <div class="architecture-detail-title"><span class="architecture-thumbnail-icon" aria-hidden="true"><i class="ph ph-${iconForLive(node)}"></i></span><div><strong>${escapeHtml(node.label)}</strong><span>${escapeHtml(kindLabel(node.kind))}</span></div></div>
+  return `<section class="architecture-component-detail" data-architecture-detail-id="${escapeHtml(node.id)}" tabindex="-1" aria-label="${escapeHtml(`${node.label} component detail. Click open space or press Escape to return to components.`)}">
+    <div class="architecture-detail-title"><span class="architecture-thumbnail-icon" aria-hidden="true"><i class="ph ph-${iconForLive(node)}"></i></span><div><strong>${escapeHtml(node.label)}</strong><span>${escapeHtml(kindLabel(node.kind))}</span></div><span class="architecture-status-dot is-${escapeHtml(node.status)}" aria-label="${escapeHtml(statusLabel(node.status))}"></span></div>
     ${role ? `<section class="architecture-detail-purpose"><span>Operational role</span><strong>${escapeHtml(role)}</strong>${explanation ? `<p>${escapeHtml(explanation)}</p>` : ""}</section>` : ""}
     <dl class="architecture-detail-facts">${facts.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("")}</dl>
     ${incoming.length || outgoing.length ? `<div class="architecture-detail-related">
@@ -2130,7 +2126,7 @@ function openArchitectureDetail(id) {
   architectureDetail = { nodeId: context.node.id };
   selected = null;
   render();
-  requestAnimationFrame(() => els["canvas-layers"].querySelector("[data-architecture-back]")?.focus());
+  requestAnimationFrame(() => els["canvas-layers"].querySelector("[data-architecture-detail-id]")?.focus());
 }
 
 function closeArchitectureDetail() {

@@ -2339,7 +2339,6 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .is-architecture-source .architecture-thumbnail-icon,
 .is-architecture-source .source-node.is-architecture-compact,
 .is-architecture-source .source-node.is-architecture-compact .node-icon,
-.is-architecture-source .architecture-detail-back,
 .is-architecture-source .architecture-detail-fact,
 .is-architecture-source .architecture-detail-relations {
   border: 0;
@@ -2392,32 +2391,9 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
   gap: 18px;
   padding: 18px;
 }
-.is-architecture-source .architecture-detail-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  min-height: 22px;
-}
-.is-architecture-source .architecture-detail-back {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0;
-  color: #1d4ed8;
-  background: transparent;
-  font: inherit;
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-}
-.is-architecture-source .architecture-detail-back:focus-visible {
-  outline: 2px solid var(--blue);
-  outline-offset: 3px;
-  border-radius: var(--architecture-control-radius);
-}
 .is-architecture-source .architecture-detail-title {
   display: grid;
-  grid-template-columns: 40px minmax(0, 1fr);
+  grid-template-columns: 40px minmax(0, 1fr) auto;
   align-items: center;
   gap: 12px;
 }
@@ -2429,6 +2405,7 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .is-architecture-source .architecture-detail-title div { display: grid; gap: 3px; }
 .is-architecture-source .architecture-detail-title strong { color: #111827; font-size: 16px; font-weight: 600; letter-spacing: -.01em; }
 .is-architecture-source .architecture-detail-title span:last-child { color: #475569; font-size: 12px; }
+.is-architecture-source .architecture-detail-title .architecture-status-dot { position: static; width: 7px; height: 7px; }
 .is-architecture-source .architecture-detail-purpose { display: grid; gap: 4px; }
 .is-architecture-source .architecture-detail-purpose > span,
 .is-architecture-source .architecture-detail-relations > span { color: #64748b; font-size: 11px; font-weight: 500; }
@@ -2501,7 +2478,6 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .is-architecture-source .architecture-thumbnail-icon,
 .is-architecture-source .source-node.is-architecture-compact,
 .is-architecture-source .source-node.is-architecture-compact .node-icon,
-.is-architecture-source .architecture-detail-back,
 .is-architecture-source .architecture-detail-fact,
 .is-architecture-source .architecture-detail-relations {
   border: 0;
