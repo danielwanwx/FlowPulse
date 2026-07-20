@@ -72,18 +72,6 @@ export const ARCHITECTURE_LAYERS = [
     label: "Async, data & platform",
     description: "eventing, workers, configuration, and telemetry",
     ids: ["email", "kafka", "accounting", "fraud-detection", "fraud", "quote", "image-provider", "flagd-ui", "flagd", "telemetry-docs", "otelcol-contrib", "astronomy-db"]
-  },
-  {
-    id: "control",
-    label: "FlowPulse control plane",
-    description: "bounded change and investigation components",
-    ids: ["deployment", "agent", "evaluator"]
-  },
-  {
-    id: "evidence",
-    label: "Evidence plane",
-    description: "append-only evidence and decision record",
-    ids: ["ledger"]
   }
 ];
 
@@ -238,9 +226,10 @@ export function architecturePositions(nodes = []) {
   const fallbackLayer = { client: 0, api: 1, service: 1, stream: 2, worker: 2, database: 3 };
 
   for (const node of nodes) {
+    if (node.plane && !["runtime", "data"].includes(node.plane)) continue;
     const known = knownLayer.get(node.id);
     const backendRuntimeLayer = ["experience", "commerce", "processing", "platform"].indexOf(node.layer);
-    const layerIndex = node.plane === "evidence" ? 5 : node.plane === "control" ? 4 : backendRuntimeLayer >= 0 ? backendRuntimeLayer : known?.index ?? fallbackLayer[node.kind] ?? 3;
+    const layerIndex = backendRuntimeLayer >= 0 ? backendRuntimeLayer : known?.index ?? fallbackLayer[node.kind] ?? 3;
     buckets[layerIndex].push({ node, order: known?.order ?? 1_000 });
   }
 
@@ -254,7 +243,7 @@ export function architecturePositions(nodes = []) {
       layerPosition: index,
       layerSize: sorted.length,
       x: spreadCoordinate(index, sorted.length),
-      y: [18, 34, 50, 66, 80, 92][layerIndex]
+      y: [18, 39, 61, 82][layerIndex]
     }));
   });
 }
@@ -431,6 +420,34 @@ export function architectureViewTopology(topologyViews = {}) {
     runtime_data: { ...runtimeData },
     control_evidence: { ...controlEvidence },
     truth: { ...topologyViews.truth }
+  };
+}
+
+export function architectureBoundaries(topology = {}) {
+  const nodes = Array.isArray(topology.nodes) ? topology.nodes : [];
+  const edges = Array.isArray(topology.edges) ? topology.edges : [];
+  const observedNodes = nodes.filter((node) => ["runtime", "data"].includes(node.plane));
+  const flowpulseNodes = nodes.filter((node) => ["control", "evidence"].includes(node.plane));
+  const observedIds = new Set(observedNodes.map((node) => node.id));
+  const flowpulseIds = new Set(flowpulseNodes.map((node) => node.id));
+  const observedRelations = [];
+  const internalRelations = [];
+  const crossBoundaryRelations = [];
+
+  for (const edge of edges) {
+    const observedFrom = observedIds.has(edge.from);
+    const observedTo = observedIds.has(edge.to);
+    const flowpulseFrom = flowpulseIds.has(edge.from);
+    const flowpulseTo = flowpulseIds.has(edge.to);
+    if (observedFrom && observedTo) observedRelations.push(edge);
+    else if (flowpulseFrom && flowpulseTo) internalRelations.push(edge);
+    else if ((observedFrom && flowpulseTo) || (flowpulseFrom && observedTo)) crossBoundaryRelations.push(edge);
+  }
+
+  return {
+    observed: { nodes: observedNodes, relations: observedRelations },
+    flowpulse: { nodes: flowpulseNodes, internal_relations: internalRelations },
+    cross_boundary_relations: crossBoundaryRelations
   };
 }
 

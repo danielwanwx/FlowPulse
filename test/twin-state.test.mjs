@@ -11,6 +11,7 @@ import {
   TWIN_NODES,
   TWIN_STAGES,
   activeIncidentState,
+  architectureBoundaries,
   architectureViewTopology,
   availableStage,
   architecturePositions,
@@ -70,12 +71,19 @@ test("Architecture accepts only the complete backend topology view and retains s
   assert.equal(view.graph.edges.filter((edge) => ["control", "evidence"].includes(edge.plane)).length, 1);
   const ids = new Set(view.graph.nodes.map((node) => node.id));
   assert.equal(view.graph.edges.every((edge) => ids.has(edge.from) && ids.has(edge.to)), true);
-  const positioned = new Map(architecturePositions(view.graph.nodes).map((node) => [node.id, node]));
-  for (const node of view.graph.nodes.filter((node) => ["runtime", "data"].includes(node.plane))) {
+  const boundaries = architectureBoundaries(view.graph);
+  assert.equal(boundaries.observed.nodes.length, 22);
+  assert.equal(boundaries.observed.relations.length, 22);
+  assert.equal(boundaries.flowpulse.nodes.length, 4);
+  assert.equal(boundaries.flowpulse.internal_relations.length, 0);
+  assert.equal(boundaries.cross_boundary_relations.length, 1);
+  assert.equal(boundaries.cross_boundary_relations[0].id, "deployment-checkout");
+  assert.equal(boundaries.observed.nodes.some((node) => ["deployment", "agent", "evaluator", "ledger"].includes(node.id)), false);
+  assert.equal(boundaries.flowpulse.nodes.every((node) => ["control", "evidence"].includes(node.plane)), true);
+  const positioned = new Map(architecturePositions(boundaries.observed.nodes).map((node) => [node.id, node]));
+  for (const node of boundaries.observed.nodes) {
     assert.equal(positioned.get(node.id).layer, node.layer);
   }
-  assert.equal(positioned.get("deployment").layer, "control");
-  assert.equal(positioned.get("ledger").layer, "evidence");
 
   assert.equal(architectureViewTopology({ schema_version: "flowpulse.topology-views.v1", architecture: { graph: { nodes: topologyManifest.nodes, edges: topologyManifest.edges } } }), null);
   const invalid = backendArchitectureView();
@@ -90,6 +98,10 @@ test("Architecture accepts only the complete backend topology view and retains s
   assert.doesNotMatch(architectureFunction, /sourceState\(|TWIN_NODES|TWIN_EDGES/);
   assert.match(appJs, /architectureComponentContext/);
   assert.match(appJs, /function architectureView\(\) \{[\s\S]+architectureViewTopology\(state\?\.topology_views\)/);
+  assert.match(appJs, /architecture-observed-system/);
+  assert.match(appJs, /architecture-flowpulse-system/);
+  assert.match(appJs, /architectureBoundaries\(topology\)/);
+  assert.match(appJs, /Cross-boundary evidence relation/);
 });
 
 test("light and pure-black themes have a persisted accessible toggle", () => {
@@ -120,7 +132,7 @@ test("architecture layout is deterministic, layered, and leaves room for complet
   const second = architecturePositions([...nodes].reverse());
   const coordinates = (items) => Object.fromEntries(items.map(({ id, layer, x, y }) => [id, { layer, x, y }]));
   assert.deepEqual(coordinates(first), coordinates(second));
-  assert.deepEqual([...new Set(first.map(({ layer }) => layer))], ARCHITECTURE_LAYERS.slice(0, 4).map(({ id }) => id));
+  assert.deepEqual([...new Set(first.map(({ layer }) => layer))], ARCHITECTURE_LAYERS.map(({ id }) => id));
   assert.ok(ARCHITECTURE_LAYERS.every(({ description }) => typeof description === "string" && description.length > 0));
   assert.ok(first.every(({ x, y }) => x >= 6 && x <= 94 && y >= 18 && y <= 82));
   assert.deepEqual([...new Set(first.map(({ layerSize }) => layerSize))], [2, 4, 6, 10]);
@@ -128,17 +140,21 @@ test("architecture layout is deterministic, layered, and leaves room for complet
     const xs = first.filter((node) => node.y === y).map((node) => node.x).sort((a, b) => a - b);
     for (let index = 1; index < xs.length; index++) assert.ok((xs[index] - xs[index - 1]) * 12.8 >= 116);
   }
-  assert.match(appJs, /if \(layout === "architecture"\) \{[\s\S]+architecture-stack/);
-  assert.match(appJs, /topology\.edges\.filter\(\(edge\) => \["control", "evidence"\]\.includes\(edge\.plane\)\)/);
+  assert.equal(architecturePositions([...nodes, { id: "agent", label: "Investigator", kind: "service", plane: "control", layer: "investigation" }]).some((node) => node.id === "agent"), false);
+  assert.match(appJs, /if \(layout === "architecture"\) \{[\s\S]+architecture-systems/);
+  assert.match(appJs, /architecture-observed-system/);
+  assert.match(appJs, /architecture-flowpulse-system/);
+  assert.match(appJs, /architecture-cross-boundary/);
+  assert.match(appJs, /cross-boundary-evidence/);
   assert.match(appJs, /dataset\.runtimeEdges/);
   assert.match(appJs, /dataset\.controlRelations/);
   assert.doesNotMatch(appJs.match(/if \(layout === "architecture"\) \{[\s\S]+?return;/)?.[0] || "", /edge-map|pulse-flow/);
   assert.doesNotMatch(appJs, /style="left:\$\{node\.x\}/);
-  assert.match(stylesCss, /\.architecture-tier-row \{[^}]+min-height: 72px;[^}]+grid-template-columns: repeat\(auto-fit, var\(--architecture-card-width\)\)/s);
+  assert.match(stylesCss, /\.architecture-tier-row \{[^}]+min-height: 54px;[^}]+grid-template-columns: repeat\(auto-fit, var\(--architecture-card-width\)\)/s);
   assert.match(stylesCss, /\.architecture-tier \{[^}]+width: 100%;[^}]+display: block/s);
   assert.match(stylesCss, /\.architecture-tier \.source-node \{[\s\S]+position: relative;[\s\S]+margin: 0;[\s\S]+border-width: 1px \.5px/s);
-  assert.match(stylesCss, /--architecture-card-width: clamp\(116px, 9vw, 140px\)/);
-  assert.match(stylesCss, /\.architecture-tier \.source-node strong \{[^}]+font-size: 12px/s);
+  assert.match(stylesCss, /--architecture-card-width: clamp\(88px, 7\.5vw, 110px\)/);
+  assert.match(stylesCss, /\.architecture-tier \.source-node strong \{[^}]+font-size: 11px/s);
   assert.match(stylesCss, /\.twin-canvas\.is-architecture-source \{ min-width: 0; \}/);
   assert.match(stylesCss, /\.architecture-tier-label \{[^}]+display: flex;[^}]+border-bottom: 1px solid var\(--line-strong\)/s);
   assert.match(appJs, /architecture-tier-label[^\n]+layer\.description/);

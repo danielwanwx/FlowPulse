@@ -8,6 +8,7 @@ import {
   TWIN_NODES,
   TWIN_EDGES,
   activeIncidentState,
+  architectureBoundaries,
   availableStage,
   architecturePositions,
   architectureViewTopology,
@@ -199,7 +200,8 @@ function renderHeader() {
   els["workspace-title"].textContent = titles[mode];
   els["canvas-title"].textContent = canvasTitles[mode];
   const architecture = mode === "architecture" ? architectureView() : null;
-  els.stage.textContent = mode === "architecture" ? architecture ? `${architecture.graph.nodes.length} backend components` : "Architecture unavailable" : mode === "live" ? source.label : mode === "agents" ? agentControl().report.stage : mode === "compare" ? "Incident vs verified" : timelineStages()[cursor].label;
+  const architectureSystems = architecture ? architectureBoundaries(architecture.graph) : null;
+  els.stage.textContent = mode === "architecture" ? architectureSystems ? `${architectureSystems.observed.nodes.length} observed · ${architectureSystems.flowpulse.nodes.length} FlowPulse` : "Architecture unavailable" : mode === "live" ? source.label : mode === "agents" ? agentControl().report.stage : mode === "compare" ? "Incident vs verified" : timelineStages()[cursor].label;
   els["status-text"].textContent = modeStatus();
   els["ledger-state"].textContent = `${state.events.length} immutable events`;
   els["capture-label"].textContent = captureLabel();
@@ -256,13 +258,13 @@ function renderMetrics() {
   }
   if (mode === "architecture") {
     const view = architectureView();
-    const topology = view?.graph;
-    els["metric-checkout-label"].textContent = "Components";
-    els["metric-payment-label"].textContent = "Dependencies";
-    els["metric-kafka-label"].textContent = "Source truth";
-    setMetric("checkout", String(topology?.nodes.length || 0), view ? `${view.runtime_data.node_count} runtime/data · ${view.control_evidence.node_count} FlowPulse` : "Backend view unavailable");
-    setMetric("payment", String(topology?.edges.length || 0), view ? `${view.runtime_data.edge_count} runtime · ${view.control_evidence.relation_count} control/evidence` : "No compatibility fallback");
-    setMetric("kafka", view?.truth.label || "UNAVAILABLE", "backend projection");
+    const boundaries = view ? architectureBoundaries(view.graph) : null;
+    els["metric-checkout-label"].textContent = "Observed system";
+    els["metric-payment-label"].textContent = "Runtime dependencies";
+    els["metric-kafka-label"].textContent = "FlowPulse";
+    setMetric("checkout", String(boundaries?.observed.nodes.length || 0), view ? "data source components" : "Backend view unavailable");
+    setMetric("payment", String(boundaries?.observed.relations.length || 0), view ? "inside observed boundary" : "No compatibility fallback");
+    setMetric("kafka", String(boundaries?.flowpulse.nodes.length || 0), view ? `${boundaries.cross_boundary_relations.length} cross-boundary evidence` : "Control system unavailable");
     return;
   }
   if (mode === "live" || state.mode === "development") {
@@ -357,32 +359,44 @@ function renderSourceCanvas(layout) {
     els["twin-canvas"].setAttribute("aria-label", layout === "architecture" ? "Architecture projection unavailable." : `${source.label}. No observed service topology is available.`);
     return;
   }
-  const positioned = layout === "architecture" ? architecturePositions(topology.nodes) : livePositions(topology.nodes);
+  const positioned = layout === "architecture" ? null : livePositions(topology.nodes);
   const nodeStates = layout === "architecture"
     ? Object.fromEntries(topology.nodes.map((node) => [node.id, node.status]))
     : liveIncidentNodeStates({ mode: state.mode, events: state.events, source });
   if (layout === "architecture") {
-    const controlRelations = topology.edges.filter((edge) => ["control", "evidence"].includes(edge.plane));
+    const boundaries = architectureBoundaries(topology);
+    const observedPositions = architecturePositions(boundaries.observed.nodes);
     const tiers = ARCHITECTURE_LAYERS.map((layer, layerIndex) => {
-      const members = positioned.filter((node) => node.layerIndex === layerIndex);
+      const members = observedPositions.filter((node) => node.layerIndex === layerIndex);
       if (!members.length) return "";
-      const relations = layer.id === "control"
-        ? controlRelations.filter((edge) => edge.plane === "control")
-        : layer.id === "evidence"
-          ? controlRelations.filter((edge) => edge.plane === "evidence")
-          : [];
       return `<section class="architecture-tier architecture-tier-${layerIndex}" aria-label="${escapeHtml(layer.label)}">
-        <header class="architecture-tier-label" data-plane="${escapeHtml(layer.id)}"><b aria-hidden="true">${String(layerIndex + 1).padStart(2, "0")}</b><span><strong>${escapeHtml(layer.label)}</strong><small>${escapeHtml(layer.description || "Observed services")}</small></span><em>${members.length} component${members.length === 1 ? "" : "s"}</em></header>
+        <header class="architecture-tier-label"><b aria-hidden="true">${String(layerIndex + 1).padStart(2, "0")}</b><span><strong>${escapeHtml(layer.label)}</strong><small>${escapeHtml(layer.description || "Observed services")}</small></span><em>${members.length} component${members.length === 1 ? "" : "s"}</em></header>
         <div class="architecture-tier-row">${members.map((node) => sourceNodeMarkup(node, { layout, source, nodeStates })).join("")}</div>
-        ${relations.length ? `<div class="architecture-tier-relations" data-plane="${escapeHtml(layer.id)}">${relations.map((edge) => `<span>${escapeHtml(edge.label || edge.kind)} · ${escapeHtml(edge.from)} → ${escapeHtml(edge.to)}</span>`).join("")}</div>` : ""}
       </section>`;
     }).join("");
-    els["canvas-layers"].innerHTML = `<div class="twin-layer layer-current architecture-stack is-complete-topology">${tiers}</div>`;
+    const controlNodes = boundaries.flowpulse.nodes.map((node) => sourceNodeMarkup(node, { layout, source, nodeStates })).join("");
+    const relationMarkup = (edge, category) => `<li data-relation-category="${category}"><strong>${escapeHtml(edge.label || edge.kind)}</strong><span>${escapeHtml(edge.from)} → ${escapeHtml(edge.to)}</span><small>${escapeHtml(edge.provenance_refs.join(" · "))}</small></li>`;
+    const controlRelations = boundaries.flowpulse.internal_relations.map((edge) => relationMarkup(edge, "flowpulse-internal")).join("");
+    const crossBoundaryRelations = boundaries.cross_boundary_relations.map((edge) => relationMarkup(edge, "cross-boundary-evidence")).join("");
+    els["canvas-layers"].innerHTML = `<div class="twin-layer layer-current architecture-systems is-complete-topology">
+      <section class="architecture-system architecture-observed-system" aria-label="Observed System Data Source Architecture">
+        <header class="architecture-system-heading" data-system="observed"><span>Observed System</span><div><strong>Data Source Architecture</strong><small>${escapeHtml(architecture.truth.label)} runtime and data source projection</small></div><em>${boundaries.observed.nodes.length} components · ${boundaries.observed.relations.length} dependencies</em></header>
+        <div class="architecture-stack architecture-observed-stack">${tiers}</div>
+        <footer class="architecture-relation-summary" data-relation-category="runtime-data"><strong>Runtime/data dependencies</strong><span>${boundaries.observed.relations.length} backend-projected relations remain inside the observed-system boundary.</span></footer>
+      </section>
+      <aside class="architecture-system architecture-flowpulse-system" aria-label="FlowPulse Control System">
+        <header class="architecture-system-heading" data-system="flowpulse"><span>FlowPulse</span><div><strong>FlowPulse Control System</strong><small>Observes and reasons about the data source</small></div><em>${boundaries.flowpulse.nodes.length} control/evidence components</em></header>
+        <div class="architecture-flowpulse-nodes">${controlNodes}</div>
+        <section class="architecture-flowpulse-relations" aria-label="FlowPulse internal control relations"><strong>FlowPulse internal/control relations</strong>${controlRelations ? `<ul>${controlRelations}</ul>` : "<span>No internal relation is projected for this source."}</section>
+      </aside>
+      <section class="architecture-cross-boundary" aria-label="Cross-boundary evidence relations"><header><strong>Cross-boundary evidence relations</strong><span>${boundaries.cross_boundary_relations.length} backend-provided · sparse and evidence-grounded</span></header>${crossBoundaryRelations ? `<ul>${crossBoundaryRelations}</ul>` : "<p>No cross-boundary evidence relation is projected.</p>"}</section>
+    </div>`;
     els["twin-canvas"].dataset.invalidEdges = String(topology.invalid_edges.length);
     els["twin-canvas"].dataset.unlinkedNodes = "0";
     els["twin-canvas"].dataset.runtimeEdges = String(architecture.runtime_data.edge_count);
     els["twin-canvas"].dataset.controlRelations = String(architecture.control_evidence.relation_count);
-    els["twin-canvas"].setAttribute("aria-label", `Architecture block stack with ${architecture.runtime_data.node_count} runtime/data components and ${architecture.control_evidence.node_count} FlowPulse control/evidence components. ${architecture.runtime_data.edge_count} runtime dependencies and ${architecture.control_evidence.relation_count} control/evidence relations are projected by the backend.`);
+    els["twin-canvas"].dataset.crossBoundaryRelations = String(boundaries.cross_boundary_relations.length);
+    els["twin-canvas"].setAttribute("aria-label", `Observed System Data Source Architecture with ${boundaries.observed.nodes.length} runtime/data components and ${boundaries.observed.relations.length} runtime dependencies, separate from the FlowPulse Control System with ${boundaries.flowpulse.nodes.length} control/evidence components and ${boundaries.cross_boundary_relations.length} cross-boundary evidence relations.`);
     return;
   }
   const positions = new Map(positioned.map((node) => [node.id, node]));
@@ -1827,9 +1841,9 @@ function modeStatus() {
 function modeCaption(frame) {
   if (mode === "architecture") {
     const view = architectureView();
-    return view
-      ? `${view.truth.label} · ${view.runtime_data.node_count} runtime/data + ${view.control_evidence.node_count} FlowPulse components`
-      : "Backend architecture projection unavailable";
+    if (!view) return "Backend architecture projection unavailable";
+    const systems = architectureBoundaries(view.graph);
+    return `${view.truth.label} · Observed System ${systems.observed.nodes.length} components / ${systems.observed.relations.length} dependencies · FlowPulse ${systems.flowpulse.nodes.length} components`;
   }
   if (mode === "live") {
     const source = sourceState();
