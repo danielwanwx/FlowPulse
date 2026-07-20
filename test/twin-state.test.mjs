@@ -182,7 +182,7 @@ test("architecture is a static four-layer overview with backend-owned status dot
   assert.match(appJs, /const COMPONENT_EXPLANATIONS = Object\.freeze/);
   assert.match(appJs, /data-architecture-detail-id/);
   assert.doesNotMatch(appJs, /data-architecture-back|Back to components/);
-  assert.match(appJs, /architectureDetailSurface === event\.target/);
+  assert.match(appJs, /if \(architectureDetailSurface\) \{/);
   assert.match(appJs, /architectureDetail && event\.key === "Escape"/);
   assert.match(appJs, /data-architecture-detail-id="\$\{escapeHtml\(node\.id\)\}" tabindex="-1"/);
   assert.match(appJs, /function openArchitectureDetail\(id\)/);
