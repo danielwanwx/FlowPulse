@@ -89,8 +89,6 @@ let liveSignalTimers = [];
 let liveSignalIndex = 0;
 let liveSignalFrame = null;
 let liveSignalGeneration = 0;
-let architectureFace = "overview";
-let architectureTransitioning = false;
 let componentCatalogSource = null;
 let componentCatalogCache = new Map();
 let selectedCollaboratorId = "commander";
@@ -371,46 +369,22 @@ function renderSourceCanvas(layout) {
       members: boundaries.observed.nodes.filter((node) => node.layer === layer.id)
     }));
     const layerModules = layerGroups.map((layer) => {
-      const anatomy = layer.members.map((node) => `<span class="architecture-thumbnail-node" role="listitem" title="${escapeHtml(node.label)}" data-architecture-thumbnail-id="${escapeHtml(node.id)}"><span class="architecture-thumbnail-icon" aria-hidden="true"><i class="ph ph-${iconForLive(node)}"></i></span><span class="architecture-thumbnail-label">${escapeHtml(node.label)}</span></span>`).join("");
+      const layerStatus = architectureLayerStatus(layer.members);
+      const anatomy = layer.members.map((node) => architectureThumbnailMarkup(node, nodeStates[node.id])).join("");
       const content = `<span class="architecture-layer-copy"><strong>${escapeHtml(layer.label)}</strong><span class="architecture-layer-count">${layer.members.length} components</span></span>
         <span class="architecture-layer-anatomy" role="list" aria-label="${escapeHtml(layer.label)} components" data-architecture-member-count="${layer.members.length}">${anatomy}</span>`;
-      return layer.id === "experience"
-        ? `<button class="architecture-layer-module is-enterable" type="button" data-architecture-layer="experience" aria-label="Open ${escapeHtml(layer.label)} layer, ${layer.members.length} components">${content}<span class="architecture-layer-action" aria-hidden="true"><i class="ph ph-arrow-right"></i></span></button>`
-        : `<article class="architecture-layer-module" data-architecture-layer="${escapeHtml(layer.id)}">${content}</article>`;
+      return `<article class="architecture-layer-module is-${escapeHtml(layerStatus)}" data-architecture-layer="${escapeHtml(layer.id)}" aria-label="${escapeHtml(layer.label)}, ${layer.members.length} components, ${escapeHtml(statusLabel(layerStatus))}">${content}<span class="architecture-status-dot" aria-hidden="true"></span></article>`;
     }).join("");
-    const experienceLayer = layerGroups.find((layer) => layer.id === "experience");
-    const experienceNodes = experienceLayer?.members || [];
-    const experienceMarkup = experienceNodes.map((node) => renderArchitectureInlineNode(architectureComponentContext(node.id))).join("");
-    const controlNodes = boundaries.flowpulse.nodes.map((node) => sourceNodeMarkup(node, { layout, source, nodeStates, architectureCompact: true })).join("");
-    const crossBoundarySummary = boundaries.cross_boundary_relations[0];
-    const detailActive = architectureFace === "experience";
-    const workspaceFace = detailActive
-      ? `<section class="architecture-workspace-face architecture-detail-face" aria-label="Client applications layer anatomy">
-          <header class="architecture-face-heading architecture-detail-heading">
-            <button class="architecture-back-control" type="button" data-architecture-back><i class="ph ph-arrow-left" aria-hidden="true"></i><span>Back to overview</span></button>
-            <div><strong>${escapeHtml(experienceLayer?.label || "Client applications")}</strong></div>
-            <em>${experienceNodes.length} components</em>
-          </header>
-          <div class="architecture-experience-nodes">${experienceMarkup}</div>
-        </section>`
-      : `<section class="architecture-workspace-face architecture-overview-face" aria-label="Architecture layer overview">
-          <div class="architecture-layer-grid">${layerModules}</div>
-        </section>`;
+    const controlNodes = boundaries.flowpulse.nodes.map((node) => architectureStaticNodeMarkup(node, nodeStates[node.id])).join("");
     els["canvas-layers"].innerHTML = `<div class="twin-layer layer-current architecture-systems is-complete-topology">
       <section class="architecture-system architecture-observed-system" aria-label="Observed System Data Source Architecture">
         <span class="visually-hidden">Observed System Data Source Architecture. ${boundaries.observed.nodes.length} components and ${boundaries.observed.relations.length} backend-projected dependencies.</span>
-        <div class="architecture-workspace" data-architecture-face="${detailActive ? "experience" : "overview"}">
-          <div class="architecture-workspace-turn">${workspaceFace}</div>
-        </div>
+        <div class="architecture-layer-grid">${layerModules}</div>
       </section>
       <aside class="architecture-system architecture-flowpulse-system" aria-label="FlowPulse Control System">
+        <span class="visually-hidden">${boundaries.flowpulse.nodes.length} FlowPulse control and evidence components with ${boundaries.cross_boundary_relations.length} backend-projected cross-boundary evidence relations.</span>
         <header class="architecture-control-heading"><div><span>FlowPulse</span><strong>Control System</strong></div><em>${boundaries.flowpulse.nodes.length} components</em></header>
         <div class="architecture-flowpulse-nodes">${controlNodes}</div>
-        <dl class="architecture-flowpulse-summary">
-          <div><dt>Internal control relations</dt><dd>${boundaries.flowpulse.internal_relations.length}</dd></div>
-          <div><dt>Cross-boundary evidence</dt><dd>${boundaries.cross_boundary_relations.length}</dd></div>
-        </dl>
-        <section class="architecture-evidence-summary" aria-label="Cross-boundary evidence summary"><span>Evidence relation</span>${crossBoundarySummary ? `<strong>${escapeHtml(crossBoundarySummary.label || crossBoundarySummary.kind)}</strong><small>${escapeHtml(crossBoundarySummary.from)} / ${escapeHtml(crossBoundarySummary.to)}</small>` : "<strong>Unavailable</strong>"}</section>
       </aside>
     </div>`;
     els["twin-canvas"].dataset.invalidEdges = String(topology.invalid_edges.length);
@@ -418,9 +392,7 @@ function renderSourceCanvas(layout) {
     els["twin-canvas"].dataset.runtimeEdges = String(architecture.runtime_data.edge_count);
     els["twin-canvas"].dataset.controlRelations = String(architecture.control_evidence.relation_count);
     els["twin-canvas"].dataset.crossBoundaryRelations = String(boundaries.cross_boundary_relations.length);
-    const faceLabel = detailActive ? "Client applications detail" : "layer overview";
-    els["twin-canvas"].setAttribute("aria-label", `Observed System Architecture ${faceLabel} with ${boundaries.observed.nodes.length} runtime/data components and ${boundaries.observed.relations.length} retained runtime dependencies, separate from the FlowPulse Control System with ${boundaries.flowpulse.nodes.length} control/evidence components and ${boundaries.cross_boundary_relations.length} cross-boundary evidence relations.`);
-    syncArchitectureSelection();
+    els["twin-canvas"].setAttribute("aria-label", `Static Observed System Architecture with ${boundaries.observed.nodes.length} runtime/data components and ${boundaries.observed.relations.length} retained runtime dependencies, separate from the FlowPulse Control System with ${boundaries.flowpulse.nodes.length} control/evidence components and ${boundaries.cross_boundary_relations.length} cross-boundary evidence relations.`);
     return;
   }
   const positions = new Map(positioned.map((node) => [node.id, node]));
@@ -456,50 +428,41 @@ function renderSourceCanvas(layout) {
   els["twin-canvas"].setAttribute("aria-label", `Runtime topology with ${positioned.length} observed services. ${primaryEdges.length} primary paths are shown from ${topology.edges.length} authoritative dependencies, with ${topology.unlinked_node_ids.length} components lacking dependency evidence from ${sourceOrigin(layout)}`);
 }
 
-function syncArchitectureSelection() {
-  if (mode !== "architecture") return;
-  const selectedNodeId = selected?.type === "node" ? selected.id : null;
-  for (const node of els["canvas-layers"].querySelectorAll("[data-node-id]")) node.classList.toggle("is-selected", node.dataset.nodeId === selectedNodeId);
+function architectureLayerStatus(nodes) {
+  const rank = ["root", "impact", "rejected", "warning", "change", "approval", "active", "recording", "healthy", "verified", "learned", "observed", "idle", "quiet", "dormant"];
+  const order = (status) => {
+    const index = rank.indexOf(status);
+    return index === -1 ? rank.length : index;
+  };
+  return [...nodes].map((node) => node.status || "observed").sort((left, right) => order(left) - order(right))[0] || "observed";
 }
 
-function sourceNodeMarkup(node, { layout, source, nodeStates, architectureCompact = false }) {
-  const architecture = layout === "architecture";
-  const nodeState = architecture ? nodeStates[node.id] || "observed" : node.connectivity === "unlinked" ? "unlinked" : nodeStates[node.id] || "dormant";
-  const nodeStatus = architecture ? statusLabel(nodeState) : sourceStatusLabel(nodeState, source.status);
-  const ariaStatus = nodeState === "unlinked" ? "Insufficient dependency evidence" : nodeStatus;
-  const profile = architecture ? architectureComponentProfile(node) : sourceComponentProfile(node);
-  const origin = architecture ? `${kindLabel(node.kind)} · ${node.plane} / ${node.layer}` : `RUNTIME · ${sourceOrigin(layout)}`;
-  const detail = architecture ? `${node.provenance_refs.length} provenance ref${node.provenance_refs.length === 1 ? "" : "s"}` : node.detail || (nodeState === "unlinked" ? "dependency not observed" : "observed service.name");
-  const livePositionClass = layout === "live" ? ` live-column-${node.layerIndex} live-count-${node.layerSize} live-index-${node.layerPosition}` : "";
-  const compactCopy = architecture && architectureCompact
-    ? `<span class="node-copy"><strong>${escapeHtml(node.label)}</strong></span>`
-    : `<span class="node-copy"><span class="node-origin">${escapeHtml(origin)}</span><strong>${escapeHtml(node.label)}</strong><span class="node-detail">${escapeHtml(detail)}</span><span class="node-status">${escapeHtml(nodeStatus)}</span></span>`;
-  return `<button class="twin-node source-node${architecture && architectureCompact ? " is-architecture-compact" : ""} plane-${escapeHtml(node.plane || "runtime")} kind-${escapeHtml(node.kind)} is-${nodeState}${livePositionClass}" type="button" data-node-id="${escapeHtml(node.id)}" data-status="${escapeHtml(nodeState)}" data-transition-key="${escapeHtml(transitionKey(node.id))}" aria-label="${escapeHtml(architecture ? node.label : profile.capability)}, ${escapeHtml(kindLabel(node.kind))}, ${escapeHtml(architecture ? `${node.plane} plane ${node.layer} layer` : profile.runtimeIdentity)}, ${escapeHtml(ariaStatus)}">
+function architectureThumbnailMarkup(node, status = "observed") {
+  return `<article class="architecture-thumbnail-node is-${escapeHtml(status)}" role="listitem" title="${escapeHtml(node.label)}" data-architecture-thumbnail-id="${escapeHtml(node.id)}" aria-label="${escapeHtml(node.label)}, ${escapeHtml(kindLabel(node.kind))}, ${escapeHtml(statusLabel(status))}"><span class="architecture-thumbnail-icon" aria-hidden="true"><i class="ph ph-${iconForLive(node)}"></i></span><span class="architecture-thumbnail-label">${escapeHtml(node.label)}</span><span class="architecture-status-dot" aria-hidden="true"></span></article>`;
+}
+
+function architectureStaticNodeMarkup(node, status = "observed") {
+  return `<article class="source-node is-architecture-compact plane-${escapeHtml(node.plane || "control")} kind-${escapeHtml(node.kind)} is-${escapeHtml(status)}" data-architecture-control-id="${escapeHtml(node.id)}" aria-label="${escapeHtml(node.label)}, ${escapeHtml(kindLabel(node.kind))}, ${escapeHtml(statusLabel(status))}">
     <span class="node-icon" aria-hidden="true"><i class="ph ph-${iconForLive(node)}"></i></span>
-    ${compactCopy}
+    <span class="node-copy"><strong>${escapeHtml(node.label)}</strong></span>
+    <span class="node-status-dot" aria-hidden="true"></span>
+  </article>`;
+}
+
+function sourceNodeMarkup(node, { layout, source, nodeStates }) {
+  const nodeState = node.connectivity === "unlinked" ? "unlinked" : nodeStates[node.id] || "dormant";
+  const nodeStatus = sourceStatusLabel(nodeState, source.status);
+  const ariaStatus = nodeState === "unlinked" ? "Insufficient dependency evidence" : nodeStatus;
+  const profile = sourceComponentProfile(node);
+  const origin = `RUNTIME · ${sourceOrigin(layout)}`;
+  const detail = node.detail || (nodeState === "unlinked" ? "dependency not observed" : "observed service.name");
+  const livePositionClass = layout === "live" ? ` live-column-${node.layerIndex} live-count-${node.layerSize} live-index-${node.layerPosition}` : "";
+  const copy = `<span class="node-copy"><span class="node-origin">${escapeHtml(origin)}</span><strong>${escapeHtml(node.label)}</strong><span class="node-detail">${escapeHtml(detail)}</span><span class="node-status">${escapeHtml(nodeStatus)}</span></span>`;
+  return `<button class="twin-node source-node plane-${escapeHtml(node.plane || "runtime")} kind-${escapeHtml(node.kind)} is-${nodeState}${livePositionClass}" type="button" data-node-id="${escapeHtml(node.id)}" data-status="${escapeHtml(nodeState)}" data-transition-key="${escapeHtml(transitionKey(node.id))}" aria-label="${escapeHtml(profile.capability)}, ${escapeHtml(kindLabel(node.kind))}, ${escapeHtml(profile.runtimeIdentity)}, ${escapeHtml(ariaStatus)}">
+    <span class="node-icon" aria-hidden="true"><i class="ph ph-${iconForLive(node)}"></i></span>
+    ${copy}
     <span class="node-status-dot" aria-hidden="true"></span>
   </button>`;
-}
-
-function renderArchitectureInlineNode(context) {
-  const { node, incoming, outgoing, source } = context;
-  const labels = (nodes, empty) => nodes.length ? nodes.map((item) => escapeHtml(item.label)).join(", ") : escapeHtml(empty);
-  const signals = node.signal_types.length ? node.signal_types.map((signal) => escapeHtml(signal)).join(", ") : "Unavailable";
-  const provenance = node.provenance_refs.length ? node.provenance_refs.map((reference) => escapeHtml(reference)).join(", ") : "Unavailable";
-  return `<article class="architecture-inline-node-card plane-${escapeHtml(node.plane || "runtime")} kind-${escapeHtml(node.kind)}" data-architecture-node-id="${escapeHtml(node.id)}" aria-label="${escapeHtml(node.label)}, ${escapeHtml(kindLabel(node.kind))}, ${escapeHtml(statusLabel(node.status))}">
-    <header>
-      <span class="architecture-inline-node-icon" aria-hidden="true"><i class="ph ph-${iconForLive(node)}"></i></span>
-      <span class="architecture-inline-node-copy"><strong>${escapeHtml(node.label)}</strong><small>${escapeHtml(kindLabel(node.kind))}</small></span>
-      <em>${escapeHtml(statusLabel(node.status))}</em>
-    </header>
-    <dl class="architecture-inline-node-facts">
-      <div><dt>Source</dt><dd>${escapeHtml(source.label)}</dd></div>
-      <div><dt>Signals</dt><dd>${signals}</dd></div>
-      <div><dt>Upstream</dt><dd>${labels(incoming, "Observed entry point")}</dd></div>
-      <div><dt>Downstream</dt><dd>${labels(outgoing, "No observed dependency")}</dd></div>
-      <div class="architecture-inline-node-provenance"><dt>Provenance</dt><dd title="${provenance}">${provenance}</dd></div>
-    </dl>
-  </article>`;
 }
 
 function liveSignalTone(edge, nodeStates) {
@@ -1435,24 +1398,15 @@ function selectionEntities() {
 }
 
 function handleCanvasSelection(event) {
-  const architectureBack = event.target.closest("[data-architecture-back]");
-  const architectureLayer = event.target.closest('[data-architecture-layer="experience"]');
   const node = event.target.closest("[data-node-id]");
   const edge = event.target.closest("[data-edge-id]");
   const agentEdge = event.target.closest("[data-agent-edge-id]");
-  if (architectureBack) setArchitectureFace("overview");
-  else if (architectureLayer) setArchitectureFace("experience");
-  else if (node) openDrawer({ type: "node", id: node.dataset.nodeId }, defaultTabForNode(node.dataset.nodeId));
+  if (node) openDrawer({ type: "node", id: node.dataset.nodeId }, defaultTabForNode(node.dataset.nodeId));
   else if (edge) openDrawer({ type: "edge", id: edge.dataset.edgeId }, "evidence");
   else if (agentEdge) openDrawer({ type: "agent-edge", id: agentEdge.dataset.agentEdgeId }, "agent");
 }
 
 function handleCanvasKeydown(event) {
-  if (event.target.matches('[data-architecture-layer="experience"], [data-architecture-back]') && (event.key === "Enter" || event.key === " ")) {
-    event.preventDefault();
-    setArchitectureFace(event.target.matches("[data-architecture-back]") ? "overview" : "experience");
-    return;
-  }
   if (event.target.matches("[data-collaborator-id]") && ["ArrowRight", "ArrowDown", "ArrowLeft", "ArrowUp"].includes(event.key)) {
     const nodes = [...els["canvas-layers"].querySelectorAll("[data-collaborator-id]")];
     const direction = ["ArrowRight", "ArrowDown"].includes(event.key) ? 1 : -1;
@@ -1490,67 +1444,18 @@ function openDrawer(focus, tab = "evidence") {
   managerOpen = false;
   selected = focus;
   activeTab = tab;
-  syncArchitectureSelection();
   renderDrawer();
 }
 
 function closeDrawer() {
   selected = null;
-  syncArchitectureSelection();
   renderDrawer();
   els["details-button"].focus();
-}
-
-function setArchitectureFace(nextFace) {
-  if (mode !== "architecture" || !["overview", "experience"].includes(nextFace) || architectureFace === nextFace || architectureTransitioning) return;
-  const workspace = els["canvas-layers"].querySelector(".architecture-workspace");
-  const turn = workspace?.querySelector(".architecture-workspace-turn");
-  if (!workspace || !turn) return;
-  const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  const focusFaceControl = () => {
-    const focusTarget = nextFace === "experience"
-      ? els["canvas-layers"].querySelector("[data-architecture-back]")
-      : els["canvas-layers"].querySelector('[data-architecture-layer="experience"]');
-    focusTarget?.focus();
-  };
-  if (reducedMotion) {
-    architectureFace = nextFace;
-    renderSourceCanvas("architecture");
-    window.setTimeout(focusFaceControl, 0);
-    return;
-  }
-  architectureTransitioning = true;
-  const forward = nextFace === "experience";
-  turn.classList.add(forward ? "is-turning-forward" : "is-turning-back");
-  window.setTimeout(() => {
-    if (mode !== "architecture") {
-      architectureTransitioning = false;
-      return;
-    }
-    architectureFace = nextFace;
-    renderSourceCanvas("architecture");
-    const incoming = els["canvas-layers"].querySelector(".architecture-workspace-turn");
-    if (!incoming) {
-      architectureTransitioning = false;
-      return;
-    }
-    const incomingClass = forward ? "is-entering-forward" : "is-entering-back";
-    incoming.classList.add(incomingClass);
-    requestAnimationFrame(() => requestAnimationFrame(() => incoming.classList.remove(incomingClass)));
-    window.setTimeout(() => {
-      architectureTransitioning = false;
-      focusFaceControl();
-    }, 240);
-  }, 240);
 }
 
 function setMode(nextMode) {
   stopPlayback();
   if (!state) return;
-  if (nextMode !== "architecture") {
-    architectureFace = "overview";
-    architectureTransitioning = false;
-  }
   mode = nextMode;
   if (mode === "live" || mode === "agents") cursor = availableStage(state.events);
   if (mode === "compare") closeDrawerWithoutFocus();
@@ -2065,8 +1970,7 @@ function sourceState() {
 }
 
 function sourceComponentContext(id) {
-  if (!["architecture", "live"].includes(mode)) return null;
-  if (mode === "architecture") return architectureComponentContext(id);
+  if (mode !== "live") return null;
   const source = sourceState();
   const topology = topologyIntegrity(source.topology);
   const node = topology.nodes.find((item) => item.id === id);
@@ -2076,25 +1980,6 @@ function sourceComponentContext(id) {
   const evidence = source.evidence.filter((item) => item.entity === id || item.value?.services?.includes(id));
   const nodeStates = liveIncidentNodeStates({ mode: state.mode, events: state.events, source });
   return { node, profile: sourceComponentProfile(node), incoming, outgoing, evidence, status: node.connectivity === "unlinked" ? "unlinked" : nodeStates[id] || "dormant", source };
-}
-
-function architectureComponentContext(id) {
-  const view = architectureView();
-  const topology = view?.graph;
-  const node = topology?.nodes.find((item) => item.id === id);
-  if (!node) return null;
-  const incoming = topology.edges.filter((edge) => edge.to === id).map((edge) => topology.nodes.find((item) => item.id === edge.from)).filter(Boolean);
-  const outgoing = topology.edges.filter((edge) => edge.from === id).map((edge) => topology.nodes.find((item) => item.id === edge.to)).filter(Boolean);
-  return {
-    architecture: true,
-    node,
-    profile: architectureComponentProfile(node),
-    incoming,
-    outgoing,
-    evidence: [],
-    status: node.status,
-    source: architectureSource(view)
-  };
 }
 
 function sourceComponentProfile(node) {
@@ -2112,17 +1997,6 @@ function sourceComponentProfile(node) {
     language,
     signals,
     attributes: observed
-  };
-}
-
-function architectureComponentProfile(node) {
-  return {
-    capability: `${node.plane} / ${node.layer}`,
-    runtimeIdentity: node.id,
-    runtimeSummary: node.signal_types.join(" + "),
-    language: "",
-    signals: [...node.signal_types],
-    attributes: {}
   };
 }
 

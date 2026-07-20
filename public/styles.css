@@ -1361,6 +1361,143 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
   -webkit-backdrop-filter: blur(28px) saturate(126%);
   font-family: var(--architecture-font, -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", sans-serif);
 }
+
+/* Architecture static overview: flat alpha-only material. */
+.app-shell[data-mode="architecture"] .topbar,
+.app-shell[data-mode="architecture"] .mission-bar,
+.twin-canvas.is-architecture-source,
+.is-architecture-source .architecture-system,
+.is-architecture-source .architecture-flowpulse-system,
+.is-architecture-source .architecture-layer-module,
+.is-architecture-source .architecture-thumbnail-node,
+.is-architecture-source .architecture-thumbnail-icon,
+.is-architecture-source .source-node.is-architecture-compact,
+.is-architecture-source .source-node.is-architecture-compact .node-icon,
+.app-shell[data-mode="architecture"] .workspace-menu-panel,
+.app-shell[data-mode="architecture"] .state-key,
+.app-shell[data-mode="architecture"] .workspace-menu-panel .nav-button,
+.app-shell[data-mode="architecture"] .workspace-menu-panel .button,
+.app-shell[data-mode="architecture"] .context-drawer {
+  border: 0;
+  box-shadow: none;
+}
+.app-shell[data-mode="architecture"] .topbar,
+.app-shell[data-mode="architecture"] .mission-bar {
+  background: rgba(247, 250, 252, .34);
+}
+.twin-canvas.is-architecture-source {
+  --architecture-shadow: none;
+  --architecture-surface: rgba(255, 255, 255, .12);
+  --architecture-surface-muted: rgba(235, 244, 252, .18);
+  --architecture-node-surface: rgba(255, 255, 255, .28);
+  background:
+    radial-gradient(ellipse 55% 58% at 2% 4%, rgba(255, 255, 255, .34), transparent 78%),
+    radial-gradient(ellipse 44% 56% at 100% 100%, rgba(151, 169, 184, .35), transparent 78%),
+    rgba(190, 201, 210, .46);
+}
+.is-architecture-source .architecture-system,
+.is-architecture-source .architecture-flowpulse-system,
+.is-architecture-source .architecture-layer-module,
+.is-architecture-source .architecture-thumbnail-node,
+.is-architecture-source .source-node.is-architecture-compact,
+.is-architecture-source .architecture-thumbnail-icon,
+.is-architecture-source .source-node.is-architecture-compact .node-icon,
+.app-shell[data-mode="architecture"] .workspace-menu-panel,
+.app-shell[data-mode="architecture"] .state-key,
+.app-shell[data-mode="architecture"] .workspace-menu-panel .nav-button,
+.app-shell[data-mode="architecture"] .workspace-menu-panel .button,
+.app-shell[data-mode="architecture"] .context-drawer {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+.is-architecture-source .architecture-flowpulse-system {
+  background: var(--architecture-surface-muted);
+}
+.is-architecture-source .architecture-layer-module {
+  position: relative;
+  background: rgba(255, 255, 255, .19);
+}
+.is-architecture-source .architecture-thumbnail-node,
+.is-architecture-source .source-node.is-architecture-compact {
+  position: relative;
+  background: var(--architecture-node-surface);
+}
+.is-architecture-source .architecture-thumbnail-node {
+  font-size: 13px;
+}
+.is-architecture-source .architecture-thumbnail-label {
+  font-size: 13px;
+  font-weight: 500;
+}
+.is-architecture-source .architecture-thumbnail-icon,
+.is-architecture-source .source-node.is-architecture-compact .node-icon {
+  color: var(--architecture-vector);
+  background: rgba(89, 117, 142, .12);
+}
+.is-architecture-source .source-node.is-architecture-compact {
+  min-width: 0;
+  display: grid;
+  align-items: center;
+}
+.is-architecture-source .source-node.is-architecture-compact strong {
+  font-size: 13px;
+  font-weight: 500;
+}
+.is-architecture-source .architecture-layer-copy {
+  padding-right: 16px;
+}
+.is-architecture-source .architecture-status-dot,
+.is-architecture-source .source-node.is-architecture-compact .node-status-dot {
+  --architecture-status: var(--blue);
+  position: absolute;
+  top: 11px;
+  right: 11px;
+  width: 7px;
+  height: 7px;
+  display: block;
+  border-radius: 50%;
+  background: var(--architecture-status);
+  box-shadow: none;
+}
+.is-architecture-source .architecture-layer-module.is-healthy .architecture-status-dot,
+.is-architecture-source .architecture-layer-module.is-verified .architecture-status-dot,
+.is-architecture-source .architecture-layer-module.is-learned .architecture-status-dot,
+.is-architecture-source .architecture-thumbnail-node.is-healthy .architecture-status-dot,
+.is-architecture-source .architecture-thumbnail-node.is-verified .architecture-status-dot,
+.is-architecture-source .architecture-thumbnail-node.is-learned .architecture-status-dot,
+.is-architecture-source .source-node.is-architecture-compact.is-healthy .node-status-dot,
+.is-architecture-source .source-node.is-architecture-compact.is-verified .node-status-dot,
+.is-architecture-source .source-node.is-architecture-compact.is-learned .node-status-dot { --architecture-status: var(--green); }
+.is-architecture-source .architecture-layer-module.is-root .architecture-status-dot,
+.is-architecture-source .architecture-layer-module.is-impact .architecture-status-dot,
+.is-architecture-source .architecture-layer-module.is-rejected .architecture-status-dot,
+.is-architecture-source .architecture-thumbnail-node.is-root .architecture-status-dot,
+.is-architecture-source .architecture-thumbnail-node.is-impact .architecture-status-dot,
+.is-architecture-source .architecture-thumbnail-node.is-rejected .architecture-status-dot,
+.is-architecture-source .source-node.is-architecture-compact.is-root .node-status-dot,
+.is-architecture-source .source-node.is-architecture-compact.is-impact .node-status-dot,
+.is-architecture-source .source-node.is-architecture-compact.is-rejected .node-status-dot { --architecture-status: var(--red); }
+.is-architecture-source .architecture-layer-module.is-warning .architecture-status-dot,
+.is-architecture-source .architecture-layer-module.is-change .architecture-status-dot,
+.is-architecture-source .architecture-layer-module.is-approval .architecture-status-dot,
+.is-architecture-source .architecture-thumbnail-node.is-warning .architecture-status-dot,
+.is-architecture-source .architecture-thumbnail-node.is-change .architecture-status-dot,
+.is-architecture-source .architecture-thumbnail-node.is-approval .architecture-status-dot,
+.is-architecture-source .source-node.is-architecture-compact.is-warning .node-status-dot,
+.is-architecture-source .source-node.is-architecture-compact.is-change .node-status-dot,
+.is-architecture-source .source-node.is-architecture-compact.is-approval .node-status-dot { --architecture-status: var(--amber); }
+.is-architecture-source .architecture-layer-module.is-idle .architecture-status-dot,
+.is-architecture-source .architecture-layer-module.is-quiet .architecture-status-dot,
+.is-architecture-source .architecture-layer-module.is-dormant .architecture-status-dot,
+.is-architecture-source .architecture-thumbnail-node.is-idle .architecture-status-dot,
+.is-architecture-source .architecture-thumbnail-node.is-quiet .architecture-status-dot,
+.is-architecture-source .architecture-thumbnail-node.is-dormant .architecture-status-dot,
+.is-architecture-source .source-node.is-architecture-compact.is-idle .node-status-dot,
+.is-architecture-source .source-node.is-architecture-compact.is-quiet .node-status-dot,
+.is-architecture-source .source-node.is-architecture-compact.is-dormant .node-status-dot { --architecture-status: var(--faint); }
+.app-shell[data-mode="architecture"] .context-drawer {
+  background: rgba(249, 251, 252, .28);
+}
 @media (max-width: 1320px) {
   .is-architecture-source .architecture-systems { grid-template-columns: minmax(0, 1fr) 236px; gap: 14px; padding: 12px 14px; }
   .is-architecture-source .architecture-layer-grid { gap: 10px; padding: 10px; }
