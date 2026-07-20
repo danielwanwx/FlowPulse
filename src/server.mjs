@@ -22,6 +22,8 @@ import { FRESHNESS_MAX_AGE_MS, FRESHNESS_RECEIPT_SCHEMA_VERSION, verifySnapshotF
 import { sha256 as hashBoundEvidence } from "./regression-backtest.mjs";
 import { buildIncidentProjection, INCIDENT_PROJECTION_LIMITS } from "./incident-projection.mjs";
 import { validateProjectionCanonicalChain } from "./projection-canonical-validator.mjs";
+import { loadTopologyManifest, validateAstronomyIncidentSubgraph } from "./topology-manifest.mjs";
+import { composeTopologyViews } from "./topology-projection.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const publicDir = join(root, "public");
@@ -30,6 +32,8 @@ const port = Number(process.env.PORT || 4310);
 const host = process.env.HOST || "127.0.0.1";
 const ledger = new Ledger(dbPath);
 const bundle = loadBundle();
+const topologyManifest = loadTopologyManifest();
+const incidentTopologyOverlay = validateAstronomyIncidentSubgraph(topologyManifest, bundle);
 const runtime = new IncidentRuntime({ ledger, bundle });
 const liveSource = new LiveSource({ directory: process.env.FLOWPULSE_OTLP_DIR || join(root, "outputs", "live", "otel") });
 const development = new DevelopmentRuntime({ runtime, source: liveSource, adapter: developmentAdapter });
@@ -62,7 +66,7 @@ const server = createServer(async (request, response) => {
       return json(response, 200, await stateWithSource(runtime.ensureRun(), { cursor: url.searchParams.get("projection_cursor") }));
     }
     if (url.pathname === "/api/source" && request.method === "GET") {
-      return json(response, 200, redactedSource(await sourceProjection(runtime.ensureRun())));
+      return json(response, 200, (await stateWithSource(runtime.ensureRun())).source);
     }
     if (url.pathname === "/api/evidence" && request.method === "GET") {
       const source = await selectedEvidenceSource(url.searchParams.get("run_id") || runtime.ensureRun());
@@ -781,6 +785,12 @@ async function stateWithSource(runId = runtime.ensureRun(), { cursor = null } = 
     cursor,
     authority_chain
   });
+  const topology_views = composeTopologyViews({
+    manifest: topologyManifest,
+    incidentProjection: incident_projection,
+    overlay: incidentTopologyOverlay,
+    controls: topologyControlInputs(projected, sourceState)
+  });
   const state = {
     schema_version: "flowpulse.browser-state.v1",
     run_id: incident_projection.run_id || safeBrowserId(projected.run_id),
@@ -791,7 +801,8 @@ async function stateWithSource(runId = runtime.ensureRun(), { cursor = null } = 
     incident: incident_projection.incident,
     events: projected.events.slice(-INCIDENT_PROJECTION_LIMITS.max_frames).map(redactedLedgerEvent),
     evidence: incident_projection.evidence,
-    source: redactedSource(sourceState, incident_projection),
+    source: redactedSource(sourceState, incident_projection, topology_views),
+    topology_views,
     incident_projection,
     agent_control: agentControl.project(runId, { incidentProjection: incident_projection, state: projected }),
     harness: redactedHarness(harnessProjection(projected.events))
@@ -826,7 +837,7 @@ function nonActionableBrowserState(runId, code) {
   };
   return {
     schema_version: "flowpulse.browser-state.v1", run_id: safeBrowserId(runId), mode: "unavailable", status: "non_actionable", complete: false, waiting_for_approval: false,
-    incident: incident_projection.incident, events: [], evidence: [], source: redactedSource({}, incident_projection), incident_projection, agent_control,
+    incident: incident_projection.incident, events: [], evidence: [], source: redactedSource({}, incident_projection), topology_views: null, incident_projection, agent_control,
     harness: { manifest: { legacy_detail_status: "legacy_detail_unavailable" }, current_stage: "unavailable", attempt: null, last_context_sha256: null, failure: { legacy_detail_status: "legacy_detail_unavailable", boundary: "unavailable", validator_id: "unavailable", reason_code: safeBrowserText(code, 120), tool_coverage: [], missing_evidence_classes: [], next_precondition: "unavailable" } }
   };
 }
@@ -922,12 +933,14 @@ function redactedEventPayload(event) {
   }
 }
 
-function redactedSource(source, projection = null) {
+function redactedSource(source, projection = null, topologyViews = null) {
   const graph = projection?.graph || { nodes: [], edges: [] };
   return {
     mode: safeBrowserText(source?.mode || "unavailable", 80), status: safeBrowserEnum(source?.status, ["captured", "frozen", "live", "stale", "disconnected", "connecting", "unavailable"], "unavailable"),
     label: safeBrowserText(source?.label || "FlowPulse evidence source", 160), raw_records_excluded: true,
+    topology_scope: projection ? "incident_overlay_compatibility" : "unavailable",
     topology: { services: graph.nodes.map((node) => ({ id: node.id, label: node.label, kind: node.kind })), dependencies: graph.edges.map((edge) => ({ id: edge.id, from: edge.from, to: edge.to, kind: edge.kind })) },
+    topology_views: topologyViews,
     evidence: projection?.evidence || [],
     counts: safeCounts(source?.counts)
   };
@@ -960,7 +973,7 @@ function redactedEvidenceDetail(record) {
 }
 function safeCounts(value) { const result = {}; if (!value || typeof value !== "object" || Array.isArray(value)) return result; for (const [key, count] of Object.entries(value).slice(0, 16)) if (/^[a-z_]+$/i.test(key) && Number.isSafeInteger(count) && count >= 0 && count <= 1_000_000) result[key] = count; return result; }
 function redactedHarness(value) { return { manifest: value?.manifest?.sha256 ? { version: safeBrowserText(value.manifest.version, 80), sha256: safeBrowserHash(value.manifest.sha256) } : { legacy_detail_status: "legacy_detail_unavailable" }, current_stage: safeBrowserText(value?.current_stage || "unavailable", 120), attempt: Number.isSafeInteger(value?.attempt) ? value.attempt : null, last_context_sha256: safeBrowserHash(value?.last_context_sha256), failure: { legacy_detail_status: safeBrowserText(value?.failure?.legacy_detail_status || "legacy_detail_unavailable", 80), boundary: safeBrowserText(value?.failure?.boundary || "unavailable", 120), validator_id: safeBrowserText(value?.failure?.validator_id || "unavailable", 160), reason_code: safeBrowserText(value?.failure?.reason_code || "unavailable", 160), tool_coverage: Array.isArray(value?.failure?.tool_coverage) ? value.failure.tool_coverage.slice(0, 24).map((item) => safeBrowserText(String(item), 160)) : [], missing_evidence_classes: Array.isArray(value?.failure?.missing_evidence_classes) ? value.failure.missing_evidence_classes.slice(0, 8).map((item) => safeBrowserText(String(item), 120)) : [], next_precondition: safeBrowserText(value?.failure?.next_precondition || "unavailable", 160) } }; }
-function enforceBrowserResponseCap(value) { if (Buffer.byteLength(JSON.stringify(value), "utf8") <= BROWSER_RESPONSE_MAX_BYTES) return value; const reduced = { ...value, events: [], evidence: [], source: { ...value.source, topology: { services: [], dependencies: [] }, evidence: [] }, agent_control: { ...value.agent_control, activity: [], graph: { nodes: [], edges: [] } } }; if (Buffer.byteLength(JSON.stringify(reduced), "utf8") <= BROWSER_RESPONSE_MAX_BYTES) return reduced; return { schema_version: "flowpulse.browser-state.v1", run_id: null, mode: "unavailable", status: "non_actionable", complete: false, waiting_for_approval: false, incident: reduced.incident_projection.incident, events: [], evidence: [], source: redactedSource({}, reduced.incident_projection), incident_projection: reduced.incident_projection, agent_control: { schema_version: "flowpulse.agent_control.v1", authority: "append-only-ledger", actions: [], activity: [], graph: { nodes: [], edges: [] }, incident_projection: reduced.incident_projection }, harness: { manifest: { legacy_detail_status: "legacy_detail_unavailable" } } }; }
+function enforceBrowserResponseCap(value) { if (Buffer.byteLength(JSON.stringify(value), "utf8") <= BROWSER_RESPONSE_MAX_BYTES) return value; const reduced = { ...value, events: [], evidence: [], source: { ...value.source, topology: { services: [], dependencies: [] }, evidence: [] }, agent_control: { ...value.agent_control, activity: [], graph: { nodes: [], edges: [] } } }; if (Buffer.byteLength(JSON.stringify(reduced), "utf8") <= BROWSER_RESPONSE_MAX_BYTES) return reduced; return { schema_version: "flowpulse.browser-state.v1", run_id: null, mode: "unavailable", status: "non_actionable", complete: false, waiting_for_approval: false, incident: reduced.incident_projection.incident, events: [], evidence: [], source: redactedSource({}, reduced.incident_projection), topology_views: null, incident_projection: reduced.incident_projection, agent_control: { schema_version: "flowpulse.agent_control.v1", authority: "append-only-ledger", actions: [], activity: [], graph: { nodes: [], edges: [] }, incident_projection: reduced.incident_projection }, harness: { manifest: { legacy_detail_status: "legacy_detail_unavailable" } } }; }
 function safeBrowserText(value, limit = 160) { return typeof value === "string" ? value.replace(/[\u0000-\u001f\u007f<>&"']/g, " ").slice(0, limit) : "unknown"; }
 function safeBrowserId(value) { return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/.test(value) ? value : null; }
 function safeBrowserHash(value) { return validHash(value) ? value : null; }
@@ -992,6 +1005,15 @@ async function sourceProjection(runId = runtime.ensureRun(), source = null) {
     errors: project.errors,
     evidence: selected.list({ limit: 50 }).items,
     raw_records_excluded: true
+  };
+}
+
+function topologyControlInputs(projected, sourceState) {
+  const deploymentEvidence = Array.isArray(sourceState?.evidence) && sourceState.evidence.some((record) => record?.id === "ev-deploy-checkout"
+    && record.kind === "deploy" && record.source === "deployment.change" && record.entity === "checkout");
+  return {
+    deployment_evidence_id: deploymentEvidence ? "ev-deploy-checkout" : null,
+    ledger_event_count: Array.isArray(projected?.events) ? Math.min(projected.events.length, INCIDENT_PROJECTION_LIMITS.max_input_events) : 0
   };
 }
 

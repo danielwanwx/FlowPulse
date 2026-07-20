@@ -353,6 +353,41 @@ test("judge API serves state and advances the replay", async (context) => {
     ["kafka-accounting", "kafka", "accounting"],
     ["kafka-fraud", "kafka", "fraud"]
   ]);
+  const source = await fetch(`http://127.0.0.1:${port}/api/source`).then((response) => response.json());
+  assert.equal(initial.source.topology_scope, "incident_overlay_compatibility");
+  assert.deepEqual(source.topology_views, initial.topology_views);
+  assert.deepEqual(initial.source.topology_views, initial.topology_views);
+  assert.equal(initial.topology_views.schema_version, "flowpulse.topology-views.v1");
+  assert.deepEqual(initial.topology_views.truth, {
+    source_health: "unavailable",
+    evidence_mode: "captured_fixture",
+    execution_mode: "deterministic_replay",
+    label: "CAPTURED"
+  });
+  assert.deepEqual(initial.topology_views.readiness, {
+    architecture_available: true,
+    live_available: true,
+    incident_detected: true,
+    diagnose_available: false,
+    agent_available: false,
+    compare_available: false
+  });
+  assert.equal(initial.topology_views.architecture.graph.nodes.length, 26);
+  assert.equal(initial.topology_views.architecture.runtime_data.node_count, 22);
+  assert.equal(initial.topology_views.architecture.runtime_data.edge_count, 22);
+  assert.equal(initial.topology_views.architecture.control_evidence.node_count, 4);
+  assert.equal(initial.topology_views.architecture.control_evidence.relation_count, 1);
+  assert.equal(initial.topology_views.live.graph.nodes.length, 22);
+  assert.equal(initial.topology_views.live.graph.edges.length, 22);
+  assert.equal(initial.topology_views.live.graph.nodes.every((node) => node.status === "captured" && node.source_health === "unavailable"), true);
+  assert.equal(initial.topology_views.diagnose.graph.nodes.length, 22);
+  assert.equal(initial.topology_views.diagnose.graph.edges.length, 22);
+  assert.equal(initial.topology_views.diagnose.overlay.node_ids.length, 6);
+  assert.equal(initial.topology_views.diagnose.overlay.edges.length, 5);
+  assert.equal(initial.topology_views.diagnose.overlay.edges.filter((edge) => edge.relation === "observed_dependency").length, 2);
+  assert.equal(initial.topology_views.diagnose.overlay.edges.filter((edge) => edge.relation === "incident_evidence").length, 3);
+  const architectureIds = new Set(initial.topology_views.architecture.graph.nodes.map((node) => node.id));
+  assert.equal(initial.topology_views.architecture.graph.edges.every((edge) => architectureIds.has(edge.from) && architectureIds.has(edge.to)), true);
 
   const rawMarker = "PROVIDER_BODY_SECRET::<img src=x onerror=alert(1)>";
   new Ledger(dbPath).append({
