@@ -514,7 +514,7 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .live-change-node { left: 82%; top: 8%; }
 
 .is-live-source .edge-group { --edge-signal: var(--live-pulse); }
-.is-live-source .edge-group .edge-line { opacity: .28; }
+.is-live-source .edge-group .edge-line { stroke: #9ca5b0; stroke-width: 1.5; opacity: .82; }
 .is-live-source .signal-droplet { display: none; pointer-events: none; }
 .is-live-source .edge-group.is-signal-active .signal-droplet { display: block; }
 .is-live-source .signal-droplet { filter: drop-shadow(0 0 2px var(--live-pulse-glow)) drop-shadow(0 0 5px var(--live-pulse-glow)); }

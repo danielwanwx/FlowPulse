@@ -350,7 +350,9 @@ export function orderedSignalEdges(edges = [], pulseSlots = {}) {
 export function topologyIntegrity(topology = {}) {
   const nodes = [];
   const byId = new Map();
-  for (const input of topology.nodes || []) {
+  const sourceNodes = Array.isArray(topology.nodes) ? topology.nodes : Array.isArray(topology.services) ? topology.services : [];
+  const sourceEdges = Array.isArray(topology.edges) ? topology.edges : Array.isArray(topology.dependencies) ? topology.dependencies : [];
+  for (const input of sourceNodes) {
     const normalized = normalizeServiceId(input.id);
     if (!normalized || byId.has(normalized)) continue;
     const node = { ...input, id: normalized };
@@ -361,7 +363,7 @@ export function topologyIntegrity(topology = {}) {
   const invalidEdges = [];
   const edgeIds = new Set();
   const edges = [];
-  for (const input of topology.edges || []) {
+  for (const input of sourceEdges) {
     const from = normalizeServiceId(input.from);
     const to = normalizeServiceId(input.to);
     if (!byId.has(from) || !byId.has(to)) {

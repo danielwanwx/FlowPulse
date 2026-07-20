@@ -1346,10 +1346,11 @@ function handleCanvasKeydown(event) {
     event.preventDefault();
     return;
   }
-  if (!event.target.matches("[data-edge-id], [data-agent-edge-id]")) return;
+  if (!event.target.matches("[data-node-id], [data-edge-id], [data-agent-edge-id]")) return;
   if (event.key === "Enter" || event.key === " ") {
     event.preventDefault();
-    if (event.target.dataset.agentEdgeId) openDrawer({ type: "agent-edge", id: event.target.dataset.agentEdgeId }, "agent");
+    if (event.target.dataset.nodeId) openDrawer({ type: "node", id: event.target.dataset.nodeId }, defaultTabForNode(event.target.dataset.nodeId));
+    else if (event.target.dataset.agentEdgeId) openDrawer({ type: "agent-edge", id: event.target.dataset.agentEdgeId }, "agent");
     else openDrawer({ type: "edge", id: event.target.dataset.edgeId }, "evidence");
   }
 }
@@ -1987,8 +1988,8 @@ function displayRuntimeLanguage(value) {
 }
 
 function architectureTopology() {
-  const topology = sourceState().topology;
-  if (topology?.nodes?.length) return topology;
+  const sourceTopology = topologyIntegrity(sourceState().topology);
+  if (sourceTopology.nodes.length) return sourceTopology;
   const runtimeNodes = TWIN_NODES.filter((node) => node.plane === "runtime").map((node) => ({
     id: node.id,
     label: node.label,
@@ -2009,7 +2010,7 @@ function architectureTopology() {
 
 function captureLabel() {
   if (mode === "architecture") return sourceState().status === "live" ? "Live architecture" : "Captured architecture";
-  if (mode === "live") return sourceState().status === "live" ? "Live OTLP" : "Last-known OTLP";
+  if (mode === "live") return sourceState().status === "live" ? "Live OTLP" : sourceState().status === "captured" ? "Captured replay" : "Last-known OTLP";
   if (mode === "agents") return agentControl().langfuse === "observing" ? "Agent traces live" : "Ledger agent view";
   if (mode === "compare") return compareProvenance(state.events).label;
   return state.mode === "development" ? "Hashed incident" : "Captured incident";

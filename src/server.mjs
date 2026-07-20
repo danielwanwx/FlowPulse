@@ -771,7 +771,10 @@ async function stateWithSource(runId = runtime.ensureRun(), { cursor = null } = 
   const sourceState = await sourceProjection(runId, source);
   const authority_chain = projectionAuthorityChain({ runId, projected, evidenceById: new Map(evidence.map((record) => [record.id, record])) });
   const incident_projection = buildIncidentProjection({
-    run: projected,
+    // Topology is source evidence, not runtime authority. Bind the selected,
+    // read-only source topology into the bounded projection before browser
+    // redaction so replay never falls back to unrelated collector state.
+    run: { ...projected, topology: sourceState.topology },
     events: projected.events,
     evidence,
     source: sourceState,
@@ -974,6 +977,10 @@ async function sourceProjection(runId = runtime.ensureRun(), source = null) {
   const selected = source || await selectedEvidenceSource(runId);
   const project = await liveSource.project();
   const metadata = selected.metadata();
+  // Replay must project the selected captured bundle, not an unrelated current
+  // collector window. The projection remains read-only and deliberately carries
+  // no policy, approval, or execution material.
+  const topology = typeof selected.topology === "function" ? selected.topology() : project.topology;
   return {
     ...metadata,
     kind: "otlp-jsonl",
@@ -981,7 +988,7 @@ async function sourceProjection(runId = runtime.ensureRun(), source = null) {
     last_observed_at: project.last_observed_at,
     freshness_ms: project.freshness_ms,
     counts: project.counts,
-    topology: project.topology,
+    topology,
     errors: project.errors,
     evidence: selected.list({ limit: 50 }).items,
     raw_records_excluded: true

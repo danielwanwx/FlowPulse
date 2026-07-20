@@ -337,6 +337,22 @@ test("judge API serves state and advances the replay", async (context) => {
   assert.equal(initial.incident_projection.stage_status, "collecting");
   assert.equal(initial.incident_projection.execution_mode, "deterministic_replay");
   assert.equal(initial.incident_projection.action.status, "not_started");
+  assert.equal(initial.source.status, "captured");
+  assert.deepEqual(initial.source.topology.services.map(({ id }) => id), ["frontend", "checkout", "payment", "kafka", "accounting", "fraud"]);
+  assert.deepEqual(initial.source.topology.dependencies.map(({ id, from, to }) => [id, from, to]), [
+    ["frontend-checkout", "frontend", "checkout"],
+    ["checkout-payment", "checkout", "payment"],
+    ["checkout-kafka", "checkout", "kafka"],
+    ["kafka-accounting", "kafka", "accounting"],
+    ["kafka-fraud", "kafka", "fraud"]
+  ]);
+  assert.deepEqual(initial.incident_projection.graph.edges.map(({ id, from, to }) => [id, from, to]), [
+    ["frontend-checkout", "frontend", "checkout"],
+    ["checkout-payment", "checkout", "payment"],
+    ["checkout-kafka", "checkout", "kafka"],
+    ["kafka-accounting", "kafka", "accounting"],
+    ["kafka-fraud", "kafka", "fraud"]
+  ]);
 
   const rawMarker = "PROVIDER_BODY_SECRET::<img src=x onerror=alert(1)>";
   new Ledger(dbPath).append({

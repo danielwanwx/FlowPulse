@@ -123,6 +123,32 @@ test("live topology normalizes endpoints and explains true telemetry islands", (
   assert.match(appJs, /Insufficient dependency evidence/);
 });
 
+test("captured browser topology consumes the bounded projection aliases and keeps every valid replay edge", () => {
+  const projected = topologyIntegrity({
+    services: [
+      { id: "frontend", kind: "client" }, { id: "checkout", kind: "service" }, { id: "payment", kind: "api" },
+      { id: "kafka", kind: "stream" }, { id: "accounting", kind: "worker" }, { id: "fraud", kind: "worker" }
+    ],
+    dependencies: [
+      { id: "frontend-checkout", from: "frontend", to: "checkout" },
+      { id: "checkout-payment", from: "checkout", to: "payment" },
+      { id: "checkout-kafka", from: "checkout", to: "kafka" },
+      { id: "kafka-accounting", from: "kafka", to: "accounting" },
+      { id: "kafka-fraud", from: "kafka", to: "fraud" }
+    ]
+  });
+  assert.equal(projected.nodes.length, 6);
+  assert.equal(projected.edges.length, 5);
+  assert.deepEqual(primaryLiveEdges(projected).map(({ id }) => id), [
+    "checkout-kafka", "checkout-payment", "frontend-checkout", "kafka-accounting", "kafka-fraud"
+  ]);
+  assert.match(appJs, /const sourceTopology = topologyIntegrity\(sourceState\(\)\.topology\)/);
+  assert.match(appJs, /sourceState\(\)\.status === "captured" \? "Captured replay"/);
+  assert.match(stylesCss, /\.is-live-source \.edge-group \.edge-line \{ stroke: #9ca5b0; stroke-width: 1\.5; opacity: \.82; \}/);
+  assert.match(appJs, /event\.target\.matches\("\[data-node-id\], \[data-edge-id\], \[data-agent-edge-id\]"\)/);
+  assert.match(appJs, /event\.target\.dataset\.nodeId\) openDrawer\(\{ type: "node"/);
+});
+
 test("B1 recovery console keeps six collaborators visible while owner approval stays separate", () => {
   assert.match(indexHtml, /data-mode="agents">Recovery Console</);
   assert.match(indexHtml, /id="manager-panel"[^>]+aria-labelledby="manager-title"/);

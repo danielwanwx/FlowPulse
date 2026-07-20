@@ -42,6 +42,24 @@ test("GPT evidence tools query the selected frozen snapshot rather than the stat
   assert.equal(new CapturedBundleEvidenceSource(loadBundle()).has("ev-trace-payment-refused"), true);
 });
 
+test("captured replay publishes its complete, deterministic dependency topology without source authority", () => {
+  const source = new CapturedBundleEvidenceSource(loadBundle());
+  const first = source.topology();
+  const second = source.topology();
+  assert.deepEqual(first, second);
+  assert.deepEqual(first.services.map(({ id }) => id), ["frontend", "checkout", "payment", "kafka", "accounting", "fraud"]);
+  assert.deepEqual(first.dependencies.map(({ id, from, to }) => [id, from, to]), [
+    ["frontend-checkout", "frontend", "checkout"],
+    ["checkout-payment", "checkout", "payment"],
+    ["checkout-kafka", "checkout", "kafka"],
+    ["kafka-accounting", "kafka", "accounting"],
+    ["kafka-fraud", "kafka", "fraud"]
+  ]);
+  assert.equal(Object.isFrozen(first), true);
+  assert.equal(Object.isFrozen(first.services), true);
+  assert.equal(Object.isFrozen(first.dependencies), true);
+});
+
 test("frozen development snapshot includes a hashed applied change and bounded failure facts", () => {
   const change = versionedChangeEvidence({
     manifest: manifest(),

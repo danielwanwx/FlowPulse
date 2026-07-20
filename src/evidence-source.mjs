@@ -15,6 +15,7 @@ export class CapturedBundleEvidenceSource {
     this.bundle = bundle;
     this.records = [...bundle.evidence].sort(compareEvidence);
     this.mode = "deterministic_replay";
+    this.captureTopology = capturedTopology(bundle.topology);
   }
 
   metadata() {
@@ -26,6 +27,7 @@ export class CapturedBundleEvidenceSource {
   summariesById(ids) { return evidenceById(this.bundle, ids).map(summarizeEvidence); }
   query({ kind, entity } = {}) { return queryEvidence(this.bundle, { kind, entity }).map(summarizeEvidence); }
   entities() { return this.bundle.topology.services.map((service) => service.id); }
+  topology() { return this.captureTopology; }
   has(id) { return this.records.some((record) => record.id === id); }
 }
 
@@ -53,6 +55,7 @@ export class LiveOtlpEvidenceSource {
   summariesById(ids) { return selected(this.records, ids).map(summarizeEvidence); }
   query({ kind, entity } = {}) { return this.records.filter(matches({ kind, entity })).map(summarizeEvidence); }
   entities() { return [...new Set(this.records.map((record) => record.entity))].sort(); }
+  topology() { return sourceTopology(this.project.topology); }
   has(id) { return this.records.some((record) => record.id === id); }
 
   freeze({ incidentId, runId, after, entities = INCIDENT_ENTITIES, supplementalRecords = [], executable = false, maxRecords = SNAPSHOT_MAX_RECORDS, maxBytes = SNAPSHOT_MAX_BYTES, harness = null } = {}) {
@@ -121,7 +124,40 @@ export class FrozenEvidenceSnapshot {
   summariesById(ids) { return selected(this.records, ids).map(summarizeEvidence); }
   query({ kind, entity } = {}) { return this.records.filter(matches({ kind, entity })).map(summarizeEvidence); }
   entities() { return [...new Set(this.records.map((record) => record.entity))].sort(); }
+  topology() { return EMPTY_TOPOLOGY; }
   has(id) { return this.records.some((record) => record.id === id); }
+}
+
+const EMPTY_TOPOLOGY = Object.freeze({ services: Object.freeze([]), dependencies: Object.freeze([]) });
+
+function capturedTopology(value = {}) {
+  const services = Array.isArray(value?.services) ? value.services : [];
+  const nodes = services
+    .filter((service) => service && typeof service.id === "string" && service.id.length > 0)
+    .map((service) => Object.freeze({
+      id: service.id,
+      label: typeof service.label === "string" && service.label.length ? service.label : service.id,
+      kind: typeof service.kind === "string" && service.kind.length ? service.kind : "service"
+    }));
+  const ids = new Set(nodes.map((service) => service.id));
+  const dependencies = [];
+  const seen = new Set();
+  for (const edge of Array.isArray(value?.edges) ? value.edges : []) {
+    const from = Array.isArray(edge) ? edge[0] : edge?.from;
+    const to = Array.isArray(edge) ? edge[1] : edge?.to;
+    if (!ids.has(from) || !ids.has(to)) continue;
+    const id = typeof edge?.id === "string" && edge.id.length ? edge.id : `${from}-${to}`;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    dependencies.push(Object.freeze({ id, from, to, kind: typeof edge?.kind === "string" && edge.kind.length ? edge.kind : "dependency" }));
+  }
+  return Object.freeze({ services: Object.freeze(nodes), dependencies: Object.freeze(dependencies) });
+}
+
+function sourceTopology(value = {}) {
+  const services = Array.isArray(value?.services) ? value.services : Array.isArray(value?.nodes) ? value.nodes : [];
+  const edges = Array.isArray(value?.dependencies) ? value.dependencies : Array.isArray(value?.edges) ? value.edges : [];
+  return capturedTopology({ services, edges });
 }
 
 export class InsufficientEvidenceError extends Error {
