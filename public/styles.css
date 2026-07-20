@@ -947,17 +947,13 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
     #dfe5e9;
 }
 .app-shell[data-mode="architecture"] .topbar,
-.app-shell[data-mode="architecture"] .mission-bar,
-.app-shell[data-mode="architecture"] .canvas-toolbar {
+.app-shell[data-mode="architecture"] .mission-bar {
   background: rgba(250, 252, 253, .5);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, .78);
 }
 .app-shell[data-mode="architecture"] .canvas-toolbar {
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  display: none;
 }
-.app-shell[data-mode="architecture"] .canvas-toolbar > div:first-child { display: none; }
-.app-shell[data-mode="architecture"] .canvas-toolbar .metric-cluster { grid-column: 2; }
-.app-shell[data-mode="architecture"] .canvas-toolbar .legend-menu { grid-column: 3; }
 .app-shell[data-mode="architecture"] .canvas-toolbar h2,
 .app-shell[data-mode="architecture"] .canvas-toolbar p,
 .app-shell[data-mode="architecture"] .mode-button,
