@@ -38,6 +38,7 @@ const stylesCss = readFileSync(new URL("../public/styles.css", import.meta.url),
 const architectureRefinementCss = stylesCss.slice(stylesCss.lastIndexOf("/* Architecture refinement: compact nested anatomy"));
 const architectureMaterialCss = architectureRefinementCss.slice(0, architectureRefinementCss.indexOf("@media (max-width: 1320px)"));
 const architectureStaticCss = stylesCss.slice(stylesCss.lastIndexOf("/* Architecture static overview: flat alpha-only material. */"));
+const architectureDetailCss = stylesCss.slice(stylesCss.lastIndexOf("/* Architecture component detail: one flat four-level material scale. */"));
 const topologyManifest = JSON.parse(readFileSync(new URL("../data/topology/otel-demo-system-v1.json", import.meta.url), "utf8"));
 
 function backendArchitectureView() {
@@ -167,7 +168,20 @@ test("architecture is a static four-layer overview with backend-owned status dot
   assert.match(appJs, /function architectureStaticNodeMarkup\(/);
   assert.match(appJs, /architecture-status-dot/);
   assert.match(appJs, /data-architecture-control-id/);
-  assert.doesNotMatch(appJs, /architectureFace|architectureTransitioning|setArchitectureFace|data-architecture-back|renderArchitectureInlineNode|architecture-inline-node-card|architecture-workspace-turn|architecture-detail-face|architecture-back-control/);
+  assert.match(appJs, /let architectureDetail = null;/);
+  assert.match(appJs, /function architectureDetailContext\(id\)/);
+  assert.match(appJs, /function architectureComponentDetailMarkup\(context\)/);
+  assert.match(appJs, /data-architecture-detail-id/);
+  assert.match(appJs, /data-architecture-back/);
+  assert.match(appJs, /function openArchitectureDetail\(id\)/);
+  assert.match(appJs, /function closeArchitectureDetail\(\)/);
+  assert.match(appJs, /event\.target\.matches\("\[data-architecture-thumbnail-id\]"\)/);
+  assert.match(appJs, /event\.target\.matches\("\[data-architecture-back\]"\)/);
+  assert.match(appJs, /mode === "architecture" \|\| !selected/);
+  assert.match(appJs, /item\?\.id === id && item\.plane === "runtime"/);
+  assert.match(appJs, /nodeById\.has\(edge\.from\) && nodeById\.has\(edge\.to\)/);
+  assert.match(appJs, /edge\.from === id \|\| edge\.to === id/);
+  assert.match(appJs, /slice\(0, 8\)/);
   assert.match(appJs, /node\.layer === layer\.id/);
   assert.match(appJs, /dataset\.runtimeEdges/);
   assert.match(appJs, /dataset\.controlRelations/);
@@ -180,8 +194,8 @@ test("architecture is a static four-layer overview with backend-owned status dot
   assert.match(architectureRefinementCss, /\.architecture-flowpulse-nodes \.source-node\.is-architecture-compact \{[^}]+height: 54px;[^}]+min-height: 54px;[^}]+grid-template-columns: 32px minmax\(0, 1fr\);/s);
   assert.match(architectureRefinementCss, /@media \(max-width: 1320px\) \{[\s\S]+?\.architecture-layer-anatomy \{ grid-template-columns: repeat\(3, minmax\(0, 1fr\)\); gap: 7px; \}/);
   assert.match(architectureRefinementCss, /\.architecture-thumbnail-icon,\s*\.is-architecture-source \.source-node\.is-architecture-compact \.node-icon \{[^}]+color: var\(--architecture-vector\);/s);
-  assert.match(architectureRefinementCss, /\.architecture-thumbnail-node \{[^}]+border-radius: var\(--architecture-node-radius\);[^}]+background: rgba\(255, 255, 255, \.18\);/s);
-  assert.match(architectureRefinementCss, /\.source-node\.is-architecture-compact \{[^}]+border-radius: var\(--architecture-node-radius\);[^}]+background: rgba\(255, 255, 255, \.18\);/s);
+  assert.match(architectureDetailCss, /--architecture-vector: #111827;/);
+  assert.match(architectureDetailCss, /\.architecture-thumbnail-node,[\s\S]+?\.source-node\.is-architecture-compact \{[\s\S]+?background: rgba\(255, 255, 255, \.9\);/);
   assert.match(architectureRefinementCss, /\.app-shell\[data-mode="architecture"\] \.workspace-menu-panel,[\s\S]+?\.state-key \{[^}]+border: 0;[^}]+background: rgba\(255, 255, 255, \.3\);/s);
   assert.match(architectureRefinementCss, /\.app-shell\[data-mode="architecture"\] \.context-drawer \{[^}]+background: rgba\(249, 251, 252, \.36\);/s);
   assert.match(architectureRefinementCss, /\.app-shell\[data-mode="architecture"\] \.canvas-toolbar \{[^}]+display: none;/s);
@@ -196,8 +210,12 @@ test("architecture is a static four-layer overview with backend-owned status dot
   assert.match(architectureStaticCss, /is-pending[\s\S]+?--architecture-status: var\(--amber\);/);
   assert.match(architectureStaticCss, /is-sleeping[\s\S]+?--architecture-status: var\(--faint\);/);
   assert.match(appJs, /"fault", "pending", "warning"/);
-  assert.match(architectureStaticCss, /\.app-shell\[data-mode="architecture"\] main,[\s\S]+?\.twin-scroll \{[\s\S]+?background: #d9e0e5;/);
-  assert.match(architectureStaticCss, /\.twin-canvas\.is-architecture-source \{[\s\S]+?--architecture-node-surface: rgba\(255, 255, 255, \.32\);[\s\S]+?border-radius: 0;[\s\S]+?background: transparent;/);
+  assert.match(architectureDetailCss, /\.app-shell\[data-mode="architecture"\] \{[\s\S]+?background: #d3dce2;/);
+  assert.match(architectureDetailCss, /\.twin-workspace,[\s\S]+?\.twin-scroll \{ background: #c9d4dc; \}/);
+  assert.match(architectureDetailCss, /\.architecture-layer-module,[\s\S]+?\.architecture-flowpulse-system \{[\s\S]+?background: rgba\(233, 238, 241, \.82\);/);
+  assert.match(architectureDetailCss, /\.architecture-layer-module\.is-detail \{ background: rgba\(255, 255, 255, \.92\); \}/);
+  assert.match(architectureDetailCss, /\.architecture-component-detail \{[\s\S]+?display: grid;/);
+  assert.match(architectureDetailCss, /\.architecture-detail-facts \{[\s\S]+?grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/);
   assert.match(architectureStaticCss, /\.is-architecture-compact \{[\s\S]+?display: grid;/);
   assert.match(stylesCss, /\.is-architecture-source \.source-node\.is-architecture-compact \{[^}]+border: 0;[^}]+border-radius: var\(--architecture-node-radius\);/s);
   assert.match(stylesCss, /--architecture-page-radius: 22px;[\s\S]+--architecture-system-radius: 22px;[\s\S]+--architecture-node-radius: 14px;[\s\S]+--architecture-control-radius: 14px;/);

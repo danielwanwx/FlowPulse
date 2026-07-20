@@ -2255,3 +2255,163 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
   .is-live-source .edge-group.is-signal-active .signal-droplet { display: none; }
   .is-live-source .source-node.is-signal-launch, .is-live-source .source-node.is-signal-arrival { box-shadow: 0 10px 24px var(--signal-lift), 0 0 0 1px var(--signal-ring); }
 }
+
+/* Architecture component detail: one flat four-level material scale. */
+.app-shell[data-mode="architecture"] {
+  --architecture-vector: #111827;
+  background: #d3dce2;
+}
+.app-shell[data-mode="architecture"] main { background: transparent; }
+.app-shell[data-mode="architecture"] .twin-workspace,
+.app-shell[data-mode="architecture"] .canvas-shell,
+.app-shell[data-mode="architecture"] .twin-scroll { background: #c9d4dc; }
+.app-shell[data-mode="architecture"] .topbar,
+.app-shell[data-mode="architecture"] .mission-bar { background: #d3dce2; }
+.twin-canvas.is-architecture-source {
+  --architecture-surface: transparent;
+  --architecture-surface-muted: rgba(233, 238, 241, .78);
+  --architecture-node-surface: rgba(255, 255, 255, .86);
+  background: transparent;
+}
+.is-architecture-source .architecture-system,
+.is-architecture-source .architecture-flowpulse-system,
+.is-architecture-source .architecture-layer-module,
+.is-architecture-source .architecture-thumbnail-node,
+.is-architecture-source .architecture-thumbnail-icon,
+.is-architecture-source .source-node.is-architecture-compact,
+.is-architecture-source .source-node.is-architecture-compact .node-icon,
+.is-architecture-source .architecture-detail-back,
+.is-architecture-source .architecture-detail-fact,
+.is-architecture-source .architecture-detail-relations {
+  border: 0;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+.is-architecture-source .architecture-observed-system { background: transparent; }
+.is-architecture-source .architecture-layer-module,
+.is-architecture-source .architecture-flowpulse-system {
+  background: rgba(233, 238, 241, .82);
+}
+.is-architecture-source .architecture-layer-module.is-detail { background: rgba(255, 255, 255, .92); }
+.is-architecture-source .architecture-thumbnail-node,
+.is-architecture-source .source-node.is-architecture-compact {
+  min-width: 0;
+  border-radius: var(--architecture-node-radius);
+  background: rgba(255, 255, 255, .9);
+}
+.is-architecture-source .architecture-thumbnail-node {
+  width: 100%;
+  padding: 10px;
+  color: var(--architecture-copy);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.is-architecture-source .architecture-thumbnail-node:hover,
+.is-architecture-source .architecture-thumbnail-node:focus-visible {
+  background: #ffffff;
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
+}
+.is-architecture-source .architecture-thumbnail-icon,
+.is-architecture-source .source-node.is-architecture-compact .node-icon {
+  color: #111827;
+  background: rgba(211, 220, 226, .58);
+}
+.is-architecture-source .architecture-layer-copy strong,
+.is-architecture-source .architecture-control-heading strong,
+.is-architecture-source .architecture-thumbnail-label,
+.is-architecture-source .source-node.is-architecture-compact strong { color: #111827; }
+.is-architecture-source .architecture-layer-copy,
+.is-architecture-source .architecture-control-heading em,
+.is-architecture-source .architecture-layer-count { color: #475569; }
+.is-architecture-source .architecture-component-detail {
+  min-height: 100%;
+  display: grid;
+  align-content: start;
+  gap: 18px;
+  padding: 18px;
+}
+.is-architecture-source .architecture-detail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 22px;
+}
+.is-architecture-source .architecture-detail-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  color: #1d4ed8;
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.is-architecture-source .architecture-detail-back:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 3px;
+  border-radius: var(--architecture-control-radius);
+}
+.is-architecture-source .architecture-detail-title {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+}
+.is-architecture-source .architecture-detail-title .architecture-thumbnail-icon {
+  width: 40px;
+  height: 40px;
+  font-size: 20px;
+}
+.is-architecture-source .architecture-detail-title div { display: grid; gap: 3px; }
+.is-architecture-source .architecture-detail-title strong { color: #111827; font-size: 16px; font-weight: 600; letter-spacing: -.01em; }
+.is-architecture-source .architecture-detail-title span:last-child { color: #475569; font-size: 12px; }
+.is-architecture-source .architecture-detail-facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px 18px;
+  margin: 0;
+}
+.is-architecture-source .architecture-detail-facts div { min-width: 0; display: grid; gap: 3px; }
+.is-architecture-source .architecture-detail-facts dt,
+.is-architecture-source .architecture-detail-relations > span { color: #64748b; font-size: 11px; font-weight: 500; }
+.is-architecture-source .architecture-detail-facts dd { min-width: 0; margin: 0; color: #111827; font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
+.is-architecture-source .architecture-detail-related { display: grid; gap: 13px; }
+.is-architecture-source .architecture-detail-relations { display: grid; gap: 5px; }
+.is-architecture-source .architecture-detail-relations div { color: #111827; font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
+.is-architecture-source .architecture-detail-relations i { margin-inline: 5px; color: #94a3b8; font-style: normal; }
+.is-architecture-source .architecture-detail-relations small { color: #64748b; font-size: 12px; }
+.is-architecture-source .architecture-component-detail .architecture-status-dot { position: static; width: 8px; height: 8px; }
+.is-architecture-source .architecture-component-detail .architecture-status-dot.is-root,
+.is-architecture-source .architecture-component-detail .architecture-status-dot.is-impact,
+.is-architecture-source .architecture-component-detail .architecture-status-dot.is-rejected,
+.is-architecture-source .architecture-component-detail .architecture-status-dot.is-fault { background: var(--red); }
+.is-architecture-source .architecture-component-detail .architecture-status-dot.is-pending,
+.is-architecture-source .architecture-component-detail .architecture-status-dot.is-warning,
+.is-architecture-source .architecture-component-detail .architecture-status-dot.is-change,
+.is-architecture-source .architecture-component-detail .architecture-status-dot.is-approval { background: var(--amber); }
+.is-architecture-source .architecture-component-detail .architecture-status-dot.is-idle,
+.is-architecture-source .architecture-component-detail .architecture-status-dot.is-quiet,
+.is-architecture-source .architecture-component-detail .architecture-status-dot.is-dormant,
+.is-architecture-source .architecture-component-detail .architecture-status-dot.is-sleeping { background: var(--faint); }
+@media (max-width: 1320px) {
+  .is-architecture-source .architecture-component-detail { gap: 13px; padding: 14px; }
+  .is-architecture-source .architecture-detail-facts { gap: 10px 14px; }
+}
+@media (prefers-reduced-transparency: reduce) {
+  .app-shell[data-mode="architecture"],
+  .app-shell[data-mode="architecture"] .topbar,
+  .app-shell[data-mode="architecture"] .mission-bar { background: #d3dce2; }
+  .app-shell[data-mode="architecture"] .twin-workspace,
+  .app-shell[data-mode="architecture"] .canvas-shell,
+  .app-shell[data-mode="architecture"] .twin-scroll { background: #c9d4dc; }
+  .is-architecture-source .architecture-layer-module,
+  .is-architecture-source .architecture-flowpulse-system { background: #e9eef1; }
+  .is-architecture-source .architecture-layer-module.is-detail,
+  .is-architecture-source .architecture-thumbnail-node,
+  .is-architecture-source .source-node.is-architecture-compact { background: #ffffff; }
+}

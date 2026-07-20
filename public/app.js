@@ -75,6 +75,7 @@ let busy = false;
 let comparePercent = 50;
 let compareFocus = "impact";
 let selected = null;
+let architectureDetail = null;
 let activeTab = "evidence";
 let toastTimer;
 let eventSource;
@@ -364,16 +365,21 @@ function renderSourceCanvas(layout) {
     : liveIncidentNodeStates({ mode: state.mode, events: state.events, source });
   if (layout === "architecture") {
     const boundaries = architectureBoundaries(topology);
+    const selectedArchitectureDetail = architectureDetail ? architectureDetailContext(architectureDetail.nodeId) : null;
+    if (architectureDetail && (!selectedArchitectureDetail || !ARCHITECTURE_LAYERS.some((layer) => layer.id === selectedArchitectureDetail.node.layer))) architectureDetail = null;
     const layerGroups = ARCHITECTURE_LAYERS.map((layer) => ({
       ...layer,
       members: boundaries.observed.nodes.filter((node) => node.layer === layer.id)
     }));
     const layerModules = layerGroups.map((layer) => {
       const layerStatus = architectureLayerStatus(layer.members);
+      const detail = selectedArchitectureDetail?.node.layer === layer.id ? selectedArchitectureDetail : null;
       const anatomy = layer.members.map((node) => architectureThumbnailMarkup(node, nodeStates[node.id])).join("");
-      const content = `<span class="architecture-layer-copy"><strong>${escapeHtml(layer.label)}</strong><span class="architecture-layer-count">${layer.members.length} components</span></span>
-        <span class="architecture-layer-anatomy" role="list" aria-label="${escapeHtml(layer.label)} components" data-architecture-member-count="${layer.members.length}">${anatomy}</span>`;
-      return `<article class="architecture-layer-module is-${escapeHtml(layerStatus)}" data-architecture-layer="${escapeHtml(layer.id)}" aria-label="${escapeHtml(layer.label)}, ${layer.members.length} components, ${escapeHtml(statusLabel(layerStatus))}">${content}<span class="architecture-status-dot" aria-hidden="true"></span></article>`;
+      const content = detail
+        ? architectureComponentDetailMarkup(detail)
+        : `<span class="architecture-layer-copy"><strong>${escapeHtml(layer.label)}</strong><span class="architecture-layer-count">${layer.members.length} components</span></span>
+          <span class="architecture-layer-anatomy" role="list" aria-label="${escapeHtml(layer.label)} components" data-architecture-member-count="${layer.members.length}">${anatomy}</span>`;
+      return `<article class="architecture-layer-module is-${escapeHtml(layerStatus)}${detail ? " is-detail" : ""}" data-architecture-layer="${escapeHtml(layer.id)}" aria-label="${escapeHtml(detail ? `${detail.node.label} component detail` : `${layer.label}, ${layer.members.length} components, ${statusLabel(layerStatus)}`)}">${content}${detail ? "" : '<span class="architecture-status-dot" aria-hidden="true"></span>'}</article>`;
     }).join("");
     const controlNodes = boundaries.flowpulse.nodes.map((node) => architectureStaticNodeMarkup(node, nodeStates[node.id])).join("");
     els["canvas-layers"].innerHTML = `<div class="twin-layer layer-current architecture-systems is-complete-topology">
@@ -438,7 +444,7 @@ function architectureLayerStatus(nodes) {
 }
 
 function architectureThumbnailMarkup(node, status = "observed") {
-  return `<article class="architecture-thumbnail-node is-${escapeHtml(status)}" role="listitem" title="${escapeHtml(node.label)}" data-architecture-thumbnail-id="${escapeHtml(node.id)}" aria-label="${escapeHtml(node.label)}, ${escapeHtml(kindLabel(node.kind))}, ${escapeHtml(statusLabel(status))}"><span class="architecture-thumbnail-icon" aria-hidden="true"><i class="ph ph-${iconForLive(node)}"></i></span><span class="architecture-thumbnail-label">${escapeHtml(node.label)}</span><span class="architecture-status-dot" aria-hidden="true"></span></article>`;
+  return `<span role="listitem"><button class="architecture-thumbnail-node is-${escapeHtml(status)}" type="button" title="${escapeHtml(node.label)}" data-architecture-thumbnail-id="${escapeHtml(node.id)}" aria-label="Show ${escapeHtml(node.label)} component detail. ${escapeHtml(kindLabel(node.kind))}, ${escapeHtml(statusLabel(status))}"><span class="architecture-thumbnail-icon" aria-hidden="true"><i class="ph ph-${iconForLive(node)}"></i></span><span class="architecture-thumbnail-label">${escapeHtml(node.label)}</span><span class="architecture-status-dot" aria-hidden="true"></span></button></span>`;
 }
 
 function architectureStaticNodeMarkup(node, status = "observed") {
@@ -1128,7 +1134,7 @@ async function sendRecoveryCommand(form) {
 }
 
 function renderDrawer() {
-  if (!selected || !state) {
+  if (mode === "architecture" || !selected || !state) {
     els["context-drawer"].hidden = true;
     return;
   }
@@ -1398,6 +1404,16 @@ function selectionEntities() {
 }
 
 function handleCanvasSelection(event) {
+  const back = event.target.closest("[data-architecture-back]");
+  if (back) {
+    closeArchitectureDetail();
+    return;
+  }
+  const architectureThumbnail = event.target.closest("[data-architecture-thumbnail-id]");
+  if (architectureThumbnail) {
+    openArchitectureDetail(architectureThumbnail.dataset.architectureThumbnailId);
+    return;
+  }
   const node = event.target.closest("[data-node-id]");
   const edge = event.target.closest("[data-edge-id]");
   const agentEdge = event.target.closest("[data-agent-edge-id]");
@@ -1407,6 +1423,16 @@ function handleCanvasSelection(event) {
 }
 
 function handleCanvasKeydown(event) {
+  if (event.target.matches("[data-architecture-thumbnail-id]") && (event.key === "Enter" || event.key === " ")) {
+    event.preventDefault();
+    openArchitectureDetail(event.target.dataset.architectureThumbnailId);
+    return;
+  }
+  if (event.target.matches("[data-architecture-back]") && (event.key === "Enter" || event.key === " ")) {
+    event.preventDefault();
+    closeArchitectureDetail();
+    return;
+  }
   if (event.target.matches("[data-collaborator-id]") && ["ArrowRight", "ArrowDown", "ArrowLeft", "ArrowUp"].includes(event.key)) {
     const nodes = [...els["canvas-layers"].querySelectorAll("[data-collaborator-id]")];
     const direction = ["ArrowRight", "ArrowDown"].includes(event.key) ? 1 : -1;
@@ -1457,6 +1483,7 @@ function setMode(nextMode) {
   stopPlayback();
   if (!state) return;
   mode = nextMode;
+  if (mode !== "architecture") architectureDetail = null;
   if (mode === "live" || mode === "agents") cursor = availableStage(state.events);
   if (mode === "compare") closeDrawerWithoutFocus();
   render();
@@ -1982,6 +2009,70 @@ function sourceComponentContext(id) {
   return { node, profile: sourceComponentProfile(node), incoming, outgoing, evidence, status: node.connectivity === "unlinked" ? "unlinked" : nodeStates[id] || "dormant", source };
 }
 
+function architectureDetailContext(id) {
+  const architecture = architectureView();
+  const graph = architecture?.graph;
+  const nodes = Array.isArray(graph?.nodes) ? graph.nodes : [];
+  const node = nodes.find((item) => item?.id === id && item.plane === "runtime");
+  if (!node) return null;
+  const nodeById = new Map(nodes.filter((item) => typeof item?.id === "string").map((item) => [item.id, item]));
+  const relations = (Array.isArray(graph?.edges) ? graph.edges : [])
+    .filter((edge) => edge && nodeById.has(edge.from) && nodeById.has(edge.to) && (edge.from === id || edge.to === id))
+    .sort((left, right) => String(left.id).localeCompare(String(right.id)));
+  const relationNodes = (direction) => relations
+    .filter((edge) => direction === "incoming" ? edge.to === id : edge.from === id)
+    .map((edge) => ({ edge, node: nodeById.get(direction === "incoming" ? edge.from : edge.to) }))
+    .filter((item) => item.node?.plane === "runtime")
+    .slice(0, 8);
+  return {
+    node,
+    source: architectureSource(architecture),
+    incoming: relationNodes("incoming"),
+    outgoing: relationNodes("outgoing")
+  };
+}
+
+function architectureComponentDetailMarkup(context) {
+  const { node, incoming, outgoing, source } = context;
+  const relationList = (label, relations, empty) => `<section class="architecture-detail-relations"><span>${label}</span><div>${relations.length ? relations.map(({ edge, node: related }) => `<span title="${escapeHtml(edge.label || edge.kind || "relation")}">${escapeHtml(related.label)}</span>`).join("<i aria-hidden=\"true\">·</i>") : `<small>${empty}</small>`}</div></section>`;
+  const signals = Array.isArray(node.signal_types) && node.signal_types.length ? node.signal_types.join(" · ") : "No signal summary";
+  const provenance = Array.isArray(node.provenance_refs) && node.provenance_refs.length ? node.provenance_refs.slice(0, 4).join(" · ") : "No provenance reference";
+  return `<section class="architecture-component-detail" data-architecture-detail-id="${escapeHtml(node.id)}">
+    <header class="architecture-detail-header">
+      <button class="architecture-detail-back" type="button" data-architecture-back aria-label="Back to ${escapeHtml(node.layer)} component overview"><i class="ph ph-arrow-left" aria-hidden="true"></i>Back to components</button>
+      <span class="architecture-status-dot is-${escapeHtml(node.status)}" aria-label="${escapeHtml(statusLabel(node.status))}"></span>
+    </header>
+    <div class="architecture-detail-title"><span class="architecture-thumbnail-icon" aria-hidden="true"><i class="ph ph-${iconForLive(node)}"></i></span><div><strong>${escapeHtml(node.label)}</strong><span>${escapeHtml(kindLabel(node.kind))}</span></div></div>
+    <dl class="architecture-detail-facts">
+      <div><dt>Status</dt><dd>${escapeHtml(statusLabel(node.status))}</dd></div>
+      <div><dt>Source health</dt><dd>${escapeHtml(node.source_health || source.status)}</dd></div>
+      <div><dt>Signals</dt><dd>${escapeHtml(signals)}</dd></div>
+      <div><dt>Provenance</dt><dd>${escapeHtml(provenance)}</dd></div>
+    </dl>
+    <div class="architecture-detail-related">
+      ${relationList("Uses", incoming, "No projected upstream dependency")}
+      ${relationList("Used by", outgoing, "No projected downstream dependent")}
+    </div>
+  </section>`;
+}
+
+function openArchitectureDetail(id) {
+  if (mode !== "architecture") return;
+  const context = architectureDetailContext(id);
+  if (!context || !ARCHITECTURE_LAYERS.some((layer) => layer.id === context.node.layer)) return;
+  architectureDetail = { nodeId: context.node.id };
+  selected = null;
+  render();
+  requestAnimationFrame(() => els["canvas-layers"].querySelector("[data-architecture-back]")?.focus());
+}
+
+function closeArchitectureDetail() {
+  const originId = architectureDetail?.nodeId;
+  architectureDetail = null;
+  render();
+  requestAnimationFrame(() => [...els["canvas-layers"].querySelectorAll("[data-architecture-thumbnail-id]")].find((item) => item.dataset.architectureThumbnailId === originId)?.focus());
+}
+
 function sourceComponentProfile(node) {
   const observed = sourceComponentCatalog().get(node.id) || {};
   const signals = [...new Set([...(node.signals || []), ...(observed.signals || [])])].sort();
@@ -2157,7 +2248,7 @@ function iconForLive(node) {
 }
 
 function statusLabel(status) {
-  return ({ healthy: "Healthy", observed: "Observed", idle: "Idle", quiet: "Standby", dormant: "Not active", recording: "Recording", warning: "Change pending", change: "Deployment change", impact: "Impact", root: "Root cause", rejected: "Rejected", accepted: "Accepted", active: "Investigating", approval: "Approval required", verified: "Verified", learned: "Learning recorded" })[status] || status;
+  return ({ healthy: "Healthy", observed: "Healthy", idle: "Sleeping", quiet: "Sleeping", dormant: "Sleeping", sleeping: "Sleeping", recording: "Recording", warning: "Pending", pending: "Pending", change: "Change pending", impact: "Fault", fault: "Fault", root: "Root cause", rejected: "Rejected", accepted: "Accepted", active: "Investigating", approval: "Approval required", verified: "Verified", learned: "Learning recorded" })[status] || status;
 }
 
 function sourceStatusLabel(status, sourceStatus) {
