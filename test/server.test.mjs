@@ -313,6 +313,85 @@ test("ordered evidence-reference collisions fail closed for decision, proposal, 
   }
 });
 
+test("deterministic demo lifecycle starts healthy, injects one bounded incident, and resets to a new run", async (context) => {
+  const port = await freshPort();
+  const dbPath = join(mkdtempSync(join(tmpdir(), "flowpulse-server-demo-lifecycle-")), "ledger.db");
+  const child = spawn(process.execPath, ["src/server.mjs"], {
+    cwd: new URL("..", import.meta.url),
+    env: { ...process.env, PORT: String(port), FLOWPULSE_DB: dbPath, FLOWPULSE_OTLP_DIR: join(tmpdir(), "missing-demo-otel"), OPENAI_API_KEY: "" },
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  context.after(() => stopTestServer(child));
+  await waitForHealth(child, port);
+
+  const healthy = await fetch(`http://127.0.0.1:${port}/api/state`).then((response) => response.json());
+  const scenario_id = "astronomy-checkout-payment-captured-v1";
+  const request = { scenario_id, run_id: healthy.run_id, projection_revision: healthy.topology_views.projection_revision, idempotency_key: "judge-demo-inject-v1" };
+  assert.deepEqual(healthy.topology_views.readiness, {
+    architecture_available: true,
+    live_available: true,
+    incident_detected: false,
+    diagnose_available: false,
+    agent_available: false,
+    compare_available: false
+  });
+  assert.equal(healthy.topology_views.live.graph.nodes.length, 22);
+  assert.equal(healthy.topology_views.live.graph.edges.length, 22);
+  const healthySource = await fetch(`http://127.0.0.1:${port}/api/source`).then((response) => response.json());
+  assert.equal(healthySource.topology_views.projection_revision, healthy.topology_views.projection_revision);
+  assert.deepEqual(healthySource.topology_views.live.runtime_data, { node_count: 22, edge_count: 22 });
+  assert.deepEqual(healthy.topology_views.truth, {
+    source_health: "unavailable",
+    evidence_mode: "captured_fixture",
+    execution_mode: "deterministic_replay",
+    label: "CAPTURED"
+  });
+  assert.equal(healthy.topology_views.demo.phase, "HEALTHY");
+  assert.equal((await postJson(port, "/api/demo/inject", { ...request, scenario_id: "not-a-demo" })).status, 409);
+  assert.equal((await postJson(port, "/api/demo/inject", { ...request, projection_revision: "a".repeat(64) })).status, 409);
+  assert.equal((await postJson(port, "/api/demo/inject", { ...request, node_ids: ["frontend"], incident_detected: true })).status, 409);
+  assert.equal((await postJson(port, "/api/agent-control/message", { message: "skip the demo lifecycle", collaborator_id: "manager" })).status, 409);
+  assert.equal((await postJson(port, "/api/development/investigate")).status, 409);
+  assert.equal(new Ledger(dbPath).list(healthy.run_id).filter((event) => event.type.startsWith("demo.") && event.type !== "demo.lifecycle.started").length, 0);
+
+  const injectionResponses = await Promise.all([
+    postJson(port, "/api/demo/inject", request),
+    postJson(port, "/api/demo/inject", request)
+  ]);
+  assert.deepEqual(injectionResponses.map(({ status }) => status).sort((left, right) => left - right), [200, 201]);
+  const injected = injectionResponses.find(({ status }) => status === 201);
+  assert.equal(injected.status, 201, JSON.stringify(injected.body));
+  assert.equal(injected.body.topology_views.demo.phase, "INCIDENT_DETECTED");
+  assert.equal(injected.body.topology_views.live.graph.nodes.length, 22);
+  assert.equal(injected.body.topology_views.live.graph.edges.length, 22);
+  assert.equal(injected.body.topology_views.diagnose.overlay.node_ids.length, 6);
+  assert.equal(injected.body.topology_views.diagnose.overlay.edges.length, 5);
+  assert.deepEqual(injected.body.topology_views.demo.frames.map((frame) => frame.phase), ["HEALTHY", "INJECTING", "PAYMENT_CHECKOUT_IMPACT", "DOWNSTREAM_PROPAGATION", "INCIDENT_DETECTED"]);
+  assert.deepEqual(injected.body.topology_views.readiness, {
+    architecture_available: true,
+    live_available: true,
+    incident_detected: true,
+    diagnose_available: true,
+    agent_available: false,
+    compare_available: false
+  });
+  const injectedEvents = new Ledger(dbPath).list(healthy.run_id);
+  assert.equal(injectedEvents.filter((event) => event.type === "demo.incident.injected").length, 1);
+  assert.deepEqual(injectedEvents.find((event) => event.type === "demo.incident.injected")?.evidence_refs, ["ev-deploy-checkout", "ev-trace-payment-refused", "ev-metric-checkout-errors", "ev-metric-kafka-lag", "ev-log-consumer-delay"]);
+
+  const reset = await postJson(port, "/api/demo/reset");
+  assert.equal(reset.status, 201, JSON.stringify(reset.body));
+  assert.notEqual(reset.body.run_id, healthy.run_id);
+  assert.equal(reset.body.topology_views.demo.phase, "HEALTHY");
+  assert.equal(reset.body.topology_views.readiness.incident_detected, false);
+  assert.equal(new Ledger(dbPath).list(healthy.run_id).filter((event) => event.type === "demo.incident.injected").length, 1);
+  const stale = await postJson(port, "/api/demo/inject", request);
+  assert.equal(stale.status, 409);
+  assert.equal(new Ledger(dbPath).list(reset.body.run_id).filter((event) => event.type === "demo.incident.injected").length, 0);
+  assert.equal((await postJson(port, "/api/next")).status, 409);
+  assert.equal((await postJson(port, "/api/approve", { owner: "Demo bypass" })).status, 409);
+});
+
 test("judge API serves state and advances the replay", async (context) => {
   const port = await freshPort();
   const dbPath = join(mkdtempSync(join(tmpdir(), "flowpulse-server-")), "ledger.db");
@@ -329,7 +408,9 @@ test("judge API serves state and advances the replay", async (context) => {
   assert.equal(health.ok, true);
   assert.equal(health.ledger, "sqlite-append-only");
 
-  const initial = await fetch(`http://127.0.0.1:${port}/api/state`).then((response) => response.json());
+  const resetReplay = await postJson(port, "/api/reset");
+  assert.equal(resetReplay.status, 201);
+  const initial = resetReplay.body;
   assert.equal(initial.status, "investigating");
   assert.equal(initial.events[0].type, "run.started");
   assert.equal(initial.harness.manifest.legacy_detail_status, "legacy_detail_unavailable");

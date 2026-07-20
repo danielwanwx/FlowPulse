@@ -95,6 +95,37 @@ test("view revisions bind projection semantics and invalid incident overlays fai
   );
 });
 
+test("server-owned demo lifecycle keeps the full graph healthy, then exposes only the bounded incident overlay", () => {
+  const healthy = composeTopologyViews({ manifest, incidentProjection: projection(), overlay, controls: controls(), demoLifecycle: demoLifecycle("HEALTHY") });
+  const detected = composeTopologyViews({ manifest, incidentProjection: projection(), overlay, controls: controls(), demoLifecycle: demoLifecycle("INCIDENT_DETECTED") });
+
+  assert.deepEqual(healthy.readiness, {
+    architecture_available: true,
+    live_available: true,
+    incident_detected: false,
+    diagnose_available: false,
+    agent_available: false,
+    compare_available: false
+  });
+  assert.equal(healthy.live.graph.nodes.every((node) => node.status === "healthy"), true);
+  assert.equal(healthy.live.graph.edges.every((edge) => edge.status === "healthy"), true);
+  assert.equal(healthy.diagnose.overlay.status, "unavailable");
+  assert.equal(detected.readiness.incident_detected, true);
+  assert.equal(detected.readiness.diagnose_available, true);
+  assert.equal(detected.readiness.agent_available, false);
+  assert.equal(detected.readiness.compare_available, false);
+  assert.equal(detected.live.graph.nodes.filter((node) => node.status === "incident").length, 6);
+  assert.equal(detected.live.incident_overlay.edges.length, 5);
+  assert.deepEqual(detected.demo.frames.map((frame) => frame.phase), ["HEALTHY", "INJECTING", "PAYMENT_CHECKOUT_IMPACT", "DOWNSTREAM_PROPAGATION", "INCIDENT_DETECTED"]);
+
+  const forged = demoLifecycle("INCIDENT_DETECTED");
+  forged.frames[3].relation_ids = ["kafka->fraud-detection", "checkout->kafka", "kafka->accounting"];
+  assert.throws(
+    () => composeTopologyViews({ manifest, incidentProjection: projection(), overlay, controls: controls(), demoLifecycle: forged }),
+    (error) => error instanceof TopologyProjectionError && error.code === "topology_view_demo_lifecycle_invalid"
+  );
+});
+
 function controls(overrides = {}) {
   return {
     deployment_evidence_id: "ev-deploy-checkout",
@@ -124,5 +155,21 @@ function investigation(verdict) {
     evaluator: { verdict, evidence_refs: [] },
     diagnosis_gate: { status: verdict === "accepted" ? "passed" : "pending", event_id: null, evidence_refs: [] },
     replan: { status: verdict === "rejected" ? "recorded" : "not_recorded", event_id: null }
+  };
+}
+
+function demoLifecycle(phase) {
+  return {
+    schema_version: "flowpulse.demo-lifecycle.v1",
+    run_id: "run-topology",
+    scenario_id: "astronomy-checkout-payment-captured-v1",
+    phase,
+    frames: [
+      { id: "healthy", order: 0, phase: "HEALTHY", node_ids: [], relation_ids: [], evidence_refs: [] },
+      { id: "injecting", order: 1, phase: "INJECTING", node_ids: ["checkout", "payment"], relation_ids: ["checkout->payment"], evidence_refs: ["ev-deploy-checkout", "ev-trace-payment-refused"] },
+      { id: "payment_checkout_impact", order: 2, phase: "PAYMENT_CHECKOUT_IMPACT", node_ids: ["checkout", "payment"], relation_ids: ["checkout->payment"], evidence_refs: ["ev-metric-checkout-errors"] },
+      { id: "downstream_propagation", order: 3, phase: "DOWNSTREAM_PROPAGATION", node_ids: ["kafka", "accounting", "fraud-detection"], relation_ids: ["checkout->kafka", "kafka->accounting", "kafka->fraud-detection"], evidence_refs: ["ev-metric-kafka-lag", "ev-log-consumer-delay"] },
+      { id: "incident_detected", order: 4, phase: "INCIDENT_DETECTED", node_ids: ["accounting", "checkout", "fraud-detection", "frontend", "kafka", "payment"], relation_ids: ["checkout->kafka", "checkout->payment", "frontend->checkout", "kafka->accounting", "kafka->fraud-detection"], evidence_refs: ["ev-metric-checkout-errors", "ev-metric-kafka-lag", "ev-log-consumer-delay"] }
+    ].slice(0, phase === "HEALTHY" ? 1 : 5)
   };
 }

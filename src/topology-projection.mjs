@@ -13,17 +13,28 @@ const HASH = /^[a-f0-9]{64}$/;
 const CONTROL_IDS = new Set(["deployment", "agent", "evaluator", "ledger"]);
 const VIEW_READY_STAGES = new Set(["evaluating", "replanning", "blocked", "waiting_for_owner", "approved", "executing", "verified"]);
 const AGENT_READY_STAGES = new Set(["evaluating", "replanning", "blocked"]);
+const DEMO_SCENARIO_ID = "astronomy-checkout-payment-captured-v1";
+const DEMO_PHASES = ["HEALTHY", "INJECTING", "PAYMENT_CHECKOUT_IMPACT", "DOWNSTREAM_PROPAGATION", "INCIDENT_DETECTED"];
+const DEMO_FRAME_CONTENT = [
+  { node_ids: [], relation_ids: [], evidence_refs: [] },
+  { node_ids: ["checkout", "payment"], relation_ids: ["checkout->payment"], evidence_refs: ["ev-deploy-checkout", "ev-trace-payment-refused"] },
+  { node_ids: ["checkout", "payment"], relation_ids: ["checkout->payment"], evidence_refs: ["ev-metric-checkout-errors"] },
+  { node_ids: ["kafka", "accounting", "fraud-detection"], relation_ids: ["checkout->kafka", "kafka->accounting", "kafka->fraud-detection"], evidence_refs: ["ev-metric-kafka-lag", "ev-log-consumer-delay"] },
+  { node_ids: ["accounting", "checkout", "fraud-detection", "frontend", "kafka", "payment"], relation_ids: ["checkout->kafka", "checkout->payment", "frontend->checkout", "kafka->accounting", "kafka->fraud-detection"], evidence_refs: ["ev-metric-checkout-errors", "ev-metric-kafka-lag", "ev-log-consumer-delay"] }
+];
 
-export function composeTopologyViews({ manifest, incidentProjection, overlay, controls = {} } = {}) {
+export function composeTopologyViews({ manifest, incidentProjection, overlay, controls = {}, demoLifecycle = null } = {}) {
   const base = runtimeGraph(manifest);
   const incident = incidentState(incidentProjection);
+  const demo = normalizeDemoLifecycle(demoLifecycle, incident, base);
   const control = controlGraph(controls, incident);
-  const readiness = readinessFor(incident, base.available);
+  const readiness = readinessFor(incident, base.available, demo);
   const truth = truthFor(manifest);
   const architectureNodes = sortNodes([...base.nodes, ...control.nodes]);
   const architectureIds = new Set(architectureNodes.map(({ id }) => id));
   const architectureEdges = sortEdges([...base.edges, ...control.edges].filter(({ from, to }) => architectureIds.has(from) && architectureIds.has(to)));
-  const incidentOverlay = diagnoseOverlay(overlay, incident, base);
+  const incidentOverlay = diagnoseOverlay(overlay, incident, base, demo);
+  const live = liveGraph(base, incidentOverlay, demo);
   const revision = canonicalSha256({
     schema_version: TOPOLOGY_VIEW_PROJECTION_SCHEMA_VERSION,
     manifest_sha256: manifest.content_sha256,
@@ -31,9 +42,10 @@ export function composeTopologyViews({ manifest, incidentProjection, overlay, co
     truth,
     readiness,
     architecture: graphIdentity(architectureNodes, architectureEdges),
-    live: graphIdentity(base.nodes, base.edges),
+    live: graphIdentity(live.nodes, live.edges),
     overlay: incidentOverlay,
-    control: control.identity
+    control: control.identity,
+    demo
   });
   const result = {
     schema_version: TOPOLOGY_VIEW_PROJECTION_SCHEMA_VERSION,
@@ -47,14 +59,12 @@ export function composeTopologyViews({ manifest, incidentProjection, overlay, co
       runtime_data: { node_count: base.nodes.length, edge_count: base.edges.length },
       control_evidence: { node_count: control.nodes.length, relation_count: control.edges.length }
     },
-    live: {
-      graph: graph(base.nodes.map((node) => ({ ...node, status: "captured" })), base.edges.map((edge) => ({ ...edge, status: "captured" }))),
-      runtime_data: { node_count: base.nodes.length, edge_count: base.edges.length }
-    },
+    live: { graph: graph(live.nodes, live.edges), runtime_data: { node_count: base.nodes.length, edge_count: base.edges.length }, incident_overlay: live.incident_overlay },
     diagnose: {
       graph: graph(base.nodes, base.edges),
       overlay: incidentOverlay
-    }
+    },
+    demo
   };
   if (Buffer.byteLength(JSON.stringify(result), "utf8") > MAX_SERIALIZED_BYTES) throw new TopologyProjectionError("topology_view_projection_limit_exceeded");
   return deepFreeze(result);
@@ -139,8 +149,8 @@ function controlEdge(id, from, to, kind, plane, label, status, provenance_refs) 
   return { id, from, to, kind, plane, label, status, provenance_refs };
 }
 
-function diagnoseOverlay(overlay, incident, base) {
-  if (!incident.available) return { status: "unavailable", node_ids: [], edges: [] };
+function diagnoseOverlay(overlay, incident, base, demo) {
+  if (!incident.available || demo?.phase === "HEALTHY") return { status: "unavailable", node_ids: [], edges: [] };
   if (!plain(overlay) || !sameKeys(overlay, ["schema_version", "base_fixture_id", "incident_id", "node_ids", "edges"]) || overlay.schema_version !== "flowpulse.incident-topology-map.v1" || overlay.base_fixture_id !== "otel-demo-system-v1" || overlay.incident_id !== incident.incident_id || !Array.isArray(overlay.node_ids) || !Array.isArray(overlay.edges) || overlay.node_ids.length !== OVERLAY_NODE_COUNT || overlay.edges.length !== OVERLAY_EDGE_COUNT || new Set(overlay.node_ids).size !== OVERLAY_NODE_COUNT || !overlay.node_ids.every(safeId)) fail("topology_view_overlay_invalid");
   const nodeIds = new Set(overlay.node_ids);
   const baseNodeIds = new Set(base.nodes.map(({ id }) => id));
@@ -156,7 +166,15 @@ function diagnoseOverlay(overlay, incident, base) {
   return { status: "available", node_ids: [...overlay.node_ids].sort(), edges: [...edges].sort((left, right) => left.id.localeCompare(right.id)) };
 }
 
-function readinessFor(incident, graphAvailable) {
+function readinessFor(incident, graphAvailable, demo) {
+  if (demo) return {
+    architecture_available: graphAvailable,
+    live_available: graphAvailable,
+    incident_detected: demo.phase === "INCIDENT_DETECTED",
+    diagnose_available: demo.phase === "INCIDENT_DETECTED",
+    agent_available: false,
+    compare_available: false
+  };
   const incidentDetected = incident.available;
   const diagnoseAvailable = incidentDetected && VIEW_READY_STAGES.has(incident.stage_status);
   return {
@@ -166,6 +184,39 @@ function readinessFor(incident, graphAvailable) {
     diagnose_available: diagnoseAvailable,
     agent_available: incidentDetected && AGENT_READY_STAGES.has(incident.stage_status),
     compare_available: diagnoseAvailable && incident.action === "executed" && incident.verification === "passed"
+  };
+}
+
+function normalizeDemoLifecycle(value, incident, base) {
+  if (value == null) return null;
+  if (!incident.available || !plain(value) || !sameKeys(value, ["schema_version", "run_id", "scenario_id", "phase", "frames"]) || value.schema_version !== "flowpulse.demo-lifecycle.v1" || value.run_id !== incident.run_id || value.scenario_id !== DEMO_SCENARIO_ID || !["HEALTHY", "INCIDENT_DETECTED"].includes(value.phase) || !Array.isArray(value.frames)) fail("topology_view_demo_lifecycle_invalid");
+  const expectedFrames = value.phase === "HEALTHY" ? DEMO_PHASES.slice(0, 1) : DEMO_PHASES;
+  if (value.frames.length !== expectedFrames.length) fail("topology_view_demo_lifecycle_invalid");
+  const nodeIds = new Set(base.nodes.map(({ id }) => id));
+  const relationIds = new Set(["checkout->kafka", "checkout->payment", "frontend->checkout", "kafka->accounting", "kafka->fraud-detection"]);
+  const frames = value.frames.map((frame, index) => {
+    const expected = DEMO_FRAME_CONTENT[index];
+    if (!plain(frame) || !sameKeys(frame, ["id", "order", "phase", "node_ids", "relation_ids", "evidence_refs"]) || frame.id !== expectedFrames[index].toLowerCase() || frame.order !== index || frame.phase !== expectedFrames[index] || !Array.isArray(frame.node_ids) || !Array.isArray(frame.relation_ids) || !Array.isArray(frame.evidence_refs) || frame.node_ids.length > OVERLAY_NODE_COUNT || frame.relation_ids.length > OVERLAY_EDGE_COUNT || frame.evidence_refs.length > 6 || new Set(frame.node_ids).size !== frame.node_ids.length || new Set(frame.relation_ids).size !== frame.relation_ids.length || new Set(frame.evidence_refs).size !== frame.evidence_refs.length || !frame.node_ids.every((id) => nodeIds.has(id)) || !frame.relation_ids.every((id) => relationIds.has(id)) || !frame.evidence_refs.every(safeId) || !sameOrdered(frame.node_ids, expected.node_ids) || !sameOrdered(frame.relation_ids, expected.relation_ids) || !sameOrdered(frame.evidence_refs, expected.evidence_refs)) fail("topology_view_demo_lifecycle_invalid");
+    return { id: frame.id, order: frame.order, phase: frame.phase, node_ids: [...frame.node_ids], relation_ids: [...frame.relation_ids], evidence_refs: [...frame.evidence_refs] };
+  });
+  return { schema_version: value.schema_version, run_id: value.run_id, scenario_id: value.scenario_id, phase: value.phase, frames };
+}
+
+function liveGraph(base, overlay, demo) {
+  if (!demo) return {
+    nodes: base.nodes.map((node) => ({ ...node, status: "captured" })),
+    edges: base.edges.map((edge) => ({ ...edge, status: "captured" })),
+    incident_overlay: { status: "inactive", node_ids: [], edges: [] }
+  };
+  const finalFrame = demo.frames.at(-1);
+  const incident = demo.phase === "INCIDENT_DETECTED" ? new Set(finalFrame.node_ids) : new Set();
+  const observedRelations = new Set(overlay.edges.filter(({ relation }) => relation === "observed_dependency").map(({ id }) => id));
+  return {
+    nodes: base.nodes.map((node) => ({ ...node, status: incident.has(node.id) ? "incident" : "healthy" })),
+    edges: base.edges.map((edge) => ({ ...edge, status: observedRelations.has(edge.id) && demo.phase === "INCIDENT_DETECTED" ? "incident" : "healthy" })),
+    incident_overlay: demo.phase === "INCIDENT_DETECTED"
+      ? { status: "active", node_ids: [...overlay.node_ids], edges: overlay.edges.map((edge) => ({ ...edge, status: "incident" })) }
+      : { status: "inactive", node_ids: [], edges: [] }
   };
 }
 
@@ -208,6 +259,7 @@ function provenance(value) {
 
 function safeId(value) { return typeof value === "string" && ID.test(value); }
 function safeText(value, maximum) { return typeof value === "string" && value.length > 0 && Buffer.byteLength(value, "utf8") <= maximum && /^[A-Za-z0-9][A-Za-z0-9 .()/_+-]*$/.test(value); }
+function sameOrdered(actual, expected) { return actual.length === expected.length && actual.every((value, index) => value === expected[index]); }
 function sameKeys(value, expected) { return Object.keys(value).sort().join(",") === [...expected].sort().join(","); }
 function plain(value) { return Boolean(value) && typeof value === "object" && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype; }
 function fail(code) { throw new TopologyProjectionError(code); }

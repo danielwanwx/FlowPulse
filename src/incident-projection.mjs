@@ -29,6 +29,7 @@ const AUTHORITY_EVENTS = new Set([
 ]);
 const KNOWN_EVENTS = new Set([
   "run.started", "incident.opened", "incident.detected", "incident.close", "closed.incident",
+  "demo.lifecycle.started", "demo.incident.injected",
   "evidence.queried", "evidence.requested", "evidence.snapshot.created", "evidence.manifest.proposed", "evidence.manifest.accepted", "evidence.plan.approved", "evidence.gap.proposed",
   "tool.called", "context.compiled", "hypothesis.proposed", "diagnosis.proposed", "diagnosis.gate.passed", "diagnosis.baseline.captured", "diagnosis.evidence_refs", "diagnosis.propagation", "diagnosis.proposed_repair",
   "evaluation.accepted", "evaluation.rejected", "plan.revised", "outcome.classified", "development.investigation.failed", "failure.episode.recorded",

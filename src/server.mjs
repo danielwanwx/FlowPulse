@@ -1,5 +1,5 @@
 import "./load-env.mjs";
-import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { extname, join, normalize } from "node:path";
@@ -49,7 +49,23 @@ const BROWSER_RESPONSE_MAX_BYTES = 512 * 1024;
 // This is a server-side work bound, deliberately much smaller than an
 // unbounded ledger scan and independent of the 256 KiB browser response cap.
 const PROJECTION_LEDGER_MAX_BYTES = 2 * 1024 * 1024;
-runtime.ensureRun();
+const DEMO_SCENARIO_ID = "astronomy-checkout-payment-captured-v1";
+const DEMO_LIFECYCLE_SCHEMA_VERSION = "flowpulse.demo-lifecycle.v1";
+const DEMO_INJECTION_EVIDENCE_REFS = [
+  "ev-deploy-checkout",
+  "ev-trace-payment-refused",
+  "ev-metric-checkout-errors",
+  "ev-metric-kafka-lag",
+  "ev-log-consumer-delay"
+];
+const DEMO_REPLAY_FRAMES = [
+  { id: "healthy", order: 0, phase: "HEALTHY", node_ids: [], relation_ids: [], evidence_refs: [] },
+  { id: "injecting", order: 1, phase: "INJECTING", node_ids: ["checkout", "payment"], relation_ids: ["checkout->payment"], evidence_refs: ["ev-deploy-checkout", "ev-trace-payment-refused"] },
+  { id: "payment_checkout_impact", order: 2, phase: "PAYMENT_CHECKOUT_IMPACT", node_ids: ["checkout", "payment"], relation_ids: ["checkout->payment"], evidence_refs: ["ev-metric-checkout-errors"] },
+  { id: "downstream_propagation", order: 3, phase: "DOWNSTREAM_PROPAGATION", node_ids: ["kafka", "accounting", "fraud-detection"], relation_ids: ["checkout->kafka", "kafka->accounting", "kafka->fraud-detection"], evidence_refs: ["ev-metric-kafka-lag", "ev-log-consumer-delay"] },
+  { id: "incident_detected", order: 4, phase: "INCIDENT_DETECTED", node_ids: ["accounting", "checkout", "fraud-detection", "frontend", "kafka", "payment"], relation_ids: ["checkout->kafka", "checkout->payment", "frontend->checkout", "kafka->accounting", "kafka->fraud-detection"], evidence_refs: ["ev-metric-checkout-errors", "ev-metric-kafka-lag", "ev-log-consumer-delay"] }
+];
+let activeDemoRunId = initializeDemoRun();
 validateAutonomyPolicyArtifact(AUTONOMY_POLICY_ARTIFACT);
 const langfuseEnabled = await initializeObservability().catch(() => {
   console.warn("Langfuse disabled");
@@ -63,13 +79,13 @@ const server = createServer(async (request, response) => {
   try {
     const url = new URL(request.url, `http://${request.headers.host || "localhost"}`);
     if (url.pathname === "/api/state" && request.method === "GET") {
-      return json(response, 200, await stateWithSource(runtime.ensureRun(), { cursor: url.searchParams.get("projection_cursor") }));
+      return json(response, 200, await stateWithSource(browserRunId(), { cursor: url.searchParams.get("projection_cursor") }));
     }
     if (url.pathname === "/api/source" && request.method === "GET") {
-      return json(response, 200, (await stateWithSource(runtime.ensureRun())).source);
+      return json(response, 200, (await stateWithSource(browserRunId())).source);
     }
     if (url.pathname === "/api/evidence" && request.method === "GET") {
-      const source = await selectedEvidenceSource(url.searchParams.get("run_id") || runtime.ensureRun());
+      const source = await selectedEvidenceSource(url.searchParams.get("run_id") || browserRunId());
       return json(response, 200, { source: redactedSource(source.metadata()), ...redactedEvidencePage(source.list({
         cursor: url.searchParams.get("cursor") || undefined,
         limit: url.searchParams.get("limit") || undefined,
@@ -79,7 +95,7 @@ const server = createServer(async (request, response) => {
     }
     if (url.pathname.startsWith("/api/evidence/") && request.method === "GET") {
       const id = decodeURIComponent(url.pathname.slice("/api/evidence/".length));
-      const source = await selectedEvidenceSource(url.searchParams.get("run_id") || runtime.ensureRun());
+      const source = await selectedEvidenceSource(url.searchParams.get("run_id") || browserRunId());
       return json(response, 200, { source: redactedSource(source.metadata()), evidence: redactedEvidenceDetail(source.detail(id)) });
     }
     if (url.pathname === "/api/agent-control" && request.method === "GET") {
@@ -91,7 +107,8 @@ const server = createServer(async (request, response) => {
     if (url.pathname === "/api/agent-control/message" && request.method === "POST") {
       requireJson(request);
       const body = await readJson(request);
-      const runId = runtime.ensureRun();
+      const runId = browserRunId();
+      if (isDemoRun(runId)) return json(response, 409, { error: "Demo lifecycle does not accept agent-control messages" });
       return json(response, 200, await withAgentControlTrace({
         runId,
         incidentId: runtime.bundle.incident.id,
@@ -114,7 +131,8 @@ const server = createServer(async (request, response) => {
     if (url.pathname === "/api/agent-control/action" && request.method === "POST") {
       requireJson(request);
       const body = await readJson(request);
-      const runId = runtime.ensureRun();
+      const runId = browserRunId();
+      if (isDemoRun(runId)) return json(response, 409, { error: "Demo lifecycle does not accept agent-control actions" });
       return json(response, 200, await withAgentControlTrace({
         runId,
         incidentId: runtime.bundle.incident.id,
@@ -149,6 +167,7 @@ const server = createServer(async (request, response) => {
       requireJson(request);
       const body = await readJson(request);
       if (!isEmptyObject(body)) return json(response, 409, { error: "Development investigation accepts no caller authority input" });
+      if (isDemoRun(browserRunId())) return json(response, 409, { error: "Demo lifecycle must reach a later Diagnose checkpoint" });
       const runId = runtime.ensureRun();
       try {
         await singleFlightDevelopmentInvestigation(runId);
@@ -167,6 +186,7 @@ const server = createServer(async (request, response) => {
     if (url.pathname === "/api/development/approve" && request.method === "POST") {
       requireJson(request);
       const body = await readJson(request);
+      if (isDemoRun(browserRunId())) return json(response, 409, { error: "Demo lifecycle cannot use development approval" });
       const runId = runtime.ensureRun();
       const owner = approvalOwner(body);
       if (!owner) return json(response, 409, { error: "An explicit bounded owner is required" });
@@ -175,25 +195,45 @@ const server = createServer(async (request, response) => {
     }
     if (url.pathname === "/api/development/verify" && request.method === "POST") {
       requireJson(request);
+      if (isDemoRun(browserRunId())) return json(response, 409, { error: "Demo lifecycle cannot use development verification" });
       const runId = runtime.ensureRun();
       await development.verify(runId);
       return json(response, 200, await stateWithSource(runId));
     }
     if (url.pathname === "/api/reset" && request.method === "POST") {
+      activeDemoRunId = null;
       const runId = runtime.startRun();
       return json(response, 201, await stateWithSource(runId));
     }
     if (url.pathname === "/api/next" && request.method === "POST") {
       const runId = runtime.ensureRun();
+      if (isDemoRun(runId)) return json(response, 409, { error: "Demo lifecycle requires a bounded demo injection" });
       agentControl.advance(runId, "timeline-advance");
       return json(response, 200, await stateWithSource(runId));
     }
     if (url.pathname === "/api/approve" && request.method === "POST") {
       const body = await readJson(request);
       const runId = runtime.ensureRun();
+      if (isDemoRun(runId)) return json(response, 409, { error: "Demo lifecycle cannot use compatibility approval" });
       if (runMode(runId) === "development") return json(response, 409, { error: "Development approval requires the canonical development Owner Gate" });
       runtime.approve(runId, body.owner || "Incident owner");
       return json(response, 200, await stateWithSource(runId));
+    }
+    if (url.pathname === "/api/demo/inject" && request.method === "POST") {
+      requireJson(request);
+      const body = await readJson(request);
+      const runId = browserRunId();
+      const current = await stateWithSource(runId);
+      const result = injectDemoIncident({ runId, body, current });
+      if (!result.ok) return json(response, 409, { error: result.code });
+      return json(response, result.inserted ? 201 : 200, await stateWithSource(runId));
+    }
+    if (url.pathname === "/api/demo/reset" && request.method === "POST") {
+      requireJson(request);
+      const body = await readJson(request);
+      if (!isEmptyObject(body)) return json(response, 409, { error: "Demo reset accepts no caller state" });
+      activeDemoRunId = createHealthyDemoRun();
+      return json(response, 201, await stateWithSource(activeDemoRunId));
     }
     if (url.pathname === "/api/live" && request.method === "POST") {
       const runId = runtime.startRun("live");
@@ -714,6 +754,102 @@ function sameCanonicalEvaluation(eventPayload, gatePayload) {
 function isEmptyObject(value) { return Boolean(value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === 0); }
 function approvalOwner(value) { return value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === 1 && boundedText(value.owner, 160) ? value.owner : null; }
 function runMode(runId) { return ledger.list(runId).find((event) => event.type === "run.started")?.payload?.mode || null; }
+function browserRunId() { return activeDemoRunId || runtime.ensureRun(); }
+function initializeDemoRun() {
+  const latest = ledger.latestRun(bundle.incident.id);
+  if (!latest) return createHealthyDemoRun();
+  return demoLifecycleFor(latest).ok ? latest : null;
+}
+function demoCorrelationId(runId) { return `demo:${runId}`; }
+function demoLifecycleFor(runId) {
+  if (!safeBrowserId(runId)) return { ok: false, code: "demo_run_invalid" };
+  const events = ledger.list(runId);
+  const start = events.find((event) => event.type === "run.started");
+  const lifecycle = events.find((event) => event.type === "demo.lifecycle.started");
+  if (!start || !lifecycle) return { ok: false, code: "demo_lifecycle_missing" };
+  const correlationId = demoCorrelationId(runId);
+  const validStart = start.actor === "demo-lifecycle" && start.parent_id === null && start.correlation_id === correlationId && start.payload?.mode === "replay" && start.payload?.schema_version === 1 && start.payload?.demo_lifecycle === "healthy" && start.payload?.scenario_id === DEMO_SCENARIO_ID;
+  const validLifecycle = lifecycle.actor === "demo-lifecycle" && lifecycle.parent_id === start.id && lifecycle.correlation_id === correlationId && lifecycle.payload?.schema_version === DEMO_LIFECYCLE_SCHEMA_VERSION && lifecycle.payload?.scenario_id === DEMO_SCENARIO_ID && lifecycle.payload?.phase === "HEALTHY" && lifecycle.evidence_refs.length === 0 && start.sequence < lifecycle.sequence;
+  if (!validStart || !validLifecycle) return { ok: false, code: "demo_lifecycle_invalid" };
+  const injections = events.filter((event) => event.type === "demo.incident.injected");
+  const extraDemoEvents = events.filter((event) => event.type.startsWith("demo.") && event.type !== "demo.lifecycle.started" && event.type !== "demo.incident.injected");
+  if (extraDemoEvents.length || injections.length > 1) return { ok: false, code: "demo_lifecycle_invalid" };
+  if (!injections.length) return { ok: true, value: demoLifecycleValue(runId, "HEALTHY"), injection: null };
+  const injection = injections[0];
+  const payload = injection.payload;
+  const validInjection = injection.id === `demo-injection-${runId}` && injection.actor === "demo-lifecycle" && injection.parent_id === lifecycle.id && injection.correlation_id === correlationId && injection.sequence > lifecycle.sequence && sameOrderedRefs(injection.evidence_refs, DEMO_INJECTION_EVIDENCE_REFS) && plainDemoInjectionPayload(payload);
+  if (!validInjection) return { ok: false, code: "demo_lifecycle_invalid" };
+  return { ok: true, value: demoLifecycleValue(runId, "INCIDENT_DETECTED"), injection };
+}
+function demoLifecycleValue(runId, phase) {
+  return {
+    schema_version: DEMO_LIFECYCLE_SCHEMA_VERSION,
+    run_id: runId,
+    scenario_id: DEMO_SCENARIO_ID,
+    phase,
+    frames: DEMO_REPLAY_FRAMES.slice(0, phase === "HEALTHY" ? 1 : DEMO_REPLAY_FRAMES.length).map((frame) => ({ ...frame, node_ids: [...frame.node_ids], relation_ids: [...frame.relation_ids], evidence_refs: [...frame.evidence_refs] }))
+  };
+}
+function plainDemoInjectionPayload(value) {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype && Object.keys(value).sort().join(",") === "idempotency_key,phase,projection_revision,scenario_id" && value.scenario_id === DEMO_SCENARIO_ID && value.phase === "INCIDENT_DETECTED" && validHash(value.projection_revision) && validDemoIdempotencyKey(value.idempotency_key));
+}
+function validDemoIdempotencyKey(value) { return typeof value === "string" && /^[a-z][a-z0-9-]{2,80}$/.test(value); }
+function createHealthyDemoRun() {
+  const runId = `run-${randomUUID()}`;
+  const correlationId = demoCorrelationId(runId);
+  const started = ledger.append({
+    id: `demo-run-started-${runId}`,
+    runId,
+    incidentId: bundle.incident.id,
+    type: "run.started",
+    actor: "demo-lifecycle",
+    payload: { mode: "replay", schema_version: 1, demo_lifecycle: "healthy", scenario_id: DEMO_SCENARIO_ID },
+    evidenceRefs: [],
+    correlationId
+  });
+  ledger.append({
+    id: `demo-lifecycle-started-${runId}`,
+    runId,
+    incidentId: bundle.incident.id,
+    type: "demo.lifecycle.started",
+    actor: "demo-lifecycle",
+    payload: { schema_version: DEMO_LIFECYCLE_SCHEMA_VERSION, scenario_id: DEMO_SCENARIO_ID, phase: "HEALTHY" },
+    evidenceRefs: [],
+    parentId: started.id,
+    correlationId
+  });
+  return runId;
+}
+function injectDemoIncident({ runId, body, current }) {
+  const lifecycle = demoLifecycleFor(runId);
+  if (!lifecycle.ok || activeDemoRunId !== runId) return { ok: false, code: "demo_run_not_active" };
+  if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).sort().join(",") !== "idempotency_key,projection_revision,run_id,scenario_id" || body.scenario_id !== DEMO_SCENARIO_ID || body.run_id !== runId || !validHash(body.projection_revision) || !validDemoIdempotencyKey(body.idempotency_key)) return { ok: false, code: "demo_injection_request_invalid" };
+  if (lifecycle.value.phase === "INCIDENT_DETECTED") {
+    const payload = lifecycle.injection?.payload;
+    return payload?.idempotency_key === body.idempotency_key && payload?.projection_revision === body.projection_revision
+      ? { ok: true, inserted: false }
+      : { ok: false, code: "demo_incident_already_injected" };
+  }
+  if (current?.topology_views?.projection_revision !== body.projection_revision || current?.topology_views?.demo?.phase !== "HEALTHY") return { ok: false, code: "demo_injection_request_invalid" };
+  const start = ledger.list(runId).find((event) => event.type === "demo.lifecycle.started");
+  const appended = ledger.appendIfAbsent({
+    id: `demo-injection-${runId}`,
+    runId,
+    incidentId: bundle.incident.id,
+    type: "demo.incident.injected",
+    actor: "demo-lifecycle",
+    payload: { scenario_id: DEMO_SCENARIO_ID, phase: "INCIDENT_DETECTED", projection_revision: body.projection_revision, idempotency_key: body.idempotency_key },
+    evidenceRefs: DEMO_INJECTION_EVIDENCE_REFS,
+    parentId: start?.id || null,
+    correlationId: demoCorrelationId(runId)
+  });
+  if (appended.inserted) return { ok: true, inserted: true };
+  const fresh = demoLifecycleFor(runId);
+  return fresh.ok && fresh.injection?.payload?.idempotency_key === body.idempotency_key && fresh.injection?.payload?.projection_revision === body.projection_revision
+    ? { ok: true, inserted: false }
+    : { ok: false, code: "demo_injection_conflict" };
+}
+function isDemoRun(runId) { return demoLifecycleFor(runId).ok; }
 function autonomyFailure(code, field_path) { const error = new InsufficientEvidenceError("Autonomy authority boundary rejected the run"); error.code = code; error.metadata = { stage: "authority_decision", validator_id: "server_authority_closure", reason_code: code, field_path, next_precondition: "produce_a_matching_frozen_diagnosis_gate" }; return error; }
 
 async function serveStatic(pathname, response) {
@@ -769,6 +905,8 @@ async function stateWithSource(runId = runtime.ensureRun(), { cursor = null } = 
   const preflight = projectionLedgerPreflight(runId);
   if (!preflight.ok) return nonActionableBrowserState(runId, preflight.code);
   const projected = runtime.state(runId);
+  const demoLifecycle = demoLifecycleFor(runId);
+  if (activeDemoRunId === runId && !demoLifecycle.ok) return nonActionableBrowserState(runId, demoLifecycle.code);
   const referenced = new Set(projected.events.flatMap((event) => event.evidence_refs));
   const source = await selectedEvidenceSource(runId, projected.mode);
   const evidence = source.summariesById(referenced);
@@ -789,7 +927,8 @@ async function stateWithSource(runId = runtime.ensureRun(), { cursor = null } = 
     manifest: topologyManifest,
     incidentProjection: incident_projection,
     overlay: incidentTopologyOverlay,
-    controls: topologyControlInputs(projected, sourceState)
+    controls: topologyControlInputs(projected, sourceState),
+    demoLifecycle: demoLifecycle.ok ? demoLifecycle.value : null
   });
   const state = {
     schema_version: "flowpulse.browser-state.v1",
@@ -1108,7 +1247,7 @@ function harnessProjection(events = []) {
 }
 
 function streamAgentEvents(request, response, url) {
-  const runId = url.searchParams.get("run_id") || runtime.ensureRun();
+  const runId = url.searchParams.get("run_id") || browserRunId();
   let lastSequence = Number(request.headers["last-event-id"] || url.searchParams.get("after") || 0);
   response.writeHead(200, {
     "content-type": "text/event-stream; charset=utf-8",
