@@ -1,6 +1,6 @@
 # FlowPulse Spatial Glass architecture visual polish
 
-**Status:** Owner-approved static Architecture overview refinement. Implementation is limited to the four-layer Architecture overview and its separate FlowPulse control surface.
+**Status:** Owner-approved Architecture overview and bounded in-layer component-detail refinement. Implementation is limited to the four-layer Architecture overview, its separate FlowPulse control surface, and safe details for a selected observed component.
 
 **Branch baseline:** `codex/frontend-architecture-polish` at `c352e89c08f384a45891c1b60f34c38ff7854dff`
 **Superseded visual implementation:** `b1fefe36849587efb3594c74fce9c791166ff928` is an inspectable solid-panel candidate, not the material direction for future work.
@@ -10,9 +10,9 @@
 
 **FlowPulse Spatial Glass** is a web approximation inspired by the spatial layering, depth, and frosted material cues associated with Apple Vision Pro interfaces. It is not, and must not claim to be, Apple's native Liquid Glass implementation.
 
-The Architecture page must stop reading as a line-art diagram while remaining an honest engineering topology and evidence-control product. Architecture is one static layered technology-stack overview, not a connected graph view or a drill-down workspace. The observed stack must be easy to scan, FlowPulse itself must remain visibly separate, and the canonical component inventory must be visible directly in each layer without a second face, node flip, or right-side component drawer.
+The Architecture page must stop reading as a line-art diagram while remaining an honest engineering topology and evidence-control product. Architecture is a layered technology-stack overview, not a connected graph view. The observed stack must be easy to scan, FlowPulse itself must remain visibly separate, and the canonical component inventory must remain visible directly in each layer. Selecting a component may replace only that layer's internal anatomy with one safe, bounded detail face. It never opens a duplicate right-side component drawer.
 
-This is redesign-preserve work. Existing navigation, canonical backend topology contracts, graph identity and counts, lifecycle logic, keyboard behavior, and theme-toggle behavior remain intact. Header, navigation, source status, and the FlowPulse control surface remain fixed around one static central workspace. Header, mode navigation, and the Architecture canvas share one continuous cool-gray page field rather than separate visual layers. Architecture child nodes are display surfaces, not click targets; the browser remains read-only and does not acquire authority.
+This is redesign-preserve work. Existing navigation, canonical backend topology contracts, graph identity and counts, lifecycle logic, keyboard behavior, and theme-toggle behavior remain intact. Header, navigation, source status, and the FlowPulse control surface remain fixed around one central workspace. Header, mode navigation, and the Architecture canvas share one continuous cool-gray page field rather than separate visual layers. Architecture child nodes become bounded local controls for their own layer detail only; the browser remains read-only and does not acquire authority.
 
 ## Locked design dials
 
@@ -23,7 +23,7 @@ This is redesign-preserve work. Existing navigation, canonical backend topology 
 | Visual density | 7/10: both system boundaries and principal topology are useful at the default desktop view |
 | Checkpoint theme | Light spatial theme. Do not remove or redesign the existing theme toggle in this checkpoint. |
 | Primary accent | FlowPulse blue. Status color remains independent of category color; red means fault only. |
-| Material | Flat translucent white surfaces over a cool-gray spatial canvas. Alpha contrast only separates material levels; no inner highlights, cast shadows, white-edge effects, or stacked shells. |
+| Material | A four-step cool-neutral material ladder: lighter cool-gray page, distinct Architecture workspace, near-white macro modules, and pure-white component/detail surfaces. Contrast comes from tone steps and alpha, never inner highlights, cast shadows, white-edge effects, or stacked shells. |
 | Prohibited effects | No rainbow or AI-purple mesh gradients, outer neon glow, pure-black shadows, dirty-black panels, glass on every primitive, decorative perpetual motion, or Apple-native implementation claims. |
 | Radius system | Primary glass surfaces 22px; nested nodes 14px; navigation and compact status controls may be pill-shaped. |
 
@@ -64,11 +64,15 @@ Cross-boundary relations remain available only if supplied by the backend and ev
 
 ## Central workspace information model
 
-Architecture is one static, non-editable summary surface. It has no local face state and cannot strengthen backend readiness, authority, or source truth.
+Architecture is a non-editable summary surface. It may hold only a local selected-component presentation state. That state cannot strengthen backend readiness, authority, or source truth and clears if the canonical Architecture projection becomes unavailable or the user leaves Architecture.
 
 - Four large translucent modules represent **Client applications**, **Commerce edge & APIs**, **Core services**, and **Async data & platform**.
 - Each module derives its canonical technical name, count, and compact member anatomy from the backend Architecture projection. All 22 members remain visible as consistent icon-and-name mini modules, so the user can identify the whole stack without drilling in.
-- A mini module is an information surface, not a button: no flip, nested page, keyboard activation, node selection, or duplicate detail drawer is rendered in Architecture.
+- A mini module is a compact button. Click, Enter, or Space replaces only its containing macro module's anatomy with the selected component's focused detail face. It does not change route, mode, server state, graph identity, or any other macro module.
+- The focused face uses the same macro module bounds and contains a clear Back to layer inventory control. It shows one selected component, not a secondary component grid, so it stays visually calm and does not create an extra card layer.
+- Focused detail is limited to safe backend-projected fields: canonical label, component class and plane/layer, exact status and source-health label, ordered signal-type summaries, bounded provenance references, and incoming/outgoing Architecture relations. A responsibility sentence appears only when a future canonical projection explicitly supplies a bounded safe description; otherwise the face labels the projected technical class rather than inventing prose.
+- Related components are listed only from endpoint-valid incoming/outgoing relations in `topology_views.architecture`. They are relationship metadata, not Architecture edge lines or browser-derived causal claims.
+- Architecture does not open the shared right-side context drawer for mini modules. The existing drawer remains available only to its owning non-Architecture views.
 - Each layer and each FlowPulse control node receives a small upper-right status dot from its exact backend-projected status. Green is the normal projected baseline, including captured `observed` state; red means a proven fault/impact; amber means pending/warning/change/approval; muted gray means sleeping/idle/quiet/dormant. This compact visual mapping never claims a captured source is fresh production LIVE and never authorizes lifecycle state.
 - FlowPulse Control System remains an independent translucent side surface containing exactly Deployment, Investigator, Evaluator, and Evidence Ledger. It is not a fifth layer.
 - Architecture renders no dependency line, SVG edge map, arrowhead, pulse, node-to-node line, cross-boundary line, internal relation diagram, or relation selection. Backend relation data remains available to Live, diagnosis, and safe detail elsewhere.
@@ -79,16 +83,16 @@ Use Architecture-scoped CSS variables and existing stack primitives. These value
 
 | Token family | Intent | Light spatial rule and fallback |
 | --- | --- | --- |
-| Spatial background | Establish quiet depth behind the workspace | One continuous cool-gray page field behind fixed navigation and the Architecture canvas. No multicolor marketing mesh. Fallback is a solid off-white neutral. |
-| Page glass | Contain the Architecture workspace | Navigation and workspace share the same continuous page field; only semantic modules receive translucent light-neutral material. Fallback uses an opaque off-white surface and normal contrast. |
-| Observed-system matte glass | Make the monitored system the primary plane | One transparent workspace, not a second raised shell. Spacing and alpha-separated layer modules do the grouping. |
-| FlowPulse control glass | Distinguish the control plane without treating it as runtime | 22px radius; separate translucent surface with a restrained FlowPulse-blue tint and slightly higher alpha. The tint never means incident severity. |
-| Nested node glass | Make member anatomy clear without creating a card wall | 14px radius; consistent, visibly lighter translucent white face than its containing layer, readable text, no ordinary border, highlight, blur, or shadow. |
+| Spatial background | Establish quiet depth behind the workspace | Level 0: light cool-gray `#d3dce2` page field behind fixed navigation and the Architecture canvas. No multicolor marketing mesh. Fallback is a solid off-white neutral. |
+| Page glass | Contain the Architecture workspace | Level 1: distinct cool-blue-gray `#c9d4dc` Architecture workspace. Navigation and workspace still share one continuous page field, without a separate canvas shell. |
+| Observed-system matte glass | Make the monitored system the primary plane | One transparent workspace, not a second raised shell. Spacing and Level 2 macro modules do the grouping. |
+| FlowPulse control glass | Distinguish the control plane without treating it as runtime | Level 2 near-white gray, with a restrained FlowPulse-blue label only. Its four control nodes use Level 3 surfaces. The tint never means incident severity. |
+| Nested node glass | Make member anatomy clear without creating a card wall | Level 3 pure white `#fff`, 14px radius, readable text, no ordinary border, highlight, blur, or shadow. The selected detail uses the same pure-white top level. |
 | Floating controls | Give menus/toolbar highest interaction priority | Compact, pill-shaped only where status or navigation semantics call for it; otherwise use the same 14px nested-control geometry, contrast, and visible focus ring. |
-| Static node anatomy | Make the stack inventory visible without another interaction layer | Every layer shows the same 14px mini component module: icon, canonical short name, and truthfully projected status dot. |
-| Run-level drawer | Keep non-Architecture inspection coherent without a dark modal | 22px radius; translucent matte glass with alpha separation only. Architecture does not open this drawer for component mini modules. |
+| Static node anatomy | Make the stack inventory visible and reachable | Every layer shows the same 14px mini component button: near-black icon, canonical short name, and truthfully projected status dot. |
+| Focused component detail | Keep Architecture inspection in context | Replaces the selected macro layer's anatomy with a single pure-white detail face and Back control. It is not a right-side drawer or a new route. |
 | Text | Preserve readability on translucent material | Near-black primary, dark neutral secondary, WCAG-readable metadata. Never use low-contrast gray text merely to look glassy. |
-| Accent and status | Encode intent, not material | FlowPulse blue for selected/active/control treatment. Red=fault only, amber=caution, green=verified recovery. Category color is limited to icon bases or compact glyph detail. |
+| Accent and status | Encode intent, not material | FlowPulse blue for selected/active/control treatment. Red=fault only, amber=pending/caution, green=normal projected baseline, gray=sleeping/idle. Component glyphs use one near-black neutral `#111827` rather than category colors. |
 | Shape scale | Make the system coherent | 22px primary glass, 14px nested nodes and controls, pills only for compact status/navigation. Icon bases are circular or 12px rounded squares. |
 
 Decorative borders, top highlights, shadow effects, and separator hairlines are removed where material contrast, padding, or alignment communicates the grouping more clearly. An essential fallback outline may appear only in reduced-transparency mode.
@@ -99,20 +103,20 @@ Decorative borders, top highlights, shadow effects, and separator hairlines are 
 
 - Primary glass boundaries and any run-level drawer use 22px. Nested node modules and ordinary controls use 14px. Do not introduce another radius tier.
 - Avoid ad hoc pills and mixed square/rounded corners. Pills remain limited to compact navigation or status semantics.
-- Icons sit on a circular or 12px rounded-square base. The base identifies category; it cannot imply authority or severity.
+- Icons sit on a circular or 12px rounded-square neutral base. Every glyph uses one near-black neutral and cannot imply authority or severity.
 - Status/toggle controls may be pill-shaped because their compact state semantics benefit from it. Node cards and system boundaries may not become pills.
 
 ### Material hierarchy
 
 The view must retain these levels from back to front:
 
-1. **Continuous cool-gray page field**: one neutral background behind fixed navigation, mode controls, and the Architecture canvas.
-2. **Observed System field**: one transparent workspace containing the four macro layer modules, without a second canvas shell.
-3. **FlowPulse Control surface**: a visibly separate, restrained blue-tinted translucent module.
-4. **Layer and component modules**: higher-alpha 22px and 14px surfaces, respectively, with no shadow, highlight, border, or nested glass shell.
-5. **Fixed navigation and controls**: use the same alpha-only material where Architecture styling applies.
+1. **Level 0, page field**: `#d3dce2` behind fixed navigation, mode controls, and the Architecture canvas.
+2. **Level 1, Architecture workspace**: `#c9d4dc`, one clear field containing the four macro layer modules, without a second canvas shell.
+3. **Level 2, macro and FlowPulse surfaces**: `#e9eef1` or an equivalent near-white cool neutral.
+4. **Level 3, components and focused detail**: pure white, including the observed mini nodes and FlowPulse controls.
+5. **Status dots and FlowPulse label**: the only compact semantic color, independent of the material ladder.
 
-The page uses alpha rather than optical elevation. Backdrop blur may be retained only on a bounded outer surface when it materially improves the fallback-safe spatial field; it must never be applied to layer, node, icon, or status-dot modules. Nested high-radius blurs, cast shadows, and white-edge effects are forbidden.
+The page uses tone steps and alpha rather than optical elevation. Backdrop blur may be retained only on a bounded outer surface when it materially improves the fallback-safe spatial field; it must never be applied to layer, node, icon, or status-dot modules. Nested high-radius blurs, cast shadows, white-edge effects, and ordinary outlines are forbidden.
 
 ## Page composition and system-boundary hierarchy
 
@@ -129,22 +133,22 @@ At 1440px, the two boundaries and principal topology are visible without browser
 
 Every backend-projected node uses a consistent anatomy:
 
-1. Existing component-type icon on a circular or 12px-square category base.
+1. Existing component-type icon on a circular or 12px-square neutral base. Every glyph uses one near-black neutral rather than category color.
 2. Canonical short node title in the product face, aligned consistently across observed and FlowPulse control modules.
 3. One upper-right status dot from backend-projected status; it never substitutes for component category or source truth.
-4. No visible runtime/kind/layer/provenance facts on Architecture mini modules. Accessibility labels carry bounded safe identity and status.
+4. No visible runtime/kind/layer/provenance facts on Architecture mini modules. Accessibility labels carry bounded safe identity and status. The focused detail face shows only the safe projected facts specified above.
 
 | Entity class | Existing icon-family intent | Category treatment |
 | --- | --- | --- |
-| API/service | Existing service, plug, browser, or API glyph | Cool neutral/blue category base |
-| Stream/Kafka | Existing queue/stream glyph | Stream category base |
-| Database, warehouse, dataset | Existing storage/database glyph | Storage category base |
-| Job/worker | Existing gear/worker glyph | Work category base |
-| Deployment | Existing commit/deployment glyph | FlowPulse control base |
-| Investigator/evaluator | Existing robot/scales glyph | FlowPulse control base |
-| Evidence ledger | Existing database/evidence glyph | FlowPulse evidence base |
+| API/service | Existing service, plug, browser, or API glyph | Near-black glyph on neutral base |
+| Stream/Kafka | Existing queue/stream glyph | Near-black glyph on neutral base |
+| Database, warehouse, dataset | Existing storage/database glyph | Near-black glyph on neutral base |
+| Job/worker | Existing gear/worker glyph | Near-black glyph on neutral base |
+| Deployment | Existing commit/deployment glyph | Near-black glyph on neutral base |
+| Investigator/evaluator | Existing robot/scales glyph | Near-black glyph on neutral base |
+| Evidence ledger | Existing database/evidence glyph | Near-black glyph on neutral base |
 
-Architecture component modules are static, non-selectable inventory. The browser cannot generate a causal narrative, map missing fault evidence to healthy, or infer authority from displayed status.
+Architecture component modules are selectable local inventory. Their focused detail remains read-only: the browser cannot generate a causal narrative, map missing fault evidence to healthy, or infer authority from displayed status.
 
 ## Architecture relation and legend rules
 
@@ -163,9 +167,10 @@ The Architecture surface does not render a legend. Four macro modules and the vi
 
 ## Interaction, accessibility, and motion
 
-- Preserve existing page navigation. Architecture layers, mini modules, and FlowPulse control modules are information surfaces rather than interactive controls; non-Architecture and run-level inspection retain their appropriate drawer behavior. Architecture remains structured and calm, never an editable flowchart. Live retains its own graph pan, zoom, route selection, and flow animation behavior unchanged.
-- Pointer hover and keyboard focus remain visible for actual page controls and menus in both transparency and fallback modes. Architecture mini modules remain static readable information surfaces.
-- `prefers-reduced-motion: reduce` has no Architecture transition to suppress; it preserves the existing static arrangement.
+- Preserve existing page navigation. Architecture macro layers and FlowPulse control modules remain information surfaces. Observed mini modules are the only Architecture-local controls; non-Architecture and run-level inspection retain their appropriate drawer behavior. Architecture remains structured and calm, never an editable flowchart. Live retains its own graph pan, zoom, route selection, and flow animation behavior unchanged.
+- Click, Enter, and Space open the focused face for the selected mini component. Back returns keyboard focus to the originating mini component. A short 180-240ms opacity/transform swap communicates the in-layer turn; it never changes layout geometry or leaves mirrored text visible.
+- Pointer hover and keyboard focus remain visible for actual page controls and menus in both transparency and fallback modes. The selected mini component uses the FlowPulse-blue selection accent, not a border glow.
+- `prefers-reduced-motion: reduce` uses an immediate content swap while preserving Back focus behavior.
 - `prefers-reduced-transparency: reduce` or a no-`backdrop-filter` environment replaces translucent/blurred materials with high-contrast opaque off-white surfaces, essential borders, and the same semantic hierarchy.
 - Animations may change only transform and opacity. They must not animate layout geometry, alter reading order, or create decorative perpetual motion.
 
@@ -174,14 +179,14 @@ The Architecture surface does not render a legend. Four macro modules and the vi
 ### 1440x900
 
 - Both named system boundaries, four observed layer modules, and the FlowPulse control surface are visible without browser zoom; no Architecture metric/Legend strip consumes canvas height.
-- The four macro surfaces show compact thumbnail anatomy for 6/9/3/4 canonical members, zero Architecture edges, zero expanded observed-node detail grid, and no clipping.
+- The four macro surfaces show compact thumbnail anatomy for 6/9/3/4 canonical members, zero Architecture edges, and no clipping. Selecting a member replaces only that macro surface with one focused detail face.
 - The material hierarchy is obvious through transparency only: observed system is the primary workspace; FlowPulse is a separate blue-tinted control surface; modules have no ordinary border, white top edge, shadow, or additional nested shell.
 
 ### 1280x800
 
 - The observed/control split remains unmistakable even if the control surface or evidence summary reflows.
-- Layer modules compact only within their backend-projected bounds; no title or component count becomes unreadably small.
-- Fixed page controls, fallback unavailable state, and non-Architecture run-level drawer in its owning view remain keyboard reachable and unclipped. Architecture modules remain static.
+- Layer modules and their focused detail faces compact only within their backend-projected bounds; no title, component count, Back control, or safe fact becomes unreadably small.
+- Fixed page controls, fallback unavailable state, and non-Architecture run-level drawer in its owning view remain keyboard reachable and unclipped. Architecture remains non-editable; only its selected macro layer may locally swap inventory for safe detail.
 
 ## Architecture-only non-goals
 
@@ -198,16 +203,19 @@ Implementation review must show:
 1. Architecture renders only the valid canonical projection and keeps the 22 runtime/data + 22 retained runtime dependency + four FlowPulse split.
 2. The client does not use `source.topology` as an Architecture fallback.
 3. Architecture contains four macro layers with canonical counts 6/9/3/4, a compact icon-and-label anatomy for every member, zero Architecture edge paths, and zero arrowheads.
-4. Architecture has exactly 22 observed mini modules and four separately represented FlowPulse control/evidence modules. No mini module opens an Architecture component face or component drawer.
+4. Architecture has exactly 22 observed mini modules and four separately represented FlowPulse control/evidence modules. Selecting an observed mini module replaces only its own macro layer with one focused detail face; it never opens the shared right-side drawer.
 5. FlowPulse nodes never render inside observed-system layers; no relation is drawn.
 6. Each layer and FlowPulse node presents an upper-right status dot from its backend-projected status: normal baseline green, pending amber, fault red, sleeping gray. The browser never treats a dot as source freshness, authority, or lifecycle truth.
-7. Redundant visible labels are absent while accessibility labels retain the observed-system and control-plane meaning. Architecture modules are not keyboard controls; actual page controls keep visible focus contrast.
-8. Reduced-motion and reduced-transparency fallbacks preserve meaning and readability. Architecture material levels differ by alpha only, never cast shadow, inner highlight, white edge, or blur on nested modules.
-8. No browser console error, failed API request, or raw/sensitive content reaches the page.
+7. The focused detail reads only backend-projected label, class, plane/layer, exact status, source health, ordered signal types, bounded provenance, and endpoint-valid related components. It renders explicit unavailable copy rather than invented responsibility text.
+8. Redundant visible labels are absent while accessibility labels retain the observed-system and control-plane meaning. Observed mini modules and Back controls are keyboard reachable; actual page controls keep visible focus contrast.
+9. Reduced-motion and reduced-transparency fallbacks preserve meaning and readability. The four material levels remain visibly distinct: Level 0 page `#d3dce2`, Level 1 Architecture workspace `#c9d4dc`, Level 2 macro modules `#e9eef1`, and Level 3 pure-white components/details. There are no cast shadows, inner highlights, white edges, or blur on nested modules.
+10. All component glyphs use the same near-black neutral, while lifecycle status remains in semantic dots only.
+11. No browser console error, failed API request, or raw/sensitive content reaches the page.
 
 Required screenshots:
 
 - Architecture Overview at 1440x900.
+- Selected observed component detail in its own macro layer at 1440x900.
 - Architecture Overview at 1280x800.
 - Architecture with reduced motion enabled.
 - Architecture with reduced transparency or blur fallback enabled.
@@ -217,10 +225,10 @@ Required screenshots:
 
 Each step is a separate reviewable commit. Stop after every step for owner review. Do not automatically continue.
 
-1. **Static architecture pass**: show compact canonical anatomy in all four layers; simplify visible hierarchy to one Architecture title; remove the in-canvas metric/Legend toolbar; remove Architecture face transition, Back control, node detail, and drawer activation; restyle FlowPulse with matching alpha-only nested modules and backend-owned status dots.
-2. **Owner screenshot gate**: review 1440x900 and 1280x800 static Overview evidence before expanding any other page.
-3. **Deferred runtime detail**: place richer component detail in Live or another owner-approved diagnostic surface, never by adding another Architecture face.
-4. **Final density pass**: keep the FlowPulse side surface, menu, and run-level sidebar under one translucent alpha-only material system; verify fallback materials, reduced motion/transparency, console/network cleanliness, and no Architecture edge renderer.
+1. **Material ladder pass**: normalize the four flat, borderless tone levels across the page field, workspace, macro layers, FlowPulse system, observed mini modules, control nodes, and details. Normalize every Architecture glyph to near-black.
+2. **Focused detail pass**: add local selection state, compact keyboard behavior, safe projection-only detail extraction, Back behavior, and an in-layer content swap. Remove any Architecture route to the shared component drawer.
+3. **Owner screenshot gate**: review 1440x900 and 1280x800 Overview plus a selected component face before expanding any other page.
+4. **Final density pass**: verify fallback materials, reduced motion/transparency, console/network cleanliness, valid safe-field absence behavior, and no Architecture edge renderer.
 
 The old `b1fefe3` CSS is not an implementation base by default. A future owner-approved implementation may reuse individual safe layout or token mechanics only after confirming that they satisfy this Spatial Glass material hierarchy; otherwise it supersedes them in a new explicit change. Rollback for any new implementation step is its own revert commit. If the work requires a backend contract change, new graph data, authority change, or another-page redesign, stop and return to owner review.
 
@@ -230,7 +238,8 @@ The old `b1fefe3` CSS is not an implementation base by default. A future owner-a
 - The approved material direction is FlowPulse Spatial Glass, not the prior opaque solid-panel direction.
 - The product may borrow high-level spatial-interface cues but must not claim native Apple material behavior or copy an Apple product surface.
 - Architecture is a layered stack overview, not a connected graph. Live owns connection animation.
-- Architecture is now one static overview. It does not offer any layer detail face, component flip, node selection, or component drawer.
+- Architecture is one layered overview with a bounded component detail face. An observed mini module can locally replace its own macro-layer anatomy; it does not offer a new route, a global drill-down page, Architecture graph lines, or a component drawer.
 - All 22 observed components remain visible in the four technical layers; FlowPulse retains four independent control/evidence modules with their own backend-owned status dots.
-- The remaining owner gate is review of that static Architecture sample before any other page receives the system.
+- The material hierarchy uses four contrast steps: lighter cool-gray page, distinct Architecture workspace, near-white macro modules, and pure-white component/detail surfaces. All glyphs are near-black; status dots retain green, amber, red, and gray semantic states.
+- The remaining owner gate is review of Overview and selected component samples before any other page receives the system.
 - The approved refinement removes shadows, white-edge effects, and excessive surface nesting. It uses a cool-gray canvas plus alpha-only transparent white modules and does not change any backend contract, graph count, lifecycle state, or non-Architecture page.
