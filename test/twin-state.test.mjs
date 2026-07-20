@@ -231,6 +231,9 @@ test("architecture is a static four-layer overview with backend-owned status dot
   assert.match(architectureStaticCss, /@media \(prefers-reduced-motion: reduce\)[\s\S]+?\.architecture-thumbnail-node:hover,[\s\S]+?transform: none;/);
   assert.match(architectureHoverCss, /\.architecture-thumbnail-node:hover,[\s\S]+?\.source-node\.is-architecture-compact:hover \{[\s\S]+?outline: none;[\s\S]+?background: rgba\(255, 255, 255, \.9\);[\s\S]+?box-shadow: none;/);
   assert.match(architectureHoverCss, /\.architecture-thumbnail-node:focus-visible,[\s\S]+?outline: 2px solid var\(--blue\);/);
+  assert.match(architectureHoverCss, /Detail stays inside its own macro layer; long projected facts scroll locally/);
+  assert.match(architectureHoverCss, /\.architecture-layer-module\.is-detail \{[\s\S]+?overflow: hidden;/);
+  assert.match(architectureHoverCss, /\.architecture-component-detail \{[\s\S]+?height: 100%;[\s\S]+?overflow-y: auto;[\s\S]+?overscroll-behavior: contain;/);
   assert.match(appJs, /"fault", "pending", "warning"/);
   assert.match(architectureDetailCss, /\.app-shell\[data-mode="architecture"\] \{[\s\S]+?background: #e9eef1;/);
   assert.match(architectureDetailCss, /\.twin-workspace,[\s\S]+?\.twin-scroll \{ background: #e9eef1; \}/);
