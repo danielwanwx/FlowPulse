@@ -1151,8 +1151,26 @@ async function sourceProjection(runId = runtime.ensureRun(), source = null) {
 function topologyControlInputs(projected, sourceState) {
   const deploymentEvidence = Array.isArray(sourceState?.evidence) && sourceState.evidence.some((record) => record?.id === "ev-deploy-checkout"
     && record.kind === "deploy" && record.source === "deployment.change" && record.entity === "checkout");
+  const observerStatus = sourceState?.status === "captured" || sourceState?.status === "frozen"
+    ? "observed"
+    : sourceState?.live_status === "live"
+      ? "active"
+      : "idle";
+  const observerSourceHealth = ["live", "stale", "disconnected"].includes(sourceState?.live_status)
+    ? sourceState.live_status
+    : "unavailable";
   return {
-    deployment_evidence_id: deploymentEvidence ? "ev-deploy-checkout" : null,
+    observer_status: observerStatus,
+    observer_source_health: observerSourceHealth,
+    external_change_evidence: deploymentEvidence
+      ? [{
+          id: "ev-deploy-checkout",
+          kind: "deployment_change",
+          status: "observed",
+          affected_node_ids: ["checkout"],
+          provenance_refs: ["evidence://ev-deploy-checkout"]
+        }]
+      : [],
     ledger_event_count: Array.isArray(projected?.events) ? Math.min(projected.events.length, INCIDENT_PROJECTION_LIMITS.max_input_events) : 0
   };
 }

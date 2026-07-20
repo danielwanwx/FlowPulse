@@ -25,6 +25,7 @@ import {
   liveSignalDuration,
   liveSignalProgress,
   livePulseSlots,
+  liveViewTopology,
   livePositions,
   orderedSignalEdges,
   primaryLiveEdges,
@@ -43,48 +44,96 @@ const architectureHoverCss = stylesCss.slice(stylesCss.lastIndexOf("/* Hover con
 const architectureComponentDetailSource = appJs.slice(appJs.indexOf("function architectureComponentDetailMarkup"), appJs.indexOf("function openArchitectureDetail"));
 const topologyManifest = JSON.parse(readFileSync(new URL("../data/topology/otel-demo-system-v1.json", import.meta.url), "utf8"));
 
+function runtimeNodes(status) {
+  const planeOrder = { runtime: 0, data: 1 };
+  const layerOrder = { experience: 0, commerce: 1, processing: 2, platform: 3 };
+  return [...topologyManifest.nodes]
+    .sort((left, right) => planeOrder[left.plane] - planeOrder[right.plane] || layerOrder[left.layer] - layerOrder[right.layer] || left.id.localeCompare(right.id))
+    .map((node) => ({ ...node, status }));
+}
+
 function backendArchitectureView() {
   const controls = [
-    { id: "deployment", kind: "deployment", display_class: "change", plane: "control", layer: "change", label: "Deployment", status: "observed", source_health: "unavailable", signal_types: [], provenance_refs: ["evidence://ev-deploy-checkout"] },
-    { id: "agent", kind: "service", display_class: "agent", plane: "control", layer: "investigation", label: "Investigator", status: "idle", source_health: "unavailable", signal_types: [], provenance_refs: ["code://flowpulse/investigator"] },
+    { id: "observer", kind: "service", display_class: "observer", plane: "control", layer: "observation", label: "Observer", status: "observed", source_health: "unavailable", signal_types: [], provenance_refs: ["code://flowpulse/observer"] },
+    { id: "orchestrator", kind: "service", display_class: "orchestrator", plane: "control", layer: "orchestration", label: "Orchestrator", status: "idle", source_health: "unavailable", signal_types: [], provenance_refs: ["ledger://orchestration"] },
+    { id: "investigator", kind: "service", display_class: "agent", plane: "control", layer: "investigation", label: "Investigator", status: "idle", source_health: "unavailable", signal_types: [], provenance_refs: ["code://flowpulse/investigator"] },
     { id: "evaluator", kind: "service", display_class: "evaluator", plane: "control", layer: "evaluation", label: "Evaluator", status: "idle", source_health: "unavailable", signal_types: [], provenance_refs: ["code://flowpulse/evaluator"] },
     { id: "ledger", kind: "dataset", display_class: "ledger", plane: "evidence", layer: "evidence", label: "Evidence Ledger", status: "recording", source_health: "unavailable", signal_types: [], provenance_refs: ["ledger://append-only"] }
   ];
-  const controlEdges = [{ id: "deployment-checkout", from: "deployment", to: "checkout", kind: "affects", plane: "control", label: "Deployment evidence", status: "observed", provenance_refs: ["evidence://ev-deploy-checkout"] }];
-  const nodes = [...topologyManifest.nodes, ...controls];
-  const edges = [...topologyManifest.edges, ...controlEdges];
+  const runtime = (status) => ({
+    graph: {
+      nodes: runtimeNodes(status),
+      edges: topologyManifest.edges.map((edge) => ({ ...edge, status })),
+      total_nodes: 22,
+      total_edges: 22,
+      truncated: false
+    },
+    node_count: 22,
+    edge_count: 22
+  });
+  const controlSystem = { nodes: controls, relations: [], node_count: 5, relation_count: 0 };
+  const externalChangeEvidence = {
+    records: [{ id: "ev-deploy-checkout", kind: "deployment_change", status: "observed", affected_node_ids: ["checkout"], provenance_refs: ["evidence://ev-deploy-checkout"] }],
+    relation_count: 1
+  };
   return {
-    schema_version: "flowpulse.topology-views.v1",
+    schema_version: "flowpulse.topology-views.v2",
+    projection_revision: "a".repeat(64),
+    run_id: "run-topology",
+    incident_id: "inc-astro-checkout-001",
     truth: { source_health: "unavailable", evidence_mode: "captured_fixture", execution_mode: "deterministic_replay", label: "CAPTURED" },
+    readiness: { architecture_available: true, live_available: true, incident_detected: false, diagnose_available: false, agent_available: false, compare_available: false },
     architecture: {
-      graph: { nodes, edges, total_nodes: nodes.length, total_edges: edges.length, truncated: false },
-      runtime_data: { node_count: 22, edge_count: 22 },
-      control_evidence: { node_count: 4, relation_count: 1 }
+      runtime_data: runtime("observed"),
+      control_system: controlSystem,
+      external_change_evidence: externalChangeEvidence
+    },
+    live: {
+      runtime_data: runtime("captured"),
+      control_system: controlSystem,
+      external_change_evidence: externalChangeEvidence,
+      incident_overlay: { status: "inactive", node_ids: [], edges: [] }
+    },
+    diagnose: {
+      runtime_data: runtime("observed"),
+      overlay: { status: "unavailable", node_ids: [], edges: [] }
+    },
+    demo: {
+      schema_version: "flowpulse.demo-lifecycle.v1",
+      run_id: "run-topology",
+      scenario_id: "astronomy-checkout-payment-captured-v1",
+      phase: "HEALTHY",
+      frames: [{ id: "healthy", order: 0, phase: "HEALTHY", node_ids: [], relation_ids: [], evidence_refs: [] }]
     }
   };
 }
 
-test("Architecture accepts only the complete backend topology view and retains separate control evidence counts", () => {
+test("Architecture accepts only the strict v2 backend topology view and retains separate control evidence", () => {
   const view = architectureViewTopology(backendArchitectureView());
   assert.ok(view);
-  assert.equal(view.graph.nodes.length, 26);
+  assert.equal(view.graph.nodes.length, 27);
   assert.equal(view.runtime_data.node_count, 22);
   assert.equal(view.runtime_data.edge_count, 22);
-  assert.equal(view.control_evidence.node_count, 4);
-  assert.equal(view.control_evidence.relation_count, 1);
-  assert.deepEqual(view.graph.nodes.filter((node) => ["control", "evidence"].includes(node.plane)).map((node) => node.id).sort(), ["agent", "deployment", "evaluator", "ledger"]);
+  assert.equal(view.control_system.node_count, 5);
+  assert.equal(view.control_system.relation_count, 0);
+  assert.equal(view.external_change_evidence.relation_count, 1);
+  const live = liveViewTopology(backendArchitectureView());
+  assert.ok(live);
+  assert.equal(live.runtime_data.graph.nodes.length, 22);
+  assert.deepEqual(live.control_system.nodes.map(({ id }) => id), ["observer", "orchestrator", "investigator", "evaluator", "ledger"]);
+  assert.equal(live.external_change_evidence.relation_count, 1);
+  assert.deepEqual(view.graph.nodes.filter((node) => ["control", "evidence"].includes(node.plane)).map((node) => node.id).sort(), ["evaluator", "investigator", "ledger", "observer", "orchestrator"]);
   assert.equal(view.graph.edges.filter((edge) => edge.plane === "runtime").length, 22);
-  assert.equal(view.graph.edges.filter((edge) => ["control", "evidence"].includes(edge.plane)).length, 1);
+  assert.equal(view.graph.edges.filter((edge) => ["control", "evidence"].includes(edge.plane)).length, 0);
   const ids = new Set(view.graph.nodes.map((node) => node.id));
   assert.equal(view.graph.edges.every((edge) => ids.has(edge.from) && ids.has(edge.to)), true);
   const boundaries = architectureBoundaries(view.graph);
   assert.equal(boundaries.observed.nodes.length, 22);
   assert.equal(boundaries.observed.relations.length, 22);
-  assert.equal(boundaries.flowpulse.nodes.length, 4);
+  assert.equal(boundaries.flowpulse.nodes.length, 5);
   assert.equal(boundaries.flowpulse.internal_relations.length, 0);
-  assert.equal(boundaries.cross_boundary_relations.length, 1);
-  assert.equal(boundaries.cross_boundary_relations[0].id, "deployment-checkout");
-  assert.equal(boundaries.observed.nodes.some((node) => ["deployment", "agent", "evaluator", "ledger"].includes(node.id)), false);
+  assert.equal(boundaries.cross_boundary_relations.length, 0);
+  assert.equal(boundaries.observed.nodes.some((node) => ["deployment", "investigator", "evaluator", "ledger", "observer", "orchestrator"].includes(node.id)), false);
   assert.equal(boundaries.flowpulse.nodes.every((node) => ["control", "evidence"].includes(node.plane)), true);
   const positioned = new Map(architecturePositions(boundaries.observed.nodes).map((node) => [node.id, node]));
   for (const node of boundaries.observed.nodes) {
@@ -93,11 +142,27 @@ test("Architecture accepts only the complete backend topology view and retains s
 
   assert.equal(architectureViewTopology({ schema_version: "flowpulse.topology-views.v1", architecture: { graph: { nodes: topologyManifest.nodes, edges: topologyManifest.edges } } }), null);
   const invalid = backendArchitectureView();
-  invalid.architecture.graph.edges[0] = { ...invalid.architecture.graph.edges[0], to: "missing" };
+  invalid.architecture.runtime_data.graph.edges[0] = { ...invalid.architecture.runtime_data.graph.edges[0], to: "missing" };
   assert.equal(architectureViewTopology(invalid), null);
   const unsafe = backendArchitectureView();
-  unsafe.architecture.graph.nodes[0] = { ...unsafe.architecture.graph.nodes[0], raw_trace: "not browser-safe" };
+  unsafe.architecture.runtime_data.graph.nodes[0] = { ...unsafe.architecture.runtime_data.graph.nodes[0], raw_trace: "not browser-safe" };
   assert.equal(architectureViewTopology(unsafe), null);
+  const extraControl = backendArchitectureView();
+  extraControl.architecture.control_system.nodes.push({ ...extraControl.architecture.control_system.nodes[0], id: "extra-control" });
+  extraControl.architecture.control_system.node_count = 6;
+  assert.equal(architectureViewTopology(extraControl), null);
+  const mismatchedLive = backendArchitectureView();
+  mismatchedLive.live.runtime_data.graph.nodes[0] = { ...mismatchedLive.live.runtime_data.graph.nodes[0], label: "Forged" };
+  assert.equal(architectureViewTopology(mismatchedLive), null);
+  const invalidEvidence = backendArchitectureView();
+  invalidEvidence.architecture.external_change_evidence.records[0].affected_node_ids = ["missing"];
+  assert.equal(architectureViewTopology(invalidEvidence), null);
+  const invalidDemo = backendArchitectureView();
+  invalidDemo.demo.frames[0].node_ids = ["missing"];
+  assert.equal(architectureViewTopology(invalidDemo), null);
+  const extraRoot = backendArchitectureView();
+  extraRoot.compatibility = true;
+  assert.equal(architectureViewTopology(extraRoot), null);
 
   const architectureFunction = appJs.match(/function architectureTopology\(\) \{[\s\S]+?\n\}/)?.[0] || "";
   assert.match(architectureFunction, /architectureViewTopology\(state\?\.topology_views\)/);

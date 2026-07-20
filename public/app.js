@@ -294,7 +294,7 @@ function renderMetrics() {
     els["metric-kafka-label"].textContent = "FlowPulse";
     setMetric("checkout", String(boundaries?.observed.nodes.length || 0), view ? "captured source" : "Backend view unavailable");
     setMetric("payment", String(boundaries?.observed.relations.length || 0), view ? "retained projection" : "No compatibility fallback");
-    setMetric("kafka", String(boundaries?.flowpulse.nodes.length || 0), view ? `${boundaries.cross_boundary_relations.length} evidence relation` : "Control system unavailable");
+    setMetric("kafka", String(boundaries?.flowpulse.nodes.length || 0), view ? `${view.external_change_evidence.relation_count} evidence relation` : "Control system unavailable");
     return;
   }
   if (mode === "live" || state.mode === "development") {
@@ -420,7 +420,7 @@ function renderSourceCanvas(layout) {
         <div class="architecture-layer-grid">${layerModules}</div>
       </section>
       <aside class="architecture-system architecture-flowpulse-system" aria-label="FlowPulse Control System">
-        <span class="visually-hidden">${boundaries.flowpulse.nodes.length} FlowPulse control and evidence components with ${boundaries.cross_boundary_relations.length} backend-projected cross-boundary evidence relations.</span>
+        <span class="visually-hidden">${boundaries.flowpulse.nodes.length} FlowPulse control and evidence components with ${architecture.external_change_evidence.relation_count} backend-projected external change evidence relations.</span>
         <header class="architecture-control-heading"><div><span>FlowPulse</span><strong>Control System</strong></div><em>${boundaries.flowpulse.nodes.length} components</em></header>
         <div class="architecture-flowpulse-nodes">${controlNodes}</div>
       </aside>
@@ -428,9 +428,9 @@ function renderSourceCanvas(layout) {
     els["twin-canvas"].dataset.invalidEdges = String(topology.invalid_edges.length);
     els["twin-canvas"].dataset.unlinkedNodes = "0";
     els["twin-canvas"].dataset.runtimeEdges = String(architecture.runtime_data.edge_count);
-    els["twin-canvas"].dataset.controlRelations = String(architecture.control_evidence.relation_count);
-    els["twin-canvas"].dataset.crossBoundaryRelations = String(boundaries.cross_boundary_relations.length);
-    els["twin-canvas"].setAttribute("aria-label", `Static Observed System Architecture with ${boundaries.observed.nodes.length} runtime/data components and ${boundaries.observed.relations.length} retained runtime dependencies, separate from the FlowPulse Control System with ${boundaries.flowpulse.nodes.length} control/evidence components and ${boundaries.cross_boundary_relations.length} cross-boundary evidence relations.`);
+    els["twin-canvas"].dataset.controlRelations = String(architecture.control_system.relation_count);
+    els["twin-canvas"].dataset.crossBoundaryRelations = String(architecture.external_change_evidence.relation_count);
+    els["twin-canvas"].setAttribute("aria-label", `Static Observed System Architecture with ${boundaries.observed.nodes.length} runtime/data components and ${boundaries.observed.relations.length} retained runtime dependencies, separate from the FlowPulse Control System with ${boundaries.flowpulse.nodes.length} control/evidence components and ${architecture.external_change_evidence.relation_count} backend-projected external change evidence relations.`);
     return;
   }
   const positions = new Map(positioned.map((node) => [node.id, node]));
@@ -2307,7 +2307,7 @@ function closeWorkspaceMenu() {
 function iconForLive(node) {
   const known = { frontend: "browser", "frontend-proxy": "arrows-left-right", checkout: "shopping-cart-simple", payment: "credit-card", kafka: "queue", accounting: "calculator", "fraud-detection": "shield-check", cart: "shopping-bag", shipping: "truck", currency: "currency-circle-dollar" };
   const displayClass = node.display_class || node.kind;
-  return known[node.id] || ({ client: "browser", api: "plugs-connected", stream: "queue", worker: "gear", change: "git-commit", agent: "robot", evaluator: "scales", ledger: "database", deployment: "git-commit", dataset: "database", topic: "queue", job: "gear", database: "database" })[displayClass] || "cube";
+  return known[node.id] || ({ client: "browser", api: "plugs-connected", stream: "queue", worker: "gear", observer: "eye", orchestrator: "git-branch", agent: "robot", evaluator: "scales", ledger: "database", deployment: "git-commit", dataset: "database", topic: "queue", job: "gear", database: "database" })[displayClass] || "cube";
 }
 
 function statusLabel(status) {

@@ -389,38 +389,166 @@ export function topologyIntegrity(topology = {}) {
 }
 
 export function architectureViewTopology(topologyViews = {}) {
-  if (!plainRecord(topologyViews) || topologyViews.schema_version !== "flowpulse.topology-views.v1" || !validTopologyTruth(topologyViews.truth)) return null;
-  const architecture = topologyViews.architecture;
-  if (!plainRecord(architecture) || !sameKeys(architecture, ["graph", "runtime_data", "control_evidence"]) || !plainRecord(architecture.graph) || !plainRecord(architecture.runtime_data) || !plainRecord(architecture.control_evidence)) return null;
-  const { graph, runtime_data: runtimeData, control_evidence: controlEvidence } = architecture;
-  if (!sameKeys(graph, ["nodes", "edges", "total_nodes", "total_edges", "truncated"]) || !sameKeys(runtimeData, ["node_count", "edge_count"]) || !sameKeys(controlEvidence, ["node_count", "relation_count"])
-    || !Array.isArray(graph.nodes) || !Array.isArray(graph.edges)
-    || graph.total_nodes !== graph.nodes.length || graph.total_edges !== graph.edges.length || graph.truncated !== false
-    || runtimeData.node_count !== 22 || runtimeData.edge_count !== 22
-    || controlEvidence.node_count !== 4 || !Number.isInteger(controlEvidence.relation_count) || controlEvidence.relation_count < 0 || controlEvidence.relation_count > 32
-    || graph.nodes.length !== runtimeData.node_count + controlEvidence.node_count
-    || graph.edges.length !== runtimeData.edge_count + controlEvidence.relation_count) return null;
-  if (!graph.nodes.every(validArchitectureNode) || !graph.edges.every(validArchitectureEdge)) return null;
-
-  const topology = topologyIntegrity({ nodes: graph.nodes, edges: graph.edges });
-  if (topology.invalid_edges.length || topology.nodes.length !== graph.nodes.length || topology.edges.length !== graph.edges.length) return null;
-  if (!graph.nodes.every((node, index) => node.id === topology.nodes[index]?.id)
-    || !graph.edges.every((edge, index) => edge.id === topology.edges[index]?.id && edge.from === topology.edges[index]?.from && edge.to === topology.edges[index]?.to)) return null;
-
-  const controlIds = ["deployment", "agent", "evaluator", "ledger"];
-  const controls = topology.nodes.filter((node) => ["control", "evidence"].includes(node.plane));
-  const runtimeEdges = topology.edges.filter((edge) => ["runtime", "data"].includes(edge.plane));
-  const controlEdges = topology.edges.filter((edge) => ["control", "evidence"].includes(edge.plane));
-  if (controls.length !== controlEvidence.node_count || runtimeEdges.length !== runtimeData.edge_count || controlEdges.length !== controlEvidence.relation_count
-    || controls.map((node) => node.id).sort().join(",") !== [...controlIds].sort().join(",")
-    || topology.nodes.some((node) => controlIds.includes(node.id) !== ["control", "evidence"].includes(node.plane))) return null;
-
+  const views = topologyViewsV2(topologyViews);
+  if (!views) return null;
+  const runtime = views.architecture.runtime_data.graph;
+  const controls = views.architecture.control_system;
+  const graph = topologyIntegrity({ nodes: [...runtime.nodes, ...controls.nodes], edges: [...runtime.edges, ...controls.relations] });
+  if (graph.invalid_edges.length || graph.nodes.length !== runtime.nodes.length + controls.nodes.length || graph.edges.length !== runtime.edges.length + controls.relations.length) return null;
   return {
-    graph: { ...topology, total_nodes: graph.total_nodes, total_edges: graph.total_edges, truncated: false },
-    runtime_data: { ...runtimeData },
-    control_evidence: { ...controlEvidence },
-    truth: { ...topologyViews.truth }
+    graph: { ...graph, total_nodes: graph.nodes.length, total_edges: graph.edges.length, truncated: false },
+    runtime_data: { ...views.architecture.runtime_data },
+    control_system: { ...controls },
+    external_change_evidence: { ...views.architecture.external_change_evidence },
+    truth: { ...views.truth },
+    projection_revision: views.projection_revision
   };
+}
+
+export function liveViewTopology(topologyViews = {}) {
+  const views = topologyViewsV2(topologyViews);
+  if (!views) return null;
+  return {
+    runtime_data: { ...views.live.runtime_data },
+    control_system: { ...views.live.control_system },
+    external_change_evidence: { ...views.live.external_change_evidence },
+    incident_overlay: { ...views.live.incident_overlay },
+    truth: { ...views.truth },
+    readiness: { ...views.readiness },
+    projection_revision: views.projection_revision
+  };
+}
+
+function topologyViewsV2(value) {
+  const rootKeys = ["schema_version", "projection_revision", "run_id", "incident_id", "truth", "readiness", "architecture", "live", "diagnose", "demo"];
+  if (!plainRecord(value) || !sameKeys(value, rootKeys) || value.schema_version !== "flowpulse.topology-views.v2" || !validHash(value.projection_revision) || !nullableTopologyId(value.run_id) || !nullableTopologyId(value.incident_id) || !validTopologyTruth(value.truth) || !validTopologyReadiness(value.readiness)) return null;
+  const architecture = parseScopedTopology(value.architecture, false);
+  const live = parseScopedTopology(value.live, true);
+  const diagnose = parseDiagnoseTopology(value.diagnose);
+  const demo = parseDemoTopology(value.demo, value.run_id, architecture?.runtime_data.graph);
+  if (!architecture || !live || !diagnose || demo === undefined || !sameRuntimeIdentity(architecture.runtime_data.graph, live.runtime_data.graph) || !sameRuntimeIdentity(architecture.runtime_data.graph, diagnose.runtime_data.graph) || !sameControlIdentity(architecture.control_system, live.control_system) || !sameExternalEvidence(architecture.external_change_evidence, live.external_change_evidence)) return null;
+  return {
+    projection_revision: value.projection_revision,
+    run_id: value.run_id,
+    incident_id: value.incident_id,
+    truth: value.truth,
+    readiness: value.readiness,
+    architecture,
+    live,
+    diagnose,
+    demo
+  };
+}
+
+function parseScopedTopology(scope, hasOverlay) {
+  const keys = hasOverlay ? ["runtime_data", "control_system", "external_change_evidence", "incident_overlay"] : ["runtime_data", "control_system", "external_change_evidence"];
+  if (!plainRecord(scope) || !sameKeys(scope, keys)) return null;
+  const runtimeData = parseRuntimeData(scope.runtime_data);
+  const controlSystem = parseControlSystem(scope.control_system);
+  const externalEvidence = parseExternalEvidence(scope.external_change_evidence, new Set(runtimeData?.graph.nodes.map(({ id }) => id)));
+  const overlay = hasOverlay ? parseLiveOverlay(scope.incident_overlay, new Set(runtimeData?.graph.nodes.map(({ id }) => id)), new Set(runtimeData?.graph.edges.map(({ id }) => id))) : null;
+  if (!runtimeData || !controlSystem || !externalEvidence || hasOverlay && !overlay) return null;
+  return hasOverlay
+    ? { runtime_data: runtimeData, control_system: controlSystem, external_change_evidence: externalEvidence, incident_overlay: overlay }
+    : { runtime_data: runtimeData, control_system: controlSystem, external_change_evidence: externalEvidence };
+}
+
+function parseRuntimeData(value) {
+  if (!plainRecord(value) || !sameKeys(value, ["graph", "node_count", "edge_count"]) || !plainRecord(value.graph) || !sameKeys(value.graph, ["nodes", "edges", "total_nodes", "total_edges", "truncated"]) || !Array.isArray(value.graph.nodes) || !Array.isArray(value.graph.edges) || value.node_count !== 22 || value.edge_count !== 22 || value.graph.nodes.length !== 22 || value.graph.edges.length !== 22 || value.graph.total_nodes !== 22 || value.graph.total_edges !== 22 || value.graph.truncated !== false || !value.graph.nodes.every(validRuntimeNode) || !value.graph.edges.every(validRuntimeEdge)) return null;
+  const ids = new Set(value.graph.nodes.map(({ id }) => id));
+  const edgeIds = new Set(value.graph.edges.map(({ id }) => id));
+  const semanticEdges = new Set(value.graph.edges.map(({ from, to, kind }) => `${from}\0${to}\0${kind}`));
+  if (ids.size !== 22 || edgeIds.size !== 22 || semanticEdges.size !== 22 || value.graph.edges.some(({ from, to }) => !ids.has(from) || !ids.has(to) || from === to) || !sameOrdered(value.graph.nodes, sortProjectionNodes(value.graph.nodes)) || !sameOrdered(value.graph.edges, sortProjectionEdges(value.graph.edges))) return null;
+  return { graph: { nodes: value.graph.nodes, edges: value.graph.edges, total_nodes: 22, total_edges: 22, truncated: false }, node_count: 22, edge_count: 22 };
+}
+
+function parseControlSystem(value) {
+  if (!plainRecord(value) || !sameKeys(value, ["nodes", "relations", "node_count", "relation_count"]) || !Array.isArray(value.nodes) || !Array.isArray(value.relations) || value.node_count !== 5 || value.nodes.length !== 5 || !Number.isInteger(value.relation_count) || value.relation_count < 0 || value.relation_count > 4 || value.relations.length !== value.relation_count || !value.nodes.every(validControlNode) || !value.relations.every(validControlRelation)) return null;
+  const ids = new Set(value.nodes.map(({ id }) => id));
+  const expected = ["observer", "orchestrator", "investigator", "evaluator", "ledger"];
+  const relationIds = new Set(value.relations.map(({ id }) => id));
+  if (ids.size !== 5 || expected.some((id) => !ids.has(id)) || relationIds.size !== value.relations.length || value.relations.some(({ from, to }) => !ids.has(from) || !ids.has(to)) || !sameOrdered(value.nodes, sortProjectionNodes(value.nodes)) || !sameOrdered(value.relations, sortProjectionEdges(value.relations))) return null;
+  return { nodes: value.nodes, relations: value.relations, node_count: 5, relation_count: value.relation_count };
+}
+
+function parseExternalEvidence(value, runtimeIds) {
+  if (!plainRecord(value) || !sameKeys(value, ["records", "relation_count"]) || !Array.isArray(value.records) || value.records.length > 4 || !Number.isInteger(value.relation_count) || value.relation_count < 0 || value.relation_count > 16 || !value.records.every(validExternalEvidenceRecord) || new Set(value.records.map(({ id }) => id)).size !== value.records.length || value.records.some((record) => record.affected_node_ids.some((id) => !runtimeIds.has(id))) || value.relation_count !== value.records.reduce((count, record) => count + record.affected_node_ids.length, 0) || !sameOrdered(value.records, [...value.records].sort((left, right) => left.id.localeCompare(right.id)))) return null;
+  return { records: value.records, relation_count: value.relation_count };
+}
+
+function parseDiagnoseTopology(value) {
+  if (!plainRecord(value) || !sameKeys(value, ["runtime_data", "overlay"])) return null;
+  const runtimeData = parseRuntimeData(value.runtime_data);
+  const nodeIds = new Set(runtimeData?.graph.nodes.map(({ id }) => id));
+  const edgeIds = new Set(runtimeData?.graph.edges.map(({ id }) => id));
+  const overlay = parseDiagnoseOverlay(value.overlay, nodeIds, edgeIds);
+  return runtimeData && overlay ? { runtime_data: runtimeData, overlay } : null;
+}
+
+function parseLiveOverlay(value, nodeIds, edgeIds) {
+  if (!plainRecord(value) || !sameKeys(value, ["status", "node_ids", "edges"]) || !["inactive", "active"].includes(value.status) || !Array.isArray(value.node_ids) || !Array.isArray(value.edges) || value.node_ids.length > 6 || value.edges.length > 5 || new Set(value.node_ids).size !== value.node_ids.length || new Set(value.edges.map((edge) => edge?.id)).size !== value.edges.length || !value.node_ids.every((id) => nodeIds.has(id)) || !value.edges.every((edge) => plainRecord(edge) && sameKeys(edge, ["id", "from", "to", "relation", "status"]) && edge.id === `${edge.from}->${edge.to}` && value.node_ids.includes(edge.from) && value.node_ids.includes(edge.to) && ["observed_dependency", "incident_evidence"].includes(edge.relation) && edge.status === "incident" && (edge.relation !== "observed_dependency" || edgeIds.has(edge.id))) || !sameOrdered(value.node_ids, [...value.node_ids].sort()) || !sameOrdered(value.edges, [...value.edges].sort((left, right) => left.id.localeCompare(right.id)))) return null;
+  if (value.status === "inactive" && (value.node_ids.length || value.edges.length)) return null;
+  if (value.status === "active" && (value.node_ids.length !== 6 || value.edges.length !== 5)) return null;
+  return { status: value.status, node_ids: value.node_ids, edges: value.edges };
+}
+
+function parseDiagnoseOverlay(value, nodeIds, edgeIds) {
+  if (!plainRecord(value) || !sameKeys(value, ["status", "node_ids", "edges"]) || !["unavailable", "available"].includes(value.status) || !Array.isArray(value.node_ids) || !Array.isArray(value.edges) || value.node_ids.length > 6 || value.edges.length > 5 || new Set(value.node_ids).size !== value.node_ids.length || new Set(value.edges.map((edge) => edge?.id)).size !== value.edges.length || !value.node_ids.every((id) => nodeIds.has(id)) || !value.edges.every((edge) => plainRecord(edge) && sameKeys(edge, ["id", "from", "to", "relation"]) && edge.id === `${edge.from}->${edge.to}` && value.node_ids.includes(edge.from) && value.node_ids.includes(edge.to) && ["observed_dependency", "incident_evidence"].includes(edge.relation) && (edge.relation !== "observed_dependency" || edgeIds.has(edge.id))) || !sameOrdered(value.node_ids, [...value.node_ids].sort()) || !sameOrdered(value.edges, [...value.edges].sort((left, right) => left.id.localeCompare(right.id)))) return null;
+  if (value.status === "unavailable" && (value.node_ids.length || value.edges.length)) return null;
+  if (value.status === "available" && (value.node_ids.length !== 6 || value.edges.length !== 5)) return null;
+  return { status: value.status, node_ids: value.node_ids, edges: value.edges };
+}
+
+function parseDemoTopology(value, runId, graph) {
+  if (value === null) return null;
+  const phases = ["HEALTHY", "INJECTING", "PAYMENT_CHECKOUT_IMPACT", "DOWNSTREAM_PROPAGATION", "INCIDENT_DETECTED"];
+  const evidenceRefs = new Set(["ev-deploy-checkout", "ev-trace-payment-refused", "ev-metric-checkout-errors", "ev-metric-kafka-lag", "ev-log-consumer-delay"]);
+  const expectedPhases = value?.phase === "HEALTHY" ? phases.slice(0, 1) : value?.phase === "INCIDENT_DETECTED" ? phases : null;
+  const nodeIds = new Set(graph?.nodes.map(({ id }) => id));
+  const edgeIds = new Set(graph?.edges.map(({ id }) => id));
+  if (!safeTopologyId(runId) || !expectedPhases || !plainRecord(value) || !sameKeys(value, ["schema_version", "run_id", "scenario_id", "phase", "frames"])
+    || value.schema_version !== "flowpulse.demo-lifecycle.v1" || value.run_id !== runId || value.scenario_id !== "astronomy-checkout-payment-captured-v1"
+    || !Array.isArray(value.frames) || value.frames.length !== expectedPhases.length) return undefined;
+  const valid = value.frames.every((frame, index) => plainRecord(frame) && sameKeys(frame, ["id", "order", "phase", "node_ids", "relation_ids", "evidence_refs"])
+    && frame.id === expectedPhases[index].toLowerCase() && frame.order === index && frame.phase === expectedPhases[index]
+    && Array.isArray(frame.node_ids) && frame.node_ids.length <= 6 && new Set(frame.node_ids).size === frame.node_ids.length && frame.node_ids.every((id) => nodeIds.has(id)) && sameOrdered(frame.node_ids, [...frame.node_ids].sort())
+    && Array.isArray(frame.relation_ids) && frame.relation_ids.length <= 5 && new Set(frame.relation_ids).size === frame.relation_ids.length && frame.relation_ids.every((id) => edgeIds.has(id)) && sameOrdered(frame.relation_ids, [...frame.relation_ids].sort())
+    && Array.isArray(frame.evidence_refs) && frame.evidence_refs.length <= 6 && new Set(frame.evidence_refs).size === frame.evidence_refs.length && frame.evidence_refs.every((id) => evidenceRefs.has(id)) && sameOrdered(frame.evidence_refs, [...frame.evidence_refs].sort()));
+  return valid ? { schema_version: value.schema_version, run_id: value.run_id, scenario_id: value.scenario_id, phase: value.phase, frames: value.frames.map((frame) => ({ ...frame, node_ids: [...frame.node_ids], relation_ids: [...frame.relation_ids], evidence_refs: [...frame.evidence_refs] })) } : undefined;
+}
+
+function sameRuntimeIdentity(left, right) {
+  return JSON.stringify(runtimeIdentity(left)) === JSON.stringify(runtimeIdentity(right));
+}
+
+function sameControlIdentity(left, right) {
+  return JSON.stringify(left.nodes.map(nodeIdentity)) === JSON.stringify(right.nodes.map(nodeIdentity)) && JSON.stringify(left.relations.map(edgeIdentity)) === JSON.stringify(right.relations.map(edgeIdentity));
+}
+
+function sameExternalEvidence(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function runtimeIdentity(graph) {
+  return { nodes: graph.nodes.map(nodeIdentity), edges: graph.edges.map(edgeIdentity) };
+}
+
+function nodeIdentity({ status, ...node }) { return node; }
+function edgeIdentity({ status, ...edge }) { return edge; }
+
+function sortProjectionNodes(nodes) {
+  const plane = { runtime: 0, data: 1, control: 2, evidence: 3 };
+  const layer = { experience: 0, commerce: 1, processing: 2, platform: 3, observation: 4, orchestration: 5, investigation: 6, evaluation: 7, evidence: 8 };
+  return [...nodes].sort((left, right) => plane[left.plane] - plane[right.plane] || layer[left.layer] - layer[right.layer] || left.id.localeCompare(right.id));
+}
+
+function sortProjectionEdges(edges) {
+  const plane = { runtime: 0, data: 1, control: 2, evidence: 3 };
+  return [...edges].sort((left, right) => plane[left.plane] - plane[right.plane] || left.from.localeCompare(right.from) || left.to.localeCompare(right.to) || left.kind.localeCompare(right.kind) || left.id.localeCompare(right.id));
+}
+
+function sameOrdered(actual, expected) {
+  return actual.length === expected.length && actual.every((value, index) => value === expected[index]);
 }
 
 export function architectureBoundaries(topology = {}) {
@@ -455,13 +583,13 @@ function validArchitectureNode(node) {
   return plainRecord(node) && sameKeys(node, ["id", "kind", "display_class", "plane", "layer", "label", "status", "source_health", "signal_types", "provenance_refs"])
     && typeof node.id === "string" && /^[a-z0-9][a-z0-9-]{0,79}$/.test(node.id)
     && typeof node.label === "string" && node.label.length > 0 && node.label.length <= 160
-    && ["service", "job", "topic", "deployment", "dataset"].includes(node.kind)
-    && ["client", "service", "api", "stream", "worker", "change", "agent", "evaluator", "ledger"].includes(node.display_class)
+    && ["service", "job", "topic", "dataset"].includes(node.kind)
+    && ["client", "service", "api", "stream", "worker", "observer", "orchestrator", "agent", "evaluator", "ledger"].includes(node.display_class)
     && ["runtime", "data", "control", "evidence"].includes(node.plane)
     && typeof node.layer === "string" && node.layer.length > 0 && node.layer.length <= 80
-    && ["observed", "idle", "recording", "active", "rejected", "accepted"].includes(node.status)
+    && ["observed", "captured", "healthy", "incident", "idle", "recording", "active", "rejected", "accepted"].includes(node.status)
     && ["live", "stale", "disconnected", "unavailable"].includes(node.source_health)
-    && Array.isArray(node.signal_types) && node.signal_types.length <= 3 && node.signal_types.every((value) => ["trace", "metric", "log"].includes(value))
+    && Array.isArray(node.signal_types) && node.signal_types.length <= 3 && new Set(node.signal_types).size === node.signal_types.length && node.signal_types.every((value, index) => ["trace", "metric", "log"].includes(value) && (index === 0 || ["trace", "metric", "log"].indexOf(node.signal_types[index - 1]) < ["trace", "metric", "log"].indexOf(value)))
     && Array.isArray(node.provenance_refs) && node.provenance_refs.length > 0 && node.provenance_refs.length <= 4 && node.provenance_refs.every(validProvenanceRef);
 }
 
@@ -472,8 +600,65 @@ function validArchitectureEdge(edge) {
     && ["runtime", "data", "control", "evidence"].includes(edge.plane)
     && typeof edge.kind === "string" && edge.kind.length > 0 && edge.kind.length <= 80
     && (edge.label === null || typeof edge.label === "string" && edge.label.length <= 160)
-    && ["observed", "idle", "recording", "active", "rejected", "accepted"].includes(edge.status)
+    && ["observed", "captured", "healthy", "incident", "idle", "recording", "active", "rejected", "accepted"].includes(edge.status)
     && Array.isArray(edge.provenance_refs) && edge.provenance_refs.length > 0 && edge.provenance_refs.length <= 4 && edge.provenance_refs.every(validProvenanceRef);
+}
+
+function validRuntimeNode(node) {
+  return validArchitectureNode(node)
+    && ["runtime", "data"].includes(node.plane)
+    && ["experience", "commerce", "processing", "platform"].includes(node.layer)
+    && ["service", "job", "topic"].includes(node.kind)
+    && ["client", "service", "api", "stream", "worker"].includes(node.display_class)
+    && ["observed", "captured", "healthy", "incident"].includes(node.status);
+}
+
+function validRuntimeEdge(edge) {
+  return validArchitectureEdge(edge)
+    && edge.id === `${edge.from}->${edge.to}`
+    && edge.kind === "calls"
+    && edge.plane === "runtime"
+    && edge.label === "Observed dependency"
+    && ["observed", "captured", "healthy", "incident"].includes(edge.status);
+}
+
+function validControlNode(node) {
+  const expected = {
+    observer: ["service", "observer", "control", "observation", "Observer"],
+    orchestrator: ["service", "orchestrator", "control", "orchestration", "Orchestrator"],
+    investigator: ["service", "agent", "control", "investigation", "Investigator"],
+    evaluator: ["service", "evaluator", "control", "evaluation", "Evaluator"],
+    ledger: ["dataset", "ledger", "evidence", "evidence", "Evidence Ledger"]
+  };
+  const shape = expected[node?.id];
+  return validArchitectureNode(node) && Boolean(shape)
+    && node.kind === shape[0] && node.display_class === shape[1] && node.plane === shape[2] && node.layer === shape[3] && node.label === shape[4]
+    && ["observed", "idle", "recording", "active", "rejected", "accepted"].includes(node.status)
+    && (node.id === "observer" || node.source_health === "unavailable")
+    && node.signal_types.length === 0;
+}
+
+function validControlRelation(edge) {
+  const expected = {
+    "investigator-evaluator": ["investigator", "evaluator", "evaluates", "control", "Investigation handoff", "ledger://investigation"],
+    "investigator-ledger": ["investigator", "ledger", "records", "evidence", "Investigation record", "ledger://investigation"],
+    "evaluator-ledger": ["evaluator", "ledger", "records", "evidence", "Evaluator record", "ledger://evaluation"]
+  };
+  const shape = expected[edge?.id];
+  return validArchitectureEdge(edge) && Boolean(shape)
+    && edge.from === shape[0] && edge.to === shape[1] && edge.kind === shape[2] && edge.plane === shape[3] && edge.label === shape[4]
+    && edge.provenance_refs.length === 1 && edge.provenance_refs[0] === shape[5]
+    && ["active", "rejected", "accepted"].includes(edge.status);
+}
+
+function validExternalEvidenceRecord(record) {
+  return plainRecord(record) && sameKeys(record, ["id", "kind", "status", "affected_node_ids", "provenance_refs"])
+    && typeof record.id === "string" && /^[a-z0-9][a-z0-9-]{0,79}$/.test(record.id)
+    && record.kind === "deployment_change" && record.status === "observed"
+    && Array.isArray(record.affected_node_ids) && record.affected_node_ids.length >= 1 && record.affected_node_ids.length <= 4 && new Set(record.affected_node_ids).size === record.affected_node_ids.length
+    && record.affected_node_ids.every((id) => typeof id === "string" && /^[a-z0-9][a-z0-9-]{0,79}$/.test(id))
+    && sameOrdered(record.affected_node_ids, [...record.affected_node_ids].sort())
+    && Array.isArray(record.provenance_refs) && record.provenance_refs.length > 0 && record.provenance_refs.length <= 4 && record.provenance_refs.every(validProvenanceRef);
 }
 
 function validTopologyTruth(truth) {
@@ -483,6 +668,15 @@ function validTopologyTruth(truth) {
     && ["deterministic_replay", "gpt_model_only", "real_local_development", "captured_simulation"].includes(truth.execution_mode)
     && ["LIVE", "CAPTURED", "UNAVAILABLE"].includes(truth.label);
 }
+
+function validTopologyReadiness(readiness) {
+  const keys = ["architecture_available", "live_available", "incident_detected", "diagnose_available", "agent_available", "compare_available"];
+  return plainRecord(readiness) && sameKeys(readiness, keys) && keys.every((key) => typeof readiness[key] === "boolean");
+}
+
+function validHash(value) { return typeof value === "string" && /^[a-f0-9]{64}$/.test(value); }
+function nullableTopologyId(value) { return value === null || typeof value === "string" && /^[a-z0-9][a-z0-9-]{0,79}$/.test(value); }
+function safeTopologyId(value) { return typeof value === "string" && /^[a-z0-9][a-z0-9-]{0,79}$/.test(value); }
 
 function validProvenanceRef(value) {
   return typeof value === "string" && value.length > 0 && value.length <= 200 && /^(capture|code|ledger|evidence):\/\/[A-Za-z0-9._:/#-]+$/.test(value);

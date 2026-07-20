@@ -11,25 +11,31 @@ test("topology views compose deterministic captured Architecture, Live, and Diag
   const incidentProjection = projection();
   const first = composeTopologyViews({ manifest, incidentProjection, overlay, controls: controls() });
   const second = composeTopologyViews({ manifest, incidentProjection, overlay, controls: controls() });
-  const architectureIds = new Set(first.architecture.graph.nodes.map(({ id }) => id));
+  const runtimeIds = new Set(first.architecture.runtime_data.graph.nodes.map(({ id }) => id));
 
   assert.deepEqual(second, first);
+  assert.equal(first.schema_version, "flowpulse.topology-views.v2");
   assert.equal(first.truth.label, "CAPTURED");
   assert.deepEqual([first.truth.source_health, first.truth.evidence_mode, first.truth.execution_mode], ["unavailable", "captured_fixture", "deterministic_replay"]);
-  assert.equal(first.architecture.graph.nodes.length, 26);
-  assert.equal(architectureIds.size, 26);
+  assert.equal(first.architecture.runtime_data.graph.nodes.length, 22);
+  assert.equal(runtimeIds.size, 22);
   assert.equal(first.architecture.runtime_data.edge_count, 22);
-  assert.equal(first.architecture.control_evidence.relation_count, 1);
-  assert.equal(first.architecture.graph.edges.every(({ from, to }) => architectureIds.has(from) && architectureIds.has(to)), true);
-  assert.equal(first.live.graph.nodes.length, 22);
-  assert.equal(first.live.graph.edges.length, 22);
-  assert.equal(first.live.graph.nodes.every(({ status, source_health }) => status === "captured" && source_health === "unavailable"), true);
-  assert.equal(first.diagnose.graph.nodes.length, 22);
-  assert.equal(first.diagnose.graph.edges.length, 22);
+  assert.equal(first.architecture.runtime_data.graph.edges.every(({ from, to }) => runtimeIds.has(from) && runtimeIds.has(to)), true);
+  assert.deepEqual(first.architecture.control_system.nodes.map(({ id }) => id), ["observer", "orchestrator", "investigator", "evaluator", "ledger"]);
+  assert.equal(first.architecture.control_system.relation_count, 0);
+  assert.equal(first.architecture.external_change_evidence.relation_count, 1);
+  assert.deepEqual(first.architecture.external_change_evidence.records[0].affected_node_ids, ["checkout"]);
+  assert.equal(first.live.runtime_data.graph.nodes.length, 22);
+  assert.equal(first.live.runtime_data.graph.edges.length, 22);
+  assert.equal(first.live.runtime_data.graph.nodes.every(({ status, source_health }) => status === "captured" && source_health === "unavailable"), true);
+  assert.deepEqual(first.live.control_system.nodes.map(({ id }) => id), first.architecture.control_system.nodes.map(({ id }) => id));
+  assert.deepEqual(first.live.external_change_evidence, first.architecture.external_change_evidence);
+  assert.equal(first.diagnose.runtime_data.graph.nodes.length, 22);
+  assert.equal(first.diagnose.runtime_data.graph.edges.length, 22);
   assert.equal(first.diagnose.overlay.node_ids.length, 6);
   assert.equal(first.diagnose.overlay.edges.length, 5);
   assert.equal(Object.isFrozen(first), true);
-  assert.equal(Object.isFrozen(first.live.graph.nodes[0]), true);
+  assert.equal(Object.isFrozen(first.live.runtime_data.graph.nodes[0]), true);
 });
 
 test("topology readiness is server-derived and compatibility input cannot unlock views", () => {
@@ -70,13 +76,14 @@ test("topology readiness is server-derived and compatibility input cannot unlock
   assert.equal(malformed.readiness.diagnose_available, false);
 });
 
-test("control identity is idle without evidence while the six-node overlay remains non-mutating", () => {
+test("five control identities remain while deployment change evidence is bounded and optional", () => {
   const before = JSON.stringify(overlay);
-  const view = composeTopologyViews({ manifest, incidentProjection: projection(), overlay, controls: controls({ deployment_evidence_id: null }) });
-  const deployment = view.architecture.graph.nodes.find(({ id }) => id === "deployment");
+  const view = composeTopologyViews({ manifest, incidentProjection: projection(), overlay, controls: controls({ external_change_evidence: [] }) });
 
-  assert.equal(deployment.status, "idle");
-  assert.equal(view.architecture.control_evidence.relation_count, 0);
+  assert.deepEqual(view.architecture.control_system.nodes.map(({ id }) => id), ["observer", "orchestrator", "investigator", "evaluator", "ledger"]);
+  assert.equal(view.architecture.control_system.nodes.some(({ id }) => id === "deployment"), false);
+  assert.equal(view.architecture.external_change_evidence.relation_count, 0);
+  assert.deepEqual(view.architecture.external_change_evidence.records, []);
   assert.equal(view.diagnose.overlay.edges.filter(({ relation }) => relation === "observed_dependency").length, 2);
   assert.equal(view.diagnose.overlay.edges.filter(({ relation }) => relation === "incident_evidence").length, 3);
   assert.equal(JSON.stringify(overlay), before);
@@ -85,13 +92,19 @@ test("control identity is idle without evidence while the six-node overlay remai
 test("view revisions bind projection semantics and invalid incident overlays fail closed", () => {
   const baseline = composeTopologyViews({ manifest, incidentProjection: projection(), overlay, controls: controls() });
   const semanticDrift = composeTopologyViews({ manifest, incidentProjection: projection({ projection_revision: "b".repeat(64) }), overlay, controls: controls() });
+  const evidenceDrift = composeTopologyViews({ manifest, incidentProjection: projection(), overlay, controls: controls({ external_change_evidence: [changeEvidence("payment")] }) });
   const invalidOverlay = structuredClone(overlay);
   invalidOverlay.edges[0].from = "not-a-runtime-node";
 
   assert.notEqual(semanticDrift.projection_revision, baseline.projection_revision);
+  assert.notEqual(evidenceDrift.projection_revision, baseline.projection_revision);
   assert.throws(
     () => composeTopologyViews({ manifest, incidentProjection: projection(), overlay: invalidOverlay, controls: controls() }),
     (error) => error instanceof TopologyProjectionError && error.code === "topology_view_overlay_invalid"
+  );
+  assert.throws(
+    () => composeTopologyViews({ manifest, incidentProjection: projection(), overlay, controls: controls({ external_change_evidence: [changeEvidence("missing")] }) }),
+    (error) => error instanceof TopologyProjectionError && error.code === "topology_view_external_change_invalid"
   );
 });
 
@@ -107,14 +120,14 @@ test("server-owned demo lifecycle keeps the full graph healthy, then exposes onl
     agent_available: false,
     compare_available: false
   });
-  assert.equal(healthy.live.graph.nodes.every((node) => node.status === "healthy"), true);
-  assert.equal(healthy.live.graph.edges.every((edge) => edge.status === "healthy"), true);
+  assert.equal(healthy.live.runtime_data.graph.nodes.every((node) => node.status === "healthy"), true);
+  assert.equal(healthy.live.runtime_data.graph.edges.every((edge) => edge.status === "healthy"), true);
   assert.equal(healthy.diagnose.overlay.status, "unavailable");
   assert.equal(detected.readiness.incident_detected, true);
   assert.equal(detected.readiness.diagnose_available, true);
   assert.equal(detected.readiness.agent_available, false);
   assert.equal(detected.readiness.compare_available, false);
-  assert.equal(detected.live.graph.nodes.filter((node) => node.status === "incident").length, 6);
+  assert.equal(detected.live.runtime_data.graph.nodes.filter((node) => node.status === "incident").length, 6);
   assert.equal(detected.live.incident_overlay.edges.length, 5);
   assert.deepEqual(detected.demo.frames.map((frame) => frame.phase), ["HEALTHY", "INJECTING", "PAYMENT_CHECKOUT_IMPACT", "DOWNSTREAM_PROPAGATION", "INCIDENT_DETECTED"]);
 
@@ -128,9 +141,21 @@ test("server-owned demo lifecycle keeps the full graph healthy, then exposes onl
 
 function controls(overrides = {}) {
   return {
-    deployment_evidence_id: "ev-deploy-checkout",
+    observer_status: "observed",
+    observer_source_health: "unavailable",
+    external_change_evidence: [changeEvidence("checkout")],
     ledger_event_count: 2,
     ...overrides
+  };
+}
+
+function changeEvidence(affectedNodeId) {
+  return {
+    id: "ev-deploy-checkout",
+    kind: "deployment_change",
+    status: "observed",
+    affected_node_ids: [affectedNodeId],
+    provenance_refs: ["evidence://ev-deploy-checkout"]
   };
 }
 

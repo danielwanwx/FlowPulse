@@ -1,7 +1,7 @@
 import { canonicalSha256 } from "./evidence-envelope.mjs";
 import { topologyManifestContentSha256 } from "./topology-manifest.mjs";
 
-export const TOPOLOGY_VIEW_PROJECTION_SCHEMA_VERSION = "flowpulse.topology-views.v1";
+export const TOPOLOGY_VIEW_PROJECTION_SCHEMA_VERSION = "flowpulse.topology-views.v2";
 
 const RUNTIME_NODE_COUNT = 22;
 const RUNTIME_EDGE_COUNT = 22;
@@ -10,7 +10,7 @@ const OVERLAY_EDGE_COUNT = 5;
 const MAX_SERIALIZED_BYTES = 64 * 1024;
 const ID = /^[a-z0-9][a-z0-9-]{0,79}$/;
 const HASH = /^[a-f0-9]{64}$/;
-const CONTROL_IDS = new Set(["deployment", "agent", "evaluator", "ledger"]);
+const CONTROL_IDS = new Set(["observer", "orchestrator", "investigator", "evaluator", "ledger"]);
 const VIEW_READY_STAGES = new Set(["evaluating", "replanning", "blocked", "waiting_for_owner", "approved", "executing", "verified"]);
 const AGENT_READY_STAGES = new Set(["evaluating", "replanning", "blocked"]);
 const DEMO_SCENARIO_ID = "astronomy-checkout-payment-captured-v1";
@@ -27,24 +27,27 @@ export function composeTopologyViews({ manifest, incidentProjection, overlay, co
   const base = runtimeGraph(manifest);
   const incident = incidentState(incidentProjection);
   const demo = normalizeDemoLifecycle(demoLifecycle, incident, base);
-  const control = controlGraph(controls, incident);
+  const control = controlSystem(controls, incident);
+  const externalEvidence = externalChangeEvidence(controls, base);
   const readiness = readinessFor(incident, base.available, demo);
   const truth = truthFor(manifest);
-  const architectureNodes = sortNodes([...base.nodes, ...control.nodes]);
-  const architectureIds = new Set(architectureNodes.map(({ id }) => id));
-  const architectureEdges = sortEdges([...base.edges, ...control.edges].filter(({ from, to }) => architectureIds.has(from) && architectureIds.has(to)));
   const incidentOverlay = diagnoseOverlay(overlay, incident, base, demo);
   const live = liveGraph(base, incidentOverlay, demo);
+  const architecture = scopedTopology(base, control, externalEvidence);
+  const liveScope = scopedTopology(live, control, externalEvidence, { incident_overlay: live.incident_overlay });
+  const diagnose = {
+    runtime_data: runtimeData(base),
+    overlay: incidentOverlay
+  };
   const revision = canonicalSha256({
     schema_version: TOPOLOGY_VIEW_PROJECTION_SCHEMA_VERSION,
     manifest_sha256: manifest.content_sha256,
     incident_projection_revision: incident.revision,
     truth,
     readiness,
-    architecture: graphIdentity(architectureNodes, architectureEdges),
-    live: graphIdentity(live.nodes, live.edges),
-    overlay: incidentOverlay,
-    control: control.identity,
+    architecture: scopeIdentity(architecture),
+    live: scopeIdentity(liveScope),
+    diagnose,
     demo
   });
   const result = {
@@ -54,16 +57,9 @@ export function composeTopologyViews({ manifest, incidentProjection, overlay, co
     incident_id: incident.incident_id,
     truth,
     readiness,
-    architecture: {
-      graph: graph(architectureNodes, architectureEdges),
-      runtime_data: { node_count: base.nodes.length, edge_count: base.edges.length },
-      control_evidence: { node_count: control.nodes.length, relation_count: control.edges.length }
-    },
-    live: { graph: graph(live.nodes, live.edges), runtime_data: { node_count: base.nodes.length, edge_count: base.edges.length }, incident_overlay: live.incident_overlay },
-    diagnose: {
-      graph: graph(base.nodes, base.edges),
-      overlay: incidentOverlay
-    },
+    architecture,
+    live: liveScope,
+    diagnose,
     demo
   };
   if (Buffer.byteLength(JSON.stringify(result), "utf8") > MAX_SERIALIZED_BYTES) throw new TopologyProjectionError("topology_view_projection_limit_exceeded");
@@ -120,33 +116,95 @@ function incidentState(projection) {
   };
 }
 
-function controlGraph(controls, incident) {
-  const deploymentObserved = controls?.deployment_evidence_id === "ev-deploy-checkout";
-  const agentStatus = ["rejected", "accepted"].includes(incident.evaluator) || AGENT_READY_STAGES.has(incident.stage_status) ? "active" : "idle";
+function controlSystem(controls, incident) {
+  const observerStatus = controlStatus(controls?.observer_status, "idle");
+  const observerHealth = sourceHealth(controls?.observer_source_health);
+  const orchestratorStatus = AGENT_READY_STAGES.has(incident.stage_status) ? "active" : "idle";
+  const investigatorStatus = ["rejected", "accepted"].includes(incident.evaluator) || AGENT_READY_STAGES.has(incident.stage_status) ? "active" : "idle";
   const evaluatorStatus = incident.evaluator === "rejected" ? "rejected" : incident.evaluator === "accepted" ? "accepted" : "idle";
   const ledgerStatus = Number.isSafeInteger(controls?.ledger_event_count) && controls.ledger_event_count > 0 ? "recording" : "idle";
   const nodes = [
-    controlNode("deployment", "deployment", "change", "control", "change", "Deployment", deploymentObserved ? "observed" : "idle", deploymentObserved ? ["evidence://ev-deploy-checkout"] : ["code://flowpulse/deployment"]),
-    controlNode("agent", "service", "agent", "control", "investigation", "Investigator", agentStatus, ["code://flowpulse/investigator"]),
-    controlNode("evaluator", "service", "evaluator", "control", "evaluation", "Evaluator", evaluatorStatus, ["code://flowpulse/evaluator"]),
-    controlNode("ledger", "dataset", "ledger", "evidence", "evidence", "Evidence Ledger", ledgerStatus, ["ledger://append-only"])
+    controlNode("observer", "service", "observer", "control", "observation", "Observer", observerStatus, observerHealth, ["code://flowpulse/observer"]),
+    controlNode("orchestrator", "service", "orchestrator", "control", "orchestration", "Orchestrator", orchestratorStatus, "unavailable", ["ledger://orchestration"]),
+    controlNode("investigator", "service", "agent", "control", "investigation", "Investigator", investigatorStatus, "unavailable", ["code://flowpulse/investigator"]),
+    controlNode("evaluator", "service", "evaluator", "control", "evaluation", "Evaluator", evaluatorStatus, "unavailable", ["code://flowpulse/evaluator"]),
+    controlNode("ledger", "dataset", "ledger", "evidence", "evidence", "Evidence Ledger", ledgerStatus, "unavailable", ["ledger://append-only"])
   ];
   const edges = [];
-  if (deploymentObserved) edges.push(controlEdge("deployment-checkout", "deployment", "checkout", "affects", "control", "Deployment evidence", "observed", ["evidence://ev-deploy-checkout"]));
   if (evaluatorStatus !== "idle") {
-    edges.push(controlEdge("agent-evaluator", "agent", "evaluator", "evaluates", "control", "Investigation handoff", evaluatorStatus, ["ledger://investigation"]));
+    edges.push(controlEdge("investigator-evaluator", "investigator", "evaluator", "evaluates", "control", "Investigation handoff", evaluatorStatus, ["ledger://investigation"]));
     edges.push(controlEdge("evaluator-ledger", "evaluator", "ledger", "records", "evidence", "Evaluator record", evaluatorStatus, ["ledger://evaluation"]));
   }
-  if (agentStatus === "active") edges.push(controlEdge("agent-ledger", "agent", "ledger", "records", "evidence", "Investigation record", "active", ["ledger://investigation"]));
-  return { nodes: sortNodes(nodes), edges: sortEdges(edges), identity: { deployment_observed: deploymentObserved, agent_status: agentStatus, evaluator_status: evaluatorStatus, ledger_status: ledgerStatus } };
+  if (investigatorStatus === "active") edges.push(controlEdge("investigator-ledger", "investigator", "ledger", "records", "evidence", "Investigation record", "active", ["ledger://investigation"]));
+  const sortedNodes = sortNodes(nodes);
+  const sortedEdges = sortEdges(edges);
+  return {
+    nodes: sortedNodes,
+    relations: sortedEdges,
+    node_count: sortedNodes.length,
+    relation_count: sortedEdges.length,
+    identity: { observer_status: observerStatus, observer_source_health: observerHealth, orchestrator_status: orchestratorStatus, investigator_status: investigatorStatus, evaluator_status: evaluatorStatus, ledger_status: ledgerStatus }
+  };
 }
 
-function controlNode(id, kind, display_class, plane, layer, label, status, provenance_refs) {
-  return { id, kind, display_class, plane, layer, label, status, source_health: "unavailable", signal_types: [], provenance_refs };
+function controlNode(id, kind, display_class, plane, layer, label, status, source_health, provenance_refs) {
+  return { id, kind, display_class, plane, layer, label, status, source_health, signal_types: [], provenance_refs };
 }
 
 function controlEdge(id, from, to, kind, plane, label, status, provenance_refs) {
   return { id, from, to, kind, plane, label, status, provenance_refs };
+}
+
+function externalChangeEvidence(controls, base) {
+  const records = controls?.external_change_evidence == null ? [] : controls.external_change_evidence;
+  if (!Array.isArray(records) || records.length > 4 || new Set(records.map((record) => record?.id)).size !== records.length) fail("topology_view_external_change_invalid");
+  const runtimeIds = new Set(base.nodes.map(({ id }) => id));
+  const normalized = records.map((record) => {
+    const fields = ["id", "kind", "status", "affected_node_ids", "provenance_refs"];
+    if (!plain(record) || !sameKeys(record, fields) || !safeId(record.id) || record.kind !== "deployment_change" || record.status !== "observed" || !Array.isArray(record.affected_node_ids) || record.affected_node_ids.length < 1 || record.affected_node_ids.length > 4 || new Set(record.affected_node_ids).size !== record.affected_node_ids.length || !record.affected_node_ids.every((id) => runtimeIds.has(id)) || !sameOrdered(record.affected_node_ids, [...record.affected_node_ids].sort()) || !provenance(record.provenance_refs)) fail("topology_view_external_change_invalid");
+    return { id: record.id, kind: record.kind, status: record.status, affected_node_ids: [...record.affected_node_ids], provenance_refs: [...record.provenance_refs] };
+  });
+  const sorted = [...normalized].sort((left, right) => left.id.localeCompare(right.id));
+  if (!sameOrdered(normalized.map(({ id }) => id), sorted.map(({ id }) => id))) fail("topology_view_external_change_invalid");
+  return { records: sorted, relation_count: sorted.reduce((count, record) => count + record.affected_node_ids.length, 0) };
+}
+
+function runtimeData(value) {
+  return { graph: graph(value.nodes, value.edges), node_count: value.nodes.length, edge_count: value.edges.length };
+}
+
+function scopedTopology(runtime, control, external, extra = {}) {
+  return {
+    runtime_data: runtimeData(runtime),
+    control_system: {
+      nodes: control.nodes,
+      relations: control.relations,
+      node_count: control.node_count,
+      relation_count: control.relation_count
+    },
+    external_change_evidence: external,
+    ...extra
+  };
+}
+
+function scopeIdentity(scope) {
+  return {
+    runtime_data: graphIdentity(scope.runtime_data.graph.nodes, scope.runtime_data.graph.edges),
+    control_system: {
+      nodes: scope.control_system.nodes.map((node) => ({ ...node, signal_types: [...node.signal_types], provenance_refs: [...node.provenance_refs] })),
+      relations: scope.control_system.relations.map((edge) => ({ ...edge, provenance_refs: [...edge.provenance_refs] }))
+    },
+    external_change_evidence: scope.external_change_evidence.records.map((record) => ({ ...record, affected_node_ids: [...record.affected_node_ids], provenance_refs: [...record.provenance_refs] })),
+    incident_overlay: scope.incident_overlay || null
+  };
+}
+
+function controlStatus(value, fallback) {
+  return ["observed", "idle", "recording", "active", "rejected", "accepted"].includes(value) ? value : fallback;
+}
+
+function sourceHealth(value) {
+  return ["live", "stale", "disconnected", "unavailable"].includes(value) ? value : "unavailable";
 }
 
 function diagnoseOverlay(overlay, incident, base, demo) {
@@ -239,7 +297,7 @@ function graphIdentity(nodes, edges) {
 
 function sortNodes(nodes) {
   const planeOrder = { runtime: 0, data: 1, control: 2, evidence: 3 };
-  const layerOrder = { experience: 0, commerce: 1, processing: 2, platform: 3, change: 4, investigation: 5, evaluation: 6, evidence: 7 };
+  const layerOrder = { experience: 0, commerce: 1, processing: 2, platform: 3, observation: 4, orchestration: 5, investigation: 6, evaluation: 7, evidence: 8 };
   return [...nodes].sort((left, right) => planeOrder[left.plane] - planeOrder[right.plane] || layerOrder[left.layer] - layerOrder[right.layer] || left.id.localeCompare(right.id));
 }
 
