@@ -56,6 +56,30 @@ const COMPONENT_CAPABILITIES = Object.freeze({
   "otelcol-contrib": "Observability pipeline",
   "astronomy-db": "Operational data"
 });
+const COMPONENT_EXPLANATIONS = Object.freeze({
+  "load-generator": "Generates deterministic demo traffic for the captured system.",
+  "frontend-web": "Serves the browser entry point and static web assets.",
+  "frontend-proxy": "Routes browser requests toward the storefront application.",
+  frontend: "Composes the storefront interface for customer requests.",
+  cart: "Maintains the active shopping basket for a customer session.",
+  currency: "Converts or formats prices for storefront and checkout requests.",
+  shipping: "Coordinates shipping options and fulfillment routing.",
+  checkout: "Coordinates order placement across payment and downstream services.",
+  "product-catalog": "Provides product and catalogue information to storefront flows.",
+  recommendation: "Ranks product recommendations for the storefront.",
+  ad: "Selects promotional content for storefront requests.",
+  payment: "Authorizes payment requests during checkout.",
+  kafka: "Carries order and payment events between downstream services.",
+  accounting: "Posts financial records from completed order flows.",
+  "fraud-detection": "Screens order and payment activity for risk signals.",
+  email: "Sends customer communications after order events.",
+  quote: "Calculates shipping quotes for an order.",
+  "image-provider": "Supplies product media to the storefront.",
+  flagd: "Serves runtime feature configuration to observed services.",
+  "telemetry-docs": "Provides captured telemetry diagnostic documentation.",
+  "otelcol-contrib": "Collects and forwards observed telemetry signals.",
+  "astronomy-db": "Stores operational application data for the captured system."
+});
 const COLLABORATOR_ACTIONS = Object.freeze({
   commander: ["advance", "delegate_task", "draft_jira", "approve_jira_draft"],
   observer: ["advance", "delegate_task"],
@@ -2034,25 +2058,32 @@ function architectureDetailContext(id) {
 
 function architectureComponentDetailMarkup(context) {
   const { node, incoming, outgoing, source } = context;
-  const relationList = (label, relations, empty) => `<section class="architecture-detail-relations"><span>${label}</span><div>${relations.length ? relations.map(({ edge, node: related }) => `<span title="${escapeHtml(edge.label || edge.kind || "relation")}">${escapeHtml(related.label)}</span>`).join("<i aria-hidden=\"true\">·</i>") : `<small>${empty}</small>`}</div></section>`;
-  const signals = Array.isArray(node.signal_types) && node.signal_types.length ? node.signal_types.join(" · ") : "No signal summary";
-  const provenance = Array.isArray(node.provenance_refs) && node.provenance_refs.length ? node.provenance_refs.slice(0, 4).join(" · ") : "No provenance reference";
+  const relationList = (label, relations) => relations.length ? `<section class="architecture-detail-relations"><span>${label}</span><div>${relations.map(({ edge, node: related }) => `<span><strong>${escapeHtml(related.label)}</strong>${edge.label || edge.kind ? `<small>${escapeHtml(edge.label || edge.kind)}</small>` : ""}</span>`).join("")}</div></section>` : "";
+  const layerLabel = ARCHITECTURE_LAYERS.find((layer) => layer.id === node.layer)?.label;
+  const role = COMPONENT_CAPABILITIES[node.id];
+  const explanation = COMPONENT_EXPLANATIONS[node.id];
+  const signals = Array.isArray(node.signal_types) && node.signal_types.length ? node.signal_types.join(" · ") : null;
+  const provenance = Array.isArray(node.provenance_refs) && node.provenance_refs.length ? node.provenance_refs.slice(0, 4).join(" · ") : null;
+  const facts = [
+    ["Status", statusLabel(node.status)],
+    ["Component ID", node.id],
+    layerLabel ? ["Architecture layer", layerLabel] : null,
+    node.source_health || source.status ? ["Source health", node.source_health || source.status] : null,
+    signals ? ["Signals", signals] : null,
+    provenance ? ["Provenance", provenance] : null
+  ].filter(Boolean);
   return `<section class="architecture-component-detail" data-architecture-detail-id="${escapeHtml(node.id)}">
     <header class="architecture-detail-header">
       <button class="architecture-detail-back" type="button" data-architecture-back aria-label="Back to ${escapeHtml(node.layer)} component overview"><i class="ph ph-arrow-left" aria-hidden="true"></i>Back to components</button>
       <span class="architecture-status-dot is-${escapeHtml(node.status)}" aria-label="${escapeHtml(statusLabel(node.status))}"></span>
     </header>
     <div class="architecture-detail-title"><span class="architecture-thumbnail-icon" aria-hidden="true"><i class="ph ph-${iconForLive(node)}"></i></span><div><strong>${escapeHtml(node.label)}</strong><span>${escapeHtml(kindLabel(node.kind))}</span></div></div>
-    <dl class="architecture-detail-facts">
-      <div><dt>Status</dt><dd>${escapeHtml(statusLabel(node.status))}</dd></div>
-      <div><dt>Source health</dt><dd>${escapeHtml(node.source_health || source.status)}</dd></div>
-      <div><dt>Signals</dt><dd>${escapeHtml(signals)}</dd></div>
-      <div><dt>Provenance</dt><dd>${escapeHtml(provenance)}</dd></div>
-    </dl>
-    <div class="architecture-detail-related">
-      ${relationList("Uses", incoming, "No projected upstream dependency")}
-      ${relationList("Used by", outgoing, "No projected downstream dependent")}
-    </div>
+    ${role ? `<section class="architecture-detail-purpose"><span>Operational role</span><strong>${escapeHtml(role)}</strong>${explanation ? `<p>${escapeHtml(explanation)}</p>` : ""}</section>` : ""}
+    <dl class="architecture-detail-facts">${facts.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("")}</dl>
+    ${incoming.length || outgoing.length ? `<div class="architecture-detail-related">
+      ${relationList("Depends on", outgoing)}
+      ${relationList("Depended on by", incoming)}
+    </div>` : ""}
   </section>`;
 }
 

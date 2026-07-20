@@ -2291,9 +2291,9 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .is-architecture-source .architecture-observed-system { background: transparent; }
 .is-architecture-source .architecture-layer-module,
 .is-architecture-source .architecture-flowpulse-system {
-  background: rgba(211, 220, 226, .88);
+  background: rgba(211, 220, 226, .66);
 }
-.is-architecture-source .architecture-layer-module.is-detail { background: rgba(255, 255, 255, .92); }
+.is-architecture-source .architecture-layer-module.is-detail { background: rgba(255, 255, 255, .78); }
 .is-architecture-source .architecture-thumbnail-node,
 .is-architecture-source .source-node.is-architecture-compact {
   min-width: 0;
@@ -2370,6 +2370,11 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .is-architecture-source .architecture-detail-title div { display: grid; gap: 3px; }
 .is-architecture-source .architecture-detail-title strong { color: #111827; font-size: 16px; font-weight: 600; letter-spacing: -.01em; }
 .is-architecture-source .architecture-detail-title span:last-child { color: #475569; font-size: 12px; }
+.is-architecture-source .architecture-detail-purpose { display: grid; gap: 4px; }
+.is-architecture-source .architecture-detail-purpose > span,
+.is-architecture-source .architecture-detail-relations > span { color: #64748b; font-size: 11px; font-weight: 500; }
+.is-architecture-source .architecture-detail-purpose strong { color: #111827; font-size: 14px; font-weight: 600; }
+.is-architecture-source .architecture-detail-purpose p { margin: 0; color: #475569; font-size: 12px; line-height: 1.5; }
 .is-architecture-source .architecture-detail-facts {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2377,14 +2382,14 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
   margin: 0;
 }
 .is-architecture-source .architecture-detail-facts div { min-width: 0; display: grid; gap: 3px; }
-.is-architecture-source .architecture-detail-facts dt,
-.is-architecture-source .architecture-detail-relations > span { color: #64748b; font-size: 11px; font-weight: 500; }
+.is-architecture-source .architecture-detail-facts dt { color: #64748b; font-size: 11px; font-weight: 500; }
 .is-architecture-source .architecture-detail-facts dd { min-width: 0; margin: 0; color: #111827; font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
 .is-architecture-source .architecture-detail-related { display: grid; gap: 13px; }
 .is-architecture-source .architecture-detail-relations { display: grid; gap: 5px; }
-.is-architecture-source .architecture-detail-relations div { color: #111827; font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
-.is-architecture-source .architecture-detail-relations i { margin-inline: 5px; color: #94a3b8; font-style: normal; }
-.is-architecture-source .architecture-detail-relations small { color: #64748b; font-size: 12px; }
+.is-architecture-source .architecture-detail-relations div { display: grid; gap: 5px; color: #111827; font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
+.is-architecture-source .architecture-detail-relations div > span { display: flex; align-items: baseline; gap: 7px; }
+.is-architecture-source .architecture-detail-relations strong { font-size: 12px; font-weight: 600; }
+.is-architecture-source .architecture-detail-relations small { color: #64748b; font-size: 11px; }
 .is-architecture-source .architecture-component-detail .architecture-status-dot { position: static; width: 8px; height: 8px; }
 .is-architecture-source .architecture-component-detail .architecture-status-dot.is-root,
 .is-architecture-source .architecture-component-detail .architecture-status-dot.is-impact,
@@ -2415,3 +2420,45 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
   .is-architecture-source .architecture-thumbnail-node,
   .is-architecture-source .source-node.is-architecture-compact { background: #ffffff; }
 }
+
+/* Architecture 2D transparency correction: alpha carries hierarchy, never shadow. */
+.app-shell[data-mode="architecture"] .topbar,
+.app-shell[data-mode="architecture"] .mission-bar,
+.app-shell[data-mode="architecture"] .canvas-toolbar,
+.app-shell[data-mode="architecture"] .mode-switch,
+.app-shell[data-mode="architecture"] .workspace-menu > summary,
+.app-shell[data-mode="architecture"] .theme-toggle,
+.app-shell[data-mode="architecture"] .legend-menu > summary,
+.app-shell[data-mode="architecture"] .zoom-controls,
+.app-shell[data-mode="architecture"] .metric,
+.app-shell[data-mode="architecture"] .metric-cluster,
+.app-shell[data-mode="architecture"] .workspace-menu-panel,
+.app-shell[data-mode="architecture"] .state-key,
+.app-shell[data-mode="architecture"] .context-drawer,
+.is-architecture-source .architecture-system,
+.is-architecture-source .architecture-flowpulse-system,
+.is-architecture-source .architecture-layer-module,
+.is-architecture-source .architecture-thumbnail-node,
+.is-architecture-source .architecture-thumbnail-icon,
+.is-architecture-source .source-node.is-architecture-compact,
+.is-architecture-source .source-node.is-architecture-compact .node-icon,
+.is-architecture-source .architecture-detail-back,
+.is-architecture-source .architecture-detail-fact,
+.is-architecture-source .architecture-detail-relations {
+  border: 0;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+.app-shell[data-mode="architecture"] .topbar,
+.app-shell[data-mode="architecture"] .mission-bar,
+.app-shell[data-mode="architecture"] .canvas-toolbar { background: rgba(233, 238, 241, .78); }
+.app-shell[data-mode="architecture"] .mode-switch,
+.app-shell[data-mode="architecture"] .workspace-menu > summary,
+.app-shell[data-mode="architecture"] .theme-toggle,
+.app-shell[data-mode="architecture"] .legend-menu > summary,
+.app-shell[data-mode="architecture"] .zoom-controls,
+.app-shell[data-mode="architecture"] .metric { background: rgba(255, 255, 255, .5); }
+.is-architecture-source .architecture-layer-module,
+.is-architecture-source .architecture-flowpulse-system { background: rgba(211, 220, 226, .66); }
+.is-architecture-source .architecture-layer-module.is-detail { background: rgba(255, 255, 255, .78); }

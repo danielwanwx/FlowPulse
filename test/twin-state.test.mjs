@@ -39,6 +39,7 @@ const architectureRefinementCss = stylesCss.slice(stylesCss.lastIndexOf("/* Arch
 const architectureMaterialCss = architectureRefinementCss.slice(0, architectureRefinementCss.indexOf("@media (max-width: 1320px)"));
 const architectureStaticCss = stylesCss.slice(stylesCss.lastIndexOf("/* Architecture static overview: flat alpha-only material. */"));
 const architectureDetailCss = stylesCss.slice(stylesCss.lastIndexOf("/* Architecture component detail: one flat four-level material scale. */"));
+const architectureComponentDetailSource = appJs.slice(appJs.indexOf("function architectureComponentDetailMarkup"), appJs.indexOf("function openArchitectureDetail"));
 const topologyManifest = JSON.parse(readFileSync(new URL("../data/topology/otel-demo-system-v1.json", import.meta.url), "utf8"));
 
 function backendArchitectureView() {
@@ -171,6 +172,7 @@ test("architecture is a static four-layer overview with backend-owned status dot
   assert.match(appJs, /let architectureDetail = null;/);
   assert.match(appJs, /function architectureDetailContext\(id\)/);
   assert.match(appJs, /function architectureComponentDetailMarkup\(context\)/);
+  assert.match(appJs, /const COMPONENT_EXPLANATIONS = Object\.freeze/);
   assert.match(appJs, /data-architecture-detail-id/);
   assert.match(appJs, /data-architecture-back/);
   assert.match(appJs, /function openArchitectureDetail\(id\)/);
@@ -182,6 +184,10 @@ test("architecture is a static four-layer overview with backend-owned status dot
   assert.match(appJs, /nodeById\.has\(edge\.from\) && nodeById\.has\(edge\.to\)/);
   assert.match(appJs, /edge\.from === id \|\| edge\.to === id/);
   assert.match(appJs, /slice\(0, 8\)/);
+  assert.match(architectureComponentDetailSource, /relationList\("Depends on", outgoing\)/);
+  assert.match(architectureComponentDetailSource, /relationList\("Depended on by", incoming\)/);
+  assert.doesNotMatch(architectureComponentDetailSource, /relationList\("Uses", incoming/);
+  assert.doesNotMatch(architectureComponentDetailSource, /No signal summary|No provenance reference/);
   assert.match(appJs, /node\.layer === layer\.id/);
   assert.match(appJs, /dataset\.runtimeEdges/);
   assert.match(appJs, /dataset\.controlRelations/);
@@ -212,10 +218,12 @@ test("architecture is a static four-layer overview with backend-owned status dot
   assert.match(appJs, /"fault", "pending", "warning"/);
   assert.match(architectureDetailCss, /\.app-shell\[data-mode="architecture"\] \{[\s\S]+?background: #e9eef1;/);
   assert.match(architectureDetailCss, /\.twin-workspace,[\s\S]+?\.twin-scroll \{ background: #e9eef1; \}/);
-  assert.match(architectureDetailCss, /\.architecture-layer-module,[\s\S]+?\.architecture-flowpulse-system \{[\s\S]+?background: rgba\(211, 220, 226, \.88\);/);
-  assert.match(architectureDetailCss, /\.architecture-layer-module\.is-detail \{ background: rgba\(255, 255, 255, \.92\); \}/);
+  assert.match(architectureDetailCss, /\.architecture-layer-module,[\s\S]+?\.architecture-flowpulse-system \{[\s\S]+?background: rgba\(211, 220, 226, \.66\);/);
+  assert.match(architectureDetailCss, /\.architecture-layer-module\.is-detail \{ background: rgba\(255, 255, 255, \.78\); \}/);
   assert.match(architectureDetailCss, /\.architecture-component-detail \{[\s\S]+?display: grid;/);
+  assert.match(architectureDetailCss, /\.architecture-detail-purpose \{ display: grid; gap: 4px; \}/);
   assert.match(architectureDetailCss, /\.architecture-detail-facts \{[\s\S]+?grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/);
+  assert.match(architectureDetailCss, /Architecture 2D transparency correction[\s\S]+?\.mode-switch,[\s\S]+?box-shadow: none;/);
   assert.match(architectureStaticCss, /\.is-architecture-compact \{[\s\S]+?display: grid;/);
   assert.match(stylesCss, /\.is-architecture-source \.source-node\.is-architecture-compact \{[^}]+border: 0;[^}]+border-radius: var\(--architecture-node-radius\);/s);
   assert.match(stylesCss, /--architecture-page-radius: 22px;[\s\S]+--architecture-system-radius: 22px;[\s\S]+--architecture-node-radius: 14px;[\s\S]+--architecture-control-radius: 14px;/);
