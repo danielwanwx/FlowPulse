@@ -191,8 +191,8 @@ function render() {
 function renderHeader() {
   const frame = currentFrame();
   const source = sourceState();
-  const titles = { architecture: "System architecture", live: "Runtime activity", replay: "Incident diagnosis", agents: "Recovery Console", compare: "Recovery comparison" };
-  const canvasTitles = { architecture: "Observed architecture", live: "Observed runtime", replay: "Incident reconstruction", agents: "Developer recovery workspace", compare: "Incident vs verified" };
+  const titles = { architecture: "Architecture", live: "Runtime activity", replay: "Incident diagnosis", agents: "Recovery Console", compare: "Recovery comparison" };
+  const canvasTitles = { architecture: "Architecture", live: "Observed runtime", replay: "Incident reconstruction", agents: "Developer recovery workspace", compare: "Incident vs verified" };
   els["incident-title"].textContent = state.incident.title;
   els["incident-summary"].textContent = state.incident.summary;
   els.severity.textContent = state.incident.severity;
@@ -202,7 +202,7 @@ function renderHeader() {
   els["canvas-title"].textContent = canvasTitles[mode];
   const architecture = mode === "architecture" ? architectureView() : null;
   const architectureSystems = architecture ? architectureBoundaries(architecture.graph) : null;
-  els.stage.textContent = mode === "architecture" ? architectureSystems ? `${architectureSystems.observed.nodes.length} observed · ${architectureSystems.flowpulse.nodes.length} FlowPulse` : "Architecture unavailable" : mode === "live" ? source.label : mode === "agents" ? agentControl().report.stage : mode === "compare" ? "Incident vs verified" : timelineStages()[cursor].label;
+  els.stage.textContent = mode === "architecture" ? architectureSystems ? `${architectureSystems.observed.nodes.length + architectureSystems.flowpulse.nodes.length} components` : "Architecture unavailable" : mode === "live" ? source.label : mode === "agents" ? agentControl().report.stage : mode === "compare" ? "Incident vs verified" : timelineStages()[cursor].label;
   els["status-text"].textContent = modeStatus();
   els["ledger-state"].textContent = `${state.events.length} immutable events`;
   els["capture-label"].textContent = captureLabel();
@@ -260,12 +260,12 @@ function renderMetrics() {
   if (mode === "architecture") {
     const view = architectureView();
     const boundaries = view ? architectureBoundaries(view.graph) : null;
-    els["metric-checkout-label"].textContent = "Observed system";
-    els["metric-payment-label"].textContent = "Runtime dependencies";
+    els["metric-checkout-label"].textContent = "Components";
+    els["metric-payment-label"].textContent = "Dependencies";
     els["metric-kafka-label"].textContent = "FlowPulse";
-    setMetric("checkout", String(boundaries?.observed.nodes.length || 0), view ? "data source components" : "Backend view unavailable");
-    setMetric("payment", String(boundaries?.observed.relations.length || 0), view ? "inside observed boundary" : "No compatibility fallback");
-    setMetric("kafka", String(boundaries?.flowpulse.nodes.length || 0), view ? `${boundaries.cross_boundary_relations.length} cross-boundary evidence` : "Control system unavailable");
+    setMetric("checkout", String(boundaries?.observed.nodes.length || 0), view ? "captured source" : "Backend view unavailable");
+    setMetric("payment", String(boundaries?.observed.relations.length || 0), view ? "retained projection" : "No compatibility fallback");
+    setMetric("kafka", String(boundaries?.flowpulse.nodes.length || 0), view ? `${boundaries.cross_boundary_relations.length} evidence relation` : "Control system unavailable");
     return;
   }
   if (mode === "live" || state.mode === "development") {
@@ -371,48 +371,45 @@ function renderSourceCanvas(layout) {
       members: boundaries.observed.nodes.filter((node) => node.layer === layer.id)
     }));
     const layerModules = layerGroups.map((layer) => {
-      const icons = layer.members.slice(0, 4).map((node) => `<span title="${escapeHtml(node.label)}"><i class="ph ph-${iconForLive(node)}" aria-hidden="true"></i></span>`).join("");
-      const content = `<span class="architecture-layer-icons" aria-hidden="true">${icons}</span>
-        <span class="architecture-layer-copy"><strong>${escapeHtml(layer.label)}</strong><small>${escapeHtml(layer.description || "Observed services")}</small></span>
-        <span class="architecture-layer-count">${layer.members.length} components</span>`;
+      const anatomy = layer.members.map((node) => `<span class="architecture-thumbnail-node" role="listitem" title="${escapeHtml(node.label)}" data-architecture-thumbnail-id="${escapeHtml(node.id)}"><span class="architecture-thumbnail-icon" aria-hidden="true"><i class="ph ph-${iconForLive(node)}"></i></span><span class="architecture-thumbnail-label">${escapeHtml(node.label)}</span></span>`).join("");
+      const content = `<span class="architecture-layer-copy"><strong>${escapeHtml(layer.label)}</strong><span class="architecture-layer-count">${layer.members.length} components</span></span>
+        <span class="architecture-layer-anatomy" role="list" aria-label="${escapeHtml(layer.label)} components" data-architecture-member-count="${layer.members.length}">${anatomy}</span>`;
       return layer.id === "experience"
-        ? `<button class="architecture-layer-module is-enterable" type="button" data-architecture-layer="experience" aria-label="Open Experience layer, ${layer.members.length} components">${content}<span class="architecture-layer-action">View layer <i class="ph ph-arrow-right" aria-hidden="true"></i></span></button>`
-        : `<article class="architecture-layer-module" data-architecture-layer="${escapeHtml(layer.id)}">${content}<span class="architecture-layer-action">Overview only</span></article>`;
+        ? `<button class="architecture-layer-module is-enterable" type="button" data-architecture-layer="experience" aria-label="Open Experience layer, ${layer.members.length} components">${content}<span class="architecture-layer-action" aria-hidden="true"><i class="ph ph-arrow-right"></i></span></button>`
+        : `<article class="architecture-layer-module" data-architecture-layer="${escapeHtml(layer.id)}">${content}</article>`;
     }).join("");
     const experienceNodes = layerGroups.find((layer) => layer.id === "experience")?.members || [];
-    const experienceMarkup = experienceNodes.map((node) => sourceNodeMarkup(node, { layout, source, nodeStates })).join("");
-    const controlNodes = boundaries.flowpulse.nodes.map((node) => sourceNodeMarkup(node, { layout, source, nodeStates })).join("");
+    const experienceMarkup = experienceNodes.map((node) => sourceNodeMarkup(node, { layout, source, nodeStates, architectureCompact: true })).join("");
+    const controlNodes = boundaries.flowpulse.nodes.map((node) => sourceNodeMarkup(node, { layout, source, nodeStates, architectureCompact: true })).join("");
     const crossBoundarySummary = boundaries.cross_boundary_relations[0];
     const detailActive = architectureFace === "experience";
     const workspaceFace = detailActive
       ? `<section class="architecture-workspace-face architecture-detail-face" aria-label="Experience layer anatomy">
           <header class="architecture-face-heading architecture-detail-heading">
             <button class="architecture-back-control" type="button" data-architecture-back><i class="ph ph-arrow-left" aria-hidden="true"></i><span>Back to overview</span></button>
-            <div><span>Observed System / Experience</span><strong>Experience anatomy</strong><small>Canonical entry surfaces and supporting experience services.</small></div>
+            <div><strong>Experience</strong></div>
             <em>${experienceNodes.length} components</em>
           </header>
           <div class="architecture-experience-nodes">${experienceMarkup}</div>
         </section>`
       : `<section class="architecture-workspace-face architecture-overview-face" aria-label="Architecture layer overview">
-          <header class="architecture-face-heading"><div><strong>Technology stack overview</strong><span>Choose a layer to inspect its canonical component anatomy.</span></div><em>4 architectural layers</em></header>
           <div class="architecture-layer-grid">${layerModules}</div>
         </section>`;
     els["canvas-layers"].innerHTML = `<div class="twin-layer layer-current architecture-systems is-complete-topology">
       <section class="architecture-system architecture-observed-system" aria-label="Observed System Data Source Architecture">
-        <header class="architecture-system-heading" data-system="observed"><span>Observed System</span><div><strong>Data Source Architecture</strong><small>${escapeHtml(architecture.truth.label)} runtime and data source projection</small></div><em>${boundaries.observed.nodes.length} components / ${boundaries.observed.relations.length} dependencies retained</em></header>
+        <span class="visually-hidden">Observed System Data Source Architecture. ${boundaries.observed.nodes.length} components and ${boundaries.observed.relations.length} backend-projected dependencies.</span>
         <div class="architecture-workspace" data-architecture-face="${detailActive ? "experience" : "overview"}">
           <div class="architecture-workspace-turn">${workspaceFace}</div>
         </div>
-        <footer class="architecture-relation-summary" data-relation-category="runtime-data"><strong>Runtime dependencies retained</strong><span>${boundaries.observed.relations.length} backend-projected relations remain available to Live, diagnosis, and safe detail.</span></footer>
       </section>
       <aside class="architecture-system architecture-flowpulse-system" aria-label="FlowPulse Control System">
-        <header class="architecture-system-heading" data-system="flowpulse"><span>FlowPulse</span><div><strong>FlowPulse Control System</strong><small>Observes and reasons about the data source</small></div><em>${boundaries.flowpulse.nodes.length} control/evidence components</em></header>
+        <header class="architecture-control-heading"><div><span>FlowPulse</span><strong>Control System</strong></div><em>${boundaries.flowpulse.nodes.length} components</em></header>
         <div class="architecture-flowpulse-nodes">${controlNodes}</div>
         <dl class="architecture-flowpulse-summary">
           <div><dt>Internal control relations</dt><dd>${boundaries.flowpulse.internal_relations.length}</dd></div>
           <div><dt>Cross-boundary evidence</dt><dd>${boundaries.cross_boundary_relations.length}</dd></div>
         </dl>
-        <section class="architecture-evidence-summary" aria-label="Cross-boundary evidence summary"><strong>Evidence-grounded observation</strong>${crossBoundarySummary ? `<span>${escapeHtml(crossBoundarySummary.label || crossBoundarySummary.kind)}</span><small>${escapeHtml(crossBoundarySummary.from)} to ${escapeHtml(crossBoundarySummary.to)}</small>` : "<span>No cross-boundary evidence relation is projected.</span>"}</section>
+        <section class="architecture-evidence-summary" aria-label="Cross-boundary evidence summary"><span>Evidence relation</span>${crossBoundarySummary ? `<strong>${escapeHtml(crossBoundarySummary.label || crossBoundarySummary.kind)}</strong><small>${escapeHtml(crossBoundarySummary.from)} / ${escapeHtml(crossBoundarySummary.to)}</small>` : "<strong>Unavailable</strong>"}</section>
       </aside>
     </div>`;
     els["twin-canvas"].dataset.invalidEdges = String(topology.invalid_edges.length);
@@ -463,7 +460,7 @@ function syncArchitectureSelection() {
   for (const node of els["canvas-layers"].querySelectorAll("[data-node-id]")) node.classList.toggle("is-selected", node.dataset.nodeId === selectedNodeId);
 }
 
-function sourceNodeMarkup(node, { layout, source, nodeStates }) {
+function sourceNodeMarkup(node, { layout, source, nodeStates, architectureCompact = false }) {
   const architecture = layout === "architecture";
   const nodeState = architecture ? nodeStates[node.id] || "observed" : node.connectivity === "unlinked" ? "unlinked" : nodeStates[node.id] || "dormant";
   const nodeStatus = architecture ? statusLabel(nodeState) : sourceStatusLabel(nodeState, source.status);
@@ -472,9 +469,12 @@ function sourceNodeMarkup(node, { layout, source, nodeStates }) {
   const origin = architecture ? `${kindLabel(node.kind)} · ${node.plane} / ${node.layer}` : `RUNTIME · ${sourceOrigin(layout)}`;
   const detail = architecture ? `${node.provenance_refs.length} provenance ref${node.provenance_refs.length === 1 ? "" : "s"}` : node.detail || (nodeState === "unlinked" ? "dependency not observed" : "observed service.name");
   const livePositionClass = layout === "live" ? ` live-column-${node.layerIndex} live-count-${node.layerSize} live-index-${node.layerPosition}` : "";
-  return `<button class="twin-node source-node plane-${escapeHtml(node.plane || "runtime")} kind-${escapeHtml(node.kind)} is-${nodeState}${livePositionClass}" type="button" data-node-id="${escapeHtml(node.id)}" data-status="${escapeHtml(nodeState)}" data-transition-key="${escapeHtml(transitionKey(node.id))}" aria-label="${escapeHtml(architecture ? node.label : profile.capability)}, ${escapeHtml(kindLabel(node.kind))}, ${escapeHtml(architecture ? `${node.plane} plane ${node.layer} layer` : profile.runtimeIdentity)}, ${escapeHtml(ariaStatus)}">
+  const compactCopy = architecture && architectureCompact
+    ? `<span class="node-copy"><strong>${escapeHtml(node.label)}</strong></span>`
+    : `<span class="node-copy"><span class="node-origin">${escapeHtml(origin)}</span><strong>${escapeHtml(node.label)}</strong><span class="node-detail">${escapeHtml(detail)}</span><span class="node-status">${escapeHtml(nodeStatus)}</span></span>`;
+  return `<button class="twin-node source-node${architecture && architectureCompact ? " is-architecture-compact" : ""} plane-${escapeHtml(node.plane || "runtime")} kind-${escapeHtml(node.kind)} is-${nodeState}${livePositionClass}" type="button" data-node-id="${escapeHtml(node.id)}" data-status="${escapeHtml(nodeState)}" data-transition-key="${escapeHtml(transitionKey(node.id))}" aria-label="${escapeHtml(architecture ? node.label : profile.capability)}, ${escapeHtml(kindLabel(node.kind))}, ${escapeHtml(architecture ? `${node.plane} plane ${node.layer} layer` : profile.runtimeIdentity)}, ${escapeHtml(ariaStatus)}">
     <span class="node-icon" aria-hidden="true"><i class="ph ph-${iconForLive(node)}"></i></span>
-    <span class="node-copy"><span class="node-origin">${escapeHtml(origin)}</span><strong>${escapeHtml(node.label)}</strong><span class="node-detail">${escapeHtml(detail)}</span><span class="node-status">${escapeHtml(nodeStatus)}</span></span>
+    ${compactCopy}
     <span class="node-status-dot" aria-hidden="true"></span>
   </button>`;
 }
@@ -1932,7 +1932,7 @@ function modeCaption(frame) {
     const view = architectureView();
     if (!view) return "Backend architecture projection unavailable";
     const systems = architectureBoundaries(view.graph);
-    return `${view.truth.label} · Observed System ${systems.observed.nodes.length} components / ${systems.observed.relations.length} dependencies · FlowPulse ${systems.flowpulse.nodes.length} components`;
+    return `${view.truth.label} · ${systems.observed.nodes.length} components, ${systems.observed.relations.length} retained dependencies, ${systems.flowpulse.nodes.length} FlowPulse controls`;
   }
   if (mode === "live") {
     const source = sourceState();

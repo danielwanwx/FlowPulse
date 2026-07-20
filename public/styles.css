@@ -649,7 +649,7 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
   min-height: 0;
   transform-style: preserve-3d;
   opacity: 1;
-  transition: transform 240ms cubic-bezier(.4, 0, .2, 1), opacity 220ms ease;
+  transition: transform 250ms cubic-bezier(.4, 0, .2, 1), opacity 220ms ease;
 }
 .is-architecture-source .architecture-workspace-turn.is-turning-forward,
 .is-architecture-source .architecture-workspace-turn.is-entering-back {
@@ -936,6 +936,355 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .is-architecture-source .architecture-back-control:focus-visible {
   outline: 2px solid var(--blue);
   outline-offset: 3px;
+}
+
+/* Architecture refinement: compact nested anatomy keeps the overview useful without turning it into a graph. */
+.app-shell[data-mode="architecture"] {
+  background:
+    radial-gradient(ellipse 62% 48% at 6% 0%, rgba(255, 255, 255, .88), transparent 76%),
+    radial-gradient(ellipse 44% 42% at 96% 13%, rgba(185, 201, 215, .48), transparent 78%),
+    radial-gradient(ellipse 54% 44% at 58% 105%, rgba(206, 215, 223, .56), transparent 80%),
+    #dfe5e9;
+}
+.app-shell[data-mode="architecture"] .topbar,
+.app-shell[data-mode="architecture"] .mission-bar,
+.app-shell[data-mode="architecture"] .canvas-toolbar {
+  background: rgba(250, 252, 253, .5);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .78), 0 12px 32px rgba(62, 79, 96, .07);
+}
+.app-shell[data-mode="architecture"] .canvas-toolbar h2,
+.app-shell[data-mode="architecture"] .canvas-toolbar p,
+.app-shell[data-mode="architecture"] .mode-button,
+.app-shell[data-mode="architecture"] .metric,
+.app-shell[data-mode="architecture"] .workspace-menu,
+.app-shell[data-mode="architecture"] .legend-menu,
+.app-shell[data-mode="architecture"] .theme-toggle {
+  font-family: var(--architecture-font, -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", sans-serif);
+}
+.app-shell[data-mode="architecture"] .canvas-toolbar h2 { font-weight: 600; }
+.app-shell[data-mode="architecture"] .mode-button,
+.app-shell[data-mode="architecture"] .metric { font-weight: 500; }
+.twin-canvas.is-architecture-source {
+  --architecture-page-radius: 22px;
+  --architecture-system-radius: 22px;
+  --architecture-node-radius: 14px;
+  --architecture-control-radius: 14px;
+  --architecture-font: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", sans-serif;
+  --architecture-surface: rgba(255, 255, 255, .5);
+  --architecture-surface-muted: rgba(235, 244, 252, .52);
+  --architecture-node-surface: rgba(255, 255, 255, .64);
+  --architecture-copy: #1c2833;
+  --architecture-muted: #667684;
+  --architecture-shadow: 0 24px 62px rgba(61, 78, 95, .13), inset 0 1px 0 rgba(255, 255, 255, .9);
+  background:
+    radial-gradient(ellipse 48% 46% at 10% 8%, rgba(255, 255, 255, .42), transparent 78%),
+    radial-gradient(ellipse 42% 48% at 93% 88%, rgba(181, 196, 209, .3), transparent 78%),
+    rgba(231, 237, 241, .22);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .76);
+}
+.is-architecture-source .architecture-systems {
+  grid-template-columns: minmax(0, 1fr) 272px;
+  gap: 18px;
+  padding: 16px 20px;
+}
+.is-architecture-source .architecture-system {
+  border: 0;
+  border-radius: var(--architecture-system-radius);
+  background: var(--architecture-surface);
+  box-shadow: var(--architecture-shadow);
+  backdrop-filter: blur(26px) saturate(128%);
+  -webkit-backdrop-filter: blur(26px) saturate(128%);
+}
+.is-architecture-source .architecture-observed-system { min-height: 0; }
+.is-architecture-source .architecture-flowpulse-system {
+  gap: 10px;
+  padding: 14px 12px 12px;
+  background: var(--architecture-surface-muted);
+  box-shadow: 0 24px 60px rgba(43, 92, 141, .14), inset 0 1px 0 rgba(255, 255, 255, .9);
+}
+.is-architecture-source .architecture-control-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 2px 4px 5px;
+  font-family: var(--architecture-font);
+}
+.is-architecture-source .architecture-control-heading > div { display: grid; gap: 2px; }
+.is-architecture-source .architecture-control-heading span {
+  color: var(--blue);
+  font-size: 11px;
+  font-weight: 500;
+}
+.is-architecture-source .architecture-control-heading strong {
+  color: var(--architecture-copy);
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -.025em;
+}
+.is-architecture-source .architecture-control-heading em {
+  color: var(--architecture-muted);
+  font-size: 11px;
+  font-style: normal;
+  white-space: nowrap;
+}
+.is-architecture-source .architecture-workspace {
+  min-height: 0;
+  flex: 1;
+  padding: 12px;
+  perspective: 1400px;
+}
+.is-architecture-source .architecture-workspace-turn {
+  transition: transform 250ms cubic-bezier(.4, 0, .2, 1), opacity 220ms ease;
+}
+.is-architecture-source .architecture-workspace-face {
+  border: 0;
+  border-radius: var(--architecture-system-radius);
+  background: rgba(255, 255, 255, .3);
+  box-shadow: 0 18px 46px rgba(68, 87, 106, .1), inset 0 1px 0 rgba(255, 255, 255, .88);
+  font-family: var(--architecture-font);
+  backdrop-filter: blur(22px) saturate(124%);
+  -webkit-backdrop-filter: blur(22px) saturate(124%);
+}
+.is-architecture-source .architecture-layer-grid {
+  gap: 14px;
+  padding: 14px;
+}
+.is-architecture-source .architecture-layer-module {
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 12px 14px;
+  padding: 16px;
+  border: 0;
+  border-radius: var(--architecture-system-radius);
+  background: rgba(255, 255, 255, .52);
+  box-shadow: 0 16px 38px rgba(57, 74, 92, .11), inset 0 1px 0 rgba(255, 255, 255, .9);
+  font-family: var(--architecture-font);
+  backdrop-filter: blur(18px) saturate(122%);
+  -webkit-backdrop-filter: blur(18px) saturate(122%);
+}
+.is-architecture-source button.architecture-layer-module:hover,
+.is-architecture-source button.architecture-layer-module:focus-visible {
+  transform: translateY(-2px);
+  border: 0;
+  background: rgba(255, 255, 255, .68);
+  box-shadow: 0 20px 44px rgba(48, 83, 117, .15), inset 0 2px 0 rgba(255, 255, 255, .98);
+}
+.is-architecture-source .architecture-layer-copy {
+  grid-column: auto;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+.is-architecture-source .architecture-layer-copy strong {
+  color: var(--architecture-copy);
+  font-size: clamp(18px, 1.42vw, 22px);
+  font-weight: 600;
+  letter-spacing: -.028em;
+}
+.is-architecture-source .architecture-layer-count {
+  color: var(--architecture-muted);
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.is-architecture-source .architecture-layer-anatomy {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-content: start;
+  gap: 7px;
+}
+.is-architecture-source .architecture-layer-anatomy[data-architecture-member-count="4"] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.is-architecture-source .architecture-thumbnail-node {
+  min-width: 0;
+  min-height: 36px;
+  display: grid;
+  grid-template-columns: 25px minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+  padding: 5px 7px 5px 5px;
+  border-radius: var(--architecture-node-radius);
+  color: var(--architecture-copy);
+  background: rgba(255, 255, 255, .44);
+  box-shadow: 0 7px 16px rgba(62, 80, 98, .07), inset 0 1px 0 rgba(255, 255, 255, .82);
+  backdrop-filter: blur(10px) saturate(116%);
+  -webkit-backdrop-filter: blur(10px) saturate(116%);
+}
+.is-architecture-source .architecture-thumbnail-icon {
+  width: 25px;
+  height: 25px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  color: #34526a;
+  background: rgba(235, 243, 249, .72);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .9);
+  font-size: 14px;
+}
+.is-architecture-source .architecture-thumbnail-label {
+  overflow: hidden;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.is-architecture-source .architecture-layer-action {
+  align-self: start;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  color: var(--blue);
+  background: rgba(231, 242, 253, .78);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .92), 0 6px 16px rgba(50, 87, 124, .1);
+  font-size: 15px;
+}
+.is-architecture-source .architecture-face-heading {
+  min-height: 58px;
+  padding: 10px 14px;
+  box-shadow: inset 0 -1px 0 rgba(82, 103, 123, .07);
+  font-family: var(--architecture-font);
+}
+.is-architecture-source .architecture-face-heading strong {
+  font-family: var(--architecture-font);
+  font-size: 18px;
+  font-weight: 600;
+}
+.is-architecture-source .architecture-face-heading em {
+  color: var(--architecture-muted);
+  font-family: var(--architecture-font);
+  font-size: 11px;
+  font-style: normal;
+}
+.is-architecture-source .architecture-back-control {
+  border: 0;
+  border-radius: var(--architecture-control-radius);
+  color: var(--architecture-copy);
+  background: rgba(255, 255, 255, .56);
+  box-shadow: 0 8px 19px rgba(54, 75, 97, .08), inset 0 1px 0 rgba(255, 255, 255, .92);
+  font-family: var(--architecture-font);
+  font-size: 12px;
+  font-weight: 500;
+}
+.is-architecture-source .architecture-experience-nodes {
+  gap: 14px;
+  padding: 14px;
+}
+.is-architecture-source .source-node.is-architecture-compact {
+  border: 0;
+  border-radius: var(--architecture-node-radius);
+  background: rgba(255, 255, 255, .63);
+  box-shadow: 0 12px 28px rgba(61, 80, 100, .11), inset 0 1px 0 rgba(255, 255, 255, .94);
+  font-family: var(--architecture-font);
+  backdrop-filter: blur(14px) saturate(120%);
+  -webkit-backdrop-filter: blur(14px) saturate(120%);
+}
+.is-architecture-source .source-node.is-architecture-compact:hover,
+.is-architecture-source .source-node.is-architecture-compact.is-selected {
+  border: 0;
+  background: rgba(255, 255, 255, .78);
+  box-shadow: 0 17px 35px rgba(49, 83, 118, .15), inset 3px 0 0 rgba(37, 99, 235, .74), inset 0 1px 0 rgba(255, 255, 255, .98);
+}
+.is-architecture-source .source-node.is-architecture-compact .node-icon {
+  border: 0;
+  border-radius: 12px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .88);
+}
+.is-architecture-source .source-node.is-architecture-compact strong {
+  overflow: visible;
+  color: var(--architecture-copy);
+  font-family: var(--architecture-font);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.2;
+  text-overflow: clip;
+  white-space: normal;
+}
+.is-architecture-source .architecture-flowpulse-nodes {
+  gap: 8px;
+  padding: 1px 0;
+}
+.is-architecture-source .architecture-flowpulse-nodes .source-node.is-architecture-compact {
+  height: 56px;
+  min-height: 56px;
+}
+.is-architecture-source .architecture-flowpulse-summary {
+  gap: 6px;
+  margin: 0;
+  font-family: var(--architecture-font);
+}
+.is-architecture-source .architecture-flowpulse-summary > div {
+  padding: 7px 8px;
+  border: 0;
+  border-radius: var(--architecture-control-radius);
+  background: rgba(255, 255, 255, .34);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .76);
+}
+.is-architecture-source .architecture-flowpulse-summary dt,
+.is-architecture-source .architecture-flowpulse-summary dd {
+  font-family: var(--architecture-font);
+  font-size: 11px;
+  font-weight: 500;
+}
+.is-architecture-source .architecture-flowpulse-summary dd { font-weight: 600; }
+.is-architecture-source .architecture-evidence-summary {
+  gap: 2px;
+  margin: auto 0 0;
+  padding: 10px 11px;
+  border: 0;
+  border-radius: var(--architecture-control-radius);
+  background: rgba(228, 241, 253, .48);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .84);
+  font-family: var(--architecture-font);
+}
+.is-architecture-source .architecture-evidence-summary > span,
+.is-architecture-source .architecture-evidence-summary small {
+  color: var(--architecture-muted);
+  font-size: 11px;
+  font-weight: 400;
+}
+.is-architecture-source .architecture-evidence-summary strong {
+  color: #244d75;
+  font-size: 12px;
+  font-weight: 600;
+}
+.app-shell[data-mode="architecture"] .context-drawer {
+  border: 0;
+  border-radius: var(--architecture-system-radius);
+  background: rgba(249, 251, 252, .66);
+  box-shadow: -18px 0 52px rgba(60, 79, 98, .16), inset 0 1px 0 rgba(255, 255, 255, .92);
+  backdrop-filter: blur(28px) saturate(126%);
+  -webkit-backdrop-filter: blur(28px) saturate(126%);
+  font-family: var(--architecture-font, -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", sans-serif);
+}
+@media (max-width: 1320px) {
+  .is-architecture-source .architecture-systems { grid-template-columns: minmax(0, 1fr) 236px; gap: 14px; padding: 12px 14px; }
+  .is-architecture-source .architecture-layer-grid { gap: 10px; padding: 10px; }
+  .is-architecture-source .architecture-layer-module { gap: 9px 10px; padding: 12px; }
+  .is-architecture-source .architecture-layer-anatomy { grid-template-columns: repeat(auto-fit, minmax(76px, 1fr)); gap: 5px; }
+  .is-architecture-source .architecture-thumbnail-node { min-height: 32px; grid-template-columns: 22px minmax(0, 1fr); padding: 4px; }
+  .is-architecture-source .architecture-thumbnail-icon { width: 22px; height: 22px; font-size: 12px; }
+  .is-architecture-source .architecture-thumbnail-label { font-size: 10px; }
+}
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .is-architecture-source .architecture-system,
+  .is-architecture-source .architecture-workspace-face,
+  .is-architecture-source .architecture-layer-module,
+  .is-architecture-source .architecture-thumbnail-node,
+  .is-architecture-source .source-node.is-architecture-compact,
+  .is-architecture-source .architecture-evidence-summary { background: #f5f8fa; }
+}
+@media (prefers-reduced-transparency: reduce) {
+  .is-architecture-source .architecture-system,
+  .is-architecture-source .architecture-workspace-face,
+  .is-architecture-source .architecture-layer-module,
+  .is-architecture-source .architecture-thumbnail-node,
+  .is-architecture-source .source-node.is-architecture-compact,
+  .is-architecture-source .architecture-evidence-summary { background: #f5f8fa; backdrop-filter: none; -webkit-backdrop-filter: none; }
 }
 .is-live-source .live-column-0 { left: 10%; }
 .is-live-source .live-column-1 { left: 30%; }
