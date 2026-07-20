@@ -90,6 +90,7 @@ let liveSignalIndex = 0;
 let liveSignalFrame = null;
 let liveSignalGeneration = 0;
 let architectureFace = "overview";
+let architectureDetailNodeId = null;
 let architectureTransitioning = false;
 let componentCatalogSource = null;
 let componentCatalogCache = new Map();
@@ -382,8 +383,17 @@ function renderSourceCanvas(layout) {
     const experienceMarkup = experienceNodes.map((node) => sourceNodeMarkup(node, { layout, source, nodeStates, architectureCompact: true })).join("");
     const controlNodes = boundaries.flowpulse.nodes.map((node) => sourceNodeMarkup(node, { layout, source, nodeStates, architectureCompact: true })).join("");
     const crossBoundarySummary = boundaries.cross_boundary_relations[0];
+    let componentContext = architectureFace === "component" ? architectureComponentContext(architectureDetailNodeId) : null;
+    if (architectureFace === "component" && !componentContext) {
+      architectureFace = "experience";
+      architectureDetailNodeId = null;
+      componentContext = null;
+    }
     const detailActive = architectureFace === "experience";
-    const workspaceFace = detailActive
+    const componentActive = Boolean(componentContext);
+    const workspaceFace = componentActive
+      ? renderArchitectureComponentDetail(componentContext)
+      : detailActive
       ? `<section class="architecture-workspace-face architecture-detail-face" aria-label="Experience layer anatomy">
           <header class="architecture-face-heading architecture-detail-heading">
             <button class="architecture-back-control" type="button" data-architecture-back><i class="ph ph-arrow-left" aria-hidden="true"></i><span>Back to overview</span></button>
@@ -398,7 +408,7 @@ function renderSourceCanvas(layout) {
     els["canvas-layers"].innerHTML = `<div class="twin-layer layer-current architecture-systems is-complete-topology">
       <section class="architecture-system architecture-observed-system" aria-label="Observed System Data Source Architecture">
         <span class="visually-hidden">Observed System Data Source Architecture. ${boundaries.observed.nodes.length} components and ${boundaries.observed.relations.length} backend-projected dependencies.</span>
-        <div class="architecture-workspace" data-architecture-face="${detailActive ? "experience" : "overview"}">
+        <div class="architecture-workspace" data-architecture-face="${componentActive ? "component" : detailActive ? "experience" : "overview"}">
           <div class="architecture-workspace-turn">${workspaceFace}</div>
         </div>
       </section>
@@ -417,7 +427,8 @@ function renderSourceCanvas(layout) {
     els["twin-canvas"].dataset.runtimeEdges = String(architecture.runtime_data.edge_count);
     els["twin-canvas"].dataset.controlRelations = String(architecture.control_evidence.relation_count);
     els["twin-canvas"].dataset.crossBoundaryRelations = String(boundaries.cross_boundary_relations.length);
-    els["twin-canvas"].setAttribute("aria-label", `Observed System Architecture ${detailActive ? "Experience detail" : "layer overview"} with ${boundaries.observed.nodes.length} runtime/data components and ${boundaries.observed.relations.length} retained runtime dependencies, separate from the FlowPulse Control System with ${boundaries.flowpulse.nodes.length} control/evidence components and ${boundaries.cross_boundary_relations.length} cross-boundary evidence relations.`);
+    const faceLabel = componentActive ? `${componentContext.node.label} component detail` : detailActive ? "Experience detail" : "layer overview";
+    els["twin-canvas"].setAttribute("aria-label", `Observed System Architecture ${faceLabel} with ${boundaries.observed.nodes.length} runtime/data components and ${boundaries.observed.relations.length} retained runtime dependencies, separate from the FlowPulse Control System with ${boundaries.flowpulse.nodes.length} control/evidence components and ${boundaries.cross_boundary_relations.length} cross-boundary evidence relations.`);
     syncArchitectureSelection();
     return;
   }
@@ -477,6 +488,37 @@ function sourceNodeMarkup(node, { layout, source, nodeStates, architectureCompac
     ${compactCopy}
     <span class="node-status-dot" aria-hidden="true"></span>
   </button>`;
+}
+
+function renderArchitectureComponentDetail(context) {
+  const { node, incoming, outgoing, source } = context;
+  const relationshipGroup = (label, nodes, empty) => `<section class="architecture-component-card architecture-component-relations">
+    <header><span>${escapeHtml(label)}</span><strong>${nodes.length}</strong></header>
+    <div>${nodes.length ? nodes.map((item) => `<span>${escapeHtml(item.label)}</span>`).join("") : `<small>${escapeHtml(empty)}</small>`}</div>
+  </section>`;
+  const signals = node.signal_types.length
+    ? node.signal_types.map((signal) => `<span>${escapeHtml(signal)}</span>`).join("")
+    : "<small>No bounded signal summary</small>";
+  const provenance = node.provenance_refs.length
+    ? node.provenance_refs.map((reference) => `<code>${escapeHtml(reference)}</code>`).join("")
+    : "<small>No bounded provenance reference</small>";
+  return `<section class="architecture-workspace-face architecture-component-detail-face" data-architecture-component-id="${escapeHtml(node.id)}" aria-label="${escapeHtml(node.label)} component detail">
+    <header class="architecture-face-heading architecture-detail-heading">
+      <button class="architecture-back-control" type="button" data-architecture-component-back><i class="ph ph-arrow-left" aria-hidden="true"></i><span>Back to Experience</span></button>
+      <div class="architecture-component-title"><span class="architecture-component-detail-icon" aria-hidden="true"><i class="ph ph-${iconForLive(node)}"></i></span><span><small>${escapeHtml(kindLabel(node.kind))}</small><strong>${escapeHtml(node.label)}</strong></span></div>
+      <em>${escapeHtml(statusLabel(node.status))}</em>
+    </header>
+    <div class="architecture-component-detail-grid">
+      <section class="architecture-component-card architecture-component-identity">
+        <header><span>Component</span><strong>${escapeHtml(source.label)}</strong></header>
+        <dl><div><dt>Plane</dt><dd>${escapeHtml(node.plane)}</dd></div><div><dt>Layer</dt><dd>${escapeHtml(node.layer)}</dd></div><div><dt>Status</dt><dd>${escapeHtml(statusLabel(node.status))}</dd></div></dl>
+      </section>
+      <section class="architecture-component-card architecture-component-signals"><header><span>Signals</span><strong>${node.signal_types.length}</strong></header><div>${signals}</div></section>
+      ${relationshipGroup("Upstream", incoming, "Observed entry point")}
+      ${relationshipGroup("Downstream", outgoing, "No observed downstream dependency")}
+      <section class="architecture-component-card architecture-component-provenance"><header><span>Provenance</span><strong>${node.provenance_refs.length}</strong></header><div>${provenance}</div></section>
+    </div>
+  </section>`;
 }
 
 function liveSignalTone(edge, nodeStates) {
@@ -1412,22 +1454,25 @@ function selectionEntities() {
 }
 
 function handleCanvasSelection(event) {
+  const architectureComponentBack = event.target.closest("[data-architecture-component-back]");
   const architectureBack = event.target.closest("[data-architecture-back]");
   const architectureLayer = event.target.closest('[data-architecture-layer="experience"]');
   const node = event.target.closest("[data-node-id]");
   const edge = event.target.closest("[data-edge-id]");
   const agentEdge = event.target.closest("[data-agent-edge-id]");
-  if (architectureBack) setArchitectureFace("overview");
+  if (architectureComponentBack) setArchitectureFace("experience");
+  else if (architectureBack) setArchitectureFace("overview");
   else if (architectureLayer) setArchitectureFace("experience");
+  else if (node && mode === "architecture" && architectureFace === "experience" && architectureComponentContext(node.dataset.nodeId)?.node.layer === "experience") setArchitectureFace("component", node.dataset.nodeId);
   else if (node) openDrawer({ type: "node", id: node.dataset.nodeId }, defaultTabForNode(node.dataset.nodeId));
   else if (edge) openDrawer({ type: "edge", id: edge.dataset.edgeId }, "evidence");
   else if (agentEdge) openDrawer({ type: "agent-edge", id: agentEdge.dataset.agentEdgeId }, "agent");
 }
 
 function handleCanvasKeydown(event) {
-  if (event.target.matches('[data-architecture-layer="experience"], [data-architecture-back]') && (event.key === "Enter" || event.key === " ")) {
+  if (event.target.matches('[data-architecture-layer="experience"], [data-architecture-back], [data-architecture-component-back]') && (event.key === "Enter" || event.key === " ")) {
     event.preventDefault();
-    setArchitectureFace(event.target.matches("[data-architecture-back]") ? "overview" : "experience");
+    setArchitectureFace(event.target.matches("[data-architecture-component-back]") ? "experience" : event.target.matches("[data-architecture-back]") ? "overview" : "experience");
     return;
   }
   if (event.target.matches("[data-collaborator-id]") && ["ArrowRight", "ArrowDown", "ArrowLeft", "ArrowUp"].includes(event.key)) {
@@ -1440,7 +1485,8 @@ function handleCanvasKeydown(event) {
   if (!event.target.matches("[data-node-id], [data-edge-id], [data-agent-edge-id]")) return;
   if (event.key === "Enter" || event.key === " ") {
     event.preventDefault();
-    if (event.target.dataset.nodeId) openDrawer({ type: "node", id: event.target.dataset.nodeId }, defaultTabForNode(event.target.dataset.nodeId));
+    if (event.target.dataset.nodeId && mode === "architecture" && architectureFace === "experience" && architectureComponentContext(event.target.dataset.nodeId)?.node.layer === "experience") setArchitectureFace("component", event.target.dataset.nodeId);
+    else if (event.target.dataset.nodeId) openDrawer({ type: "node", id: event.target.dataset.nodeId }, defaultTabForNode(event.target.dataset.nodeId));
     else if (event.target.dataset.agentEdgeId) openDrawer({ type: "agent-edge", id: event.target.dataset.agentEdgeId }, "agent");
     else openDrawer({ type: "edge", id: event.target.dataset.edgeId }, "evidence");
   }
@@ -1478,16 +1524,29 @@ function closeDrawer() {
   els["details-button"].focus();
 }
 
-function setArchitectureFace(nextFace) {
-  if (mode !== "architecture" || !["overview", "experience"].includes(nextFace) || architectureFace === nextFace || architectureTransitioning) return;
+function setArchitectureFace(nextFace, detailNodeId = null) {
+  const validComponent = nextFace === "component" && architectureComponentContext(detailNodeId)?.node.layer === "experience";
+  if (mode !== "architecture" || !["overview", "experience", "component"].includes(nextFace) || (nextFace === "component" && !validComponent) || (architectureFace === nextFace && (nextFace !== "component" || architectureDetailNodeId === detailNodeId)) || architectureTransitioning) return;
   const workspace = els["canvas-layers"].querySelector(".architecture-workspace");
   const turn = workspace?.querySelector(".architecture-workspace-turn");
   if (!workspace || !turn) return;
+  const previousFace = architectureFace;
+  const previousDetailNodeId = architectureDetailNodeId;
+  if (nextFace === "component") {
+    architectureDetailNodeId = detailNodeId;
+    closeDrawerWithoutFocus();
+  } else if (nextFace === "overview") {
+    architectureDetailNodeId = null;
+  }
   const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   const focusFaceControl = () => {
-    const focusTarget = nextFace === "experience"
-      ? els["canvas-layers"].querySelector("[data-architecture-back]")
-      : els["canvas-layers"].querySelector('[data-architecture-layer="experience"]');
+    const focusTarget = nextFace === "component"
+      ? els["canvas-layers"].querySelector("[data-architecture-component-back]")
+      : nextFace === "experience"
+        ? previousFace === "component" && previousDetailNodeId
+          ? els["canvas-layers"].querySelector(`[data-node-id="${previousDetailNodeId}"]`)
+          : els["canvas-layers"].querySelector("[data-architecture-back]")
+        : els["canvas-layers"].querySelector('[data-architecture-layer="experience"]');
     focusTarget?.focus();
   };
   if (reducedMotion) {
@@ -1497,7 +1556,7 @@ function setArchitectureFace(nextFace) {
     return;
   }
   architectureTransitioning = true;
-  const forward = nextFace === "experience";
+  const forward = nextFace !== "overview";
   turn.classList.add(forward ? "is-turning-forward" : "is-turning-back");
   window.setTimeout(() => {
     if (mode !== "architecture") {
@@ -1526,6 +1585,7 @@ function setMode(nextMode) {
   if (!state) return;
   if (nextMode !== "architecture") {
     architectureFace = "overview";
+    architectureDetailNodeId = null;
     architectureTransitioning = false;
   }
   mode = nextMode;

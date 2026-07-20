@@ -159,6 +159,12 @@ test("architecture uses a four-layer overview and a bounded Experience detail fa
   assert.doesNotMatch(appJs, /layer\.members\.slice\(0, 4\)/);
   assert.match(appJs, /data-architecture-layer="experience"/);
   assert.match(appJs, /data-architecture-back/);
+  assert.match(appJs, /let architectureDetailNodeId = null;/);
+  assert.match(appJs, /architecture-component-detail-face/);
+  assert.match(appJs, /data-architecture-component-back/);
+  assert.match(appJs, /architectureFace === "component"/);
+  assert.match(appJs, /mode === "architecture" && architectureFace === "experience" && architectureComponentContext\(node\.dataset\.nodeId\)/);
+  assert.match(appJs, /architectureDetailNodeId = detailNodeId;\s+closeDrawerWithoutFocus\(\);/s);
   assert.match(appJs, /node\.layer === layer\.id/);
   assert.match(appJs, /architectureFace === "experience"/);
   assert.match(appJs, /architectureCompact: true/);
@@ -181,6 +187,11 @@ test("architecture uses a four-layer overview and a bounded Experience detail fa
   assert.match(architectureRefinementCss, /\.architecture-flowpulse-nodes \.source-node\.is-architecture-compact \{[^}]+height: 54px;[^}]+min-height: 54px;[^}]+grid-template-columns: 32px minmax\(0, 1fr\);/s);
   assert.match(architectureRefinementCss, /@media \(max-width: 1320px\) \{[\s\S]+?\.architecture-layer-anatomy \{ grid-template-columns: repeat\(3, minmax\(0, 1fr\)\); gap: 7px; \}/);
   assert.match(architectureRefinementCss, /\.architecture-thumbnail-icon,\s*\.is-architecture-source \.source-node\.is-architecture-compact \.node-icon \{[^}]+color: var\(--architecture-vector\);/s);
+  assert.match(architectureRefinementCss, /\.architecture-component-card \{[^}]+border: 0;[^}]+border-radius: var\(--architecture-node-radius\);[^}]+background: rgba\(255, 255, 255, \.2\);/s);
+  assert.match(architectureRefinementCss, /\.architecture-thumbnail-node \{[^}]+border-radius: var\(--architecture-node-radius\);[^}]+background: rgba\(255, 255, 255, \.2\);/s);
+  assert.match(architectureRefinementCss, /\.source-node\.is-architecture-compact \{[^}]+border-radius: var\(--architecture-node-radius\);[^}]+background: rgba\(255, 255, 255, \.2\);/s);
+  assert.match(architectureRefinementCss, /\.app-shell\[data-mode="architecture"\] \.workspace-menu-panel,[\s\S]+?\.state-key \{[^}]+border: 0;[^}]+background: rgba\(255, 255, 255, \.3\);/s);
+  assert.match(architectureRefinementCss, /\.app-shell\[data-mode="architecture"\] \.context-drawer \{[^}]+background: rgba\(249, 251, 252, \.36\);/s);
   assert.match(stylesCss, /\.is-architecture-source \.source-node\.is-architecture-compact \{[^}]+border: 0;[^}]+border-radius: var\(--architecture-node-radius\);/s);
   assert.match(stylesCss, /--architecture-page-radius: 22px;[\s\S]+--architecture-system-radius: 22px;[\s\S]+--architecture-node-radius: 14px;[\s\S]+--architecture-control-radius: 14px;/);
   assert.match(stylesCss, /--architecture-font: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", sans-serif;/);
