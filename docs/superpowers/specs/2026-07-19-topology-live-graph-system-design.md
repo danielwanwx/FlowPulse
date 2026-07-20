@@ -1,10 +1,10 @@
 # FlowPulse topology, Live interaction, and shared Graph system design
 
-Status: owner-approved direction; this written contract requires owner review before implementation planning
+Status: owner-amended direction; the 4333/`7426364` full-topology decision supersedes the earlier ten-node Architecture and six-node Live target
 
 Date: 2026-07-19
 
-Frontend baseline: `7426364` (the `public/` surface is byte-identical through `86c5e02`)
+Frontend baseline: `7426364`, visually accepted by Daniel at port 4333 (the `public/` surface is byte-identical through `86c5e02`)
 
 Review branch: `codex/topology-live-integration`
 
@@ -29,7 +29,7 @@ No phase may be combined with a later phase merely because the files overlap. P0
 | Element | Contract |
 | --- | --- |
 | Goal | Present a truthful, navigable, visually coherent system graph without giving the browser or a fixture authority over incident, approval, execution, or verification truth. |
-| Input scope | IncidentProjection v1, bounded source topology, canonical ledger events, code-owned component metadata, the captured Astronomy Shop fixture, baseline `7426364`, and the owner reference image. |
+| Input scope | IncidentProjection v1, bounded source topology, canonical ledger events, code-owned component metadata, a sanitized checked-in topology manifest derived from the synthetic OpenTelemetry Demo capture, the bounded six-node incident bundle, baseline `7426364`, and the owner reference image. |
 | Execute | Compose and validate topology on the server; render bounded view projections; then improve Live gestures; then apply shared visual primitives. |
 | Check | Provenance, node/edge bounds, endpoint integrity, deterministic ordering, truth labels, interaction tests, accessibility, browser screenshots, console output, and no authority import or inference. |
 | Feedback | Missing evidence yields omitted or unavailable nodes, never invented topology. Gesture conflict yields a targeted P1 repair. Visual inconsistency yields a P2 token/primitive repair, not a data-contract change. |
@@ -53,25 +53,52 @@ The UI currently uses the word “topology” for several different things. They
 
 Architecture is the composed product/system view. Live is the runtime/data-flow view. Diagnose is a timeline-selected incident subgraph. Agent/Recovery is a ledger-derived control-flow view. Compare overlays incident and verified frames without changing the underlying topology truth.
 
-### 2.2 Verified causes of the current six-node and blank-Live reports
+### 2.2 Verified causes of the current incomplete and blank-Live reports
 
 | Observation | Verified cause | Consequence |
 | --- | --- | --- |
+| Port 4333 showed 22 nodes and 22 edges on `7426364` | `FLOWPULSE_OTLP_DIR` pointed at the local synthetic OpenTelemetry Demo capture, and the accepted baseline rendered the fuller observed component/dependency graph. | This is the owner-accepted visual and data-completeness baseline. The raw local capture is evidence for deriving a bounded fixture, not a judge dependency. |
 | Port 4310 showed 6 nodes and 0 edges | It was a stale service process exposing an older captured browser state. | Port 4310 is not acceptance evidence for the review branch. |
-| Port 4312 showed 6 nodes and 5 edges | It loaded review candidate `e4c6d87`, which projects the selected captured fixture topology. | The five captured dependency paths are available, but this alone does not prove the full Architecture composition. |
-| Architecture showed only 6 nodes | `architectureTopology()` replaces the product graph whenever `source.topology` is nonempty. | The six captured runtime/data nodes hide Deployment, Investigator, Evaluator, and Evidence Ledger. |
+| Port 4312 showed 6 nodes and 5 edges | It loaded review candidate `e4c6d87`, which projects the bounded incident bundle topology. | The incident paths are valid for diagnosis, but they are not the complete runtime topology. |
+| Architecture showed only 6 nodes | `architectureTopology()` replaces the product graph whenever `source.topology` is nonempty, and the selected replay source is the bounded incident bundle. | The incident subgraph replaces rather than overlays the 22-node system graph and also hides Deployment, Investigator, Evaluator, and Evidence Ledger. |
 | Live appeared blank or fixed | The stale state had no dependencies; the restored frontend also accepts pan only from blank canvas because `startLivePan()` rejects node, edge, button, input, and summary targets. | A correct topology contract and a separate gesture repair are both required. |
-| The source looked like live production data | The judge source is a deterministic captured fixture, not a production database or live vendor connection. | UI labels must say CAPTURED, not LIVE, and must not imply production connectivity. |
+| The source looked like live production data | The judge source is a deterministic sanitized fixture derived from synthetic OTLP, not a production database or live vendor connection. | UI labels must say CAPTURED. LIVE is reserved for fresh authoritative input explicitly configured at server startup. |
 
-The captured fixture proves exactly six runtime/data entities and five directed dependency edges:
+The synthetic OpenTelemetry Demo capture proves this exact 22-node runtime/data identity set for the P0 judge fixture:
 
 ```text
-Frontend -> Checkout -> Payment
-                    -> Kafka -> Accounting
-                             -> Fraud
+accounting, ad, cart, checkout, currency, email, flagd, flagd-ui,
+fraud-detection, frontend, frontend-proxy, frontend-web, image-provider,
+kafka, load-generator, otelcol-contrib, payment, product-catalog, quote,
+recommendation, shipping, telemetry-docs
 ```
 
-The current product model also contains four provable control/evidence entities: Deployment, Investigator, Evaluator, and Evidence Ledger. Their presence and active status must be projected from server-owned evidence, ledger state, and code-owned component identity. Static browser constants may provide presentation defaults only; they cannot assert that a component participated in an incident.
+It also proves 22 directed dependency edges. Their canonical endpoint pairs are:
+
+```text
+cart->flagd
+checkout->cart, checkout->currency, checkout->email, checkout->payment,
+checkout->product-catalog, checkout->shipping
+frontend->ad, frontend->cart, frontend->checkout, frontend->currency,
+frontend->product-catalog, frontend->recommendation, frontend->shipping
+frontend-proxy->flagd, frontend-proxy->frontend, frontend-proxy->image-provider
+frontend-web->frontend-proxy
+load-generator->flagd, load-generator->frontend-proxy
+recommendation->product-catalog
+shipping->quote
+```
+
+The bounded incident bundle remains a different artifact. It proves an exact six-entity/five-relation causal overlay:
+
+```text
+frontend -> checkout -> payment
+                    -> kafka -> accounting
+                             -> fraud-detection
+```
+
+The existing incident ID `fraud` is a source alias for canonical system ID `fraud-detection`; the backend performs that code-owned normalization before matching the overlay. The three causal relations absent from the 22 observed dependency edges remain explicitly typed incident-evidence relations. They are not relabelled as observed OTLP dependencies.
+
+The current product model also contains four provable control/evidence entities: Deployment, Investigator, Evaluator, and Evidence Ledger. None collides with the exact 22 runtime/data IDs above, so the deterministic Architecture fixture has exactly 26 nodes. Its runtime dependency base remains exactly 22 edges. Additional control/evidence relations are projected only when their canonical ledger/evidence prerequisites exist, so they are reported separately and are not used to inflate the fixed runtime-edge acceptance count. Their presence and active status must be projected from server-owned evidence, ledger state, and code-owned component identity. Static browser constants may provide presentation defaults only; they cannot assert that a component participated in an incident.
 
 ### 2.3 Source-truth labels
 
@@ -80,11 +107,11 @@ The visible source label is a projection of orthogonal truth fields, not a styli
 | Label | Required truth | Allowed behavior |
 | --- | --- | --- |
 | `LIVE` | `source_health=live` and `evidence_mode=live_stream`, with validated current freshness | May animate current observed signals. It still grants no action authority. |
-| `CAPTURED` | `evidence_mode=captured_fixture` or a separately labelled frozen snapshot; the judge path is `execution_mode=deterministic_replay` | May replay recorded signals. It must not imply current source health or production connectivity. |
-| `LAST-KNOWN` | A previously validated topology is retained while `source_health=stale` or `disconnected` | Display-only and non-actionable. Preserve the actual evidence/execution modes and show the last observation time when available. |
+| `CAPTURED` | `evidence_mode=captured_fixture`; the judge path is `execution_mode=deterministic_replay` and current availability is not asserted | May replay recorded signals. It must not imply current source health or production connectivity. |
+| `LAST-KNOWN` / `STALE` | A previously validated live or frozen-real topology is retained while `source_health=stale` or `disconnected` | Display-only and non-actionable. Preserve the actual evidence/execution modes, display STALE health explicitly, and show the last observation time when available. |
 | `UNAVAILABLE` | No valid bounded topology can be projected, or the schema/source is unavailable | Render an explicit empty/degraded state. Never fall back to a captured fixture. |
 
-`frozen_real_snapshot` remains a distinct evidence badge. It must not be collapsed into LIVE or CAPTURED fixture language.
+`frozen_real_snapshot` remains a distinct evidence badge. It must not be collapsed into LIVE or CAPTURED fixture language. A freshly captured frozen snapshot is still not a live stream; its current source-health label is projected independently.
 
 ## 3. Graph data contract
 
@@ -105,12 +132,35 @@ Connectors, fixtures, model output, query parameters, local storage, replay curs
 
 The server composes separate provenance domains rather than flattening them into an unlabeled list:
 
-- **Observed runtime/data:** six captured Astronomy entities and their five evidence-backed dependencies for the deterministic judge path.
+- **Observed runtime/data:** the exact 22 entities and 22 dependencies in the sanitized checked-in OpenTelemetry Demo topology manifest for the deterministic judge path, or the same strict contract populated from explicitly configured fresh/frozen input.
+- **Incident overlay:** the exact six canonical incident entities and five bounded causal relations from the incident bundle, matched onto the system graph without replacing it.
 - **Change/control:** Deployment only when bounded change/deploy evidence or a canonical ledger reference exists.
 - **Investigation/control:** Investigator and Evaluator from code-owned identities plus canonical ledger participation/status. Their presence does not mean their conclusion passed.
 - **Evidence:** Evidence Ledger from the actual append-only ledger capability and bounded run projection. The browser receives no filesystem path, SQL, raw event payload, or secret.
 
-### 3.2 Node contract
+### 3.2 Deterministic judge topology fixture and provenance
+
+The judge path must not read Daniel's untracked `outputs/live/otel`, any `.env`, or a running collector. P0 checks in one bounded product fixture:
+
+```text
+data/topology/otel-demo-system-v1.json
+```
+
+The file is derived once from the synthetic OpenTelemetry Demo capture and contains only:
+
+- schema and fixture version;
+- synthetic source identity and upstream project/version reference;
+- evidence mode `captured_fixture` and execution mode `deterministic_replay`;
+- a fixed capture window and derivation metadata;
+- the exact 22 bounded nodes and 22 directed dependencies listed in section 2.2;
+- safe component labels, kinds, planes/layers, ordered signal-type summaries, and content hashes;
+- ordered provenance references that bind each node/edge to the sanitized topology manifest without exposing raw telemetry.
+
+It contains no trace/log/metric bodies, span or trace IDs, raw operation names, environment variables, filesystem paths, provider payloads, customer identifiers, hostnames, connection strings, SQL, prompts, credentials, secrets, tokens, or local/session IDs. `outputs/live/**` and `.env*` remain excluded. The derivation inventory records input hashes and the exact redaction/normalization algorithm; the checked-in fixture is deterministically sorted and carries a canonical SHA-256 over its semantic content.
+
+The server owns fixture selection at startup. Browser/query/body/local-storage/model input cannot select a topology source or truth mode. An explicitly configured live connector may populate the same strict topology contract and replace the judge fixture only when current source health and freshness validate; it does not merge arbitrary caller topology into the fixture. Missing, stale, invalid, or mismatched live data renders LAST-KNOWN/STALE or UNAVAILABLE according to its real state and never silently falls back to CAPTURED.
+
+### 3.3 Node contract
 
 Each projected node has a strict bounded shape:
 
@@ -142,7 +192,7 @@ For example, Kafka is `kind=topic, display_class=stream`; Accounting is `kind=jo
 
 Databases, datasets, tables, queries, DAGs, and jobs appear only when a normalized source envelope, selected frozen snapshot, or canonical ledger reference proves them. Product familiarity, a vendor logo, or a desired dense layout is not evidence.
 
-### 3.3 Edge contract
+### 3.4 Edge contract
 
 Each projected edge has:
 
@@ -162,7 +212,7 @@ Edges are directed. Every endpoint must exist after deterministic truncation. Du
 
 Layout routes, pixel coordinates, edge bends, label offsets, pulse position, selection, hover, pan, and zoom are presentation state. They never enter the authority or evidence contract.
 
-### 3.4 Determinism, bounds, and truncation
+### 3.5 Determinism, bounds, and truncation
 
 The graph inherits the IncidentProjection v1 limits:
 
@@ -177,15 +227,15 @@ The graph inherits the IncidentProjection v1 limits:
 
 Nodes sort by `plane`, `layer`, stable code-owned order where defined, then `id`. Edges sort by `plane`, `from`, `to`, `kind`, then `id`. The server validates counts and bytes before graph traversal or hashing. Output uses deterministic truncation with `truncated` and `next_cursor` where applicable.
 
-The browser may compute deterministic positions from `plane`, `layer`, and order. It may not drop a valid edge silently. A visual aggregation or primary-path mode must expose that it is filtered, retain the full bounded count, and make the omitted relations inspectable. For the six-node captured judge graph, all five edges must be rendered.
+The browser may compute deterministic positions from `plane`, `layer`, and order. It may not drop a valid edge silently. A visual aggregation or primary-path mode must expose that it is filtered, retain the full bounded count, and make the omitted relations inspectable. For the full captured judge topology, all 22 nodes and all 22 endpoint-valid dependencies must be available and rendered in Live. Diagnose additionally exposes the exact six-node/five-edge causal overlay without dropping the complete system context.
 
-### 3.5 View projections
+### 3.6 View projections
 
 | View | Included graph truth | Presentation behavior | Forbidden behavior |
 | --- | --- | --- | --- |
-| Architecture (Monitor) | Composed runtime, data, control, and evidence planes | Structured/layered overview; at least the ten currently provable entities in the full judge replay | Replacing the product graph with source-only topology; asserting incident participation from browser constants |
-| Live (Monitor) | Runtime/data nodes and valid dependencies from the selected source | Pannable/zoomable flow, source-health labels, signals only on projected edges | Showing control-plane authority; calling captured data live; hiding valid captured edges |
-| Diagnose / Workbench | Timeline-selected incident subgraph plus selected/counter evidence and evaluator relationships | Stable topology with ledger-derived stage emphasis | Client-derived cause, gate pass, risk, or accepted hypothesis |
+| Architecture (Monitor) | Exact 22-node/22-edge runtime/data base plus four non-duplicated, separately layered control/evidence entities | Structured/layered overview; exactly 26 nodes for the checked-in judge fixture, with control/evidence relation activity only when ledger/evidence proves it | Replacing the system graph with the incident subgraph; asserting participation from browser constants |
+| Live (Monitor) | Full 22-node/22-edge runtime/data graph from the selected valid source | Pannable/zoomable presentation inherited from baseline; source-health labels and signals only on projected edges | Showing control-plane authority; calling captured data live; hiding valid captured edges; changing P1 gestures during P0 |
+| Diagnose / Workbench | Complete system graph plus the exact six-node/five-edge timeline-selected incident causal overlay, selected/counter evidence, and evaluator relationships | Stable topology with ledger-derived stage emphasis | Replacing the complete graph with the overlay; client-derived cause, gate pass, risk, or accepted hypothesis |
 | Agent / Recovery | Ledger-derived control/evidence relationships and the referenced incident entities | Explain investigation/evaluator/Owner Gate flow while keeping topology visible | Treating a visual connection or button as approval/execution permission |
 | Compare | Two server-projected frames sharing canonical node identity | Incident vs recovery overlay/split; changed path highlighted | Client-generated verified state or mismatched run/incident comparison |
 
@@ -195,22 +245,24 @@ Architecture and Live remain Monitor subviews. Diagnose maps to Agent Workbench.
 
 P0 is complete only when all of the following are proven against the deterministic judge scenario:
 
-1. Architecture renders at least ten currently provable entities:
-   - six captured runtime/data entities: Frontend, Checkout, Payment, Kafka, Accounting, Fraud;
-   - four server/ledger-derived control/evidence entities: Deployment, Investigator, Evaluator, Evidence Ledger.
-2. Each control/evidence node carries a safe code-owned or ledger/evidence provenance reference and an honest inactive/active/status value. A static browser constant cannot make it active.
-3. Architecture visibly separates runtime/data, control, and evidence planes. It does not relabel the observed incident subgraph as the whole system architecture.
-4. Live deterministic replay renders exactly six nodes and all five valid directed edges from the captured fixture. Every endpoint exists and every signal travels on one of those five paths.
-5. Live displays `CAPTURED` and `deterministic_replay`; it does not say LIVE OTLP, production database, or current vendor connectivity.
-6. Databases, tables, datasets, queries, DAGs, and jobs remain absent unless existing normalized evidence proves them.
-7. Invalid, stale, disconnected, schema-mismatched, oversized, cross-run, or cross-incident topology becomes explicit LAST-KNOWN or UNAVAILABLE/non-actionable state as appropriate.
-8. Architecture and Live consume the same server-owned graph composition. The browser may choose a view projection but cannot inject nodes, edges, status, provenance, or source truth.
+1. The checked-in sanitized topology fixture validates to exactly 22 runtime/data nodes and 22 directed, endpoint-valid dependencies in deterministic order.
+2. Architecture renders those 22 runtime/data nodes plus four server/ledger-derived control/evidence entities: Deployment, Investigator, Evaluator, and Evidence Ledger. Because the checked-in fixture has no identity collision with those four, the exact P0 judge count is 26 nodes and the runtime dependency base remains exactly 22 edges. Canonical control/evidence relations are counted separately. A future source collision is canonicalized and deduplicated rather than rendered twice.
+3. Each node and edge carries a safe backend-owned provenance reference. Each control/evidence node has an honest inactive/active/status value; a static browser constant cannot make it active.
+4. Architecture visibly separates runtime/data, control, and evidence planes. It does not relabel the six-node incident subgraph as the whole system architecture.
+5. Live deterministic replay renders exactly 22 runtime/data nodes and all 22 valid directed dependencies from the sanitized fixture. Every endpoint exists and every signal travels on a projected edge.
+6. Diagnose retains the complete system graph and highlights exactly six canonical incident nodes and five evidence-backed causal relations. `fraud` normalizes to `fraud-detection`; overlay relations that are not observed OTLP dependencies remain distinctly typed causal evidence.
+7. The deterministic judge path displays `CAPTURED`, `captured_fixture`, and `deterministic_replay`; it does not say LIVE OTLP, production database, or current vendor connectivity. Only explicitly configured, fresh authoritative input may display LIVE. Frozen/stale/disconnected states remain distinct.
+8. Database, table, dataset, query, DAG, or job identities appear only when the sanitized manifest or another approved normalized source proves them. The current 22-node fixture contains no database/table/query/DAG node; no desired layout may create one.
+9. Invalid, stale, disconnected, schema-mismatched, oversized, cross-run, or cross-incident topology becomes explicit LAST-KNOWN/STALE or UNAVAILABLE/non-actionable state as appropriate.
+10. Architecture, Live, and Diagnose consume server-owned view projections. The browser cannot inject nodes, edges, overlay membership, status, provenance, or source truth.
+11. The visible shell and graph presentation remain the owner-accepted `7426364` behavior demonstrated at port 4333. P0 contains no pan/drag changes and no shared visual restyling.
 
 Required evidence:
 
 - contract tests for node/edge counts, deterministic ordering, endpoint integrity, provenance, bounds, truncation, and truthful labels;
 - server/IncidentProjection tests proving source and composed graph outputs;
-- frontend tests proving Architecture does not discard the four control/evidence entities and Live renders all five captured edges;
+- fixture and contract tests proving the exact 22/22 manifest, derivation metadata, content hash, deterministic order, safe fields, and exclusion of raw/personal/secret material;
+- frontend tests proving Architecture retains all 22 runtime/data entities plus four non-duplicated control/evidence entities, Live renders all 22 dependencies, and Diagnose retains the system graph while highlighting exactly six/five;
 - browser screenshots at 1440×900 and 1280×800 for Architecture and active Live replay;
 - browser DOM evidence of node/edge counts, zero invalid endpoints, visible signals, no overflow, and no console errors or warnings;
 - before/after API evidence that identifies the exact process/port under review.
@@ -315,19 +367,22 @@ This section fixes sequencing and boundaries. A separate implementation plan mus
 
 Likely files:
 
+- `data/topology/otel-demo-system-v1.json`
+- `src/topology-manifest.mjs`
 - `src/evidence-source.mjs`
 - `src/server.mjs`
 - `src/incident-projection.mjs`
 - `public/app.js`
 - `public/twin-state.mjs`
 - `test/evidence-source.test.mjs`
+- `test/topology-manifest.test.mjs`
 - `test/incident-projection.test.mjs`
 - `test/server.test.mjs`
 - `test/twin-state.test.mjs`
 
 Tests and records:
 
-- red tests for ten-node Architecture composition, six-node/five-edge Live, endpoint integrity, provenance, deterministic ordering, truth labels, bounds, and no client authority;
+- red tests for the exact sanitized 22-node/22-edge fixture, 26-node composed Architecture, 22-node/22-edge Live, six-node/five-edge Diagnose overlay, endpoint integrity, provenance, deterministic ordering, truth labels, bounds, and no client authority;
 - focused backend/projection/frontend suites;
 - `/api/health` and `/api/state` evidence from the exact review process/port;
 - 1440×900 and 1280×800 Architecture and Live screenshots with DOM counts and console logs.
@@ -381,14 +436,14 @@ Rollback: revert only the P2 commit. P0 semantics and P1 gestures remain separat
 
 | Candidate part | Initial disposition for the implementation plan |
 | --- | --- |
-| Selected captured topology exposed by the evidence source and projected server-side | Reuse or adapt in P0 after contract review |
-| IncidentProjection graph receives selected source topology | Reuse if the composed Architecture contract does not weaken projection validation |
+| Selected-source topology normalization and server projection | Reuse only after it accepts the strict full 22/22 manifest/live contract; supersede every six-node-only display assumption |
+| IncidentProjection graph receives selected source topology | Amend so Architecture receives the composed 22-plus-four graph, Live receives the full selected 22/22 runtime graph, and Diagnose receives a separate six/five overlay |
 | Browser accepts `services/dependencies` compatibility aliases | Audit; prefer one canonical IncidentProjection shape rather than permanent dual truth |
 | Architecture replaces the product graph with source-only topology | Supersede in P0 |
 | Fixed Live edge contrast adjustment | Re-evaluate in P2 against shared tokens, not P0 |
 | Node keyboard drawer support | Preserve if focused accessibility tests pass |
 
-Do not amend `e4c6d87`, merge it to main, or silently fold P1/P2 into it. The implementation plan must choose explicit follow-up commits that reuse, repair, or supersede its hunks. Owner review decides whether the branch is eventually squashed, merged as multiple commits, or abandoned.
+Do not amend `e4c6d87`, merge it to main, or silently fold P1/P2 into it. Its six-node Live result is evidence that the read path works, not the P0 target. The implementation plan must choose explicit follow-up commits that reuse, repair, or supersede its hunks. Owner review decides whether the branch is eventually squashed, merged as multiple commits, or abandoned.
 
 ## 8. Security and authority invariants
 
@@ -413,10 +468,11 @@ Any unknown schema, unknown enum, malformed/cross-scope reference, duplicate seq
 | Decision | Rationale |
 | --- | --- |
 | P0 data semantics precede gesture and visual work | A polished or pannable graph cannot compensate for incomplete or mislabeled topology. |
-| Correct frontend reference is `7426364` | The `public/` files are identical through `86c5e02`; later restoration history does not define a different accepted visual baseline. |
-| Architecture composes multiple graph meanings | Source-only topology is an observed incident subgraph, not the complete FlowPulse product/system architecture. |
+| Correct frontend reference is `7426364` at port 4333 | Daniel explicitly accepted the 22-node/22-edge rendering; the `public/` files are identical through `86c5e02`. Ports 4310/4312 do not supersede that baseline. |
+| Architecture composes multiple graph meanings | The full 22/22 OTLP Demo graph is the runtime/data base; the six/five incident bundle is an overlay, not a replacement; control/evidence identities occupy separate planes. |
 | Live renders only selected source runtime/data topology | Control/evidence relationships belong to Architecture, Workbench, or Recovery projections and must not imply live telemetry. |
-| Ten entities are the current P0 minimum, not a density target | Six runtime/data plus four proven control/evidence entities are supported; additional databases/tables/jobs require evidence. |
+| The deterministic judge Architecture count is exactly 26 | The sanitized manifest proves 22 runtime/data identities and none duplicates Deployment, Investigator, Evaluator, or Evidence Ledger. Other sources use canonical deduplication rather than a hard-coded density target. |
+| Judge topology is checked in as a sanitized manifest | Judges must not depend on Daniel's untracked capture directory. The fixture preserves bounded topology/provenance only; raw OTLP and environment data stay excluded. |
 | Live pan starts from graph content with a movement threshold | Dense graphs otherwise feel fixed, while immediate panning would break click/keyboard inspection. |
 | Shared primitives precede any framework decision | Existing HTML/SVG/CSS and Phosphor assets already support the required grammar; dependency cost needs measured justification. |
 | Owner reference informs structure, not palette or product truth | FlowPulse remains white-first and preserves its semantic colors and evidence hierarchy. |
@@ -426,8 +482,9 @@ Any unknown schema, unknown enum, malformed/cross-scope reference, duplicate seq
 
 This design does not authorize:
 
-- production OTLP, database, warehouse, Kafka, Airflow, OpenLineage, or vendor connector work;
-- invented databases, tables, queries, jobs, DAGs, or topology used only to make the canvas denser;
+- production OTLP, database, warehouse, Kafka, Airflow, OpenLineage, or vendor connector work; the existing read-only live source may populate the same contract when explicitly configured, but P0 adds no connector;
+- invented databases, tables, queries, jobs, DAGs, or topology used only to make the canvas denser; only the exact manifest identities may appear in the judge runtime/data base;
+- committing or reading judge data from `outputs/live/**`, `.env*`, raw logs/traces/metrics, or personal filesystem paths;
 - approval/reject/defer endpoints, remediation, executor, provider, Astronomy, or authority-policy changes;
 - Devpost form, Session ID, submission, video, README marketing, deployment, or push to main;
 - merge of `e4c6d87` or any later phase without owner review;
@@ -441,11 +498,11 @@ The written specification is ready for implementation planning only when:
 
 - all P0/P1/P2 boundaries are unambiguous and independently testable;
 - source labels and graph meanings cannot be confused;
-- the ten-entity P0 composition and six-node/five-edge Live replay are evidence-backed;
+- the exact 22/22 sanitized runtime/data fixture, 26-node Architecture composition, 22/22 Live replay, and six/five Diagnose overlay are evidence-backed;
 - gesture threshold and pointer lifecycle are explicit;
 - shared visual primitives are defined without prescribing a new framework;
 - authority, privacy, bounds, and fail-closed behavior are explicit;
 - `e4c6d87` has an explicit audit disposition rather than an implied merge;
 - no application or test file changes are included with this document.
 
-After Daniel approves this document, a separate implementation-plan checkpoint may translate P0 only into exact red tests, file scope, screenshots, verification commands, rollback, and a mandatory owner review stop. P1 and P2 remain unauthorized until the preceding phase is accepted.
+After Daniel approves this amendment and its revised P0 plan, the first implementation checkpoint is the data/evidence inventory plus sanitized topology-fixture contract only. It must stop for owner review before source, projection, server, or browser wiring. P1 and P2 remain unauthorized until the preceding phase is accepted.
