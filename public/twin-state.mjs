@@ -51,26 +51,26 @@ export const PULSE_SLOTS = {
 export const ARCHITECTURE_LAYERS = [
   {
     id: "experience",
-    label: "Experience",
-    description: "customer and synthetic entry",
+    label: "Client applications",
+    description: "browser and traffic-entry services",
     ids: ["load-generator", "frontend-web"]
   },
   {
     id: "commerce",
-    label: "Edge & commerce",
-    description: "requests, cart, and checkout",
+    label: "Commerce edge & APIs",
+    description: "checkout-facing APIs and commerce services",
     ids: ["frontend-proxy", "frontend", "checkout", "cart"]
   },
   {
     id: "processing",
     label: "Core services",
-    description: "transactional and supporting services",
+    description: "domain and stream-processing services",
     ids: ["payment", "currency", "shipping", "product-catalog", "recommendation", "ad"]
   },
   {
     id: "platform",
-    label: "Async, data & platform",
-    description: "eventing, workers, configuration, and telemetry",
+    label: "Async data & platform",
+    description: "eventing, data, configuration, and telemetry",
     ids: ["email", "kafka", "accounting", "fraud-detection", "fraud", "quote", "image-provider", "flagd-ui", "flagd", "telemetry-docs", "otelcol-contrib", "astronomy-db"]
   }
 ];
