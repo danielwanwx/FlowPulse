@@ -19,33 +19,30 @@ Each positive case runs three independent rounds. Every round has unique `run_id
 
 ## API
 
-Start exactly one positive fixture run:
+Start exactly one fixture run. `idempotency_key` is optional for one-off local CLI use and required for a browser retry-safe start:
 
 ```http
 POST /api/demo/agent-loop/run
 Content-Type: application/json
 
-{"case_id":"kafka-consumer-pause","round":2}
+{"case_id":"checkout-payment-config","round":1,"idempotency_key":"live-demo-checkout-001"}
 ```
 
-The request permits only `case_id` and `round` (1–3). The response is a fully replayable projection:
+The request permits only `case_id`, `round` (1–3), and `idempotency_key`. It validates and reserves the immutable run/incident identity, then returns `202` before provider work starts:
 
 ```json
 {
-  "schema_version": "flowpulse.local-fault-loop.v1",
-  "run_id": "local-loop-kafka-consumer-pause-2-...",
-  "incident_id": "incident-local-kafka-consumer-pause-2-...",
-  "case_id": "kafka-consumer-pause",
-  "round": 2,
-  "state": "recovered",
-  "stage": "recovered",
-  "citations": ["ev-local-..."],
-  "role_responses": [
-    {"role":"observer","provider":{"provider_kind":"codex-local"},"answer_sha256":"...","answer_bytes":280,"citations":["ev-local-..."]}
-  ],
-  "events": []
+  "schema_version": "flowpulse.local-fault-loop.v2",
+  "run_id": "local-loop-checkout-payment-config-1-...",
+  "incident_id": "incident-local-checkout-payment-config-1-...",
+  "state": "running",
+  "stage": "monitor",
+  "events_url": "/api/demo/agent-loop/events?run_id=...&after=0",
+  "contextual_workspaces": {"context":{"run_id":"...","incident_id":"...","selected_component":"checkout","timeline":{"position":3,"event_id":"...","stage":"monitor","terminal_state":null}},"actions":{"view_diagnosis":{"available":false,"prerequisites":[{"id":"bounded_incident_opened","satisfied":false}]},"open_recovery_console":{"available":false,"prerequisites":[{"id":"evaluated_remediation_plan_or_repair_started","satisfied":false}]},"compare_recovery":{"available":false,"prerequisites":[{"id":"independent_verification_completed","satisfied":false},{"id":"terminal_state_recorded","satisfied":false}]}}}
 }
 ```
+
+The same idempotency key returns this original identity and never starts a second fault injection, model sequence, repair, or verification. `insufficient-evidence` is a valid case ID for the no-repair `needs_human` path.
 
 Read any recorded run without invoking a model:
 
@@ -59,9 +56,11 @@ Replay only safe ordered events over SSE; the browser never polls or receives ra
 GET /api/demo/agent-loop/events?run_id=local-loop-kafka-consumer-pause-2-...&after=0
 ```
 
-Each `local-fault-loop` event has the projected event ID/sequence/time, actor, event type, bounded payload, and evidence IDs. A terminal `local-fault-loop-state` event carries `state`, `stage`, provider label, and final record. `Last-Event-ID` resumes the safe projection. The same stream works as an incremental projection when a run is in progress and as a full replay after it finishes.
+Each `local-fault-loop` event has the projected event ID/sequence/time, actor, event type, bounded payload, and evidence IDs. The stream replays events whose sequence is greater than `after` or `Last-Event-ID`, sends one-second heartbeats while the run is active, and emits exactly one terminal `local-fault-loop-state` event before closing. It never invokes another model or repair on reconnect.
 
-If the configured provider is not an available `codex-local` provider, the POST returns `409` with `local_codex_provider_unavailable`. It never substitutes recorded text.
+Every GET and SSE event also carries `contextual_workspaces`. Its `context` preserves the canonical `run_id`, `incident_id`, selected component, and exact timeline sequence/event/stage. Its actions are advisory launch prerequisites only: `view_diagnosis` becomes available after `incident.opened`; `open_recovery_console` after an evaluated remediation plan or repair begins; and `compare_recovery` only after both independent verification and a terminal record exist. These flags never authorize, start, or alter the loop. An insufficient-evidence stop has no independent verification, so Compare remains unavailable while the human gate is visible.
+
+Provider capability checking is part of the background run so the POST remains fast. An unavailable or malformed `codex-local` provider emits a terminal `failed` state with a bounded failure reason; it never substitutes recorded text.
 
 ## Ordered event projection
 
@@ -82,7 +81,24 @@ The browser renders event order directly; it does not infer hidden transitions o
 
 When independent verification fails, the projection records `local_fault_loop.repair.rolled_back`, reinvestigates and replans once, then either recovers after the second bounded attempt or emits `local_fault_loop.stopped` with `needs_human`. It never marks a failed verification as recovered.
 
-`role_responses` carries only role ID, provider label, answer hash/byte count, schema-validated handoff metadata, and citation IDs. It never exposes a raw prompt, model payload, chain of thought, raw logs/traces, secrets, or Codex credentials.
+`local_fault_loop.role.response` and `role_responses` carry only schema-validated display data:
+
+```json
+{
+  "role":"investigator",
+  "requested_agent":"investigator",
+  "responding_agent":"investigator",
+  "state":"completed",
+  "safe_answer":"Bounded explanation with cited evidence IDs.",
+  "citations":["ev-local-..."],
+  "handoff":null,
+  "tools":[{"tool":"read_evidence_summaries","result_count":6}],
+  "answer_sha256":"...",
+  "answer_bytes":280
+}
+```
+
+`safe_answer` is capped at 280 Unicode characters / 1,200 bytes, control characters and credential-shaped tokens are redacted, and invalid provider output terminates the run. The projection never exposes a raw prompt, model payload, chain of thought, raw logs/traces, secrets, or Codex credentials.
 
 ## Local execution and reports
 

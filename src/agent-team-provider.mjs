@@ -92,6 +92,21 @@ export function createCodexLocalAdapter({
   eventLimit = EVENT_LIMIT,
   diagnostic = null
 } = {}) {
+  const testResponse = testCodexResponse();
+  if (testResponse) {
+    const capability = staticCapability("codex-local", "available", "LOCAL CODEX", "Codex CLI");
+    const testDelayMs = testCodexDelay();
+    return {
+      provider: "codex-local",
+      model: "Codex CLI",
+      capability: () => ({ ...capability }),
+      async preflight() { return { ...capability }; },
+      async respond() {
+        if (testDelayMs) await new Promise((resolve) => setTimeout(resolve, testDelayMs));
+        return providerResponse({ ...testResponse, provider: "codex-local", model: "Codex CLI", usage: { input_tokens: null, output_tokens: null } });
+      }
+    };
+  }
   let capability = staticCapability("codex-local", "preflight_required", "LOCAL CODEX", "Codex CLI");
   let preflightPromise = null;
   const preflight = async () => {
@@ -370,4 +385,13 @@ function boundedUsage(value) { return { input_tokens: safeInt(value?.input_token
 function safeText(value, maximum) { return typeof value === "string" && Buffer.byteLength(value, "utf8") > 0 && Buffer.byteLength(value, "utf8") <= maximum ? value : null; }
 function safeInt(value, maximum) { return Number.isSafeInteger(value) && value >= 0 && value <= maximum ? value : null; }
 function plain(value) { return Boolean(value) && typeof value === "object" && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype; }
+function testCodexResponse() {
+  if (process.env.NODE_ENV !== "test" || typeof process.env.FLOWPULSE_TEST_CODEX_RESPONSE !== "string") return null;
+  try { return parseOutput(process.env.FLOWPULSE_TEST_CODEX_RESPONSE); } catch { return null; }
+}
+function testCodexDelay() {
+  if (process.env.NODE_ENV !== "test") return 0;
+  const value = Number(process.env.FLOWPULSE_TEST_CODEX_DELAY_MS || 0);
+  return Number.isInteger(value) && value >= 0 && value <= 5_000 ? value : 0;
+}
 function tempRoot() { return tmpdir(); }

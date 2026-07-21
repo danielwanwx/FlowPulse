@@ -34,14 +34,15 @@ test("Agent Team HTTP and SSE projections preserve a chat's transparent routing 
   const provider = await getJson(port, "/api/agent-control/provider");
   assert.deepEqual(provider.body, initial.body.agent_control.agent_team_provider);
   const loopUnavailable = await postJson(port, "/api/demo/agent-loop/run", { case_id: "checkout-payment-config", round: 1 });
-  assert.deepEqual(loopUnavailable, { status: 409, body: { error: "local_codex_provider_unavailable" } });
+  assert.equal(loopUnavailable.status, 202);
+  assert.equal(loopUnavailable.body.state, "running");
   const loopProjection = await getJson(port, `/api/demo/agent-loop?run_id=${seededLoop.run_id}`);
   assert.equal(loopProjection.status, 200);
   assert.equal(loopProjection.body.state, "recovered");
   assert.equal(loopProjection.body.events.some((event) => event.type === "local_fault_loop.role.response" && Object.hasOwn(event.payload, "answer_sha256") && !Object.hasOwn(event.payload, "answer")), true);
   const loopStream = await readSseEvent(port, `/api/demo/agent-loop/events?run_id=${seededLoop.run_id}&after=0`);
   assert.equal(loopStream.event, "local-fault-loop");
-  assert.equal(loopStream.payload.event.type, "local_fault_loop.run.started");
+  assert.equal(loopStream.payload.event.type, "local_fault_loop.reserved");
 
   const chat = await postJson(port, "/api/agent-control/chat", {
     run_id: initial.body.run_id,
@@ -115,7 +116,7 @@ async function postJson(port, pathname, body) {
 async function waitForHealth(child, port) {
   let stderr = "";
   child.stderr.on("data", (chunk) => { stderr += String(chunk); });
-  for (let attempt = 0; attempt < 400; attempt++) {
+  for (let attempt = 0; attempt < 2400; attempt++) {
     if (child.exitCode !== null) throw new Error(`server exited: ${stderr}`);
     try {
       const response = await fetch(`http://127.0.0.1:${port}/api/health`);

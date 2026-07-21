@@ -203,9 +203,9 @@ const server = createServer(async (request, response) => {
       const body = await readJson(request);
       if (!plainLocalFaultLoopRequest(body)) return json(response, 400, { error: "local_fault_loop_request_invalid" });
       try {
-        return json(response, 201, await localFaultLoop.run({ caseId: body.case_id, round: body.round }));
+        return json(response, 202, await localFaultLoop.start({ caseId: body.case_id, round: body.round, idempotencyKey: body.idempotency_key || null }));
       } catch (error) {
-        if (error instanceof LocalFaultLoopError) return json(response, error.code === "local_codex_provider_unavailable" ? 409 : 422, { error: error.code });
+        if (error instanceof LocalFaultLoopError) return json(response, error.code === "local_fault_loop_idempotency_conflict" ? 409 : 422, { error: error.code });
         throw error;
       }
     }
@@ -979,9 +979,10 @@ function activeDemoWriteBlocked(method, pathname) {
 function plainLocalFaultLoopRequest(value) {
   return Boolean(value && typeof value === "object" && !Array.isArray(value)
     && Object.getPrototypeOf(value) === Object.prototype
-    && Object.keys(value).sort().join(",") === "case_id,round"
+    && ["case_id,round", "case_id,idempotency_key,round"].includes(Object.keys(value).sort().join(","))
     && typeof value.case_id === "string" && /^[a-z][a-z0-9-]{2,79}$/.test(value.case_id)
-    && Number.isInteger(value.round) && value.round >= 1 && value.round <= 3);
+    && Number.isInteger(value.round) && value.round >= 1 && value.round <= 3
+    && (value.idempotency_key === undefined || (typeof value.idempotency_key === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{7,159}$/.test(value.idempotency_key))));
 }
 function autonomyFailure(code, field_path) { const error = new InsufficientEvidenceError("Autonomy authority boundary rejected the run"); error.code = code; error.metadata = { stage: "authority_decision", validator_id: "server_authority_closure", reason_code: code, field_path, next_precondition: "produce_a_matching_frozen_diagnosis_gate" }; return error; }
 
@@ -1453,20 +1454,24 @@ function streamLocalFaultLoopEvents(request, response, url) {
     "cache-control": "no-cache, no-transform",
     connection: "keep-alive"
   });
+  let terminalSent = false;
   const send = () => {
+    if (terminalSent || response.writableEnded || response.destroyed) return;
     projection = localFaultLoop.project(runId);
     for (const event of projection.events.filter((item) => item.sequence > lastSequence)) {
       lastSequence = event.sequence;
-      response.write(`id: ${event.sequence}\nevent: local-fault-loop\ndata: ${JSON.stringify({ schema_version: projection.schema_version, run_id: projection.run_id, incident_id: projection.incident_id, case_id: projection.case_id, round: projection.round, event })}\n\n`);
+      response.write(`id: ${event.sequence}\nevent: local-fault-loop\ndata: ${JSON.stringify({ schema_version: projection.schema_version, run_id: projection.run_id, incident_id: projection.incident_id, case_id: projection.case_id, round: projection.round, event, contextual_workspaces: event.contextual_workspaces })}\n\n`);
     }
     if (["recovered", "needs_human", "failed"].includes(projection.state)) {
-      response.write(`event: local-fault-loop-state\ndata: ${JSON.stringify({ run_id: projection.run_id, incident_id: projection.incident_id, state: projection.state, stage: projection.stage, provider: projection.provider, final: projection.final })}\n\n`);
+      response.write(`event: local-fault-loop-state\ndata: ${JSON.stringify({ run_id: projection.run_id, incident_id: projection.incident_id, state: projection.state, stage: projection.stage, provider: projection.provider, final: projection.final, contextual_workspaces: projection.contextual_workspaces })}\n\n`);
+      terminalSent = true;
       response.end();
     }
   };
   send();
+  if (response.writableEnded) return;
   const interval = setInterval(() => {
-    if (response.destroyed) return;
+    if (response.destroyed || response.writableEnded) return;
     send();
     if (!response.writableEnded) response.write(": heartbeat\n\n");
   }, 1_000);

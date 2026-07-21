@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 
-export const LOCAL_FAULT_LOOP_SCHEMA_VERSION = "flowpulse.local-fault-loop.v1";
+export const LOCAL_FAULT_LOOP_SCHEMA_VERSION = "flowpulse.local-fault-loop.v2";
 export const LOCAL_FAULT_LOOP_CASES = Object.freeze([
   Object.freeze({
     id: "checkout-payment-config",
@@ -39,6 +39,7 @@ export const LOCAL_FAULT_LOOP_CASES = Object.freeze([
 
 const POSITIVE_ROUNDS = 3;
 const MAX_REMEDIATION_ATTEMPTS = 2;
+const NEGATIVE_CASE = Object.freeze({ id: "insufficient-evidence", title: "Insufficient evidence anomaly", root_component: "checkout", affected_components: ["checkout"], fault: "ambiguous_anomaly", root_cause: null, false_hypothesis: "A repair target is known", repair: null, risk: "unknown" });
 const ROLE_TOOLS = Object.freeze({
   observer: ["read_source_freshness", "read_signal_summaries"],
   orchestrator: ["read_workflow_projection"],
@@ -64,28 +65,39 @@ export class LocalFaultLoop {
     this.now = now;
     this.fixtureOptions = fixtureOptions;
     this.topologyProvider = typeof topologyProvider === "function" ? topologyProvider : null;
+    this.executions = new Map();
   }
 
-  async run({ caseId, round } = {}) {
-    const definition = caseFor(caseId);
-    if (!Number.isInteger(round) || round < 1 || round > POSITIVE_ROUNDS) throw new LocalFaultLoopError("local_fault_loop_round_invalid");
-    const session = this.#session({ definition, round, negative: false });
+  async start(input = {}) {
+    const existing = this.#findReservation(input);
+    if (existing) return this.#startProjection(existing);
+    const reservation = this.#reserve(input);
+    if (reservation.inserted) this.#launch(reservation);
+    return this.#startProjection(reservation);
+  }
+
+  async run(input = {}) {
+    const reservation = this.#reserve(input);
+    if (!reservation.inserted) return this.project(reservation.session.runId);
+    return this.#execute(reservation);
+  }
+
+  async runNegative({ round = 1, idempotencyKey = null } = {}) {
+    return this.run({ caseId: NEGATIVE_CASE.id, round, idempotencyKey });
+  }
+
+  async #execute(reservation) {
+    try {
+      return reservation.negative ? await this.#runNegative(reservation) : await this.#runPositive(reservation);
+    } catch (error) {
+      if (!this.#terminal(reservation.session.runId)) this.#append(reservation.session, "local_fault_loop.failed", "runtime", { state: "failed", stage: "failed", reason: safeLoopFailureReason(error) });
+      throw error;
+    }
+  }
+
+  async #runPositive({ definition, session }) {
     const simulator = new FixtureSimulator(definition, session.runId, {
       verificationFailures: boundedFailureCount(this.fixtureOptions?.verificationFailuresByCase?.[definition.id])
-    });
-    this.#append(session, "local_fault_loop.run.started", "runtime", {
-      schema_version: LOCAL_FAULT_LOOP_SCHEMA_VERSION,
-      case_id: definition.id,
-      round,
-      mode: "isolated_fixture",
-      execution_scope: "local_memory_only",
-      max_remediation_attempts: MAX_REMEDIATION_ATTEMPTS
-    });
-    this.#append(session, "incident.opened", "observer", {
-      title: definition.title,
-      severity: "SEV-2",
-      environment: "isolated local fixture",
-      summary: "A controlled reversible fault was injected into the local simulator."
     });
     try {
       session.topology = await this.#topologyFor(session, definition);
@@ -109,12 +121,18 @@ export class LocalFaultLoop {
 
     const evidence = [...baseline.evidence, ...fault.evidence];
     const observer = await this.#callRole(session, "observer", definition, evidence, "Detect bounded anomalies without assuming an initiating cause.", topology.id);
+    const incident = this.#append(session, "incident.opened", "observer", {
+      title: definition.title,
+      severity: "SEV-2",
+      environment: "isolated local fixture",
+      summary: "A controlled reversible fault was detected in the local simulator."
+    }, fault.symptom_ids, observer.id);
     const detected = this.#append(session, "local_fault_loop.observer.detected", "observer", {
       stage: "detect",
       anomaly_ids: fault.symptom_ids,
       affected_components: definition.affected_components,
       bounded_incident: true
-    }, fault.symptom_ids, observer.id);
+    }, fault.symptom_ids, incident.id);
     const orchestrator = await this.#callRole(session, "orchestrator", definition, evidence, "Select the read-only fault-to-recovery workflow and preserve authority boundaries.", detected.id);
     const routed = this.#append(session, "local_fault_loop.orchestrator.routed", "orchestrator", {
       stage: "diagnose",
@@ -220,19 +238,7 @@ export class LocalFaultLoop {
     return this.project(session.runId);
   }
 
-  async runNegative({ round = 1 } = {}) {
-    if (!Number.isInteger(round) || round < 1 || round > POSITIVE_ROUNDS) throw new LocalFaultLoopError("local_fault_loop_round_invalid");
-    const definition = Object.freeze({ id: "insufficient-evidence", title: "Insufficient evidence anomaly", root_component: "checkout", affected_components: ["checkout"], fault: "ambiguous_anomaly", root_cause: null, false_hypothesis: "A repair target is known", repair: null, risk: "unknown" });
-    const session = this.#session({ definition, round, negative: true });
-    this.#append(session, "local_fault_loop.run.started", "runtime", {
-      schema_version: LOCAL_FAULT_LOOP_SCHEMA_VERSION,
-      case_id: definition.id,
-      round,
-      mode: "isolated_fixture",
-      execution_scope: "local_memory_only",
-      max_remediation_attempts: MAX_REMEDIATION_ATTEMPTS
-    });
-    this.#append(session, "incident.opened", "observer", { title: definition.title, severity: "SEV-3", environment: "isolated local fixture", summary: "A bounded anomaly has no causal source evidence." });
+  async #runNegative({ definition, session }) {
     try {
       session.topology = await this.#topologyFor(session, definition);
     } catch {
@@ -251,7 +257,8 @@ export class LocalFaultLoop {
     }, [anomaly.id], anomalyEvent.id);
     const evidence = [anomaly];
     const observer = await this.#callRole(session, "observer", definition, evidence, "Detect the anomaly but do not infer a root cause.", topology.id);
-    const detected = this.#append(session, "local_fault_loop.observer.detected", "observer", { stage: "detect", anomaly_ids: [anomaly.id], affected_components: ["checkout"], bounded_incident: true }, [anomaly.id], observer.id);
+    const incident = this.#append(session, "incident.opened", "observer", { title: definition.title, severity: "SEV-3", environment: "isolated local fixture", summary: "A bounded anomaly was detected but has no causal source evidence." }, [anomaly.id], observer.id);
+    const detected = this.#append(session, "local_fault_loop.observer.detected", "observer", { stage: "detect", anomaly_ids: [anomaly.id], affected_components: ["checkout"], bounded_incident: true }, [anomaly.id], incident.id);
     const orchestrator = await this.#callRole(session, "orchestrator", definition, evidence, "Route the anomaly to evidence collection and request a human gate if the evidence remains insufficient.", detected.id);
     const investigator = await this.#callRole(session, "investigator", definition, evidence, "Assess the evidence gap without proposing a repair.", orchestrator.id);
     const candidate = this.#append(session, "local_fault_loop.hypothesis.proposed", "investigator", { id: `hyp-${session.runId}-unsupported`, claim: "A repair target is known", confidence: 0.12, ground_truth: false }, [anomaly.id], investigator.id);
@@ -279,20 +286,96 @@ export class LocalFaultLoop {
     const final = [...events].reverse().find((event) => ["local_fault_loop.recovered", "local_fault_loop.stopped", "local_fault_loop.failed"].includes(event.type));
     const roleResponses = events.filter((event) => event.type === "local_fault_loop.role.response").map((event) => event.payload);
     const citations = [...new Set(events.flatMap((event) => event.evidence_refs))].slice(0, 64);
+    const state = final?.payload?.state || "running";
+    const contextualWorkspaces = workspaceProjection(events, started, final, state);
     return {
       schema_version: LOCAL_FAULT_LOOP_SCHEMA_VERSION,
       run_id: runId,
       incident_id: started.incident_id,
       case_id: started.payload.case_id,
       round: started.payload.round,
-      state: final?.payload?.state || "failed",
-      stage: final?.payload?.stage || "stopped",
+      state,
+      stage: loopStage(events, final, state),
       provider: roleResponses.at(-1)?.provider || null,
       citations,
       role_responses: roleResponses,
-      events: events.map(projectEvent),
+      contextual_workspaces: contextualWorkspaces,
+      events: events.map((event, index) => ({
+        ...projectEvent(event),
+        contextual_workspaces: workspaceProjection(events.slice(0, index + 1), started)
+      })),
       final: final ? { sequence: final.sequence, recorded_at: final.recorded_at, type: final.type, payload: final.payload } : null
     };
+  }
+
+  #findReservation(input) {
+    const request = normalizeRequest(input);
+    if (!request.idempotencyKey) return null;
+    const event = this.ledger.get(reservationId(request.idempotencyKey));
+    if (!event) return null;
+    const payload = event.payload;
+    if (event.type !== "local_fault_loop.reserved" || payload?.case_id !== request.definition.id || payload?.round !== request.round || payload?.idempotency_key !== request.idempotencyKey) throw new LocalFaultLoopError("local_fault_loop_idempotency_conflict");
+    return reservationFromEvent(event, request.definition, request.negative);
+  }
+
+  #reserve(input) {
+    const request = normalizeRequest(input);
+    const session = this.#session({ definition: request.definition, round: request.round, negative: request.negative });
+    const key = request.idempotencyKey || `generated-${session.runId}`;
+    const reserved = this.ledger.appendIfAbsent({
+      id: reservationId(key),
+      runId: session.runId,
+      incidentId: session.incidentId,
+      type: "local_fault_loop.reserved",
+      actor: "runtime",
+      payload: {
+        schema_version: LOCAL_FAULT_LOOP_SCHEMA_VERSION,
+        run_id: session.runId,
+        incident_id: session.incidentId,
+        case_id: request.definition.id,
+        round: request.round,
+        idempotency_key: request.idempotencyKey,
+        state: "running",
+        stage: "monitor"
+      },
+      correlationId: `local-fault-loop:${session.runId}`,
+      recordedAt: new Date(session.startedAt).toISOString()
+    });
+    if (!reserved.inserted) return reservationFromEvent(reserved.event, request.definition, request.negative);
+    this.#append(session, "local_fault_loop.run.started", "runtime", {
+      schema_version: LOCAL_FAULT_LOOP_SCHEMA_VERSION,
+      case_id: request.definition.id,
+      round: request.round,
+      mode: "isolated_fixture",
+      execution_scope: "local_memory_only",
+      max_remediation_attempts: MAX_REMEDIATION_ATTEMPTS,
+      state: "running",
+      stage: "monitor"
+    }, [], reserved.event.id);
+    return { inserted: true, definition: request.definition, negative: request.negative, session };
+  }
+
+  #launch(reservation) {
+    const completion = new Promise((resolve) => setTimeout(resolve, 200)).then(() => this.#execute(reservation));
+    this.executions.set(reservation.session.runId, completion);
+    void completion.catch(() => {}).finally(() => this.executions.delete(reservation.session.runId));
+  }
+
+  #startProjection(reservation) {
+    const projection = this.project(reservation.session.runId);
+    return {
+      schema_version: LOCAL_FAULT_LOOP_SCHEMA_VERSION,
+      run_id: projection.run_id,
+      incident_id: projection.incident_id,
+      state: projection.state,
+      stage: projection.stage,
+      events_url: `/api/demo/agent-loop/events?run_id=${encodeURIComponent(projection.run_id)}&after=0`,
+      contextual_workspaces: projection.contextual_workspaces
+    };
+  }
+
+  #terminal(runId) {
+    return this.ledger.list(runId).some((event) => ["local_fault_loop.recovered", "local_fault_loop.stopped", "local_fault_loop.failed"].includes(event.type));
   }
 
   #session({ definition, round, negative }) {
@@ -348,14 +431,25 @@ export class LocalFaultLoop {
       }, evidence.map((item) => item.id), toolEvent.id);
       throw new LocalFaultLoopError("local_codex_provider_response_failed");
     }
-    const safeHandoff = validHandoff(response?.recommended_handoff) ? response.recommended_handoff : null;
+    const safeAnswer = safeDisplayAnswer(response?.answer);
+    if (!safeAnswer) {
+      this.#append(session, "local_fault_loop.failed", "runtime", { state: "failed", stage: "failed", reason: "local_codex_provider_response_failed", provider_failure_reason: "provider_output_schema_invalid" }, evidence.map((item) => item.id), toolEvent.id);
+      throw new LocalFaultLoopError("local_codex_provider_response_failed");
+    }
+    const safeHandoff = safeHandoffFor(response?.recommended_handoff);
     const responseEvent = this.#append(session, "local_fault_loop.role.response", role, {
       role,
+      requested_agent: role,
+      responding_agent: role,
+      state: "completed",
       provider: safeProvider(capability),
+      safe_answer: safeAnswer,
       answer_sha256: hash(String(response?.answer || "")),
       answer_bytes: Buffer.byteLength(String(response?.answer || ""), "utf8"),
+      handoff: safeHandoff,
       recommended_handoff: safeHandoff,
-      citations: evidence.map((item) => item.id)
+      citations: evidence.map((item) => item.id),
+      tools: toolEvent.payload.tools.map(({ tool, result_count }) => ({ tool, result_count }))
     }, evidence.map((item) => item.id), toolEvent.id);
     if (safeHandoff && safeHandoff.to !== role) this.#append(session, "local_fault_loop.handoff.recorded", role, { from: role, to: safeHandoff.to, reason: safeHandoff.reason }, evidence.map((item) => item.id), responseEvent.id);
     return responseEvent;
@@ -489,6 +583,58 @@ function projectEvent(event) {
   };
 }
 
+function loopStage(events, final, state) {
+  if (state === "recovered") return "recovered";
+  if (state === "needs_human") return "needs-human";
+  if (state === "failed") return "failed";
+  for (const event of [...events].reverse()) {
+    if (typeof event.payload?.stage === "string") return event.payload.stage;
+  }
+  return "monitor";
+}
+
+function workspaceProjection(events, started, final = null, state = null) {
+  const terminal = final || [...events].reverse().find((event) => ["local_fault_loop.recovered", "local_fault_loop.stopped", "local_fault_loop.failed"].includes(event.type)) || null;
+  const currentState = state || terminal?.payload?.state || "running";
+  const topology = [...events].reverse().find((event) => event.type === "local_fault_loop.topology.bound");
+  const definition = started?.payload?.case_id === NEGATIVE_CASE.id ? NEGATIVE_CASE : CASES.get(started?.payload?.case_id);
+  const selectedComponent = topology?.payload?.selected_component || definition?.root_component || null;
+  const incidentOpen = events.some((event) => event.type === "incident.opened" && event.actor === "observer");
+  const remediationReady = events.some((event) => event.type === "local_fault_loop.plan.proposed" || event.type === "local_fault_loop.repair.executed");
+  const verified = events.some((event) => event.type === "local_fault_loop.verification.completed");
+  const compareReady = verified && Boolean(terminal);
+  const current = events.at(-1) || started || null;
+  const stage = loopStage(events, terminal, currentState);
+  return {
+    context: {
+      run_id: started?.run_id || null,
+      incident_id: started?.incident_id || null,
+      selected_component: selectedComponent,
+      timeline: {
+        position: Number.isInteger(current?.sequence) ? current.sequence : 0,
+        event_id: current?.id || null,
+        stage,
+        terminal_state: terminal?.payload?.state || null
+      }
+    },
+    actions: {
+      view_diagnosis: actionAvailability(incidentOpen, "bounded_incident_opened"),
+      open_recovery_console: actionAvailability(remediationReady, "evaluated_remediation_plan_or_repair_started"),
+      compare_recovery: {
+        available: compareReady,
+        prerequisites: [
+          { id: "independent_verification_completed", satisfied: verified },
+          { id: "terminal_state_recorded", satisfied: Boolean(terminal) }
+        ]
+      }
+    }
+  };
+}
+
+function actionAvailability(available, prerequisite) {
+  return { available, prerequisites: [{ id: prerequisite, satisfied: available }] };
+}
+
 function toolResultCount(tool, evidence) {
   if (tool === "read_workflow_projection") return 1;
   if (tool === "read_selected_component") return 1;
@@ -509,10 +655,29 @@ function safeProviderFailureReason(error) {
   return /^(codex|provider|openai)_[a-z_]{1,80}$/.test(code) ? code : "provider_response_failed";
 }
 
+function safeLoopFailureReason(error) {
+  const code = typeof error?.code === "string" ? error.code : "local_fault_loop_execution_failed";
+  return /^[a-z][a-z0-9_]{2,100}$/.test(code) ? code : "local_fault_loop_execution_failed";
+}
+
+function safeDisplayAnswer(value) {
+  if (typeof value !== "string" || Buffer.byteLength(value, "utf8") < 1 || Buffer.byteLength(value, "utf8") > 1_200 || [...value].length > 280) return null;
+  const answer = value.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim()
+    .replace(/\b(?:sk|rk|pk)-[A-Za-z0-9_-]{12,}\b/g, "[redacted]")
+    .replace(/\b(?:authorization|bearer|api[_ -]?key)\s*[:=]\s*[^\s]+/gi, "[redacted]");
+  return answer && Buffer.byteLength(answer, "utf8") <= 1_200 && [...answer].length <= 280 ? answer : null;
+}
+
 function validHandoff(value) {
   return Boolean(value && typeof value === "object" && !Array.isArray(value)
     && ["observer", "orchestrator", "investigator", "evaluator"].includes(value.to)
     && typeof value.reason === "string" && value.reason.length > 0 && Buffer.byteLength(value.reason, "utf8") <= 200);
+}
+
+function safeHandoffFor(value) {
+  if (!validHandoff(value)) return null;
+  const reason = safeDisplayAnswer(value.reason);
+  return reason && Buffer.byteLength(reason, "utf8") <= 200 ? { to: value.to, reason } : null;
 }
 
 function topologyContext(value) {
@@ -537,6 +702,37 @@ function fixtureTopologyContext() {
 
 function boundedFailureCount(value) {
   return Number.isInteger(value) && value > 0 ? Math.min(value, MAX_REMEDIATION_ATTEMPTS) : 0;
+}
+
+function normalizeRequest(value) {
+  const caseId = value?.caseId;
+  const definition = caseId === NEGATIVE_CASE.id ? NEGATIVE_CASE : caseFor(caseId);
+  const round = value?.round;
+  if (!Number.isInteger(round) || round < 1 || round > POSITIVE_ROUNDS) throw new LocalFaultLoopError("local_fault_loop_round_invalid");
+  const idempotencyKey = value?.idempotencyKey ?? null;
+  if (idempotencyKey !== null && (typeof idempotencyKey !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{7,159}$/.test(idempotencyKey))) throw new LocalFaultLoopError("local_fault_loop_idempotency_key_invalid");
+  return { definition, round, idempotencyKey, negative: definition.id === NEGATIVE_CASE.id };
+}
+
+function reservationId(key) {
+  return `local-fault-loop-reservation-${hash(key).slice(0, 48)}`;
+}
+
+function reservationFromEvent(event, definition, negative) {
+  const payload = event.payload;
+  return {
+    inserted: false,
+    definition,
+    negative,
+    session: {
+      definition,
+      runId: payload.run_id,
+      incidentId: payload.incident_id,
+      negative,
+      startedAt: Date.parse(event.recorded_at),
+      index: 0
+    }
+  };
 }
 
 function caseFor(id) {

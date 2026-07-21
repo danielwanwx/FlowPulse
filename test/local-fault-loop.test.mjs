@@ -38,6 +38,15 @@ test("three isolated reversible fault cases complete three evidence-grounded rou
       const verification = run.events.find((event) => event.type === "local_fault_loop.verification.completed");
       assert.equal(verification.payload.passed, true);
       assert.equal(verification.payload.checks.every((check) => check.passed), true);
+      const incidentOpened = run.events.find((event) => event.type === "incident.opened");
+      const plan = run.events.find((event) => event.type === "local_fault_loop.plan.proposed");
+      assert.equal(incidentOpened.contextual_workspaces.actions.view_diagnosis.available, true);
+      assert.equal(incidentOpened.contextual_workspaces.actions.open_recovery_console.available, false);
+      assert.equal(plan.contextual_workspaces.actions.open_recovery_console.available, true);
+      assert.equal(verification.contextual_workspaces.actions.compare_recovery.available, false);
+      assert.equal(run.contextual_workspaces.actions.compare_recovery.available, true);
+      assert.equal(run.contextual_workspaces.context.selected_component, definition.root_component);
+      assert.equal(run.contextual_workspaces.context.timeline.position, run.events.at(-1).sequence);
     }
   }
 
@@ -45,6 +54,10 @@ test("three isolated reversible fault cases complete three evidence-grounded rou
   assert.equal(negative.state, "needs_human");
   assert.equal(negative.events.some((event) => event.type === "local_fault_loop.authority.decided" && event.payload.outcome === "needs_human"), true);
   assert.equal(negative.events.some((event) => event.type === "local_fault_loop.repair.executed"), false);
+  assert.equal(negative.contextual_workspaces.actions.view_diagnosis.available, true);
+  assert.equal(negative.contextual_workspaces.actions.open_recovery_console.available, false);
+  assert.equal(negative.contextual_workspaces.actions.compare_recovery.available, false);
+  assert.equal(negative.contextual_workspaces.context.selected_component, "checkout");
 });
 
 test("a missing local Codex provider fails the loop without recorded fallback or repair", async () => {
@@ -64,6 +77,56 @@ test("a missing local Codex provider fails the loop without recorded fallback or
   assert.equal(events.some((event) => event.type === "local_fault_loop.repair.executed"), false);
 });
 
+test("asynchronous start reserves immediately and records an unavailable provider as terminal failure", async () => {
+  const ledger = new Ledger(join(mkdtempSync(join(tmpdir(), "flowpulse-local-fault-loop-async-failure-")), "ledger.db"));
+  const loop = new LocalFaultLoop({
+    ledger,
+    modelAdapter: {
+      async preflight() { return { provider_kind: "recorded", availability: "available", truth_label: "RECORDED/DEMO", model_label: "recorded", failure_reason: null }; },
+      async respond() { throw new Error("must not run"); }
+    }
+  });
+
+  const started = await loop.start({ caseId: "checkout-payment-config", round: 1, idempotencyKey: "async-provider-failure-001" });
+  assert.equal(started.state, "running");
+  let failed = loop.project(started.run_id);
+  for (let attempt = 0; failed.state === "running" && attempt < 20; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    failed = loop.project(started.run_id);
+  }
+  assert.equal(failed.state, "failed");
+  assert.equal(failed.events.some((event) => event.type === "local_fault_loop.repair.executed"), false);
+});
+
+test("asynchronous start returns before a deliberately delayed first provider response", async () => {
+  const ledger = new Ledger(join(mkdtempSync(join(tmpdir(), "flowpulse-local-fault-loop-delayed-provider-")), "ledger.db"));
+  let calls = 0;
+  const loop = new LocalFaultLoop({
+    ledger,
+    modelAdapter: {
+      async preflight() { return { provider_kind: "codex-local", availability: "available", truth_label: "LOCAL CODEX", model_label: "Codex CLI", failure_reason: null }; },
+      async respond() {
+        calls += 1;
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        return { answer: "Delayed bounded response.", recommended_handoff: null };
+      }
+    }
+  });
+
+  const startedAt = Date.now();
+  const started = await loop.start({ caseId: "checkout-payment-config", round: 1, idempotencyKey: "delayed-provider-001" });
+  assert.equal(Date.now() - startedAt < 150, true);
+  assert.equal(started.state, "running");
+  assert.equal(calls, 0);
+  let result = loop.project(started.run_id);
+  for (let attempt = 0; result.state === "running" && attempt < 80; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    result = loop.project(started.run_id);
+  }
+  assert.equal(result.state, "recovered");
+  assert.equal(calls, 4);
+});
+
 test("a local provider failure is terminal, classified safely, and never replaced by recorded output", async () => {
   const ledger = new Ledger(join(mkdtempSync(join(tmpdir(), "flowpulse-local-fault-loop-provider-failure-")), "ledger.db"));
   const failure = Object.assign(new Error("redacted"), { code: "provider_output_schema_invalid" });
@@ -79,6 +142,28 @@ test("a local provider failure is terminal, classified safely, and never replace
   const failed = ledger.query("SELECT payload_json FROM events WHERE type='local_fault_loop.failed' LIMIT 1;")[0];
   assert.deepEqual(JSON.parse(failed.payload_json), { state: "failed", reason: "local_codex_provider_response_failed", provider_failure_reason: "provider_output_schema_invalid" });
   assert.equal(ledger.query("SELECT count(*) AS count FROM events WHERE type='local_fault_loop.role.response';")[0].count, 0);
+});
+
+test("role response projection keeps a bounded display answer while preserving only audit hashes", async () => {
+  const ledger = new Ledger(join(mkdtempSync(join(tmpdir(), "flowpulse-local-fault-loop-safe-answer-")), "ledger.db"));
+  const loop = new LocalFaultLoop({
+    ledger,
+    modelAdapter: {
+      async preflight() { return { provider_kind: "codex-local", availability: "available", truth_label: "LOCAL CODEX", model_label: "Codex CLI", failure_reason: null }; },
+      async respond() { return { answer: "Observed bounded evidence.\nsk-abcdefghijklmnopqrstuv", recommended_handoff: null }; }
+    }
+  });
+
+  const result = await loop.run({ caseId: "checkout-payment-config", round: 1 });
+  const response = result.role_responses[0];
+  assert.equal(response.requested_agent, "observer");
+  assert.equal(response.responding_agent, "observer");
+  assert.equal(response.state, "completed");
+  assert.equal(response.safe_answer.includes("[redacted]"), true);
+  assert.equal(response.safe_answer.includes("\n"), false);
+  assert.equal(Object.hasOwn(response, "answer"), false);
+  assert.equal(response.citations.length > 0, true);
+  assert.equal(response.tools.every((tool) => Number.isInteger(tool.result_count)), true);
 });
 
 test("failed verification rolls back, re-investigates once, and stops after two failed bounded repairs", async () => {
