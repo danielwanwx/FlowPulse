@@ -1352,6 +1352,18 @@ test("every canvas mode exposes the shared status-dot contract with compact tool
   assert.doesNotMatch(appJs, /This canvas does not synthesize services or telemetry/);
 });
 
+test("final competition shell gives every workspace one bounded canvas and one shared frosted rail", () => {
+  const finalShell = stylesCss.slice(stylesCss.lastIndexOf("/* Final competition demo shell"));
+  assert.match(finalShell, /--demo-page-field: #e9eef1;/);
+  assert.match(finalShell, /--demo-workspace-radius: 22px;/);
+  assert.match(finalShell, /\.app-shell\[data-mode\] \.twin-workspace \{[\s\S]*?padding: 16px 20px;/);
+  assert.match(finalShell, /\.app-shell\[data-mode\] \.canvas-shell \{[\s\S]*?border-radius: var\(--demo-workspace-radius\);[\s\S]*?overflow: hidden;/);
+  assert.match(finalShell, /\.app-shell\[data-mode\] \.operations-team-rail \{[\s\S]*?border-radius: var\(--demo-workspace-radius\);[\s\S]*?overflow: hidden;/);
+  assert.match(finalShell, /\.app-shell\[data-mode\] #timeline-dock \{[\s\S]*?border-radius: var\(--demo-control-radius\);/);
+  assert.match(finalShell, /\.app-shell\[data-mode="replay"\] \.canvas-shell,[\s\S]*?\.app-shell\[data-mode="agents"\] \.canvas-shell,[\s\S]*?\.app-shell\[data-mode="compare"\] \.canvas-shell \{[\s\S]*?min-width: 0;/);
+  assert.match(finalShell, /@media \(max-width: 900px\) \{[\s\S]*?\.app-shell\[data-mode\] \.twin-workspace \{[\s\S]*?padding: 10px 12px;/);
+});
+
 test("component vectors stay transparent, semantically colored, and status-independent", () => {
   assert.match(stylesCss, /\.node-icon \{[^}]+border: 0;[^}]+color: var\(--icon\);[^}]+background: transparent;/);
   assert.match(stylesCss, /\.node-icon \{[^}]+border: 0;[^}]+color: var\(--icon\);[^}]+background: transparent;/);

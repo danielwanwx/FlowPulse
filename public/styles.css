@@ -3850,3 +3850,96 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
   .unified-agent-switcher button,
   .recovery-workflow-node { background: #f7f9fa; }
 }
+
+/* Final competition demo shell: every workspace keeps the accepted Architecture
+   field, bounded canvas, and one identical contextual rail. Page-specific
+   canvases keep their own evidence projection and controls inside this shell. */
+.app-shell[data-mode] {
+  --demo-page-field: #e9eef1;
+  --demo-workspace-surface: rgba(255, 255, 255, .58);
+  --demo-workspace-radius: 22px;
+  --demo-control-radius: 16px;
+  --demo-cold-shadow: 0 10px 28px rgba(67, 92, 116, .10);
+  background: var(--demo-page-field);
+  color: #111827;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", sans-serif;
+}
+.app-shell[data-mode] main,
+.app-shell[data-mode] .topbar,
+.app-shell[data-mode] .mission-bar {
+  background: var(--demo-page-field);
+}
+.app-shell[data-mode] .topbar,
+.app-shell[data-mode] .mission-bar {
+  border: 0;
+}
+.app-shell[data-mode] .twin-workspace {
+  padding: 16px 20px;
+  overflow: hidden;
+  background: var(--demo-page-field);
+}
+.app-shell[data-mode] .canvas-shell {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border-radius: var(--demo-workspace-radius);
+  background: var(--demo-workspace-surface);
+  box-shadow: var(--demo-cold-shadow);
+}
+.app-shell[data-mode] .twin-scroll,
+.app-shell[data-mode] .twin-canvas {
+  background: transparent;
+}
+.app-shell[data-mode] .canvas-toolbar {
+  min-height: 58px;
+  border: 0;
+  background: rgba(255, 255, 255, .18);
+}
+.app-shell[data-mode] .canvas-toolbar h2 {
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", sans-serif;
+  font-weight: 600;
+}
+.app-shell[data-mode] .operations-team-rail {
+  top: 16px;
+  right: 20px;
+  bottom: 16px;
+  border-radius: var(--demo-workspace-radius);
+  background: rgba(239, 246, 252, .66);
+  box-shadow: var(--demo-cold-shadow), inset 0 1px 0 rgba(255, 255, 255, .72);
+  overflow: hidden;
+}
+.app-shell[data-mode] #timeline-dock {
+  margin: 0 20px 16px;
+  border: 0;
+  border-radius: var(--demo-control-radius);
+  background: var(--demo-workspace-surface);
+  box-shadow: var(--demo-cold-shadow);
+  overflow: hidden;
+}
+.app-shell[data-mode="replay"] .canvas-shell,
+.app-shell[data-mode="agents"] .canvas-shell,
+.app-shell[data-mode="compare"] .canvas-shell {
+  min-width: 0;
+}
+.app-shell[data-mode="replay"] .twin-canvas,
+.app-shell[data-mode="agents"] .twin-canvas,
+.app-shell[data-mode="compare"] .twin-canvas {
+  min-width: 0;
+  width: 100%;
+}
+.app-shell[data-mode] .operations-team-rail > .architecture-flowpulse-system {
+  border-radius: inherit;
+}
+@media (prefers-reduced-transparency: reduce) {
+  .app-shell[data-mode] .canvas-shell,
+  .app-shell[data-mode] .operations-team-rail,
+  .app-shell[data-mode] #timeline-dock {
+    background: #f7f9fa;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+}
+@media (max-width: 900px) {
+  .app-shell[data-mode] .twin-workspace { padding: 10px 12px; }
+  .app-shell[data-mode] #timeline-dock { margin: 0 12px 12px; }
+}
