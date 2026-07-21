@@ -3189,3 +3189,50 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 @media (max-width: 1320px) {
   .operations-team-rail { width: 272px; }
 }
+
+/* One shared rail geometry: Architecture renders the Control System inline,
+   while every operating view mounts the identical surface at this same slot. */
+.twin-workspace {
+  --flowpulse-control-rail-width: 272px;
+  --flowpulse-control-rail-inset-y: 16px;
+  --flowpulse-control-rail-inset-x: 20px;
+}
+.is-architecture-source .architecture-systems {
+  grid-template-columns: minmax(0, 1fr) var(--flowpulse-control-rail-width);
+  padding: var(--flowpulse-control-rail-inset-y) var(--flowpulse-control-rail-inset-x);
+}
+.operations-team-rail {
+  top: var(--flowpulse-control-rail-inset-y);
+  right: var(--flowpulse-control-rail-inset-x);
+  bottom: var(--flowpulse-control-rail-inset-y);
+  width: var(--flowpulse-control-rail-width);
+}
+.operations-team-rail .architecture-flowpulse-system {
+  gap: 10px;
+  padding: 14px 12px 12px;
+}
+.operations-team-rail .architecture-flowpulse-nodes {
+  gap: 8px;
+  padding: 7px 12px 12px;
+}
+.operations-team-rail .control-system-tile {
+  height: 54px;
+  min-height: 54px;
+  gap: 9px;
+  padding: 8px 10px;
+}
+@media (max-width: 1320px) {
+  .twin-workspace {
+    --flowpulse-control-rail-width: 236px;
+    --flowpulse-control-rail-inset-y: 12px;
+    --flowpulse-control-rail-inset-x: 14px;
+  }
+  .operations-team-rail .control-system-tile { height: 48px; min-height: 48px; }
+}
+@media (max-width: 1080px) {
+  .twin-workspace {
+    --flowpulse-control-rail-width: 212px;
+    --flowpulse-control-rail-inset-y: 8px;
+    --flowpulse-control-rail-inset-x: 12px;
+  }
+}

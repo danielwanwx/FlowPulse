@@ -580,6 +580,11 @@ test("Live reuses the canonical navigation and exposes only safe projected Team 
   assert.match(appJs, /rail\.hidden = mode === "architecture" \|\| !controls\.length \|\| Boolean\(selected\)/);
   assert.match(appJs, /controlSystemTileMarkup\(node, \{ rail: true \}\)/);
   assert.match(stylesCss, /\.operations-team-rail > \.architecture-flowpulse-system \{ height: 100%; \}/);
+  assert.match(stylesCss, /\.twin-workspace \{[\s\S]*?--flowpulse-control-rail-width: 272px;[\s\S]*?--flowpulse-control-rail-inset-y: 16px;[\s\S]*?--flowpulse-control-rail-inset-x: 20px;/);
+  assert.match(stylesCss, /\.is-architecture-source \.architecture-systems \{[\s\S]*?grid-template-columns: minmax\(0, 1fr\) var\(--flowpulse-control-rail-width\);[\s\S]*?padding: var\(--flowpulse-control-rail-inset-y\) var\(--flowpulse-control-rail-inset-x\);/);
+  assert.match(stylesCss, /\.operations-team-rail \{[\s\S]*?top: var\(--flowpulse-control-rail-inset-y\);[\s\S]*?right: var\(--flowpulse-control-rail-inset-x\);[\s\S]*?bottom: var\(--flowpulse-control-rail-inset-y\);[\s\S]*?width: var\(--flowpulse-control-rail-width\);/);
+  assert.match(stylesCss, /\.operations-team-rail \.architecture-flowpulse-system \{[\s\S]*?gap: 10px;[\s\S]*?padding: 14px 12px 12px;/);
+  assert.match(stylesCss, /@media \(max-width: 1320px\) \{[\s\S]*?\.twin-workspace \{[\s\S]*?--flowpulse-control-rail-width: 236px;/);
   assert.match(appJs, /function controlDrawerContent\(context\)/);
   assert.match(appJs, /Agent conversation and consequential actions remain unavailable here\./);
   assert.doesNotMatch(appJs.slice(appJs.indexOf("function controlDrawerContent"), appJs.indexOf("function architectureComponentDetailMarkup")), /payload|prompt|token|secret|raw_log/i);
