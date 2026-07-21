@@ -852,6 +852,7 @@ test("Live pulse ordering remains deterministic across the complete backend runt
   const renderSourceCanvasSource = appJs.slice(appJs.indexOf("function renderSourceCanvas"), appJs.indexOf("function architectureLayerStatus"));
   assert.match(renderSourceCanvasSource, /edges: \[\.\.\.live\.runtime_data\.graph\.edges, \.\.\.\(live\.runtime_data\.supporting_relations \|\| \[\]\)\]/);
   assert.match(renderSourceCanvasSource, /const pulseSlots = livePulseSlots\(\{ \.\.\.topology, edges: pulseEdges \}\);/);
+  assert.match(renderSourceCanvasSource, /const routeBuildOrder = new Map\(orderedLiveRouteBuildEdges\(runtimeEdges, positioned\)/);
   assert.match(renderSourceCanvasSource, /orderedSignalEdges\(pulseEdges, pulseSlots\)/);
   assert.match(renderSourceCanvasSource, /fixed-live-edge-map/);
   assert.match(renderSourceCanvasSource, /liveEdgePath\(positions\.get\(edge\.from\), positions\.get\(edge\.to\)/);
@@ -864,8 +865,9 @@ test("Live pulse ordering remains deterministic across the complete backend runt
   assert.match(appJs, /function positionLiveProjectile\(path, projectile, progress, pathLength\)/);
   assert.match(stylesCss, /\.is-live-source \.edge-group \.edge-line \{[\s\S]*?animation-delay: 0ms;[\s\S]*?animation-fill-mode: both;/);
   assert.match(appJs, /function applyLiveRouteDelays\(\)/);
+  assert.match(appJs, /const delay = Number\(group\.dataset\.routeOrder\) \* 32;/);
   assert.match(appJs, /line\.style\.animationDelay = `\$\{delay\}ms`/);
-  assert.match(appJs, /data-route-order="\$\{edge\.order\}"/);
+  assert.match(appJs, /data-route-order="\$\{edge\.routeOrder\}"/);
   assert.match(appJs, /data-recovery-command-send/);
   assert.match(appJs, /sendRecoveryCommand\(commandButton\.closest\("form"\)\)/);
 });

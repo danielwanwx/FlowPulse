@@ -23,6 +23,7 @@ import {
   livePulseSlots,
   livePositions,
   liveViewTopology,
+  orderedLiveRouteBuildEdges,
   orderedSignalEdges,
   primaryLiveEdges,
   projectAgentCollaborators,
@@ -449,6 +450,7 @@ function renderSourceCanvas(layout) {
   const pulseEdges = runtimeEdges.filter((edge) => edge.kind === "calls");
   const pulseSlots = livePulseSlots({ ...topology, edges: pulseEdges });
   const signalOrder = new Map(orderedSignalEdges(pulseEdges, pulseSlots).map((edge, index) => [edge.id, index]));
+  const routeBuildOrder = new Map(orderedLiveRouteBuildEdges(runtimeEdges, positioned).map((edge, index) => [edge.id, index]));
   const nodes = positioned.map((node) => sourceNodeMarkup(node, { layout, source, nodeStates })).join("");
   const unlinkedPositionedNodes = positioned.filter((node) => node.layer === LIVE_UNLINKED_LAYER.id).length;
   const guideLayers = [...LIVE_LAYERS, ...(unlinkedPositionedNodes ? [LIVE_UNLINKED_LAYER] : [])];
@@ -456,6 +458,7 @@ function renderSourceCanvas(layout) {
   const plannedEdges = runtimeEdges.map((edge, index) => ({
     ...edge,
     order: signalOrder.get(edge.id) ?? pulseEdges.length + index,
+    routeOrder: routeBuildOrder.get(edge.id) ?? index,
     pulse: edge.kind === "calls",
     tone: liveSignalTone(edge, nodeStates)
   }));
@@ -474,7 +477,7 @@ function renderSourceCanvas(layout) {
   }).join("");
   els["canvas-layers"].innerHTML = `${guides}<div class="twin-layer layer-current"><svg class="edge-map fixed-live-edge-map" viewBox="0 0 ${LIVE_WORLD.width} ${LIVE_WORLD.height}" preserveAspectRatio="none">${liveEdges}</svg>${nodes}</div>`;
   applyLiveRouteDelays();
-  const linkDuration = Math.min(1800, 320 + plannedEdges.length * 42);
+  const linkDuration = Math.min(1500, 340 + plannedEdges.length * 32);
   const renderGeneration = liveSignalGeneration;
   setTimeout(() => {
     if (renderGeneration === liveSignalGeneration && mode === "live") startLiveSignalLoop();
@@ -541,7 +544,7 @@ function applyLiveRouteDelays() {
   // timing. Set the same deterministic delay through the SVG style API after
   // the markup exists so connection construction remains visibly staggered.
   for (const group of els["canvas-layers"].querySelectorAll("[data-live-route]")) {
-    const delay = Number(group.dataset.routeOrder) * 42;
+    const delay = Number(group.dataset.routeOrder) * 32;
     const line = group.querySelector(".edge-line");
     if (Number.isSafeInteger(delay) && delay >= 0 && line) line.style.animationDelay = `${delay}ms`;
   }
@@ -550,7 +553,7 @@ function applyLiveRouteDelays() {
 function fixedLiveEdgeMarkup(edge, path, fromLabel, toLabel) {
   const label = `${edge.label} from ${fromLabel} to ${toLabel}`;
   const pulse = edge.pulse ? `data-live-edge-id="${escapeHtml(edge.id)}" data-live-projectile="single" data-signal-from="${escapeHtml(edge.from)}" data-signal-to="${escapeHtml(edge.to)}" data-signal-order="${edge.order}"` : "";
-  return `<g class="edge-group path-runtime relation-${escapeHtml(edge.kind)} signal-${escapeHtml(edge.tone)}" ${pulse} data-live-route="canonical-authored" data-route-order="${edge.order}"><path class="edge-line is-${escapeHtml(edge.tone)}" pathLength="1000" d="${path}"/><circle class="signal-projectile signal-projectile-halo" r="5" aria-hidden="true"/><circle class="signal-projectile signal-projectile-core" r="2" aria-hidden="true"/><path class="edge-hit" d="${path}" role="button" tabindex="0" aria-label="${escapeHtml(label)}" data-edge-id="${escapeHtml(edge.id)}" data-edge-from="${escapeHtml(edge.from)}" data-edge-to="${escapeHtml(edge.to)}"/></g>`;
+  return `<g class="edge-group path-runtime relation-${escapeHtml(edge.kind)} signal-${escapeHtml(edge.tone)}" ${pulse} data-live-route="canonical-authored" data-route-order="${edge.routeOrder}"><path class="edge-line is-${escapeHtml(edge.tone)}" pathLength="1000" d="${path}"/><circle class="signal-projectile signal-projectile-halo" r="5" aria-hidden="true"/><circle class="signal-projectile signal-projectile-core" r="2" aria-hidden="true"/><path class="edge-hit" d="${path}" role="button" tabindex="0" aria-label="${escapeHtml(label)}" data-edge-id="${escapeHtml(edge.id)}" data-edge-from="${escapeHtml(edge.from)}" data-edge-to="${escapeHtml(edge.to)}"/></g>`;
 }
 
 function positionLiveProjectile(path, projectile, progress, pathLength) {

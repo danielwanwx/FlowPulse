@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readFile } from "node:fs/promises";
 
-import { liveEdgePath, liveEdgeRoute, livePositions } from "../public/twin-state.mjs";
+import { liveEdgePath, liveEdgeRoute, livePositions, orderedLiveRouteBuildEdges } from "../public/twin-state.mjs";
 
 const manifest = JSON.parse(await readFile(new URL("../data/topology/otel-demo-system-v1.json", import.meta.url), "utf8"));
 const WORLD = Object.freeze({ width: 1480, height: 680, nodeWidth: 180, nodeHeight: 60 });
@@ -105,5 +105,22 @@ test("every captured dependency has one endpoint-valid route and no implicit top
     assert.equal(route.length >= 2, true, `${edge.id} needs an authored route`);
     assert.match(path, /^M /, `${edge.id} needs an SVG path`);
     assert.doesNotMatch(path, /\bC\b/, `${edge.id} must not mix Bezier routing into the shared grammar`);
+  }
+});
+
+test("Live constructs canonical paths in a deterministic left-to-right sequence", () => {
+  const positions = livePositions(manifest.nodes);
+  const byId = new Map(positions.map((node) => [node.id, node]));
+  const first = orderedLiveRouteBuildEdges(relations, positions);
+  const second = orderedLiveRouteBuildEdges([...relations].reverse(), positions);
+
+  assert.deepEqual(first.map(({ id }) => id), second.map(({ id }) => id));
+  assert.equal(first.length, relations.length);
+  assert.equal(new Set(first.map(({ id }) => id)).size, relations.length);
+  for (let index = 1; index < first.length; index += 1) {
+    const previous = byId.get(first[index - 1].from);
+    const current = byId.get(first[index].from);
+    assert.ok(previous.layerIndex <= current.layerIndex, `${first[index].id} must not build before an earlier source column`);
+    if (previous.layerIndex === current.layerIndex) assert.ok(previous.layerPosition <= current.layerPosition, `${first[index].id} must retain top-to-bottom order within its source column`);
   }
 });

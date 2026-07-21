@@ -273,6 +273,27 @@ export function livePositions(nodes = []) {
   });
 }
 
+export function orderedLiveRouteBuildEdges(edges = [], positionedNodes = []) {
+  const positions = positionedNodes instanceof Map
+    ? positionedNodes
+    : new Map((positionedNodes || []).map((node) => [node.id, node]));
+  const positionFor = (id) => positions.get(id) || { layerIndex: Number.MAX_SAFE_INTEGER, layerPosition: Number.MAX_SAFE_INTEGER };
+  // Construction follows the source columns from left to right, then top to
+  // bottom. It is distinct from the causal pulse order so the canvas can read
+  // as a connected system before traffic begins to travel through it.
+  return [...edges].sort((left, right) => {
+    const fromLeft = positionFor(left.from);
+    const fromRight = positionFor(right.from);
+    const toLeft = positionFor(left.to);
+    const toRight = positionFor(right.to);
+    return fromLeft.layerIndex - fromRight.layerIndex
+      || fromLeft.layerPosition - fromRight.layerPosition
+      || toLeft.layerIndex - toRight.layerIndex
+      || toLeft.layerPosition - toRight.layerPosition
+      || left.id.localeCompare(right.id);
+  });
+}
+
 export function primaryLiveEdges(topology = {}) {
   const nodes = topology.nodes || [];
   const edges = topology.edges || [];
