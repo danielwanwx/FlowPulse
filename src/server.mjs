@@ -15,6 +15,7 @@ import { investigationFailureEnvelope, localFailureState, projectFailureEpisode,
 import { DevelopmentRuntime } from "./development-runtime.mjs";
 import * as developmentAdapter from "./development-adapter.mjs";
 import { AgentControlService } from "./agent-control-service.mjs";
+import { AgentTeamChatError, AgentTeamChatService } from "./agent-team-chat.mjs";
 import { harnessBinding, loadHarnessManifest } from "./harness-manifest.mjs";
 import { AUTONOMY_POLICY_ARTIFACT, validateAutonomyPolicyArtifact } from "./autonomy-policy-artifacts.mjs";
 import { failureLockKey, sha256Canonical } from "./autonomy-policy.mjs";
@@ -73,6 +74,17 @@ const langfuseEnabled = await initializeObservability().catch(() => {
   return false;
 });
 const agentControl = new AgentControlService({ runtime, langfuseEnabled });
+const agentTeamChat = new AgentTeamChatService({
+  runtime,
+  contextForRun: async (_runtime, runId) => {
+    const state = await stateWithSource(runId);
+    return {
+      topology_views: state.topology_views,
+      incident_projection: state.incident_projection,
+      source: state.source
+    };
+  }
+});
 
 const server = createServer(async (request, response) => {
   setHeaders(response);
@@ -131,6 +143,41 @@ const server = createServer(async (request, response) => {
     }
     if (url.pathname === "/api/agent-control/events" && request.method === "GET") {
       return streamAgentEvents(request, response, url);
+    }
+    if (url.pathname === "/api/agent-control/conversation" && request.method === "GET") {
+      const conversationId = url.searchParams.get("conversation_id");
+      try {
+        return json(response, 200, agentTeamChat.project({ runId: browserRunId(), conversationId }));
+      } catch (error) {
+        if (error instanceof AgentTeamChatError) return json(response, error.status, { error: error.code });
+        throw error;
+      }
+    }
+    if (url.pathname === "/api/agent-control/provider" && request.method === "GET") {
+      return json(response, 200, await agentTeamChat.preflightProvider());
+    }
+    if (url.pathname === "/api/agent-control/chat" && request.method === "POST") {
+      requireJson(request);
+      const body = await readJson(request);
+      const abort = new AbortController();
+      request.once("aborted", () => abort.abort());
+      try {
+        const result = await withAgentControlTrace({
+          runId: typeof body?.run_id === "string" ? body.run_id : "invalid",
+          incidentId: runtime.bundle.incident.id,
+          action: "agent-team-chat",
+          input: {
+            conversation_id: typeof body?.conversation_id === "string" ? body.conversation_id : null,
+            requested_agent: typeof body?.requested_agent === "string" ? body.requested_agent : null,
+            page_mode: typeof body?.page_mode === "string" ? body.page_mode : null,
+            message_bytes: typeof body?.message === "string" ? Buffer.byteLength(body.message, "utf8") : null
+          }
+        }, async (trace) => agentTeamChat.submit(body, { trace, signal: abort.signal }));
+        return json(response, 200, result);
+      } catch (error) {
+        if (error instanceof AgentTeamChatError) return json(response, error.status, { error: error.code });
+        throw error;
+      }
     }
     if (url.pathname === "/api/agent-control/message" && request.method === "POST") {
       requireJson(request);
@@ -874,7 +921,7 @@ function injectDemoIncident({ runId, body, current }) {
 }
 function activeDemoWriteBlocked(method, pathname) {
   if (!activeDemoRunId || !["POST", "PUT", "PATCH", "DELETE"].includes(method)) return false;
-  return !(method === "POST" && (pathname === "/api/demo/inject" || pathname === "/api/demo/reset"));
+  return !(method === "POST" && (pathname === "/api/demo/inject" || pathname === "/api/demo/reset" || pathname === "/api/agent-control/chat"));
 }
 function autonomyFailure(code, field_path) { const error = new InsufficientEvidenceError("Autonomy authority boundary rejected the run"); error.code = code; error.metadata = { stage: "authority_decision", validator_id: "server_authority_closure", reason_code: code, field_path, next_precondition: "produce_a_matching_frozen_diagnosis_gate" }; return error; }
 
@@ -969,7 +1016,10 @@ async function stateWithSource(runId = runtime.ensureRun(), { cursor = null } = 
     source: redactedSource(sourceState, incident_projection, topology_views),
     topology_views,
     incident_projection,
-    agent_control: agentControl.project(runId, { incidentProjection: incident_projection, state: projected }),
+    agent_control: {
+      ...agentControl.project(runId, { incidentProjection: incident_projection, state: projected }),
+      agent_team_provider: agentTeamChat.providerCapability()
+    },
     harness: redactedHarness(harnessProjection(projected.events))
   };
   return enforceBrowserResponseCap(state);
@@ -1302,6 +1352,7 @@ function harnessProjection(events = []) {
 
 function streamAgentEvents(request, response, url) {
   const runId = url.searchParams.get("run_id") || browserRunId();
+  const conversationId = url.searchParams.get("conversation_id");
   let lastSequence = Number(request.headers["last-event-id"] || url.searchParams.get("after") || 0);
   response.writeHead(200, {
     "content-type": "text/event-stream; charset=utf-8",
@@ -1312,7 +1363,11 @@ function streamAgentEvents(request, response, url) {
     const projection = (await stateWithSource(runId)).agent_control;
     if (projection.last_sequence <= lastSequence) return;
     lastSequence = projection.last_sequence;
-    response.write(`id: ${lastSequence}\nevent: agent-control\ndata: ${JSON.stringify(projection)}\n\n`);
+    let payload = projection;
+    if (conversationId) {
+      try { payload = { agent_control: projection, conversation: agentTeamChat.project({ runId, conversationId }) }; } catch { payload = projection; }
+    }
+    response.write(`id: ${lastSequence}\nevent: agent-control\ndata: ${JSON.stringify(payload)}\n\n`);
   };
   void sendProjection();
   const interval = setInterval(() => {

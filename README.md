@@ -58,6 +58,22 @@ Open [http://127.0.0.1:4310](http://127.0.0.1:4310), then:
 
 The interactive path takes about 20 seconds. It is deterministic and needs no cloud credentials. `npm run judge` remains a convenience command that runs the tests and then starts the server.
 
+## Agent Team chat providers
+
+The backend-only Agent Team sidebar contract is documented in [`docs/architecture/agent-team-chat-backend-contract.md`](docs/architecture/agent-team-chat-backend-contract.md). Select its response generator explicitly with `FLOWPULSE_AGENT_PROVIDER`:
+
+- `recorded` (the default) is the deterministic judge/test adapter. It needs neither Codex nor an API key and is always labeled `RECORDED/DEMO`.
+- `codex-local` is the competition-demo adapter. It requires the Codex CLI to be installed and logged in through normal local Codex authentication; FlowPulse never reads, copies, or logs Codex auth tokens/files. Its responses are labeled `LOCAL CODEX`.
+- `openai-responses` is reserved for deployment and requires `OPENAI_API_KEY`; its responses are labeled `OPENAI API`.
+
+For example, start the local Codex-backed demo with:
+
+```bash
+FLOWPULSE_AGENT_PROVIDER=codex-local npm start
+```
+
+The safe provider capability is available at `/api/agent-control/provider`. Provider fallback is never silent: choose `recorded` explicitly when a recorded demo is desired.
+
 To run the server without checks:
 
 ```bash
