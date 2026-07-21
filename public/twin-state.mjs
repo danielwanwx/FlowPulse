@@ -884,24 +884,32 @@ export function activeIncidentState(events = []) {
   return opened && !verified;
 }
 
-export function liveSignalDuration(pathLength, speed = 520, terminalFraction = .16) {
+export function liveSignalDuration(pathLength, speed = 520, launchFraction = .1, terminalFraction = .16) {
   const length = Math.max(0, Number(pathLength) || 0);
   const velocity = Math.max(1, Number(speed) || 1);
+  const launch = Math.max(0, Math.min(.2, Number(launchFraction) || 0));
   const terminal = Math.max(0, Math.min(.4, Number(terminalFraction) || 0));
-  return (length / velocity) * (1 + terminal) * 1000;
+  const cruise = Math.max(0, 1 - launch - terminal);
+  return (length / velocity) * (cruise + 2 * launch + 2 * terminal) * 1000;
 }
 
-export function liveSignalProgress(elapsedMs, pathLength, speed = 520, terminalFraction = .16) {
+export function liveSignalProgress(elapsedMs, pathLength, speed = 520, launchFraction = .1, terminalFraction = .16) {
   const length = Math.max(0, Number(pathLength) || 0);
   if (!length) return 1;
   const velocity = Math.max(1, Number(speed) || 1);
+  const launch = Math.max(0, Math.min(.2, Number(launchFraction) || 0));
   const terminal = Math.max(0, Math.min(.4, Number(terminalFraction) || 0));
-  const cruiseDistance = length * (1 - terminal);
-  const cruiseMs = (cruiseDistance / velocity) * 1000;
   const elapsed = Math.max(0, Number(elapsedMs) || 0);
-  if (elapsed <= cruiseMs || !terminal) return Math.min(1, elapsed * velocity / 1000 / length);
+  const launchMs = (2 * length * launch / velocity) * 1000;
+  if (elapsed <= launchMs && launch) {
+    const phase = Math.min(1, elapsed / launchMs);
+    return launch * phase ** 2;
+  }
+  const cruiseDistance = length * Math.max(0, 1 - launch - terminal);
+  const cruiseMs = (cruiseDistance / velocity) * 1000;
+  if (elapsed <= launchMs + cruiseMs || !terminal) return Math.min(1, launch + (elapsed - launchMs) * velocity / 1000 / length);
   const terminalMs = (2 * length * terminal / velocity) * 1000;
-  const phase = Math.min(1, (elapsed - cruiseMs) / terminalMs);
+  const phase = Math.min(1, (elapsed - launchMs - cruiseMs) / terminalMs);
   return (1 - terminal) + terminal * (1 - (1 - phase) ** 2);
 }
 
@@ -992,8 +1000,11 @@ export function liveEdgeRoute(from, to, {
     return [start, { x: sourceGutter, y: start.y }, { x: sourceGutter, y: end.y }, end];
   }
 
-  const laneIndex = Math.abs(Math.trunc(lane)) % 5;
-  const corridorY = lane < 0 ? 22 + laneIndex * 4 : 498 - laneIndex * 4;
+  // Cross-column links travel just beyond the outermost cards. This keeps their
+  // routes out of dense component columns instead of cutting through unrelated
+  // nodes; the small offsets preserve deterministic separation at the perimeter.
+  const laneIndex = Math.abs(Math.trunc(lane));
+  const corridorY = lane < 0 ? 4 + Math.min(4, laneIndex) : 516 - Math.min(4, laneIndex);
   return [
     start,
     { x: sourceGutter, y: start.y },

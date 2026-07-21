@@ -451,7 +451,7 @@ function renderSourceCanvas(layout) {
     const lane = order % 2 ? Math.ceil(order / 2) : -Math.ceil((order + 1) / 2);
     const path = liveEdgePath(from, to, { ...edgeLayout, lane });
     const edgeState = liveSignalTone(edge, nodeStates);
-    return `<g class="edge-group path-runtime signal-${edgeState}" data-live-edge-id="${escapeHtml(edge.id)}" data-signal-from="${escapeHtml(edge.from)}" data-signal-to="${escapeHtml(edge.to)}" data-signal-order="${order}"><path class="edge-line is-${edgeState}" d="${path}"/><path class="pulse-flow is-${edgeState}" d="${path}" pathLength="1" aria-hidden="true" style="animation-delay:${(order % 6) * .22}s"/><g class="signal-droplet" aria-hidden="true"><circle class="signal-droplet-halo" r="5"/><circle class="signal-droplet-tail signal-droplet-tail-far" r=".7"/><circle class="signal-droplet-tail signal-droplet-tail-near" r="1.15"/><circle class="signal-droplet-body" r="2.15"/><circle class="signal-droplet-specular" r=".55"/></g><path class="edge-hit" d="${path}" role="button" tabindex="0" aria-label="${escapeHtml(edge.label)} from ${escapeHtml(from.label)} to ${escapeHtml(to.label)}" data-edge-id="${escapeHtml(edge.id)}" data-edge-from="${escapeHtml(edge.from)}" data-edge-to="${escapeHtml(edge.to)}"/></g>`;
+    return `<g class="edge-group path-runtime signal-${edgeState}" data-live-edge-id="${escapeHtml(edge.id)}" data-live-projectile="single" data-signal-from="${escapeHtml(edge.from)}" data-signal-to="${escapeHtml(edge.to)}" data-signal-order="${order}"><path class="edge-line is-${edgeState}" d="${path}"/><g class="signal-droplet" aria-hidden="true"><line class="signal-droplet-streak"/><circle class="signal-droplet-halo" r="5"/><circle class="signal-droplet-tail signal-droplet-tail-far" r=".7"/><circle class="signal-droplet-tail signal-droplet-tail-near" r="1.15"/><circle class="signal-droplet-body" r="2.15"/><circle class="signal-droplet-specular" r=".55"/></g><path class="edge-hit" d="${path}" role="button" tabindex="0" aria-label="${escapeHtml(edge.label)} from ${escapeHtml(from.label)} to ${escapeHtml(to.label)}" data-edge-id="${escapeHtml(edge.id)}" data-edge-from="${escapeHtml(edge.from)}" data-edge-to="${escapeHtml(edge.to)}"/></g>`;
   }).join("");
   const nodes = positioned.map((node) => sourceNodeMarkup(node, { layout, source, nodeStates })).join("");
   const unlinkedPositionedNodes = positioned.filter((node) => node.layer === LIVE_UNLINKED_LAYER.id).length;
@@ -575,6 +575,7 @@ function startLiveSignalLoop() {
     const specular = group.querySelector(".signal-droplet-specular");
     const nearTail = group.querySelector(".signal-droplet-tail-near");
     const farTail = group.querySelector(".signal-droplet-tail-far");
+    const streak = group.querySelector(".signal-droplet-streak");
     if (!path || !body) return;
     const pathLength = path.getTotalLength();
     const duration = liveSignalDuration(pathLength);
@@ -591,11 +592,16 @@ function startLiveSignalLoop() {
       const progress = liveSignalProgress(elapsed, pathLength);
       group.dataset.signalProgress = progress.toFixed(3);
       const bodyPoint = pointAt(path, progress);
+      const streakPoint = pointAt(path, progress - .05);
       place(body, bodyPoint);
       place(halo, bodyPoint);
       place(specular, { x: bodyPoint.x - 1.25, y: bodyPoint.y - 1.25 });
       place(nearTail, pointAt(path, progress - .016));
       place(farTail, pointAt(path, progress - .034));
+      streak?.setAttribute("x1", streakPoint.x);
+      streak?.setAttribute("y1", streakPoint.y);
+      streak?.setAttribute("x2", bodyPoint.x);
+      streak?.setAttribute("y2", bodyPoint.y);
       if (elapsed < duration && progress < 1) {
         liveSignalFrame = requestAnimationFrame(travel);
         return;
@@ -605,7 +611,7 @@ function startLiveSignalLoop() {
         group.classList.remove("is-signal-active");
         from?.classList.remove("is-signal-launch");
         to?.classList.add("is-signal-arrival");
-        schedule(() => activate(nextGroup(group)), 120);
+        schedule(() => activate(nextGroup(group)), 180);
       });
     };
     liveSignalFrame = requestAnimationFrame(travel);

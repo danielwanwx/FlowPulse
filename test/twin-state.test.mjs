@@ -465,7 +465,10 @@ test("Live keeps shared node identities while rendering every canonical runtime 
   assert.match(renderSourceCanvasSource, /const runtimeEdges = topology\.edges/);
   assert.match(renderSourceCanvasSource, /data-live-edge-id/);
   assert.match(renderSourceCanvasSource, /data-signal-order/);
-  assert.match(renderSourceCanvasSource, /class="pulse-flow is-\$\{edgeState\}"/);
+  assert.match(renderSourceCanvasSource, /data-live-projectile="single"/);
+  assert.match(renderSourceCanvasSource, /class="signal-droplet"/);
+  assert.match(renderSourceCanvasSource, /class="signal-droplet-streak"/);
+  assert.doesNotMatch(renderSourceCanvasSource, /class="pulse-flow is-\$\{edgeState\}"/);
   assert.match(renderSourceCanvasSource, /startLiveSignalLoop\(\);/);
   assert.doesNotMatch(renderSourceCanvasSource, /renderLiveChange\(/);
   assert.match(renderSourceCanvasSource, /\$\{runtimeEdges\.length\} projected dependency paths are rendered/);
@@ -702,6 +705,49 @@ test("reserved live routes avoid every non-endpoint card", () => {
   }
 });
 
+test("complete captured Live topology routes meet exactly at node boundaries without crossing cards", () => {
+  const topology = topologyIntegrity({ nodes: topologyManifest.nodes, edges: topologyManifest.edges });
+  const positions = livePositions(topology.nodes);
+  const byId = new Map(positions.map((node) => [node.id, node]));
+  const halfWidth = 180 * (1000 / 1480) / 2;
+  const halfHeight = 60 * (520 / 680) / 2;
+  const slots = livePulseSlots(topology);
+  const ordered = orderedSignalEdges(topology.edges, slots);
+  const rectFor = (node) => ({
+    left: node.x * 10 - halfWidth,
+    right: node.x * 10 + halfWidth,
+    top: node.y * 5.2 - halfHeight,
+    bottom: node.y * 5.2 + halfHeight
+  });
+  const isOnBoundary = (point, rect) => (
+    point.x >= rect.left && point.x <= rect.right
+    && point.y >= rect.top && point.y <= rect.bottom
+    && ([point.x - rect.left, point.x - rect.right, point.y - rect.top, point.y - rect.bottom]
+      .some((distance) => Math.abs(distance) < 1e-9))
+  );
+
+  assert.equal(positions.length, 22);
+  assert.equal(ordered.length, 22);
+  for (const [order, edge] of ordered.entries()) {
+    const lane = order % 2 ? Math.ceil(order / 2) : -Math.ceil((order + 1) / 2);
+    const route = liveEdgeRoute(byId.get(edge.from), byId.get(edge.to), {
+      canvasWidth: 1480,
+      canvasHeight: 680,
+      nodeWidth: 180,
+      nodeHeight: 60,
+      lane
+    });
+    assert.equal(isOnBoundary(route[0], rectFor(byId.get(edge.from))), true, `${edge.id} starts outside ${edge.from}`);
+    assert.equal(isOnBoundary(route.at(-1), rectFor(byId.get(edge.to))), true, `${edge.id} ends outside ${edge.to}`);
+    for (const node of positions.filter(({ id }) => ![edge.from, edge.to].includes(id))) {
+      const rect = rectFor(node);
+      for (let point = 1; point < route.length; point++) {
+        assert.equal(segmentHitsRect(route[point - 1], route[point], rect), false, `${edge.id} crosses ${node.id}`);
+      }
+    }
+  }
+});
+
 function segmentHitsRect(a, b, rect) {
   if (a.x === b.x) return a.x > rect.left && a.x < rect.right && Math.max(Math.min(a.y, b.y), rect.top) < Math.min(Math.max(a.y, b.y), rect.bottom);
   if (a.y === b.y) return a.y > rect.top && a.y < rect.bottom && Math.max(Math.min(a.x, b.x), rect.left) < Math.min(Math.max(a.x, b.x), rect.right);
@@ -734,7 +780,9 @@ test("Live pulse ordering remains deterministic across the complete backend runt
   assert.match(renderSourceCanvasSource, /const pulseSlots = livePulseSlots\(\{ \.\.\.topology, edges: runtimeEdges \}\);/);
   assert.match(renderSourceCanvasSource, /orderedSignalEdges\(runtimeEdges, pulseSlots\)/);
   assert.match(renderSourceCanvasSource, /data-live-edge-id/);
-  assert.match(renderSourceCanvasSource, /pulse-flow/);
+  assert.match(renderSourceCanvasSource, /data-live-projectile="single"/);
+  assert.match(renderSourceCanvasSource, /signal-droplet-streak/);
+  assert.doesNotMatch(renderSourceCanvasSource, /class="pulse-flow/);
   assert.match(appJs, /classList\.toggle\("is-live-source", mode === "live"\)/);
   assert.match(appJs, /function startLiveSignalLoop\(/);
   assert.match(appJs, /liveSignalDuration\(pathLength\)/);
@@ -776,14 +824,21 @@ test("future primary dependency selection remains deterministic while Live rende
   assert.match(appJs, /dataset\.displayedEdges = String\(runtimeEdges\.length\)/);
 });
 
-test("live signal travel keeps one physical speed and slows only at the destination", () => {
+test("live signal projectile accelerates, cruises, then eases into the destination", () => {
   const short = liveSignalDuration(100);
   const long = liveSignalDuration(300);
   assert.ok(Math.abs(long / short - 3) < 1e-9);
-  assert.equal(liveSignalProgress(100, 520), .1);
-  const terminalStartMs = (.84 * 520 / 520) * 1000;
+  const launchEndMs = (2 * 520 * .1 / 520) * 1000;
+  const terminalStartMs = launchEndMs + ((1 - .1 - .16) * 520 / 520) * 1000;
+  const launchFirstStep = liveSignalProgress(100, 520) - liveSignalProgress(50, 520);
+  const launchSecondStep = liveSignalProgress(150, 520) - liveSignalProgress(100, 520);
+  assert.equal(liveSignalProgress(100, 520), .025);
+  assert.ok(launchSecondStep > launchFirstStep, "launch speed increases");
+  assert.equal(liveSignalProgress(launchEndMs, 520), .1);
   assert.equal(liveSignalProgress(terminalStartMs, 520), .84);
-  assert.ok(liveSignalProgress(terminalStartMs + 100, 520) > .84);
+  const terminalFirstStep = liveSignalProgress(terminalStartMs + 80, 520) - liveSignalProgress(terminalStartMs, 520);
+  const terminalSecondStep = liveSignalProgress(terminalStartMs + 160, 520) - liveSignalProgress(terminalStartMs + 80, 520);
+  assert.ok(terminalFirstStep > terminalSecondStep, "arrival speed decreases");
   assert.equal(liveSignalProgress(liveSignalDuration(520), 520), 1);
 });
 
