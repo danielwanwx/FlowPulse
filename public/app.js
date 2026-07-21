@@ -377,7 +377,14 @@ function renderSourceCanvas(layout) {
   const architecture = layout === "architecture" ? architectureView() : null;
   const live = layout === "live" ? liveTopologyView() : null;
   const source = architecture ? architectureSource(architecture) : liveSource(live);
-  const topology = architecture ? architecture.graph : live?.runtime_data.graph ? topologyIntegrity(live.runtime_data.graph) : null;
+  const topology = architecture
+    ? architecture.graph
+    : live?.runtime_data.graph
+      ? topologyIntegrity({
+        nodes: live.runtime_data.graph.nodes,
+        edges: [...live.runtime_data.graph.edges, ...(live.runtime_data.supporting_relations || [])]
+      })
+      : null;
   els["compare-handle"].hidden = true;
   els["compare-canvas-range"].hidden = true;
   els["compare-review-rail"].hidden = true;
@@ -439,13 +446,19 @@ function renderSourceCanvas(layout) {
   // endpoint validity, status and identity; this layer only assigns deterministic
   // visual routes and pulse timing.
   const runtimeEdges = topology.edges.filter((edge) => positions.has(edge.from) && positions.has(edge.to));
-  const pulseSlots = livePulseSlots({ ...topology, edges: runtimeEdges });
-  const signalOrder = new Map(orderedSignalEdges(runtimeEdges, pulseSlots).map((edge, index) => [edge.id, index]));
+  const pulseEdges = runtimeEdges.filter((edge) => edge.kind === "calls");
+  const pulseSlots = livePulseSlots({ ...topology, edges: pulseEdges });
+  const signalOrder = new Map(orderedSignalEdges(pulseEdges, pulseSlots).map((edge, index) => [edge.id, index]));
   const nodes = positioned.map((node) => sourceNodeMarkup(node, { layout, source, nodeStates })).join("");
   const unlinkedPositionedNodes = positioned.filter((node) => node.layer === LIVE_UNLINKED_LAYER.id).length;
   const guideLayers = [...LIVE_LAYERS, ...(unlinkedPositionedNodes ? [LIVE_UNLINKED_LAYER] : [])];
   const guides = `<div class="live-guides" aria-hidden="true">${guideLayers.map((layer, index) => `<span class="live-guide-${index}">${escapeHtml(layer.label)}</span>`).join("")}</div>${topology.invalid_edges.length ? `<div class="topology-warning"><i class="ph ph-warning" aria-hidden="true"></i>${topology.invalid_edges.length} invalid dependency endpoint${topology.invalid_edges.length === 1 ? "" : "s"} omitted</div>` : ""}`;
-  const plannedEdges = runtimeEdges.map((edge, index) => ({ ...edge, order: signalOrder.get(edge.id) ?? index, tone: liveSignalTone(edge, nodeStates) }));
+  const plannedEdges = runtimeEdges.map((edge, index) => ({
+    ...edge,
+    order: signalOrder.get(edge.id) ?? pulseEdges.length + index,
+    pulse: edge.kind === "calls",
+    tone: liveSignalTone(edge, nodeStates)
+  }));
   // The Live view uses authored topology routes, not a generic obstacle solver.
   // Node coordinates and every port are derived from the same fixed world, so a
   // route always lands on the visible component that owns the dependency.
@@ -459,8 +472,13 @@ function renderSourceCanvas(layout) {
     });
     return fixedLiveEdgeMarkup(edge, path, positions.get(edge.from)?.label || edge.from, positions.get(edge.to)?.label || edge.to);
   }).join("");
-  els["canvas-layers"].innerHTML = `${guides}<div class="twin-layer layer-current"><svg class="edge-map fixed-live-edge-map" viewBox="0 0 ${LIVE_WORLD.width} ${LIVE_WORLD.height}" preserveAspectRatio="none" aria-hidden="true">${liveEdges}</svg>${nodes}</div>`;
-  startLiveSignalLoop();
+  els["canvas-layers"].innerHTML = `${guides}<div class="twin-layer layer-current"><svg class="edge-map fixed-live-edge-map" viewBox="0 0 ${LIVE_WORLD.width} ${LIVE_WORLD.height}" preserveAspectRatio="none">${liveEdges}</svg>${nodes}</div>`;
+  applyLiveRouteDelays();
+  const linkDuration = Math.min(1800, 320 + plannedEdges.length * 42);
+  const renderGeneration = liveSignalGeneration;
+  setTimeout(() => {
+    if (renderGeneration === liveSignalGeneration && mode === "live") startLiveSignalLoop();
+  }, linkDuration);
   els["twin-canvas"].dataset.invalidEdges = String(topology.invalid_edges.length);
   els["twin-canvas"].dataset.unlinkedNodes = String(topology.unlinked_node_ids.length);
   els["twin-canvas"].dataset.observedEdges = String(topology.edges.length);
@@ -518,9 +536,21 @@ function liveSignalTone(edge, nodeStates) {
   return "observed";
 }
 
+function applyLiveRouteDelays() {
+  // Safari/WebKit does not reliably resolve a custom property in SVG animation
+  // timing. Set the same deterministic delay through the SVG style API after
+  // the markup exists so connection construction remains visibly staggered.
+  for (const group of els["canvas-layers"].querySelectorAll("[data-live-route]")) {
+    const delay = Number(group.dataset.routeOrder) * 42;
+    const line = group.querySelector(".edge-line");
+    if (Number.isSafeInteger(delay) && delay >= 0 && line) line.style.animationDelay = `${delay}ms`;
+  }
+}
+
 function fixedLiveEdgeMarkup(edge, path, fromLabel, toLabel) {
   const label = `${edge.label} from ${fromLabel} to ${toLabel}`;
-  return `<g class="edge-group path-runtime signal-${escapeHtml(edge.tone)}" data-live-edge-id="${escapeHtml(edge.id)}" data-live-route="canonical-authored" data-live-projectile="single" data-signal-from="${escapeHtml(edge.from)}" data-signal-to="${escapeHtml(edge.to)}" data-signal-order="${edge.order}"><path class="edge-line is-${escapeHtml(edge.tone)}" d="${path}"/><path class="signal-trail signal-trail-halo" aria-hidden="true"/><path class="signal-trail signal-trail-core" aria-hidden="true"/><path class="edge-hit" d="${path}" role="button" tabindex="0" aria-label="${escapeHtml(label)}" data-edge-id="${escapeHtml(edge.id)}" data-edge-from="${escapeHtml(edge.from)}" data-edge-to="${escapeHtml(edge.to)}"/></g>`;
+  const pulse = edge.pulse ? `data-live-edge-id="${escapeHtml(edge.id)}" data-live-projectile="single" data-signal-from="${escapeHtml(edge.from)}" data-signal-to="${escapeHtml(edge.to)}" data-signal-order="${edge.order}"` : "";
+  return `<g class="edge-group path-runtime relation-${escapeHtml(edge.kind)} signal-${escapeHtml(edge.tone)}" ${pulse} data-live-route="canonical-authored" data-route-order="${edge.order}"><path class="edge-line is-${escapeHtml(edge.tone)}" pathLength="1" d="${path}"/><path class="signal-trail signal-trail-halo" aria-hidden="true"/><path class="signal-trail signal-trail-core" aria-hidden="true"/><path class="edge-hit" d="${path}" role="button" tabindex="0" aria-label="${escapeHtml(label)}" data-edge-id="${escapeHtml(edge.id)}" data-edge-from="${escapeHtml(edge.from)}" data-edge-to="${escapeHtml(edge.to)}"/></g>`;
 }
 
 function pathTrail(path, progress, fraction = .075) {
@@ -2112,7 +2142,12 @@ function sourceComponentContext(id) {
   if (mode !== "live") return null;
   const view = liveTopologyView();
   const source = liveSource(view);
-  const topology = view?.runtime_data.graph ? topologyIntegrity(view.runtime_data.graph) : null;
+  const topology = view?.runtime_data.graph
+    ? topologyIntegrity({
+      nodes: view.runtime_data.graph.nodes,
+      edges: [...view.runtime_data.graph.edges, ...(view.runtime_data.supporting_relations || [])]
+    })
+    : null;
   if (!topology) return null;
   const node = topology.nodes.find((item) => item.id === id);
   if (!node) return null;

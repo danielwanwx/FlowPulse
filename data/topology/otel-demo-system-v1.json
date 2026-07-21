@@ -1,5 +1,5 @@
 {
-  "schema_version": "flowpulse.topology-manifest.v1",
+  "schema_version": "flowpulse.topology-manifest.v2",
   "fixture_id": "otel-demo-system-v1",
   "source_system": "opentelemetry-demo",
   "source_version": "18b36c73ccc2dbc86759dab2e0ef05175a7a8ca5",
@@ -8,7 +8,7 @@
   "source_health": "unavailable",
   "captured_at": "2026-07-18T20:13:06.362Z",
   "derivation": {
-    "normalization_version": "flowpulse.live-source.topology.v1",
+    "normalization_version": "flowpulse.live-source.topology.v2",
     "capture_window": {
       "start": "2026-07-18T20:11:09.489Z",
       "end": "2026-07-18T20:13:06.362Z"
@@ -59,6 +59,7 @@
     { "id": "telemetry-docs", "kind": "service", "display_class": "service", "plane": "runtime", "layer": "platform", "label": "Telemetry Docs", "status": "observed", "source_health": "unavailable", "signal_types": ["trace"], "provenance_refs": ["capture://otel-demo-system-v1#node-telemetry-docs"] }
   ],
   "edges": [
+    { "id": "ad->flagd", "from": "ad", "to": "flagd", "kind": "calls", "plane": "runtime", "label": "Observed dependency", "status": "observed", "provenance_refs": ["capture://otel-demo-system-v1#edge-ad-to-flagd"] },
     { "id": "cart->flagd", "from": "cart", "to": "flagd", "kind": "calls", "plane": "runtime", "label": "Observed dependency", "status": "observed", "provenance_refs": ["capture://otel-demo-system-v1#edge-cart-to-flagd"] },
     { "id": "checkout->cart", "from": "checkout", "to": "cart", "kind": "calls", "plane": "runtime", "label": "Observed dependency", "status": "observed", "provenance_refs": ["capture://otel-demo-system-v1#edge-checkout-to-cart"] },
     { "id": "checkout->currency", "from": "checkout", "to": "currency", "kind": "calls", "plane": "runtime", "label": "Observed dependency", "status": "observed", "provenance_refs": ["capture://otel-demo-system-v1#edge-checkout-to-currency"] },
@@ -66,6 +67,7 @@
     { "id": "checkout->payment", "from": "checkout", "to": "payment", "kind": "calls", "plane": "runtime", "label": "Observed dependency", "status": "observed", "provenance_refs": ["capture://otel-demo-system-v1#edge-checkout-to-payment"] },
     { "id": "checkout->product-catalog", "from": "checkout", "to": "product-catalog", "kind": "calls", "plane": "runtime", "label": "Observed dependency", "status": "observed", "provenance_refs": ["capture://otel-demo-system-v1#edge-checkout-to-product-catalog"] },
     { "id": "checkout->shipping", "from": "checkout", "to": "shipping", "kind": "calls", "plane": "runtime", "label": "Observed dependency", "status": "observed", "provenance_refs": ["capture://otel-demo-system-v1#edge-checkout-to-shipping"] },
+    { "id": "fraud-detection->flagd", "from": "fraud-detection", "to": "flagd", "kind": "calls", "plane": "runtime", "label": "Observed dependency", "status": "observed", "provenance_refs": ["capture://otel-demo-system-v1#edge-fraud-detection-to-flagd"] },
     { "id": "frontend->ad", "from": "frontend", "to": "ad", "kind": "calls", "plane": "runtime", "label": "Observed dependency", "status": "observed", "provenance_refs": ["capture://otel-demo-system-v1#edge-frontend-to-ad"] },
     { "id": "frontend->cart", "from": "frontend", "to": "cart", "kind": "calls", "plane": "runtime", "label": "Observed dependency", "status": "observed", "provenance_refs": ["capture://otel-demo-system-v1#edge-frontend-to-cart"] },
     { "id": "frontend->checkout", "from": "frontend", "to": "checkout", "kind": "calls", "plane": "runtime", "label": "Observed dependency", "status": "observed", "provenance_refs": ["capture://otel-demo-system-v1#edge-frontend-to-checkout"] },
@@ -79,8 +81,19 @@
     { "id": "frontend-web->frontend-proxy", "from": "frontend-web", "to": "frontend-proxy", "kind": "calls", "plane": "runtime", "label": "Observed dependency", "status": "observed", "provenance_refs": ["capture://otel-demo-system-v1#edge-frontend-web-to-frontend-proxy"] },
     { "id": "load-generator->flagd", "from": "load-generator", "to": "flagd", "kind": "calls", "plane": "runtime", "label": "Observed dependency", "status": "observed", "provenance_refs": ["capture://otel-demo-system-v1#edge-load-generator-to-flagd"] },
     { "id": "load-generator->frontend-proxy", "from": "load-generator", "to": "frontend-proxy", "kind": "calls", "plane": "runtime", "label": "Observed dependency", "status": "observed", "provenance_refs": ["capture://otel-demo-system-v1#edge-load-generator-to-frontend-proxy"] },
+    { "id": "payment->flagd", "from": "payment", "to": "flagd", "kind": "calls", "plane": "runtime", "label": "Observed dependency", "status": "observed", "provenance_refs": ["capture://otel-demo-system-v1#edge-payment-to-flagd"] },
+    { "id": "recommendation->flagd", "from": "recommendation", "to": "flagd", "kind": "calls", "plane": "runtime", "label": "Observed dependency", "status": "observed", "provenance_refs": ["capture://otel-demo-system-v1#edge-recommendation-to-flagd"] },
     { "id": "recommendation->product-catalog", "from": "recommendation", "to": "product-catalog", "kind": "calls", "plane": "runtime", "label": "Observed dependency", "status": "observed", "provenance_refs": ["capture://otel-demo-system-v1#edge-recommendation-to-product-catalog"] },
     { "id": "shipping->quote", "from": "shipping", "to": "quote", "kind": "calls", "plane": "runtime", "label": "Observed dependency", "status": "observed", "provenance_refs": ["capture://otel-demo-system-v1#edge-shipping-to-quote"] }
   ],
-  "content_sha256": "1506fcac13edd0b849b0a9e31bfc2d77d18bba7e9cd694a8f8ef72fc49f2f59a"
+  "supporting_relations": [
+    { "id": "checkout->kafka", "from": "checkout", "to": "kafka", "kind": "declared_async_dependency", "plane": "data", "label": "Declared async dependency", "status": "observed", "provenance_refs": ["capture://otel-demo-system-v1#relation-checkout-to-kafka", "code://otel-demo/checkout-kafka"] },
+    { "id": "flagd-ui->otelcol-contrib", "from": "flagd-ui", "to": "otelcol-contrib", "kind": "telemetry_export", "plane": "runtime", "label": "Telemetry export", "status": "observed", "provenance_refs": ["capture://otel-demo-system-v1#relation-flagd-ui-to-otelcol-contrib", "code://otel-demo/flagd-ui-telemetry-export"] },
+    { "id": "frontend-proxy->flagd-ui", "from": "frontend-proxy", "to": "flagd-ui", "kind": "configuration_route", "plane": "runtime", "label": "Configured route", "status": "observed", "provenance_refs": ["capture://otel-demo-system-v1#relation-frontend-proxy-to-flagd-ui", "code://otel-demo/frontend-proxy-flagd-ui"] },
+    { "id": "frontend-proxy->telemetry-docs", "from": "frontend-proxy", "to": "telemetry-docs", "kind": "configuration_route", "plane": "runtime", "label": "Configured route", "status": "observed", "provenance_refs": ["capture://otel-demo-system-v1#relation-frontend-proxy-to-telemetry-docs", "code://otel-demo/frontend-proxy-telemetry-docs"] },
+    { "id": "kafka->accounting", "from": "kafka", "to": "accounting", "kind": "declared_async_dependency", "plane": "data", "label": "Declared async dependency", "status": "observed", "provenance_refs": ["capture://otel-demo-system-v1#relation-kafka-to-accounting", "code://otel-demo/kafka-accounting"] },
+    { "id": "kafka->fraud-detection", "from": "kafka", "to": "fraud-detection", "kind": "declared_async_dependency", "plane": "data", "label": "Declared async dependency", "status": "observed", "provenance_refs": ["capture://otel-demo-system-v1#relation-kafka-to-fraud-detection", "code://otel-demo/kafka-fraud-detection"] },
+    { "id": "telemetry-docs->otelcol-contrib", "from": "telemetry-docs", "to": "otelcol-contrib", "kind": "telemetry_export", "plane": "runtime", "label": "Telemetry export", "status": "observed", "provenance_refs": ["capture://otel-demo-system-v1#relation-telemetry-docs-to-otelcol-contrib", "code://otel-demo/telemetry-docs-telemetry-export"] }
+  ],
+  "content_sha256": "d1c10422a982945a9a3fb7a5ccd9bdbc01219af5403de9da55116c60d4b66d9f"
 }

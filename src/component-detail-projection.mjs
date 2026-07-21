@@ -75,11 +75,14 @@ function canonicalRuntime(views) {
   const graph = views?.schema_version === "flowpulse.topology-views.v2" && HASH.test(views?.projection_revision || "")
     ? views.architecture?.runtime_data?.graph
     : null;
-  if (!graph || graph.total_nodes !== 22 || graph.total_edges !== 22 || !Array.isArray(graph.nodes) || !Array.isArray(graph.edges)
-    || graph.nodes.length !== 22 || graph.edges.length !== 22 || !graph.nodes.every(validRuntimeNode)) fail("component_detail_topology_invalid");
+  const supporting = views?.architecture?.runtime_data?.supporting_relations;
+  if (!graph || graph.total_nodes !== 22 || graph.total_edges !== 26 || !Array.isArray(graph.nodes) || !Array.isArray(graph.edges) || !Array.isArray(supporting)
+    || graph.nodes.length !== 22 || graph.edges.length !== 26 || supporting.length !== 7 || !graph.nodes.every(validRuntimeNode)) fail("component_detail_topology_invalid");
   const ids = new Set(graph.nodes.map((node) => node.id));
-  if (ids.size !== 22 || !graph.edges.every((edge) => validRuntimeEdge(edge, ids))) fail("component_detail_topology_invalid");
-  return { nodes: graph.nodes, edges: graph.edges };
+  const relationIds = new Set(graph.edges.map(({ id }) => id));
+  if (ids.size !== 22 || !graph.edges.every((edge) => validRuntimeEdge(edge, ids)) || !supporting.every((edge) => validSupportingRelation(edge, ids))
+    || new Set(supporting.map(({ id }) => id)).size !== supporting.length || supporting.some(({ id }) => relationIds.has(id))) fail("component_detail_topology_invalid");
+  return { nodes: graph.nodes, edges: [...graph.edges, ...supporting] };
 }
 
 function validRuntimeNode(node) {
@@ -98,6 +101,16 @@ function validRuntimeEdge(edge, ids) {
     && sameKeys(edge, ["id", "from", "to", "kind", "plane", "label", "status", "provenance_refs"])
     && edge.id === `${edge.from}->${edge.to}` && ids.has(edge.from) && ids.has(edge.to) && edge.from !== edge.to
     && edge.kind === "calls" && edge.plane === "runtime" && edge.label === "Observed dependency"
+    && ["observed", "captured", "healthy", "incident"].includes(edge.status) && provenance(edge.provenance_refs);
+}
+
+function validSupportingRelation(edge, ids) {
+  return plain(edge)
+    && sameKeys(edge, ["id", "from", "to", "kind", "plane", "label", "status", "provenance_refs"])
+    && edge.id === `${edge.from}->${edge.to}` && ids.has(edge.from) && ids.has(edge.to) && edge.from !== edge.to
+    && ["declared_async_dependency", "configuration_route", "telemetry_export"].includes(edge.kind)
+    && ["runtime", "data"].includes(edge.plane)
+    && ["Declared async dependency", "Configured route", "Telemetry export"].includes(edge.label)
     && ["observed", "captured", "healthy", "incident"].includes(edge.status) && provenance(edge.provenance_refs);
 }
 

@@ -19,7 +19,8 @@ test("topology views compose deterministic captured Architecture, Live, and Diag
   assert.deepEqual([first.truth.source_health, first.truth.evidence_mode, first.truth.execution_mode], ["unavailable", "captured_fixture", "deterministic_replay"]);
   assert.equal(first.architecture.runtime_data.graph.nodes.length, 22);
   assert.equal(runtimeIds.size, 22);
-  assert.equal(first.architecture.runtime_data.edge_count, 22);
+  assert.equal(first.architecture.runtime_data.edge_count, 26);
+  assert.equal(first.architecture.runtime_data.supporting_relation_count, 7);
   assert.equal(first.architecture.runtime_data.graph.edges.every(({ from, to }) => runtimeIds.has(from) && runtimeIds.has(to)), true);
   assert.deepEqual(first.architecture.control_system.nodes.map(({ id }) => id), ["observer", "orchestrator", "investigator", "evaluator", "ledger"]);
   assert.equal(first.architecture.control_system.nodes.every((node) => node.detail && Array.isArray(node.detail.inputs) && Array.isArray(node.detail.outputs) && Array.isArray(node.detail.provenance_refs)), true);
@@ -29,12 +30,14 @@ test("topology views compose deterministic captured Architecture, Live, and Diag
   assert.equal(first.architecture.external_change_evidence.relation_count, 1);
   assert.deepEqual(first.architecture.external_change_evidence.records[0].affected_node_ids, ["checkout"]);
   assert.equal(first.live.runtime_data.graph.nodes.length, 22);
-  assert.equal(first.live.runtime_data.graph.edges.length, 22);
-  assert.equal(first.live.runtime_data.graph.nodes.every(({ status, source_health }) => status === "captured" && source_health === "unavailable"), true);
+  assert.equal(first.live.runtime_data.graph.edges.length, 26);
+  assert.equal(first.live.runtime_data.supporting_relations.length, 7);
+  assert.equal(first.live.runtime_data.graph.nodes.filter(({ status }) => status === "incident").length, 6);
+  assert.equal(first.live.runtime_data.graph.nodes.every(({ status, source_health }) => ["captured", "incident"].includes(status) && source_health === "unavailable"), true);
   assert.deepEqual(first.live.control_system.nodes.map(({ id }) => id), first.architecture.control_system.nodes.map(({ id }) => id));
   assert.deepEqual(first.live.external_change_evidence, first.architecture.external_change_evidence);
   assert.equal(first.diagnose.runtime_data.graph.nodes.length, 22);
-  assert.equal(first.diagnose.runtime_data.graph.edges.length, 22);
+  assert.equal(first.diagnose.runtime_data.graph.edges.length, 26);
   assert.equal(first.diagnose.overlay.node_ids.length, 6);
   assert.equal(first.diagnose.overlay.edges.length, 5);
   assert.equal(Object.isFrozen(first), true);
@@ -88,7 +91,7 @@ test("five control identities remain while deployment change evidence is bounded
   assert.equal(view.architecture.external_change_evidence.relation_count, 0);
   assert.deepEqual(view.architecture.external_change_evidence.records, []);
   assert.equal(view.diagnose.overlay.edges.filter(({ relation }) => relation === "observed_dependency").length, 2);
-  assert.equal(view.diagnose.overlay.edges.filter(({ relation }) => relation === "incident_evidence").length, 3);
+  assert.equal(view.diagnose.overlay.edges.filter(({ relation }) => relation === "evidence_grounded_relation").length, 3);
   assert.equal(JSON.stringify(overlay), before);
 });
 

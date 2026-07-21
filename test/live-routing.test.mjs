@@ -6,6 +6,7 @@ import { liveEdgePath, liveEdgeRoute, livePositions } from "../public/twin-state
 
 const manifest = JSON.parse(await readFile(new URL("../data/topology/otel-demo-system-v1.json", import.meta.url), "utf8"));
 const WORLD = Object.freeze({ width: 1480, height: 680, nodeWidth: 180, nodeHeight: 60 });
+const relations = Object.freeze([...manifest.edges, ...manifest.supporting_relations]);
 
 function rectFor(node) {
   return {
@@ -45,8 +46,9 @@ test("authored Live routes start and end on the rendered component boundaries wi
   const byId = new Map(positions.map((node) => [node.id, node]));
 
   assert.equal(positions.length, 22);
-  assert.equal(manifest.edges.length, 22);
-  for (const [index, edge] of manifest.edges.entries()) {
+  assert.equal(manifest.edges.length, 26);
+  assert.equal(manifest.supporting_relations.length, 7);
+  for (const [index, edge] of relations.entries()) {
     const route = routeFor(edge, index, positions);
     assert.equal(onBoundary(route[0], rectFor(byId.get(edge.from))), true, `${edge.id} must leave ${edge.from}`);
     assert.equal(onBoundary(route.at(-1), rectFor(byId.get(edge.to))), true, `${edge.id} must enter ${edge.to}`);
@@ -67,8 +69,8 @@ test("authored Live routes start and end on the rendered component boundaries wi
 
 test("authored Live paths are deterministic circuit-board routes with one rounded-corner grammar", () => {
   const positions = livePositions(manifest.nodes);
-  const first = manifest.edges.map((edge, index) => ({ id: edge.id, route: routeFor(edge, index, positions) }));
-  const second = manifest.edges.map((edge, index) => ({ id: edge.id, route: routeFor(edge, index, positions) }));
+  const first = relations.map((edge, index) => ({ id: edge.id, route: routeFor(edge, index, positions) }));
+  const second = relations.map((edge, index) => ({ id: edge.id, route: routeFor(edge, index, positions) }));
   const frontendToCart = manifest.edges.find((edge) => edge.id === "frontend->cart");
   const direct = liveEdgePath(positions.find((node) => node.id === frontendToCart.from), positions.find((node) => node.id === frontendToCart.to), {
     canvasWidth: WORLD.width,
@@ -86,12 +88,14 @@ test("authored Live paths are deterministic circuit-board routes with one rounde
 
 test("every captured dependency has one endpoint-valid route and no implicit topology relation is added", () => {
   const positions = livePositions(manifest.nodes);
-  const routed = manifest.edges.map((edge, index) => ({ edge, route: routeFor(edge, index, positions) }));
+  const routed = relations.map((edge, index) => ({ edge, route: routeFor(edge, index, positions) }));
   const routeIds = routed.map(({ edge }) => edge.id).sort();
+  const connectedNodeIds = new Set(relations.flatMap(({ from, to }) => [from, to]));
 
-  assert.equal(routed.length, 22);
-  assert.deepEqual(routeIds, manifest.edges.map(({ id }) => id).sort());
+  assert.equal(routed.length, 33);
+  assert.deepEqual(routeIds, relations.map(({ id }) => id).sort());
   assert.equal(new Set(routeIds).size, routeIds.length);
+  assert.deepEqual([...connectedNodeIds].sort(), manifest.nodes.map(({ id }) => id).sort());
   for (const { edge, route } of routed) {
     const path = liveEdgePath(
       positions.find((node) => node.id === edge.from),

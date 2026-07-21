@@ -22,7 +22,14 @@ test("component detail projects bounded, evidence-backed DevOps facts without ra
   assert.equal(detail.schema_version, "flowpulse.component-detail.v1");
   assert.equal(detail.component.id, "checkout");
   assert.equal(detail.purpose.business_role, "Order orchestration");
-  assert.deepEqual(detail.relationships.downstream.map(({ id }) => id), ["cart", "currency", "email", "payment", "product-catalog", "shipping"]);
+  assert.deepEqual(detail.relationships.downstream.map(({ id }) => id), ["cart", "currency", "email", "kafka", "payment", "product-catalog", "shipping"]);
+  assert.deepEqual(detail.relationships.downstream.find(({ id }) => id === "kafka"), {
+    id: "kafka",
+    label: "Kafka",
+    kind: "topic",
+    relation: "declared_async_dependency",
+    provenance_refs: ["capture://otel-demo-system-v1#relation-checkout-to-kafka", "code://otel-demo/checkout-kafka"]
+  });
   assert.deepEqual(detail.relationships.upstream.map(({ id }) => id), ["frontend"]);
   assert.equal(detail.observability.metrics.some(({ evidence_id }) => evidence_id === "ev-metric-checkout-errors"), true);
   assert.equal(detail.observability.traces.some(({ evidence_id }) => evidence_id === "ev-trace-payment-refused"), true);

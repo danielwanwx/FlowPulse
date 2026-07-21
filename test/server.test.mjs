@@ -336,11 +336,12 @@ test("deterministic demo lifecycle starts healthy, injects one bounded incident,
     compare_available: false
   });
   assert.equal(healthy.topology_views.live.runtime_data.graph.nodes.length, 22);
-  assert.equal(healthy.topology_views.live.runtime_data.graph.edges.length, 22);
+  assert.equal(healthy.topology_views.live.runtime_data.graph.edges.length, 26);
   const healthySource = await fetch(`http://127.0.0.1:${port}/api/source`).then((response) => response.json());
   assert.equal(healthySource.topology_views.projection_revision, healthy.topology_views.projection_revision);
   assert.equal(healthySource.topology_views.live.runtime_data.node_count, 22);
-  assert.equal(healthySource.topology_views.live.runtime_data.edge_count, 22);
+  assert.equal(healthySource.topology_views.live.runtime_data.edge_count, 26);
+  assert.equal(healthySource.topology_views.live.runtime_data.supporting_relation_count, 7);
   assert.deepEqual(healthy.topology_views.truth, {
     source_health: "unavailable",
     evidence_mode: "captured_fixture",
@@ -364,7 +365,7 @@ test("deterministic demo lifecycle starts healthy, injects one bounded incident,
   assert.equal(injected.status, 201, JSON.stringify(injected.body));
   assert.equal(injected.body.topology_views.demo.phase, "INCIDENT_DETECTED");
   assert.equal(injected.body.topology_views.live.runtime_data.graph.nodes.length, 22);
-  assert.equal(injected.body.topology_views.live.runtime_data.graph.edges.length, 22);
+  assert.equal(injected.body.topology_views.live.runtime_data.graph.edges.length, 26);
   assert.equal(injected.body.topology_views.diagnose.overlay.node_ids.length, 6);
   assert.equal(injected.body.topology_views.diagnose.overlay.edges.length, 5);
   assert.deepEqual(injected.body.topology_views.demo.frames.map((frame) => frame.phase), ["HEALTHY", "INJECTING", "PAYMENT_CHECKOUT_IMPACT", "DOWNSTREAM_PROPAGATION", "INCIDENT_DETECTED"]);
@@ -522,9 +523,10 @@ test("judge API serves state and advances the replay", async (context) => {
     compare_available: false
   });
   assert.equal(initial.topology_views.architecture.runtime_data.graph.nodes.length, 22);
-  assert.equal(initial.topology_views.architecture.runtime_data.graph.edges.length, 22);
+  assert.equal(initial.topology_views.architecture.runtime_data.graph.edges.length, 26);
   assert.equal(initial.topology_views.architecture.runtime_data.node_count, 22);
-  assert.equal(initial.topology_views.architecture.runtime_data.edge_count, 22);
+  assert.equal(initial.topology_views.architecture.runtime_data.edge_count, 26);
+  assert.equal(initial.topology_views.architecture.runtime_data.supporting_relation_count, 7);
   assert.deepEqual(initial.topology_views.architecture.control_system.nodes.map(({ id }) => id), ["observer", "orchestrator", "investigator", "evaluator", "ledger"]);
   const controlDetails = initial.topology_views.architecture.control_system.nodes.map(({ id, detail }) => ({ id, detail }));
   assert.equal(controlDetails.every(({ detail }) => Object.keys(detail).sort().join(",") === "activity,authority,inputs,outputs,provenance_refs,summary"), true);
@@ -536,16 +538,17 @@ test("judge API serves state and advances the replay", async (context) => {
   assert.equal(initial.topology_views.architecture.external_change_evidence.relation_count, 1);
   assert.deepEqual(initial.topology_views.architecture.external_change_evidence.records[0].affected_node_ids, ["checkout"]);
   assert.equal(initial.topology_views.live.runtime_data.graph.nodes.length, 22);
-  assert.equal(initial.topology_views.live.runtime_data.graph.edges.length, 22);
-  assert.equal(initial.topology_views.live.runtime_data.graph.nodes.every((node) => node.status === "captured" && node.source_health === "unavailable"), true);
+  assert.equal(initial.topology_views.live.runtime_data.graph.edges.length, 26);
+  assert.equal(initial.topology_views.live.runtime_data.graph.nodes.every((node) => ["captured", "incident"].includes(node.status) && node.source_health === "unavailable"), true);
+  assert.deepEqual(initial.topology_views.live.runtime_data.graph.nodes.filter((node) => node.status === "incident").map(({ id }) => id).sort(), ["accounting", "checkout", "fraud-detection", "frontend", "kafka", "payment"]);
   assert.deepEqual(initial.topology_views.live.control_system.nodes.map(({ id }) => id), initial.topology_views.architecture.control_system.nodes.map(({ id }) => id));
   assert.deepEqual(initial.topology_views.live.external_change_evidence, initial.topology_views.architecture.external_change_evidence);
   assert.equal(initial.topology_views.diagnose.runtime_data.graph.nodes.length, 22);
-  assert.equal(initial.topology_views.diagnose.runtime_data.graph.edges.length, 22);
+  assert.equal(initial.topology_views.diagnose.runtime_data.graph.edges.length, 26);
   assert.equal(initial.topology_views.diagnose.overlay.node_ids.length, 6);
   assert.equal(initial.topology_views.diagnose.overlay.edges.length, 5);
   assert.equal(initial.topology_views.diagnose.overlay.edges.filter((edge) => edge.relation === "observed_dependency").length, 2);
-  assert.equal(initial.topology_views.diagnose.overlay.edges.filter((edge) => edge.relation === "incident_evidence").length, 3);
+  assert.equal(initial.topology_views.diagnose.overlay.edges.filter((edge) => edge.relation === "evidence_grounded_relation").length, 3);
   const architectureIds = new Set(initial.topology_views.architecture.runtime_data.graph.nodes.map((node) => node.id));
   assert.equal(initial.topology_views.architecture.runtime_data.graph.edges.every((edge) => architectureIds.has(edge.from) && architectureIds.has(edge.to)), true);
 

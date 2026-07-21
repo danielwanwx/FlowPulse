@@ -15,14 +15,14 @@ This work follows five independently reviewable implementation stages. Each stag
 | Loop element | Decision |
 | --- | --- |
 | Goal | Preserve one identity-bearing observed topology while making Architecture structurally scannable and Live operationally legible. |
-| Inputs | Sanitized 22-node/22-dependency manifest, `IncidentProjection v1`, append-only ledger projections, source truth axes, bounded agent-control projection, and existing demo lifecycle frames. |
+| Inputs | Sanitized 22-node manifest with 26 captured OTLP `calls` dependencies and seven typed evidence-grounded supporting relations, `IncidentProjection v1`, append-only ledger projections, source truth axes, bounded agent-control projection, and existing demo lifecycle frames. |
 | Owner | Server projections and ledger-derived truth own identity, source state, gate state, evidence, and readiness. The browser owns only presentation, local focus, and motion timing. |
 | Output | A strict, bounded topology read model that tells the browser exactly what to render in Architecture and Live, plus a five-capability FlowPulse control read model. |
 | Stop rule | Stop for owner review after stages A, B, C, D, and E. Do not convert this document into UI-only assumed truth. |
 
 ## 2. Current evidence and the correction
 
-The checked-in sanitized OTEL Demo manifest is the complete observed runtime/data system: **22 stable nodes and 22 endpoint-valid runtime dependencies**. `src/topology-projection.mjs` exposes it through `composeTopologyViews`; `/api/state` and `/api/source` return the same bounded topology view from `src/server.mjs`. The existing current projection combines those 22 observed nodes with four non-observed nodes in `topology_views.architecture.graph`:
+The checked-in sanitized OTEL Demo manifest is the complete observed runtime/data system: **22 stable nodes, 26 endpoint-valid captured OTLP `calls` dependencies, and seven typed supporting relations**. Supporting relations are declared async dependencies, configured routes, or telemetry exports, each grounded in bounded capture and code provenance; they are not promoted to fabricated live-call traffic. `src/topology-projection.mjs` exposes this model through `composeTopologyViews`; `/api/state` and `/api/source` return the same bounded topology view from `src/server.mjs`.
 
 | Current ID | Current label | Correction |
 | --- | --- | --- |
@@ -48,7 +48,7 @@ Deployment evidence is not a sixth control node. A deployment record may appear 
 | Domain | Stable identities | Owner | Browser prohibition |
 | --- | --- | --- | --- |
 | Observed system | The 22 IDs in `data/topology/otel-demo-system-v1.json` | Sanitized topology manifest and server projection | Do not create, deduplicate by label, rename for authority, or replace with compatibility `source.topology`. |
-| Runtime dependencies | The 22 endpoint-valid manifest edge IDs | Manifest plus `composeTopologyViews` | Do not infer missing paths or causal edges. |
+| Runtime dependencies | The 26 captured `calls` IDs and seven typed supporting-relation IDs | Manifest plus `composeTopologyViews` | Do not infer missing paths, call traffic, or causal edges. |
 | Incident overlay | The bounded six node/five relation overlay | `IncidentProjection v1` and server projection | Do not turn a selected or animated node into incident truth. |
 | Control System | `observer`, `orchestrator`, `investigator`, `evaluator`, `ledger` | Server-side composition from canonical sources below | Do not add a control capability or infer control status from display state. |
 | Deployment change evidence | Actual bounded evidence/ledger record IDs | Server projection | Never turn it into a durable node, arbitrary client arrow, or a claim that a production deployment occurred. |
@@ -82,12 +82,12 @@ topology_views = {
   truth,
   readiness,
   architecture: {
-    runtime_data: { graph: { nodes: [22], edges: [22] }, node_count: 22, edge_count: 22 },
+    runtime_data: { graph: { nodes: [22], edges: [26] }, node_count: 22, edge_count: 26, supporting_relations: [7], supporting_relation_count: 7 },
     control_system: { nodes: [5], relations: [...], node_count: 5, relation_count },
     external_change_evidence: { records: [...], relation_count }
   },
   live: {
-    runtime_data: { graph: { nodes: [22], edges: [22] }, node_count: 22, edge_count: 22 },
+    runtime_data: { graph: { nodes: [22], edges: [26] }, node_count: 22, edge_count: 26, supporting_relations: [7], supporting_relation_count: 7 },
     control_system: { nodes: [5], relations: [...], node_count: 5, relation_count },
     external_change_evidence: { records: [...], relation_count },
     activity: { frames: [...], revision }
@@ -129,18 +129,18 @@ Absent facts are omitted rather than filled with guessed business prose. Escape 
 
 ## 5. Live information model
 
-Live consumes only `topology_views.live` with the matching v2 revision. It renders the observed runtime/data system as a single operating canvas. The v2 envelope retains matching Control System identities for revision and contract parity, but Live intentionally does **not** render a Control System surface in this design. This preserves Live as the concise operating topology; Control System progressive disclosure remains Architecture-only unless a later owner-reviewed checkpoint changes that decision.
+Live consumes only `topology_views.live` with the matching v2 revision. It renders the observed runtime/data system as a single operating canvas. The same five server-projected Control System identities mount in the fixed right-side rail through the exact Architecture Control System tile/template. This rail is not part of the observed runtime topology, and a selected node's safe detail surface temporarily replaces the rail until that selection closes.
 
 ### Default surface
 
 - All 22 observed components retain their exact IDs, labels, icons, and safe status dots while occupying deterministic upstream/downstream runtime positions.
-- The five Control System capabilities remain server-projected and semantically separate, but are not rendered in the Live canvas or a Live sidebar. They never join the monitored runtime dataflow.
-- Runtime edges appear only after the node relayout and only from the 22 backend-projected runtime dependencies.
+- The five Control System capabilities remain server-projected and semantically separate in the shared right-side rail. They never join the monitored runtime dataflow.
+- Runtime edges appear only after the node relayout: 26 captured `calls` paths use the signal grammar, while the seven supporting relations use distinct non-pulse evidence/configuration/telemetry styling.
 - Cross-boundary deployment/change evidence appears only as a safe external evidence annotation tied to affected observed IDs. It is not a permanent FlowPulse node or broad arrow fan-out.
 
 ### Live disclosure
 
-Observed runtime nodes retain their existing safe detail interaction. Live does not add a Control System expansion face. Control details remain Architecture-only and cannot display raw logs, trace bodies, prompts, provider payloads, secrets, arbitrary action controls, or a browser-created diagnosis.
+Observed runtime nodes retain their existing safe detail interaction. Control tiles use the same compact visual template and bounded server-projected detail rules as Architecture, while remaining observational and unable to display raw logs, trace bodies, prompts, provider payloads, secrets, arbitrary action controls, or a browser-created diagnosis.
 
 ## 6. Shared Architecture-to-Live choreography
 
@@ -158,7 +158,7 @@ Repeated clicks are deterministic: the latest requested mode wins. During a tran
 
 ### 6.2 Shared-element strategy
 
-The browser keeps one keyed DOM element per canonical **observed** identity for the lifetime of a valid Architecture/Live projection. In the existing vanilla frontend, this means one renderer path with stable `data-topology-node-id` attributes, a per-ID layout map, and `Element.animate` or CSS transforms for FLIP inversion/playback. Architecture Control System tiles retain stable `data-control-node-id` identities only inside the Architecture control surface; they do not create a second Live card tree. Macro layer containers and the Live runtime canvas are layout parents, not duplicate card trees.
+The browser keeps one keyed DOM element per canonical **observed** identity for the lifetime of a valid Architecture/Live projection. In the existing vanilla frontend, this means one renderer path with stable `data-topology-node-id` attributes, a per-ID layout map, and `Element.animate` or CSS transforms for FLIP inversion/playback. Architecture and Live Control System tiles reuse the same `data-control-node-id` identity and renderer template inside their separate fixed rail/surface. Macro layer containers and the Live runtime canvas are layout parents, not duplicate runtime card trees.
 
 The sequence is:
 
@@ -178,18 +178,18 @@ Nodes have minimum readable dimensions and collision padding. When a 1440x900 or
 
 ## 7. Runtime edge, status, and pulse truth
 
-Architecture has no edges or pulses. Live has only canonical runtime dependencies and their exact endpoint IDs.
+Architecture has no edges or pulses. Live renders only canonical relation IDs and their exact endpoints: captured `calls` paths, plus clearly distinct evidence-grounded supporting relations.
 
 | Backend-projected condition | Live presentation | Forbidden inference |
 | --- | --- | --- |
-| Captured deterministic baseline | CAPTURED/DEMO source label, neutral node state, bounded neutral/blue packet repetition only when a captured frame says flow is represented | Do not label it production LIVE or fresh OTEL. |
+| Captured deterministic baseline | CAPTURED/DEMO source label, neutral node state, ordered single-packet traversal on each captured `calls` path only when the captured projection represents flow | Do not label it production LIVE or fresh OTEL. |
 | Fresh authoritative source state | Normal/connected presentation with source freshness exactly as projected | Do not equate source data with owner approval or verification. |
 | Warning/lag | Amber dot/path only when bounded server status says warning, lag, or pending | Do not infer warning from a sparse graph or timer. |
 | Proven incident impact | Red only for server-projected incident overlay/frame status and its exact affected IDs | Do not make a selected node, low metric, or UI animation a fault. |
 | Disconnected or stale | Gray/muted state with exact stale/disconnected label | Do not continue normal pulses as though fresh input exists. |
 | Recovery/verified state | Green only when server projection exposes recovery or canonical verification truth | Do not paint recovery after a client animation ends. |
 
-Packets are small repeated electronic markers, typically two to four on a valid active path, with an approximately 0.8–1.2 second traversal. They communicate actual bounded frame progression or activity only. Red propagation happens stepwise along the incident overlay; green recovery happens only after projected recovery/verification. Reduced motion removes packet travel but preserves paths, status dots, and explicit text alternatives.
+Packets are small electronic markers with an eased launch, cruise, and arrival. Exactly one packet occupies a direct `calls` path at a time; the next path starts only after arrival so the captured sequence remains legible. Supporting evidence/configuration/telemetry relations never impersonate live traffic. Red propagation happens stepwise along the incident overlay; green recovery happens only after projected recovery/verification. Reduced motion removes packet travel but preserves paths, status dots, and explicit text alternatives.
 
 ## 8. Loading, incident, recovery, and fallback states
 
@@ -197,7 +197,7 @@ Packets are small repeated electronic markers, typically two to four on a valid 
 | --- | --- | --- |
 | Loading | Stable outer workspace and non-authoritative skeleton; no fabricated components | No runtime edge/pulse canvas until the matching projection validates | Read-only. |
 | Empty | Explicit bounded empty/unavailable state | Explicit no-runtime-data state | No compatibility fallback. |
-| Captured healthy demo | Layer inventory and green normal baseline dots with CAPTURED/DEMO truth | 22/22 captured runtime canvas when view is valid | Trigger/injection remains a separately authorized future control. |
+| Captured healthy demo | Layer inventory and green normal baseline dots with CAPTURED/DEMO truth | 22 nodes, 26 captured `calls` paths, and seven separately typed supporting relations when the view is valid | Trigger/injection remains a separately authorized future control. |
 | Incident detected | Structural inventory remains bounded and no Architecture edge map | Exact overlay/frame IDs may show incident path and red impact | Diagnose readiness comes from server only. |
 | Stale/disconnected | Preserve exact source truth, do not imply freshness | Gray/muted operating state; stop untruthful packets | No browser retry that changes run or source mode. |
 | Recovery | Structure unchanged | Green only from projected recovery/verification evidence | Compare remains governed by backend readiness. |
@@ -234,8 +234,8 @@ Stage A changes and extends `test/topology-projection.test.mjs`, `test/server.te
 
 The test suite must prove all of the following:
 
-1. Server and `/api/source` return the same valid scoped v2 revision or explicitly unavailable; 22 observed nodes and 22 runtime edges remain endpoint-valid.
-2. The strict v2 Architecture and Live projections expose exactly five canonical Control System IDs, never a Deployment control node; unsupported/extra control IDs fail closed. Architecture renders the five controls; Live deliberately does not render a Control System surface.
+1. Server and `/api/source` return the same valid scoped v2 revision or explicitly unavailable; 22 observed nodes, 26 captured `calls` edges, and seven typed supporting relations remain endpoint-valid.
+2. The strict v2 Architecture and Live projections expose exactly five canonical Control System IDs, never a Deployment control node; unsupported/extra control IDs fail closed. Architecture and Live reuse the same five-control rail/tile renderer without putting those controls into runtime dataflow.
 3. Deployment/change evidence is an external bounded record with actual affected observed IDs, or absent; it is not a node/arrow invented by the browser.
 4. Current source, activity, gate, evidence, and readiness facts can only weaken to unavailable, never be strengthened by compatibility fields, local selection, cursor, animation timing, or browser input.
 5. Architecture renders four layer modules, 22 observed component tiles, five independent control tiles, zero Architecture paths/arrowheads/pulses, and no visible redundant role/count prose.
@@ -262,11 +262,11 @@ Browser console and network must be clean. Local review servers use a fresh veri
 
 ### A. Backend projection correction
 
-Implement `flowpulse.topology-views.v2` in `src/topology-projection.mjs` and `src/server.mjs`, with strict browser parsing in `public/twin-state.mjs` and projection/server tests. Split the observed runtime graph, five-item Control System, and external deployment-change evidence record. Preserve 22/22 observed topology and all existing authority boundaries. Stop for contract review before UI work.
+Implement `flowpulse.topology-views.v2` in `src/topology-projection.mjs` and `src/server.mjs`, with strict browser parsing in `public/twin-state.mjs` and projection/server tests. Split the observed runtime graph, five-item Control System, and external deployment-change evidence record. Preserve the 22-node graph, 26 captured OTLP calls, seven typed supporting relations, and all existing authority boundaries. Stop for contract review before UI work.
 
 ### B. Progressive-disclosure Control System
 
-Update the Architecture consumer only after stage A is approved. Render five canonical controls with default compact identity/status and consistent in-place safe disclosure. Live remains Control-System-free; its v2 data is validated for parity but is not given a temporary sidebar or alternate visual language. Remove visible redundant copy without losing accessible meaning. Stop for visual and accessibility review.
+Update the Architecture consumer only after stage A is approved. Render five canonical controls with default compact identity/status and consistent in-place safe disclosure. Live reuses the exact same Control System rail and tile renderer, while node detail replaces that rail rather than creating a new sidebar language. Remove visible redundant copy without losing accessible meaning. Stop for visual and accessibility review.
 
 ### C. Shared Architecture-to-Live re-layout
 
@@ -293,7 +293,7 @@ Rollback is a normal revert of the most recent approved stage commit. No stage r
 - Architecture is structural and renders no dependency edges; Live is the operating canvas for the same canonical identities.
 - Live transition preserves observed-node identity through a single keyed DOM path and reversible FLIP strategy.
 - The FlowPulse Control System is exactly Observer, Orchestrator, Investigator, Evaluator, and Evidence Ledger.
-- The Control System is Architecture-only in this design; Live deliberately omits its visible surface while retaining strict v2 projection parity.
+- The Control System rail persists across Architecture and Live through one shared template, while remaining outside observed runtime dataflow.
 - Deployment is external bounded change evidence, not a FlowPulse component.
 - All dynamic, health, gate, readiness, evidence, and recovery claims remain server-derived and fail closed when invalid or unavailable.
 - No product decision blocks stage A. The first next action, after owner review, is only the strict backend projection correction.

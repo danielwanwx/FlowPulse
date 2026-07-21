@@ -66,11 +66,13 @@ function backendArchitectureView() {
       nodes: runtimeNodes(status),
       edges: topologyManifest.edges.map((edge) => ({ ...edge, status })),
       total_nodes: 22,
-      total_edges: 22,
+      total_edges: 26,
       truncated: false
     },
     node_count: 22,
-    edge_count: 22
+    edge_count: 26,
+    supporting_relations: topologyManifest.supporting_relations.map((relation) => ({ ...relation, status })),
+    supporting_relation_count: 7
   });
   const controlSystem = { nodes: controls, relations: [], node_count: 5, relation_count: 0 };
   const externalChangeEvidence = {
@@ -173,7 +175,7 @@ test("Architecture accepts only the strict v2 backend topology view and retains 
   assert.ok(view);
   assert.equal(view.graph.nodes.length, 27);
   assert.equal(view.runtime_data.node_count, 22);
-  assert.equal(view.runtime_data.edge_count, 22);
+  assert.equal(view.runtime_data.edge_count, 26);
   assert.equal(view.control_system.node_count, 5);
   assert.equal(view.control_system.relation_count, 0);
   assert.equal(view.control_system.nodes.every((node) => Object.keys(node.detail).sort().join(",") === "activity,authority,inputs,outputs,provenance_refs,summary"), true);
@@ -186,13 +188,13 @@ test("Architecture accepts only the strict v2 backend topology view and retains 
   assert.deepEqual(live.control_system.nodes.map(({ id, detail }) => ({ id, detail })), view.control_system.nodes.map(({ id, detail }) => ({ id, detail })));
   assert.equal(live.external_change_evidence.relation_count, 1);
   assert.deepEqual(view.graph.nodes.filter((node) => ["control", "evidence"].includes(node.plane)).map((node) => node.id).sort(), ["evaluator", "investigator", "ledger", "observer", "orchestrator"]);
-  assert.equal(view.graph.edges.filter((edge) => edge.plane === "runtime").length, 22);
+  assert.equal(view.graph.edges.filter((edge) => edge.plane === "runtime").length, 26);
   assert.equal(view.graph.edges.filter((edge) => ["control", "evidence"].includes(edge.plane)).length, 0);
   const ids = new Set(view.graph.nodes.map((node) => node.id));
   assert.equal(view.graph.edges.every((edge) => ids.has(edge.from) && ids.has(edge.to)), true);
   const boundaries = architectureBoundaries(view.graph);
   assert.equal(boundaries.observed.nodes.length, 22);
-  assert.equal(boundaries.observed.relations.length, 22);
+  assert.equal(boundaries.observed.relations.length, 26);
   assert.equal(boundaries.flowpulse.nodes.length, 5);
   assert.equal(boundaries.flowpulse.internal_relations.length, 0);
   assert.equal(boundaries.cross_boundary_relations.length, 0);
@@ -474,7 +476,8 @@ test("Live consumes only the strict v2 runtime view and never uses the six-node 
   ]);
   assert.match(appJs, /function liveTopologyView\(\) \{[\s\S]+liveViewTopology\(state\?\.topology_views\)/);
   assert.match(appJs, /const live = layout === "live" \? liveTopologyView\(\) : null;/);
-  assert.match(appJs, /const topology = architecture \? architecture\.graph : live\?\.runtime_data\.graph/);
+  assert.match(appJs, /live\?\.runtime_data\.graph\s*\? topologyIntegrity\(/);
+  assert.match(appJs, /edges: \[\.\.\.live\.runtime_data\.graph\.edges, \.\.\.\(live\.runtime_data\.supporting_relations \|\| \[\]\)\]/);
   assert.doesNotMatch(appJs.match(/function renderSourceCanvas\(layout\) \{[\s\S]+?\n\}/)?.[0] || "", /source\.topology/);
   const metricsSource = appJs.slice(appJs.indexOf("function renderMetrics"), appJs.indexOf("function setMetric"));
   assert.match(metricsSource, /const source = mode === "live" \? liveSource\(live\) : sourceState\(\);/);
@@ -505,7 +508,7 @@ test("Live keeps shared node identities while rendering every canonical runtime 
   assert.match(appJs, /querySelectorAll\("\[data-transition-key\]"\)/);
   assert.match(appJs, /node\.classList\.contains\("twin-node"\)/);
   assert.equal(runtime.nodes.length, 22);
-  assert.equal(runtime.edges.length, 22);
+  assert.equal(runtime.edges.length, 26);
   assert.equal(runtime.edges.every((edge) => runtime.nodes.some((node) => node.id === edge.from) && runtime.nodes.some((node) => node.id === edge.to)), true);
   assert.match(renderSourceCanvasSource, /const runtimeEdges = topology\.edges/);
   assert.match(renderSourceCanvasSource, /fixed-live-edge-map/);
@@ -737,7 +740,7 @@ test("live connector paths terminate at card boundaries for target viewport widt
   });
   assert.ok(Math.abs(crossLayer[0].x - (31 / 100 * 1440 + 72)) < 0.01);
   assert.ok(Math.abs(crossLayer.at(-1).x - (68 / 100 * 1440 - 72)) < 0.01);
-  assert.ok(crossLayer.some(({ y }) => [112, 270, 410, 562].includes(y)));
+  assert.ok(crossLayer.some(({ y }) => [4, 8, 612, 616].includes(y)));
   const path = liveEdgePath(from, to, { lane: 1 });
   assert.match(path, /^M .+ Q /);
   assert.doesNotMatch(path, /\bC\b/);
@@ -792,7 +795,7 @@ test("complete captured Live topology routes meet exactly at node boundaries wit
   );
 
   assert.equal(positions.length, 22);
-  assert.equal(ordered.length, 22);
+  assert.equal(ordered.length, 26);
   for (const [order, edge] of ordered.entries()) {
     const lane = order % 2 ? Math.ceil(order / 2) : -Math.ceil((order + 1) / 2);
     const route = liveEdgeRoute(byId.get(edge.from), byId.get(edge.to), {
@@ -842,8 +845,9 @@ test("Live pulse ordering remains deterministic across the complete backend runt
     "checkout->payment"
   ]);
   const renderSourceCanvasSource = appJs.slice(appJs.indexOf("function renderSourceCanvas"), appJs.indexOf("function architectureLayerStatus"));
-  assert.match(renderSourceCanvasSource, /const pulseSlots = livePulseSlots\(\{ \.\.\.topology, edges: runtimeEdges \}\);/);
-  assert.match(renderSourceCanvasSource, /orderedSignalEdges\(runtimeEdges, pulseSlots\)/);
+  assert.match(renderSourceCanvasSource, /edges: \[\.\.\.live\.runtime_data\.graph\.edges, \.\.\.\(live\.runtime_data\.supporting_relations \|\| \[\]\)\]/);
+  assert.match(renderSourceCanvasSource, /const pulseSlots = livePulseSlots\(\{ \.\.\.topology, edges: pulseEdges \}\);/);
+  assert.match(renderSourceCanvasSource, /orderedSignalEdges\(pulseEdges, pulseSlots\)/);
   assert.match(renderSourceCanvasSource, /fixed-live-edge-map/);
   assert.match(renderSourceCanvasSource, /liveEdgePath\(positions\.get\(edge\.from\), positions\.get\(edge\.to\)/);
   assert.doesNotMatch(renderSourceCanvasSource, /class="pulse-flow/);
@@ -853,6 +857,10 @@ test("Live pulse ordering remains deterministic across the complete backend runt
   assert.match(appJs, /liveSignalDuration\(pathLength, 760, launch, terminal\)/);
   assert.match(appJs, /liveSignalProgress\(elapsed, pathLength, timing\.speed, timing\.launch, timing\.terminal\)/);
   assert.match(appJs, /function pathTrail\(/);
+  assert.match(stylesCss, /\.is-live-source \.edge-group \.edge-line \{[\s\S]*?animation-delay: 0ms;[\s\S]*?animation-fill-mode: both;/);
+  assert.match(appJs, /function applyLiveRouteDelays\(\)/);
+  assert.match(appJs, /line\.style\.animationDelay = `\$\{delay\}ms`/);
+  assert.match(appJs, /data-route-order="\$\{edge\.order\}"/);
   assert.match(appJs, /data-recovery-command-send/);
   assert.match(appJs, /sendRecoveryCommand\(commandButton\.closest\("form"\)\)/);
 });

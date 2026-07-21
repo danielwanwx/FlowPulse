@@ -4,7 +4,8 @@ import { topologyManifestContentSha256 } from "./topology-manifest.mjs";
 export const TOPOLOGY_VIEW_PROJECTION_SCHEMA_VERSION = "flowpulse.topology-views.v2";
 
 const RUNTIME_NODE_COUNT = 22;
-const RUNTIME_EDGE_COUNT = 22;
+const RUNTIME_EDGE_COUNT = 26;
+const SUPPORTING_RELATION_COUNT = 7;
 const OVERLAY_NODE_COUNT = 6;
 const OVERLAY_EDGE_COUNT = 5;
 const MAX_SERIALIZED_BYTES = 64 * 1024;
@@ -115,15 +116,16 @@ export class TopologyProjectionError extends Error {
 }
 
 function runtimeGraph(manifest) {
-  if (!plain(manifest) || manifest.schema_version !== "flowpulse.topology-manifest.v1" || manifest.fixture_id !== "otel-demo-system-v1" || manifest.source_system !== "opentelemetry-demo" || manifest.source_health !== "unavailable" || manifest.evidence_mode !== "captured_fixture" || manifest.execution_mode !== "deterministic_replay" || !HASH.test(manifest.content_sha256) || topologyManifestContentSha256(manifest) !== manifest.content_sha256) fail("topology_view_manifest_invalid");
-  if (!Array.isArray(manifest.nodes) || !Array.isArray(manifest.edges) || manifest.nodes.length !== RUNTIME_NODE_COUNT || manifest.edges.length !== RUNTIME_EDGE_COUNT) fail("topology_view_manifest_count_invalid");
+  if (!plain(manifest) || manifest.schema_version !== "flowpulse.topology-manifest.v2" || manifest.fixture_id !== "otel-demo-system-v1" || manifest.source_system !== "opentelemetry-demo" || manifest.source_health !== "unavailable" || manifest.evidence_mode !== "captured_fixture" || manifest.execution_mode !== "deterministic_replay" || !HASH.test(manifest.content_sha256) || topologyManifestContentSha256(manifest) !== manifest.content_sha256) fail("topology_view_manifest_invalid");
+  if (!Array.isArray(manifest.nodes) || !Array.isArray(manifest.edges) || !Array.isArray(manifest.supporting_relations) || manifest.nodes.length !== RUNTIME_NODE_COUNT || manifest.edges.length !== RUNTIME_EDGE_COUNT || manifest.supporting_relations.length !== SUPPORTING_RELATION_COUNT) fail("topology_view_manifest_count_invalid");
   const nodes = manifest.nodes.map((node) => runtimeNode(node));
   const ids = new Set(nodes.map(({ id }) => id));
   if (ids.size !== nodes.length || [...ids].some((id) => CONTROL_IDS.has(id))) fail("topology_view_manifest_node_invalid");
   const edges = manifest.edges.map((edge) => runtimeEdge(edge, ids));
+  const supporting_relations = manifest.supporting_relations.map((relation) => runtimeSupportingRelation(relation, ids));
   const semantic = new Set(edges.map(({ from, to, kind }) => `${from}\0${to}\0${kind}`));
-  if (new Set(edges.map(({ id }) => id)).size !== edges.length || semantic.size !== edges.length) fail("topology_view_manifest_edge_invalid");
-  return { available: true, nodes: sortNodes(nodes), edges: sortEdges(edges) };
+  if (new Set(edges.map(({ id }) => id)).size !== edges.length || semantic.size !== edges.length || new Set(supporting_relations.map(({ id }) => id)).size !== supporting_relations.length || supporting_relations.some(({ id }) => edges.some((edge) => edge.id === id))) fail("topology_view_manifest_edge_invalid");
+  return { available: true, nodes: sortNodes(nodes), edges: sortEdges(edges), supporting_relations: [...supporting_relations].sort((left, right) => left.id.localeCompare(right.id)) };
 }
 
 function runtimeNode(node) {
@@ -136,6 +138,12 @@ function runtimeEdge(edge, ids) {
   const fields = ["id", "from", "to", "kind", "plane", "label", "status", "provenance_refs"];
   if (!plain(edge) || !sameKeys(edge, fields) || edge.id !== `${edge.from}->${edge.to}` || !ids.has(edge.from) || !ids.has(edge.to) || edge.from === edge.to || edge.kind !== "calls" || edge.plane !== "runtime" || edge.label !== "Observed dependency" || edge.status !== "observed" || !provenance(edge.provenance_refs)) fail("topology_view_manifest_edge_invalid");
   return { id: edge.id, from: edge.from, to: edge.to, kind: edge.kind, plane: edge.plane, label: edge.label, status: edge.status, provenance_refs: [...edge.provenance_refs] };
+}
+
+function runtimeSupportingRelation(relation, ids) {
+  const fields = ["id", "from", "to", "kind", "plane", "label", "status", "provenance_refs"];
+  if (!plain(relation) || !sameKeys(relation, fields) || relation.id !== `${relation.from}->${relation.to}` || !ids.has(relation.from) || !ids.has(relation.to) || relation.from === relation.to || !["declared_async_dependency", "configuration_route", "telemetry_export"].includes(relation.kind) || !["runtime", "data"].includes(relation.plane) || !["Declared async dependency", "Configured route", "Telemetry export"].includes(relation.label) || relation.status !== "observed" || !provenance(relation.provenance_refs)) fail("topology_view_manifest_relation_invalid");
+  return { id: relation.id, from: relation.from, to: relation.to, kind: relation.kind, plane: relation.plane, label: relation.label, status: relation.status, provenance_refs: [...relation.provenance_refs] };
 }
 
 function incidentState(projection) {
@@ -279,7 +287,13 @@ function externalChangeEvidence(controls, base) {
 }
 
 function runtimeData(value) {
-  return { graph: graph(value.nodes, value.edges), node_count: value.nodes.length, edge_count: value.edges.length };
+  return {
+    graph: graph(value.nodes, value.edges),
+    node_count: value.nodes.length,
+    edge_count: value.edges.length,
+    supporting_relations: value.supporting_relations.map((relation) => ({ ...relation, provenance_refs: [...relation.provenance_refs] })),
+    supporting_relation_count: value.supporting_relations.length
+  };
 }
 
 function scopedTopology(runtime, control, external, extra = {}) {
@@ -298,7 +312,10 @@ function scopedTopology(runtime, control, external, extra = {}) {
 
 function scopeIdentity(scope) {
   return {
-    runtime_data: graphIdentity(scope.runtime_data.graph.nodes, scope.runtime_data.graph.edges),
+    runtime_data: {
+      ...graphIdentity(scope.runtime_data.graph.nodes, scope.runtime_data.graph.edges),
+      supporting_relations: scope.runtime_data.supporting_relations.map((relation) => ({ ...relation, provenance_refs: [...relation.provenance_refs] }))
+    },
     control_system: {
       nodes: scope.control_system.nodes.map((node) => ({ ...node, signal_types: [...node.signal_types], provenance_refs: [...node.provenance_refs] })),
       relations: scope.control_system.relations.map((edge) => ({ ...edge, provenance_refs: [...edge.provenance_refs] }))
@@ -322,14 +339,16 @@ function diagnoseOverlay(overlay, incident, base, demo) {
   const nodeIds = new Set(overlay.node_ids);
   const baseNodeIds = new Set(base.nodes.map(({ id }) => id));
   const baseEdgeIds = new Set(base.edges.map(({ id }) => id));
+  const supportingRelationIds = new Set(base.supporting_relations.map(({ id }) => id));
   if (![...nodeIds].every((id) => baseNodeIds.has(id))) fail("topology_view_overlay_invalid");
   const edges = overlay.edges.map((edge) => {
-    if (!plain(edge) || !sameKeys(edge, ["id", "from", "to", "relation"]) || edge.id !== `${edge.from}->${edge.to}` || !nodeIds.has(edge.from) || !nodeIds.has(edge.to) || !["observed_dependency", "incident_evidence"].includes(edge.relation)) fail("topology_view_overlay_invalid");
+    if (!plain(edge) || !sameKeys(edge, ["id", "from", "to", "relation"]) || edge.id !== `${edge.from}->${edge.to}` || !nodeIds.has(edge.from) || !nodeIds.has(edge.to) || !["observed_dependency", "evidence_grounded_relation", "incident_evidence"].includes(edge.relation)) fail("topology_view_overlay_invalid");
     if (edge.relation === "observed_dependency" && !baseEdgeIds.has(edge.id)) fail("topology_view_overlay_invalid");
-    if (edge.relation === "incident_evidence" && baseEdgeIds.has(edge.id)) fail("topology_view_overlay_invalid");
+    if (edge.relation === "evidence_grounded_relation" && !supportingRelationIds.has(edge.id)) fail("topology_view_overlay_invalid");
+    if (edge.relation === "incident_evidence" && (baseEdgeIds.has(edge.id) || supportingRelationIds.has(edge.id))) fail("topology_view_overlay_invalid");
     return { id: edge.id, from: edge.from, to: edge.to, relation: edge.relation };
   });
-  if (new Set(edges.map(({ id }) => id)).size !== edges.length || edges.filter(({ relation }) => relation === "observed_dependency").length !== 2 || edges.filter(({ relation }) => relation === "incident_evidence").length !== 3) fail("topology_view_overlay_invalid");
+  if (new Set(edges.map(({ id }) => id)).size !== edges.length || edges.filter(({ relation }) => relation === "observed_dependency").length !== 2 || edges.filter(({ relation }) => relation === "evidence_grounded_relation").length !== 3 || edges.some(({ relation }) => relation === "incident_evidence")) fail("topology_view_overlay_invalid");
   return { status: "available", node_ids: [...overlay.node_ids].sort(), edges: [...edges].sort((left, right) => left.id.localeCompare(right.id)) };
 }
 
@@ -370,18 +389,15 @@ function normalizeDemoLifecycle(value, incident, base) {
 }
 
 function liveGraph(base, overlay, demo) {
-  if (!demo) return {
-    nodes: base.nodes.map((node) => ({ ...node, status: "captured" })),
-    edges: base.edges.map((edge) => ({ ...edge, status: "captured" })),
-    incident_overlay: { status: "inactive", node_ids: [], edges: [] }
-  };
-  const finalFrame = demo.frames.at(-1);
-  const incident = demo.phase === "INCIDENT_DETECTED" ? new Set(finalFrame.node_ids) : new Set();
-  const observedRelations = new Set(overlay.edges.filter(({ relation }) => relation === "observed_dependency").map(({ id }) => id));
+  const active = demo ? demo.phase === "INCIDENT_DETECTED" : overlay.status === "available";
+  const incident = active ? new Set((demo ? demo.frames.at(-1).node_ids : overlay.node_ids)) : new Set();
+  const directRelations = new Set(overlay.edges.filter(({ relation }) => relation === "observed_dependency").map(({ id }) => id));
+  const supportingRelations = new Set(overlay.edges.filter(({ relation }) => relation === "evidence_grounded_relation").map(({ id }) => id));
   return {
-    nodes: base.nodes.map((node) => ({ ...node, status: incident.has(node.id) ? "incident" : "healthy" })),
-    edges: base.edges.map((edge) => ({ ...edge, status: observedRelations.has(edge.id) && demo.phase === "INCIDENT_DETECTED" ? "incident" : "healthy" })),
-    incident_overlay: demo.phase === "INCIDENT_DETECTED"
+    nodes: base.nodes.map((node) => ({ ...node, status: incident.has(node.id) ? "incident" : demo ? "healthy" : "captured" })),
+    edges: base.edges.map((edge) => ({ ...edge, status: directRelations.has(edge.id) && active ? "incident" : demo ? "healthy" : "captured" })),
+    supporting_relations: base.supporting_relations.map((relation) => ({ ...relation, status: supportingRelations.has(relation.id) && active ? "incident" : demo ? "healthy" : "captured" })),
+    incident_overlay: active
       ? { status: "active", node_ids: [...overlay.node_ids], edges: overlay.edges.map((edge) => ({ ...edge, status: "incident" })) }
       : { status: "inactive", node_ids: [], edges: [] }
   };

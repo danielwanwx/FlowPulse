@@ -13,16 +13,19 @@ import {
 const manifestPath = new URL("../data/topology/otel-demo-system-v1.json", import.meta.url);
 const manifestRaw = readFileSync(manifestPath, "utf8");
 
-test("sanitized OpenTelemetry Demo manifest contains exactly 22 stable nodes and 22 endpoint-valid dependencies", () => {
+test("sanitized OpenTelemetry Demo manifest contains 22 stable nodes, 26 captured calls, and seven typed supporting relations", () => {
   const manifest = loadTopologyManifest(manifestPath);
   const nodeIds = new Set(manifest.nodes.map(({ id }) => id));
 
   assert.equal(manifest.nodes.length, 22);
-  assert.equal(manifest.edges.length, 22);
+  assert.equal(manifest.edges.length, 26);
+  assert.equal(manifest.supporting_relations.length, 7);
   assert.equal(nodeIds.size, 22);
   assert.equal(manifest.edges.every(({ from, to }) => nodeIds.has(from) && nodeIds.has(to)), true);
+  assert.equal(manifest.supporting_relations.every(({ from, to }) => nodeIds.has(from) && nodeIds.has(to)), true);
   assert.deepEqual(manifest.nodes.map(({ id }) => id), [...nodeIds].sort());
   assert.deepEqual(manifest.edges.map(({ id }) => id), manifest.edges.map(({ id }) => id).toSorted());
+  assert.deepEqual(manifest.supporting_relations.map(({ id }) => id), manifest.supporting_relations.map(({ id }) => id).toSorted());
   assert.equal(Object.isFrozen(manifest), true);
   assert.equal(Object.isFrozen(manifest.nodes[0]), true);
 });
@@ -81,7 +84,7 @@ test("manifest content hash binds every topology truth provenance and derivation
     (value) => { value.execution_mode = "real_local_development"; },
     (value) => { value.source_health = "live"; },
     (value) => { value.captured_at = "2026-07-18T20:13:05.000Z"; },
-    (value) => { value.derivation.normalization_version = "flowpulse.live-source.topology.v2"; },
+    (value) => { value.derivation.normalization_version = "flowpulse.live-source.topology.v3"; },
     (value) => { value.derivation.capture_window.start = "2026-07-18T20:11:10.000Z"; },
     (value) => { value.derivation.inputs[0].sha256 = "a".repeat(64); },
     (value) => { value.derivation.exclusions[0] = "arbitrary"; },
@@ -89,7 +92,8 @@ test("manifest content hash binds every topology truth provenance and derivation
     (value) => { value.nodes[0].signal_types = ["trace"]; },
     (value) => { value.nodes[0].provenance_refs[0] = "capture://otel-demo-system-v1#node-altered"; },
     (value) => { value.edges[0].label = "Changed dependency"; },
-    (value) => { value.edges[0].provenance_refs[0] = "capture://otel-demo-system-v1#edge-altered"; }
+    (value) => { value.edges[0].provenance_refs[0] = "capture://otel-demo-system-v1#edge-altered"; },
+    (value) => { value.supporting_relations[0].label = "Changed supporting relation"; }
   ];
 
   for (const mutate of mutations) {
@@ -112,6 +116,8 @@ test("unknown duplicate unsafe orphan oversized or nondeterministically ordered 
     ["topology_manifest_node_invalid", (value) => { value.nodes[0].label = "X".repeat(161); }],
     ["topology_manifest_order_invalid", (value) => { value.nodes.reverse(); }],
     ["topology_manifest_order_invalid", (value) => { value.edges.reverse(); }],
+    ["topology_manifest_order_invalid", (value) => { value.supporting_relations.reverse(); }],
+    ["topology_manifest_relation_invalid", (value) => { value.supporting_relations[0].kind = "calls"; }],
     ["topology_manifest_count_invalid", (value) => { value.edges.push({ ...value.edges[0], id: "extra-edge", from: "ad", to: "cart", provenance_refs: ["capture://otel-demo-system-v1#edge-extra-edge"] }); }]
   ];
 
@@ -139,7 +145,7 @@ test("captured judge manifest is unavailable current health authority-free and f
   });
 });
 
-test("existing six-node five-edge incident graph maps onto the full system without fabricating dependencies", () => {
+test("existing six-node five-edge incident graph maps onto the full system with typed backing relations", () => {
   const manifest = loadTopologyManifest(manifestPath);
   const bundle = loadBundle();
   const before = JSON.stringify(bundle);
@@ -148,7 +154,7 @@ test("existing six-node five-edge incident graph maps onto the full system witho
   assert.deepEqual(mapping.node_ids, ["accounting", "checkout", "fraud-detection", "frontend", "kafka", "payment"]);
   assert.equal(mapping.edges.length, 5);
   assert.equal(mapping.edges.filter(({ relation }) => relation === "observed_dependency").length, 2);
-  assert.equal(mapping.edges.filter(({ relation }) => relation === "incident_evidence").length, 3);
+  assert.equal(mapping.edges.filter(({ relation }) => relation === "evidence_grounded_relation").length, 3);
   assert.deepEqual(mapping.edges.map(({ id }) => id), [
     "checkout->kafka",
     "checkout->payment",

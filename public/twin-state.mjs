@@ -460,7 +460,8 @@ function validComponentRelationships(value) {
 function validComponentRelation(value) {
   return plainRecord(value) && sameKeys(value, ["id", "label", "kind", "relation", "provenance_refs"])
     && safeTopologyId(value.id) && validComponentText(value.label, 160) && ["service", "job", "topic"].includes(value.kind)
-    && value.relation === "calls" && validProvenanceList(value.provenance_refs, 4);
+    && ["calls", "declared_async_dependency", "configuration_route", "telemetry_export"].includes(value.relation)
+    && validProvenanceList(value.provenance_refs, 4);
 }
 
 function validComponentObservability(value) {
@@ -523,8 +524,8 @@ function topologyViewsV2(value) {
   const architecture = parseScopedTopology(value.architecture, false);
   const live = parseScopedTopology(value.live, true);
   const diagnose = parseDiagnoseTopology(value.diagnose);
-  const demo = parseDemoTopology(value.demo, value.run_id, architecture?.runtime_data.graph);
-  if (!architecture || !live || !diagnose || demo === undefined || !sameRuntimeIdentity(architecture.runtime_data.graph, live.runtime_data.graph) || !sameRuntimeIdentity(architecture.runtime_data.graph, diagnose.runtime_data.graph) || !sameControlIdentity(architecture.control_system, live.control_system) || !sameExternalEvidence(architecture.external_change_evidence, live.external_change_evidence)) return null;
+  const demo = parseDemoTopology(value.demo, value.run_id, architecture?.runtime_data);
+  if (!architecture || !live || !diagnose || demo === undefined || !sameRuntimeIdentity(architecture.runtime_data, live.runtime_data) || !sameRuntimeIdentity(architecture.runtime_data, diagnose.runtime_data) || !sameControlIdentity(architecture.control_system, live.control_system) || !sameExternalEvidence(architecture.external_change_evidence, live.external_change_evidence)) return null;
   return {
     projection_revision: value.projection_revision,
     run_id: value.run_id,
@@ -544,7 +545,7 @@ function parseScopedTopology(scope, hasOverlay) {
   const runtimeData = parseRuntimeData(scope.runtime_data);
   const controlSystem = parseControlSystem(scope.control_system);
   const externalEvidence = parseExternalEvidence(scope.external_change_evidence, new Set(runtimeData?.graph.nodes.map(({ id }) => id)));
-  const overlay = hasOverlay ? parseLiveOverlay(scope.incident_overlay, new Set(runtimeData?.graph.nodes.map(({ id }) => id)), new Set(runtimeData?.graph.edges.map(({ id }) => id))) : null;
+  const overlay = hasOverlay ? parseLiveOverlay(scope.incident_overlay, new Set(runtimeData?.graph.nodes.map(({ id }) => id)), new Set(runtimeData?.graph.edges.map(({ id }) => id)), new Set(runtimeData?.supporting_relations.map(({ id }) => id))) : null;
   if (!runtimeData || !controlSystem || !externalEvidence || hasOverlay && !overlay) return null;
   return hasOverlay
     ? { runtime_data: runtimeData, control_system: controlSystem, external_change_evidence: externalEvidence, incident_overlay: overlay }
@@ -552,12 +553,13 @@ function parseScopedTopology(scope, hasOverlay) {
 }
 
 function parseRuntimeData(value) {
-  if (!plainRecord(value) || !sameKeys(value, ["graph", "node_count", "edge_count"]) || !plainRecord(value.graph) || !sameKeys(value.graph, ["nodes", "edges", "total_nodes", "total_edges", "truncated"]) || !Array.isArray(value.graph.nodes) || !Array.isArray(value.graph.edges) || value.node_count !== 22 || value.edge_count !== 22 || value.graph.nodes.length !== 22 || value.graph.edges.length !== 22 || value.graph.total_nodes !== 22 || value.graph.total_edges !== 22 || value.graph.truncated !== false || !value.graph.nodes.every(validRuntimeNode) || !value.graph.edges.every(validRuntimeEdge)) return null;
+  if (!plainRecord(value) || !sameKeys(value, ["graph", "node_count", "edge_count", "supporting_relations", "supporting_relation_count"]) || !plainRecord(value.graph) || !sameKeys(value.graph, ["nodes", "edges", "total_nodes", "total_edges", "truncated"]) || !Array.isArray(value.graph.nodes) || !Array.isArray(value.graph.edges) || !Array.isArray(value.supporting_relations) || value.node_count !== 22 || value.edge_count !== 26 || value.supporting_relation_count !== 7 || value.graph.nodes.length !== 22 || value.graph.edges.length !== 26 || value.supporting_relations.length !== 7 || value.graph.total_nodes !== 22 || value.graph.total_edges !== 26 || value.graph.truncated !== false || !value.graph.nodes.every(validRuntimeNode) || !value.graph.edges.every(validRuntimeEdge) || !value.supporting_relations.every(validSupportingRelation)) return null;
   const ids = new Set(value.graph.nodes.map(({ id }) => id));
   const edgeIds = new Set(value.graph.edges.map(({ id }) => id));
+  const supportingIds = new Set(value.supporting_relations.map(({ id }) => id));
   const semanticEdges = new Set(value.graph.edges.map(({ from, to, kind }) => `${from}\0${to}\0${kind}`));
-  if (ids.size !== 22 || edgeIds.size !== 22 || semanticEdges.size !== 22 || value.graph.edges.some(({ from, to }) => !ids.has(from) || !ids.has(to) || from === to) || !sameOrdered(value.graph.nodes, sortProjectionNodes(value.graph.nodes)) || !sameOrdered(value.graph.edges, sortProjectionEdges(value.graph.edges))) return null;
-  return { graph: { nodes: value.graph.nodes, edges: value.graph.edges, total_nodes: 22, total_edges: 22, truncated: false }, node_count: 22, edge_count: 22 };
+  if (ids.size !== 22 || edgeIds.size !== 26 || supportingIds.size !== 7 || semanticEdges.size !== 26 || [...supportingIds].some((id) => edgeIds.has(id)) || value.graph.edges.some(({ from, to }) => !ids.has(from) || !ids.has(to) || from === to) || value.supporting_relations.some(({ from, to }) => !ids.has(from) || !ids.has(to) || from === to) || !sameOrdered(value.graph.nodes, sortProjectionNodes(value.graph.nodes)) || !sameOrdered(value.graph.edges, sortProjectionEdges(value.graph.edges)) || !sameOrdered(value.supporting_relations, [...value.supporting_relations].sort((left, right) => left.id.localeCompare(right.id)))) return null;
+  return { graph: { nodes: value.graph.nodes, edges: value.graph.edges, total_nodes: 22, total_edges: 26, truncated: false }, node_count: 22, edge_count: 26, supporting_relations: value.supporting_relations, supporting_relation_count: 7 };
 }
 
 function parseControlSystem(value) {
@@ -579,31 +581,40 @@ function parseDiagnoseTopology(value) {
   const runtimeData = parseRuntimeData(value.runtime_data);
   const nodeIds = new Set(runtimeData?.graph.nodes.map(({ id }) => id));
   const edgeIds = new Set(runtimeData?.graph.edges.map(({ id }) => id));
-  const overlay = parseDiagnoseOverlay(value.overlay, nodeIds, edgeIds);
+  const overlay = parseDiagnoseOverlay(value.overlay, nodeIds, edgeIds, new Set(runtimeData?.supporting_relations.map(({ id }) => id)));
   return runtimeData && overlay ? { runtime_data: runtimeData, overlay } : null;
 }
 
-function parseLiveOverlay(value, nodeIds, edgeIds) {
-  if (!plainRecord(value) || !sameKeys(value, ["status", "node_ids", "edges"]) || !["inactive", "active"].includes(value.status) || !Array.isArray(value.node_ids) || !Array.isArray(value.edges) || value.node_ids.length > 6 || value.edges.length > 5 || new Set(value.node_ids).size !== value.node_ids.length || new Set(value.edges.map((edge) => edge?.id)).size !== value.edges.length || !value.node_ids.every((id) => nodeIds.has(id)) || !value.edges.every((edge) => plainRecord(edge) && sameKeys(edge, ["id", "from", "to", "relation", "status"]) && edge.id === `${edge.from}->${edge.to}` && value.node_ids.includes(edge.from) && value.node_ids.includes(edge.to) && ["observed_dependency", "incident_evidence"].includes(edge.relation) && edge.status === "incident" && (edge.relation !== "observed_dependency" || edgeIds.has(edge.id))) || !sameOrdered(value.node_ids, [...value.node_ids].sort()) || !sameOrdered(value.edges, [...value.edges].sort((left, right) => left.id.localeCompare(right.id)))) return null;
+function parseLiveOverlay(value, nodeIds, edgeIds, supportingIds) {
+  if (!plainRecord(value) || !sameKeys(value, ["status", "node_ids", "edges"]) || !["inactive", "active"].includes(value.status) || !Array.isArray(value.node_ids) || !Array.isArray(value.edges) || value.node_ids.length > 6 || value.edges.length > 5 || new Set(value.node_ids).size !== value.node_ids.length || new Set(value.edges.map((edge) => edge?.id)).size !== value.edges.length || !value.node_ids.every((id) => nodeIds.has(id)) || !value.edges.every((edge) => validOverlayEdge(edge, value.node_ids, edgeIds, supportingIds, true)) || !sameOrdered(value.node_ids, [...value.node_ids].sort()) || !sameOrdered(value.edges, [...value.edges].sort((left, right) => left.id.localeCompare(right.id)))) return null;
   if (value.status === "inactive" && (value.node_ids.length || value.edges.length)) return null;
   if (value.status === "active" && (value.node_ids.length !== 6 || value.edges.length !== 5)) return null;
   return { status: value.status, node_ids: value.node_ids, edges: value.edges };
 }
 
-function parseDiagnoseOverlay(value, nodeIds, edgeIds) {
-  if (!plainRecord(value) || !sameKeys(value, ["status", "node_ids", "edges"]) || !["unavailable", "available"].includes(value.status) || !Array.isArray(value.node_ids) || !Array.isArray(value.edges) || value.node_ids.length > 6 || value.edges.length > 5 || new Set(value.node_ids).size !== value.node_ids.length || new Set(value.edges.map((edge) => edge?.id)).size !== value.edges.length || !value.node_ids.every((id) => nodeIds.has(id)) || !value.edges.every((edge) => plainRecord(edge) && sameKeys(edge, ["id", "from", "to", "relation"]) && edge.id === `${edge.from}->${edge.to}` && value.node_ids.includes(edge.from) && value.node_ids.includes(edge.to) && ["observed_dependency", "incident_evidence"].includes(edge.relation) && (edge.relation !== "observed_dependency" || edgeIds.has(edge.id))) || !sameOrdered(value.node_ids, [...value.node_ids].sort()) || !sameOrdered(value.edges, [...value.edges].sort((left, right) => left.id.localeCompare(right.id)))) return null;
+function parseDiagnoseOverlay(value, nodeIds, edgeIds, supportingIds) {
+  if (!plainRecord(value) || !sameKeys(value, ["status", "node_ids", "edges"]) || !["unavailable", "available"].includes(value.status) || !Array.isArray(value.node_ids) || !Array.isArray(value.edges) || value.node_ids.length > 6 || value.edges.length > 5 || new Set(value.node_ids).size !== value.node_ids.length || new Set(value.edges.map((edge) => edge?.id)).size !== value.edges.length || !value.node_ids.every((id) => nodeIds.has(id)) || !value.edges.every((edge) => validOverlayEdge(edge, value.node_ids, edgeIds, supportingIds, false)) || !sameOrdered(value.node_ids, [...value.node_ids].sort()) || !sameOrdered(value.edges, [...value.edges].sort((left, right) => left.id.localeCompare(right.id)))) return null;
   if (value.status === "unavailable" && (value.node_ids.length || value.edges.length)) return null;
   if (value.status === "available" && (value.node_ids.length !== 6 || value.edges.length !== 5)) return null;
   return { status: value.status, node_ids: value.node_ids, edges: value.edges };
 }
 
-function parseDemoTopology(value, runId, graph) {
+function validOverlayEdge(edge, nodeIds, edgeIds, supportingIds, live) {
+  const keys = live ? ["id", "from", "to", "relation", "status"] : ["id", "from", "to", "relation"];
+  return plainRecord(edge) && sameKeys(edge, keys) && edge.id === `${edge.from}->${edge.to}` && nodeIds.includes(edge.from) && nodeIds.includes(edge.to)
+    && ["observed_dependency", "evidence_grounded_relation"].includes(edge.relation)
+    && (edge.relation !== "observed_dependency" || edgeIds.has(edge.id))
+    && (edge.relation !== "evidence_grounded_relation" || supportingIds.has(edge.id))
+    && (!live || edge.status === "incident");
+}
+
+function parseDemoTopology(value, runId, runtimeData) {
   if (value === null) return null;
   const phases = ["HEALTHY", "INJECTING", "PAYMENT_CHECKOUT_IMPACT", "DOWNSTREAM_PROPAGATION", "INCIDENT_DETECTED"];
   const evidenceRefs = new Set(["ev-deploy-checkout", "ev-trace-payment-refused", "ev-metric-checkout-errors", "ev-metric-kafka-lag", "ev-log-consumer-delay"]);
   const expectedPhases = value?.phase === "HEALTHY" ? phases.slice(0, 1) : value?.phase === "INCIDENT_DETECTED" ? phases : null;
-  const nodeIds = new Set(graph?.nodes.map(({ id }) => id));
-  const edgeIds = new Set(graph?.edges.map(({ id }) => id));
+  const nodeIds = new Set(runtimeData?.graph.nodes.map(({ id }) => id));
+  const edgeIds = new Set([...(runtimeData?.graph.edges || []), ...(runtimeData?.supporting_relations || [])].map(({ id }) => id));
   if (!safeTopologyId(runId) || !expectedPhases || !plainRecord(value) || !sameKeys(value, ["schema_version", "run_id", "scenario_id", "phase", "frames"])
     || value.schema_version !== "flowpulse.demo-lifecycle.v1" || value.run_id !== runId || value.scenario_id !== "astronomy-checkout-payment-captured-v1"
     || !Array.isArray(value.frames) || value.frames.length !== expectedPhases.length) return undefined;
@@ -627,8 +638,12 @@ function sameExternalEvidence(left, right) {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
-function runtimeIdentity(graph) {
-  return { nodes: graph.nodes.map(nodeIdentity), edges: graph.edges.map(edgeIdentity) };
+function runtimeIdentity(runtimeData) {
+  return {
+    nodes: runtimeData.graph.nodes.map(nodeIdentity),
+    edges: runtimeData.graph.edges.map(edgeIdentity),
+    supporting_relations: runtimeData.supporting_relations.map(edgeIdentity)
+  };
 }
 
 function nodeIdentity({ status, ...node }) { return node; }
@@ -717,6 +732,15 @@ function validRuntimeEdge(edge) {
     && edge.kind === "calls"
     && edge.plane === "runtime"
     && edge.label === "Observed dependency"
+    && ["observed", "captured", "healthy", "incident"].includes(edge.status);
+}
+
+function validSupportingRelation(edge) {
+  return validArchitectureEdge(edge)
+    && edge.id === `${edge.from}->${edge.to}`
+    && ["declared_async_dependency", "configuration_route", "telemetry_export"].includes(edge.kind)
+    && ["runtime", "data"].includes(edge.plane)
+    && ["Declared async dependency", "Configured route", "Telemetry export"].includes(edge.label)
     && ["observed", "captured", "healthy", "incident"].includes(edge.status);
 }
 
@@ -1094,10 +1118,11 @@ export function liveEdgeRoute(from, to, {
   const start = { x: startCenter.x + direction * halfWidth, y: startCenter.y + portOffset };
   const end = { x: endCenter.x + (sameColumn ? direction : -direction) * halfWidth, y: endCenter.y - portOffset };
 
-  // Every runtime dependency follows this one circuit-board grammar: leave a
-  // card from its calculated side port, travel through a reserved lane, turn
-  // only at right angles, and enter the exact destination card boundary. The
-  // path renderer rounds those corners uniformly with quadratic segments.
+  // Every runtime dependency follows this one fixed-coordinate circuit-board
+  // grammar. A route leaves a calculated card port, stays in a gutter or an
+  // outer corridor, and enters the exact destination port. It deliberately
+  // does not infer a route from the DOM or arbitrary path geometry: the same
+  // backend relationship and node coordinates always yield the same path.
   if (sameColumn) {
     const laneX = sameColumnLaneX(start, fromColumn, laneIndex, canvasWidth);
     return compactRoute([start, { x: laneX, y: start.y }, { x: laneX, y: end.y }, end]);
@@ -1110,12 +1135,16 @@ export function liveEdgeRoute(from, to, {
     return compactRoute([start, { x: laneX, y: start.y }, { x: laneX, y: end.y }, end]);
   }
 
-  const sourceLane = start.x + direction * (14 + (laneIndex % 5) * 7);
-  const targetLane = end.x - direction * (14 + (laneIndex % 5) * 7);
-  const crossesSparseDataColumn = Math.min(fromColumn, toColumn) === 1 && Math.max(fromColumn, toColumn) === 3;
-  const corridorY = crossesSparseDataColumn
-    ? [112, 270, 410, 562][laneIndex % 4]
-    : (laneIndex % 2 ? 8 : canvasHeight - 8);
+  // A long relationship never crosses intermediate component columns. It
+  // joins one of four deterministic outer lanes, then returns through the
+  // target gutter. These lanes sit outside every fixed card rectangle.
+  const sourceLane = start.x + direction * (12 + (laneIndex % 5) * 8);
+  const targetLane = end.x - direction * (12 + (laneIndex % 5) * 8);
+  const outerTop = [4, 8];
+  const outerBottom = [canvasHeight - 8, canvasHeight - 4];
+  const corridorY = laneIndex % 2 === 0
+    ? outerTop[Math.floor(laneIndex / 2) % outerTop.length]
+    : outerBottom[Math.floor(laneIndex / 2) % outerBottom.length];
   return compactRoute([
     start,
     { x: sourceLane, y: start.y },
