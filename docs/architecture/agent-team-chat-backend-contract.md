@@ -15,6 +15,12 @@ The conversation is an ordered projection of append-only ledger records. The bro
 
 `ledger` is intentionally not an accepted `requested_agent`. A message about the Evidence Ledger is handed off transparently to Observer (or Evaluator for a verdict/challenge request). The UI owns static icon/name mapping for these four stable role IDs.
 
+## N1 Node Investigation extension
+
+When `selected_component` is present, the chat service uses the server-owned Node Investigation Plane described in [node-investigation-plane-frontend-contract.md](node-investigation-plane-frontend-contract.md). The browser still sends the same request envelope only. The server may record `tool_request` and `tool_result` conversation events before a response; each exposes a role-allowlisted tool name, component ID, count-only activity, same-attempt citations, source truth, cache state, and `raw_payload_excluded: true`.
+
+Provider output now has a strict nullable `recommended_handoff` and a strict required `tool_requests` array. Each request has only `{ tool, cursor, limit, signal }`, with null for unused controls. The model cannot set a component, run, window, URL, arbitrary query, authority, repair, or tool result. N1 permits at most two tool rounds, four calls total, and two calls per tool; a budget or source gap ends visibly blocked/needs-human rather than looping.
+
 ## Provider configuration and truthful labels
 
 Set `FLOWPULSE_AGENT_PROVIDER` explicitly. Provider selection never infers a mode from credentials.

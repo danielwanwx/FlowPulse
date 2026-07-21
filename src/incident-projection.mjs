@@ -37,7 +37,7 @@ const KNOWN_EVENTS = new Set([
   "regression.created", "regression.candidate.proposed", "backtest.completed", "policy.evaluated", "policy.candidate.proposed", "policy.promoted",
   "loop.symptoms_collected", "loop.initial_hypothesis", "loop.hypothesis_rejected", "loop.replanned", "loop.root_cause_confirmed", "loop.causal_evidence_collected", "loop.approval_requested", "loop.repair_executed", "loop.learning_complete",
   "manager.delegation.created", "manager.message.received", "manager.response.created", "task.delegation.proposed", "pr.review.proposed", "pr.review.recorded", "workitem.draft.proposed", "workitem.draft.approved", "orchestration.step.completed",
-  "agent_team.message.received", "agent_team.handoff.recorded", "agent_team.context.prepared", "agent_team.tool_summary.recorded", "agent_team.response.working", "agent_team.response.created", "agent_team.human_gate.required", "agent_team.error.recorded",
+  "agent_team.message.received", "agent_team.handoff.recorded", "agent_team.context.prepared", "agent_team.tool_summary.recorded", "agent_team.tool.requested", "agent_team.tool.result.recorded", "agent_team.response.working", "agent_team.response.created", "agent_team.human_gate.required", "agent_team.error.recorded",
   "candidate.edited", "false_diagnosis.record", "post_action.evidence", "topology.snapshot", "triage.annotation.proposed", "verification.proposed"
 ]);
 

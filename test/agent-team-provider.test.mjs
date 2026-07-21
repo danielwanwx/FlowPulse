@@ -41,7 +41,7 @@ test("provider selection is explicit and recorded remains truthfully labeled wit
 });
 
 test("Codex local preflight and invocation use an ephemeral read-only temp workspace with no auth or API-key environment", async () => {
-  const fixture = scriptedSpawn({ output: JSON.stringify({ answer: "Local Codex answer.", recommended_handoff: null }) });
+  const fixture = scriptedSpawn({ output: JSON.stringify({ answer: "Local Codex answer.", recommended_handoff: null, tool_requests: [] }) });
   const provider = createCodexLocalAdapter({ spawnImpl: fixture.spawn, timeoutMs: 100 });
 
   assert.equal((await provider.preflight()).availability, "available");
@@ -112,34 +112,49 @@ test("Codex cancellation terminates its child and cleans up, while output labels
 test("recorded, Responses, and Codex adapters share the same validated output envelope", async () => {
   const recorded = await createRecordedChatAdapter().respond({ role: "observer", context: CONTEXT });
   const responses = await createOpenAIResponsesAdapter({
-    requestResponse: async () => ({ output: [{ type: "message", role: "assistant", status: "completed", content: [{ type: "output_text", text: JSON.stringify({ answer: "OpenAI answer.", recommended_handoff: null }) }] }] })
+    requestResponse: async () => ({ output: [{ type: "message", role: "assistant", status: "completed", content: [{ type: "output_text", text: JSON.stringify({ answer: "OpenAI answer.", recommended_handoff: null, tool_requests: [] }) }] }] })
   }).respond({ role: "observer", context: CONTEXT });
-  const codex = createCodexLocalAdapter({ spawnImpl: scriptedSpawn({ output: JSON.stringify({ answer: "Codex answer.", recommended_handoff: null }) }).spawn, timeoutMs: 100 });
+  const codex = createCodexLocalAdapter({ spawnImpl: scriptedSpawn({ output: JSON.stringify({ answer: "Codex answer.", recommended_handoff: null, tool_requests: [] }) }).spawn, timeoutMs: 100 });
   await codex.preflight();
   const local = await codex.respond({ role: "observer", context: CONTEXT });
 
   for (const result of [recorded, responses, local]) {
-    assert.equal(Object.keys(result).sort().join(","), "answer,model,provider,recommended_handoff,usage");
+    assert.equal(Object.keys(result).sort().join(","), "answer,model,provider,recommended_handoff,tool_requests,usage");
     assert.equal(result.recommended_handoff, null);
   }
 });
 
 test("the strict Codex and Responses schema requires a nullable handoff property", () => {
   const schema = agentTeamResponseSchema();
-  assert.deepEqual(schema.required, ["answer", "recommended_handoff"]);
+  assert.deepEqual(schema.required, ["answer", "recommended_handoff", "tool_requests"]);
   assert.equal(schema.properties.answer.maxLength, 280);
   assert.deepEqual(schema.properties.recommended_handoff.type, ["object", "null"]);
-  assert.deepEqual(validateProviderResponse({ answer: "fine", recommended_handoff: null }), { answer: "fine", recommended_handoff: null });
+  assert.deepEqual(validateProviderResponse({ answer: "fine", recommended_handoff: null, tool_requests: [] }), { answer: "fine", recommended_handoff: null, tool_requests: [] });
   assert.throws(() => validateProviderResponse({ answer: "fine" }), /provider_output_schema_invalid/);
+});
+
+test("the strict provider envelope accepts only nullable bounded tool request controls", () => {
+  assert.deepEqual(
+    validateProviderResponse({ answer: "Inspect bounded evidence.", recommended_handoff: null, tool_requests: [{ tool: "query_component_traces", cursor: null, limit: null, signal: null }] }).tool_requests,
+    [{ tool: "query_component_traces", cursor: null, limit: null, signal: null }]
+  );
+  assert.throws(
+    () => validateProviderResponse({ answer: "bad", recommended_handoff: null, tool_requests: [{ tool: "shell", cursor: null, limit: null, signal: null }] }),
+    /provider_output_schema_invalid/
+  );
+  assert.throws(
+    () => validateProviderResponse({ answer: "bad", recommended_handoff: null, tool_requests: [{ tool: "query_component_logs", cursor: null, limit: null, signal: null, component_id: "checkout" }] }),
+    /provider_output_schema_invalid/
+  );
 });
 
 test("a bounded evaluator verdict may cite evidence and state that approval is not granted", () => {
   const answer = "Evaluator verdict: Kafka is not established as the initiating cause; compare [ev-timing-error-before-lag] with [ev-trace-payment-refused]. Human approval is not granted.";
-  assert.deepEqual(validateProviderResponse({ answer, recommended_handoff: null }), { answer, recommended_handoff: null });
+  assert.deepEqual(validateProviderResponse({ answer, recommended_handoff: null, tool_requests: [] }), { answer, recommended_handoff: null, tool_requests: [] });
   const unicodeAnswer = "🧪".repeat(280);
   assert.equal(Buffer.byteLength(unicodeAnswer, "utf8") <= 1_200, true);
-  assert.deepEqual(validateProviderResponse({ answer: unicodeAnswer, recommended_handoff: null }), { answer: unicodeAnswer, recommended_handoff: null });
-  assert.throws(() => validateProviderResponse({ answer: "x".repeat(281), recommended_handoff: null }), /provider_output_schema_invalid/);
+  assert.deepEqual(validateProviderResponse({ answer: unicodeAnswer, recommended_handoff: null, tool_requests: [] }), { answer: unicodeAnswer, recommended_handoff: null, tool_requests: [] });
+  assert.throws(() => validateProviderResponse({ answer: "x".repeat(281), recommended_handoff: null, tool_requests: [] }), /provider_output_schema_invalid/);
 });
 
 test("real local Codex structured response succeeds when explicitly enabled", { skip: process.env.FLOWPULSE_AGENT_REAL_CODEX_TEST === "1" ? false : "set FLOWPULSE_AGENT_REAL_CODEX_TEST=1" }, async () => {
@@ -151,7 +166,7 @@ test("real local Codex structured response succeeds when explicitly enabled", { 
   assert.equal(result.recommended_handoff, null);
 });
 
-function scriptedSpawn({ versionCode = 0, loginCode = 0, login = "Logged in", execCode = 0, output = JSON.stringify({ answer: "ok", recommended_handoff: null }), stdout = "", neverClose = false, holdExec = false } = {}) {
+function scriptedSpawn({ versionCode = 0, loginCode = 0, login = "Logged in", execCode = 0, output = JSON.stringify({ answer: "ok", recommended_handoff: null, tool_requests: [] }), stdout = "", neverClose = false, holdExec = false } = {}) {
   const calls = [];
   const spawn = (_command, args, options) => {
     const child = new EventEmitter();

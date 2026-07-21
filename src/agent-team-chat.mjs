@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { createAgentTeamProvider, createOpenAIResponsesAdapter, createRecordedChatAdapter as createRecordedProvider } from "./agent-team-provider.mjs";
+import { NodeInvestigationError, ROLE_NODE_TOOL_ALLOWLIST } from "./node-investigation-plane.mjs";
 
 export const createRecordedChatAdapter = createRecordedProvider;
 export const createOpenAIChatAdapter = createOpenAIResponsesAdapter;
@@ -12,14 +13,17 @@ export const AGENT_TEAM_CHAT_LIMITS = Object.freeze({
   max_projection_bytes: 64 * 1024,
   max_context_bytes: 24 * 1024,
   max_evidence_refs: 12,
-  max_model_attempts: 1
+  max_model_attempts: 3,
+  max_tool_rounds: 2,
+  max_tool_calls: 4,
+  max_calls_per_tool: 2
 });
 
 const ROLES = new Set(["observer", "orchestrator", "investigator", "evaluator"]);
 const PAGE_MODES = new Set(["architecture", "live", "diagnose", "recovery", "compare", "manager"]);
 const ENVELOPE_KEYS = ["run_id", "incident_id", "conversation_id", "idempotency_key", "requested_agent", "page_mode", "selected_component", "message"];
 const FORBIDDEN_FIELD = /(?:approval|approve|authority|truth|repair|remediat|evidence|verification|execute|owner|prompt|trace|log|secret|provider)/i;
-const MAX_RECORDS_PER_SUBMIT = 7;
+const MAX_RECORDS_PER_SUBMIT = 18;
 const ROLE_TOOLS = Object.freeze({
   observer: ["read_source_freshness", "read_signal_summaries"],
   orchestrator: ["read_workflow_projection"],
@@ -127,9 +131,23 @@ export class AgentTeamChatService {
       evidence_refs: context.citations,
       tool_allowlist: context.tool_allowlist,
       context_bytes: Buffer.byteLength(JSON.stringify(context), "utf8"),
-      budgets: { records: AGENT_TEAM_CHAT_LIMITS.max_conversation_records, bytes: AGENT_TEAM_CHAT_LIMITS.max_context_bytes, attempts: AGENT_TEAM_CHAT_LIMITS.max_model_attempts }
+      budgets: { records: AGENT_TEAM_CHAT_LIMITS.max_conversation_records, bytes: AGENT_TEAM_CHAT_LIMITS.max_context_bytes, attempts: AGENT_TEAM_CHAT_LIMITS.max_model_attempts, tool_rounds: AGENT_TEAM_CHAT_LIMITS.max_tool_rounds, tool_calls: AGENT_TEAM_CHAT_LIMITS.max_tool_calls }
     }, context.citations, parentId);
-    const toolSummaries = toolSummariesFor(context);
+    const toolResults = [];
+    let toolParent = contextEvent.id;
+    let toolSummaries = toolSummariesFor(context);
+    let attemptCitations = [];
+    try {
+      if (external?.node_plane && request.selected_component && context.tool_allowlist.includes("get_component_snapshot")) {
+        const seeded = this.recordNodeTool({ request, messageId, route, plane: external.node_plane, tool: "get_component_snapshot", query: {}, round: 0, attempt: 0, parentId: toolParent });
+        toolResults.push(seeded.result);
+        toolSummaries = summarizeNodeTools(toolResults);
+        attemptCitations = safeIds(toolResults.flatMap((item) => item.evidence_refs));
+        toolParent = seeded.parentId;
+      }
+    } catch (error) {
+      return this.toolBlockedResult({ error, request, messageId, route, context, provider, humanGate, parentId: toolParent, toolSummaries });
+    }
     const toolObservation = safeObservation(trace, "tool", "flowpulse.agent-team-context", {
       input: { role: route.to, tool_count: toolSummaries.length, evidence_count: context.evidence.length },
       metadata: { authority: "flowpulse-ledger" }
@@ -140,7 +158,7 @@ export class AgentTeamChatService {
       conversation_id: request.conversation_id,
       message_id: messageId,
       tools: toolSummaries
-    }, context.citations, contextEvent.id);
+    }, attemptCitations.length ? attemptCitations : context.citations, toolParent);
     const working = this.append(request.run_id, "agent_team.response.working", route.to, {
       conversation_id: request.conversation_id,
       message_id: messageId,
@@ -158,36 +176,66 @@ export class AgentTeamChatService {
     const startedAt = Date.now();
     try {
       if (provider.availability !== "available") throw new Error("provider_unavailable");
-      const model = await this.modelAdapter.respond({ role: route.to, context, signal });
+      let model = null;
+      let modelAttempts = 0;
+      let round = 0;
+      const perTool = new Map();
+      let finalParent = working.id;
+      while (true) {
+        modelAttempts++;
+        model = await this.modelAdapter.respond({ role: route.to, context: { ...context, tool_results: boundedModelToolResults(toolResults) }, signal });
+        const requests = validatedModelToolRequests(model?.tool_requests, context.tool_allowlist);
+        if (!requests.length) break;
+        if (!external?.node_plane || !request.selected_component || round >= AGENT_TEAM_CHAT_LIMITS.max_tool_rounds || modelAttempts >= AGENT_TEAM_CHAT_LIMITS.max_model_attempts) {
+          throw new AgentTeamChatError("node_tool_budget_exhausted", 422);
+        }
+        round++;
+        for (const item of requests) {
+          const count = (perTool.get(item.tool) || 0) + 1;
+          perTool.set(item.tool, count);
+          if (count > AGENT_TEAM_CHAT_LIMITS.max_calls_per_tool || toolResults.length >= AGENT_TEAM_CHAT_LIMITS.max_tool_calls) throw new AgentTeamChatError("node_tool_budget_exhausted", 422);
+          const recorded = this.recordNodeTool({ request, messageId, route, plane: external.node_plane, tool: item.tool, query: toolQueryFor(item), round, attempt: modelAttempts, parentId: finalParent });
+          toolResults.push(recorded.result);
+          finalParent = recorded.parentId;
+        }
+        toolSummaries = summarizeNodeTools(toolResults);
+        attemptCitations = safeIds(toolResults.flatMap((item) => item.evidence_refs));
+      }
       const answer = safeAnswer(model?.answer, route.to, context);
       const metadata = modelMetadata(model, Date.now() - startedAt, provider);
       safeUpdate(generation, { output: metadata });
       safeEnd(generation);
       const modelHandoff = modelHandoffFor(route.to, model?.recommended_handoff);
-      const finalParent = modelHandoff
+      finalParent = modelHandoff
         ? this.append(request.run_id, "agent_team.handoff.recorded", route.to, {
           conversation_id: request.conversation_id,
           message_id: messageId,
           from: modelHandoff.from,
           to: modelHandoff.to,
           reason: modelHandoff.reason
-        }, context.citations, working.id).id
-        : working.id;
+        }, attemptCitations.length ? attemptCitations : context.citations, finalParent).id
+        : finalParent;
+      const citations = attemptCitations.length ? attemptCitations : context.citations;
       const answerEvent = this.append(request.run_id, "agent_team.response.created", route.to, responsePayload({
         request,
         messageId,
         route,
         state: "completed",
         answer,
-        citations: context.citations,
+        citations,
         handoff: modelHandoff || (route.to === route.from ? null : route),
         toolSummaries,
         model: metadata,
         provider,
         humanGate
-      }), context.citations, finalParent);
+      }), citations, finalParent);
       return this.resultFor(request.run_id, request.conversation_id, messageId, { answerEvent });
-    } catch {
+    } catch (error) {
+      if (error instanceof NodeInvestigationError || error instanceof AgentTeamChatError) {
+        safeUpdate(generation, { output: { status: "blocked", code: error.code } });
+        safeEnd(generation);
+        return this.toolBlockedResult({ error, request, messageId, route, context, provider, humanGate, parentId: working.id, toolSummaries });
+      }
       const failedProvider = safeProvider({
         ...this.providerCapability(),
         provider_kind: provider.provider_kind,
@@ -283,6 +331,63 @@ export class AgentTeamChatService {
     }
   }
 
+  recordNodeTool({ request, messageId, route, plane, tool, query, round, attempt, parentId }) {
+    const requested = this.append(request.run_id, "agent_team.tool.requested", route.to, {
+      conversation_id: request.conversation_id,
+      message_id: messageId,
+      attempt,
+      round,
+      tool,
+      component_id: request.selected_component,
+      query: boundedToolQuery(query)
+    }, [], parentId);
+    const result = plane.invoke({ role: route.to, tool, componentId: request.selected_component, query });
+    const evidenceRefs = safeIds(result.evidence_refs);
+    const recorded = this.append(request.run_id, "agent_team.tool.result.recorded", route.to, {
+      conversation_id: request.conversation_id,
+      message_id: messageId,
+      attempt,
+      round,
+      tool: result.tool,
+      component_id: request.selected_component,
+      query_fingerprint: safeHash(result.query_fingerprint),
+      cached: result.cached === true,
+      result_count: safeInt(result.result_count, 10_000) || 0,
+      selected_count: safeInt(result.selected_count, 10_000) || 0,
+      omitted_count: safeInt(result.omitted_count, 10_000) || 0,
+      evidence_hashes: safeHashes(result.evidence_hashes),
+      source_truth: safeSourceTruth(result.source_truth),
+      raw_payload_excluded: true
+    }, evidenceRefs, requested.id);
+    return { result, parentId: recorded.id };
+  }
+
+  toolBlockedResult({ error, request, messageId, route, context, provider, humanGate, parentId, toolSummaries }) {
+    const reason = error instanceof NodeInvestigationError || error instanceof AgentTeamChatError ? error.code : "node_tool_failure";
+    const citations = context.citations;
+    const gate = this.append(request.run_id, "agent_team.human_gate.required", "orchestrator", {
+      conversation_id: request.conversation_id,
+      message_id: messageId,
+      requested_agent: request.requested_agent,
+      responding_agent: route.to,
+      reason,
+      human_gate: humanGate.status
+    }, citations, parentId);
+    this.append(request.run_id, "agent_team.response.created", route.to, responsePayload({
+      request,
+      messageId,
+      route,
+      state: "needs_human",
+      answer: "Bounded node evidence is unavailable or incomplete for this request. No approval, repair, verification, or truth state changed.",
+      citations,
+      handoff: route.to === route.from ? null : route,
+      toolSummaries,
+      provider,
+      humanGate
+    }), citations, gate.id);
+    return this.resultFor(request.run_id, request.conversation_id, messageId);
+  }
+
   append(runId, type, actor, payload, evidenceRefs = [], parentId = null) {
     return this.runtime.ledger.append({
       runId,
@@ -337,6 +442,7 @@ function buildContext({ request, state, external, role }) {
     stage_status: safeText(projection.stage_status || state.status, 80) || "unavailable"
   };
   const humanGate = { status: safeEnum(projection.human_gate?.status, ["requested", "granted", "not_required", "not_actionable"], state.waiting_for_approval ? "requested" : "not_required") };
+  const roleTools = external?.node_plane ? (role === "orchestrator" ? ROLE_TOOLS.orchestrator : (ROLE_NODE_TOOL_ALLOWLIST[role] || [])) : ROLE_TOOLS[role];
   const context = {
     role,
     message: redactText(request.message),
@@ -357,7 +463,7 @@ function buildContext({ request, state, external, role }) {
     human_gate: humanGate,
     evidence,
     citations: evidence.map((item) => item.id),
-    tool_allowlist: [...ROLE_TOOLS[role]],
+    tool_allowlist: [...roleTools],
     role_context: roleContextFor({ role, source, incident, humanGate, evidence, projection, componentDetail: external?.selected_component_detail })
   };
   if (Buffer.byteLength(JSON.stringify(context), "utf8") > AGENT_TEAM_CHAT_LIMITS.max_context_bytes) throw new AgentTeamChatError("context_byte_budget_exhausted", 429);
@@ -505,6 +611,66 @@ function toolSummariesFor(context) {
   return context.tool_allowlist.map((tool) => ({ tool, result_count: counts[tool] || 0, raw_payload_excluded: true }));
 }
 
+function validatedModelToolRequests(value, allowlist) {
+  if (value == null) return [];
+  if (!Array.isArray(value) || value.length > 2) throw new AgentTeamChatError("node_tool_request_invalid", 422);
+  return value.map((item) => {
+    if (!plain(item) || Object.keys(item).sort().join(",") !== "cursor,limit,signal,tool" || !allowlist.includes(item.tool)
+      || (item.cursor !== null && !safeId(item.cursor))
+      || (item.limit !== null && (!Number.isSafeInteger(item.limit) || item.limit < 1 || item.limit > 12))
+      || (item.signal !== null && !["all", "metric", "log", "trace", "change", "resource"].includes(item.signal))) throw new AgentTeamChatError("node_tool_request_invalid", 422);
+    return { tool: item.tool, cursor: item.cursor, limit: item.limit, signal: item.signal };
+  });
+}
+
+function toolQueryFor(item) {
+  return {
+    ...(item.cursor !== null ? { cursor: item.cursor } : {}),
+    ...(item.limit !== null ? { limit: item.limit } : {}),
+    ...(item.signal !== null ? { signal: item.signal } : {})
+  };
+}
+
+function boundedToolQuery(value) {
+  return {
+    window: "15m",
+    cursor: safeIdValue(value?.cursor),
+    limit: Number.isSafeInteger(value?.limit) ? value.limit : null,
+    signal: ["all", "metric", "log", "trace", "change", "resource"].includes(value?.signal) ? value.signal : null
+  };
+}
+
+function summarizeNodeTools(results) {
+  return results.slice(0, AGENT_TEAM_CHAT_LIMITS.max_tool_calls).map((item) => ({
+    tool: safeText(item?.tool, 120) || "read_only",
+    result_count: safeInt(item?.result_count, 10_000) || 0,
+    selected_count: safeInt(item?.selected_count, 10_000) || 0,
+    omitted_count: safeInt(item?.omitted_count, 10_000) || 0,
+    cached: item?.cached === true,
+    raw_payload_excluded: true
+  }));
+}
+
+function boundedModelToolResults(results) {
+  return results.slice(0, AGENT_TEAM_CHAT_LIMITS.max_tool_calls).map((item) => ({
+    tool: safeText(item?.tool, 120) || "read_only",
+    component_id: safeIdValue(item?.component_id),
+    query_fingerprint: safeHash(item?.query_fingerprint),
+    result_count: safeInt(item?.result_count, 10_000) || 0,
+    selected_count: safeInt(item?.selected_count, 10_000) || 0,
+    omitted_count: safeInt(item?.omitted_count, 10_000) || 0,
+    evidence_refs: safeIds(item?.evidence_refs),
+    records: Array.isArray(item?.records) ? item.records.slice(0, 8).map((record) => ({
+      id: safeIdValue(record?.id), kind: safeText(record?.kind, 80) || "unknown", title: redactText(safeText(record?.title, 180) || "Bounded evidence"), summary: redactText(safeText(record?.summary, 360) || "") || null, entity: safeText(record?.entity, 120) || "unknown", observed_at: safeText(record?.observed_at, 40) || null, record_sha256: safeHash(record?.record_sha256)
+    })).filter((record) => record.id) : [],
+    source_truth: safeSourceTruth(item?.source_truth),
+    raw_payload_excluded: true
+  }));
+}
+
+function safeHashes(value) { return Array.isArray(value) ? [...new Set(value.filter(safeHash))].slice(0, AGENT_TEAM_CHAT_LIMITS.max_evidence_refs) : []; }
+function safeSourceTruth(value) { return { mode: safeText(value?.mode, 80) || "unavailable", status: safeEnum(value?.status, ["captured", "frozen", "live", "stale", "disconnected", "unavailable"], "unavailable"), freshness_ms: safeInt(value?.freshness_ms, 31_536_000_000), observed_at: safeText(value?.observed_at, 40) || null, truth_label: safeText(value?.truth_label, 80) || "unavailable" }; }
+
 function responsePayload({ request, messageId, route, state, answer, citations, handoff, toolSummaries, model = null, provider = null, humanGate = null }) {
   return {
     conversation_id: request.conversation_id,
@@ -550,6 +716,32 @@ function projectEvent(event) {
     citations: safeIds(payload.evidence_refs)
   };
   if (event.type === "agent_team.tool_summary.recorded") return { ...base, kind: "tool_summary", agent: safeRole(event.actor), state: "working", citations: safeIds(event.evidence_refs), tools: safeToolSummaries(payload.tools) };
+  if (event.type === "agent_team.tool.requested") return {
+    ...base,
+    kind: "tool_request",
+    agent: safeRole(event.actor),
+    state: "working",
+    tool: safeText(payload.tool, 120) || "read_only",
+    component_id: safeIdValue(payload.component_id),
+    attempt: safeInt(payload.attempt, AGENT_TEAM_CHAT_LIMITS.max_model_attempts),
+    round: safeInt(payload.round, AGENT_TEAM_CHAT_LIMITS.max_tool_rounds),
+    raw_payload_excluded: true
+  };
+  if (event.type === "agent_team.tool.result.recorded") return {
+    ...base,
+    kind: "tool_result",
+    agent: safeRole(event.actor),
+    state: "working",
+    tool: safeText(payload.tool, 120) || "read_only",
+    component_id: safeIdValue(payload.component_id),
+    result_count: safeInt(payload.result_count, 10_000) || 0,
+    selected_count: safeInt(payload.selected_count, 10_000) || 0,
+    omitted_count: safeInt(payload.omitted_count, 10_000) || 0,
+    cached: payload.cached === true,
+    citations: safeIds(event.evidence_refs),
+    source_truth: safeSourceTruth(payload.source_truth),
+    raw_payload_excluded: true
+  };
   if (event.type === "agent_team.response.working") return { ...base, kind: "working", requested_agent: safeRole(payload.requested_agent), responding_agent: safeRole(payload.responding_agent), state: "working", citations: safeIds(event.evidence_refs), provider: safeProvider(payload.provider) };
   if (event.type === "agent_team.response.created") return {
     ...base,
@@ -598,8 +790,11 @@ function safeAnswer(value, role, context) {
 function redactText(value) {
   return String(value || "")
     .replace(/[\u0000-\u001f\u007f<>&]/g, " ")
-    .replace(/\bsk-[A-Za-z0-9_-]{12,}\b/g, "[redacted]")
-    .replace(/\b(api[_-]?key|token|secret|password)\s*[:=]\s*[^\s,;]+/gi, "$1=[redacted]")
+    .replace(/\b(?:sk|rk)_[A-Za-z0-9_-]{12,}\b|\bsk-[A-Za-z0-9_-]{12,}\b|\bAKIA[0-9A-Z]{16}\b|\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9._-]{10,}\.[A-Za-z0-9._-]{10,}\b/g, "[redacted]")
+    .replace(/\b(api[_-]?key|token|secret|password|authorization)\s*[:=]\s*(?:bearer\s+)?[^\s,;]+/gi, "$1=[redacted]")
+    .replace(/\bBearer\s+[A-Za-z0-9._-]{12,}\b/gi, "Bearer [redacted]")
+    .replace(/\b(?:system|developer|user)\s+prompt\b/gi, "prompt [redacted]")
+    .replace(/\b(?:provider\s+payload|raw\s+(?:log|trace|payload))\b/gi, "redacted provider detail")
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -626,7 +821,7 @@ function modelHandoffFor(from, value) {
   const reason = safeText(value.reason, 200);
   return reason ? { from, to: value.to, reason } : null;
 }
-function safeToolSummaries(value) { return Array.isArray(value) ? value.slice(0, 4).map((item) => ({ tool: safeText(item?.tool, 120) || "read_only", result_count: safeInt(item?.result_count, 10_000) || 0, raw_payload_excluded: true })) : []; }
+function safeToolSummaries(value) { return Array.isArray(value) ? value.slice(0, 4).map((item) => ({ tool: safeText(item?.tool, 120) || "read_only", result_count: safeInt(item?.result_count, 10_000) || 0, selected_count: safeInt(item?.selected_count, 10_000) || 0, omitted_count: safeInt(item?.omitted_count, 10_000) || 0, cached: item?.cached === true, raw_payload_excluded: true })) : []; }
 function providerCapability(adapter) { return safeProvider(typeof adapter?.capability === "function" ? adapter.capability() : null, adapter); }
 function safeProvider(value, adapter = null) {
   const kinds = ["codex-local", "openai-responses", "recorded"];

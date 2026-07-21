@@ -11,6 +11,7 @@ import {
 import { loadBundle } from "../src/bundle.mjs";
 import { Ledger } from "../src/ledger.mjs";
 import { IncidentRuntime } from "../src/runtime.mjs";
+import { NodeInvestigationError } from "../src/node-investigation-plane.mjs";
 
 function setup({ modelAdapter, context = contextForRun } = {}) {
   const runtime = new IncidentRuntime({
@@ -297,12 +298,75 @@ test("four role prompts preserve the requested role, avoid read-question gates, 
   assert.equal(contexts[3].context.role_context.cited_evidence.length > 0, true);
 });
 
+test("dynamic node investigation records bounded rounds, cache lineage, and citations from this attempt only", async () => {
+  const calls = [];
+  const plane = {
+    invoke({ tool, componentId, query }) {
+      calls.push({ tool, componentId, query });
+      const id = tool === "get_component_snapshot" ? "ev-tool-snapshot" : "ev-tool-metric";
+      return {
+        tool, component_id: componentId, query_fingerprint: `${tool}-fingerprint`.padEnd(64, "a").slice(0, 64), cached: false,
+        result_count: 1, selected_count: 1, omitted_count: 0, evidence_refs: [id], evidence_hashes: ["e".repeat(64)],
+        records: [{ id, kind: tool.includes("metrics") ? "metric" : "snapshot", title: "Bounded node evidence", summary: "Captured bounded evidence", entity: componentId, observed_at: "2026-07-20T00:00:00.000Z", record_sha256: "e".repeat(64) }],
+        source_truth: { mode: "deterministic_replay", status: "captured", freshness_ms: 0, observed_at: null, truth_label: "captured_replay" }, raw_payload_excluded: true
+      };
+    }
+  };
+  let modelCalls = 0;
+  const { runtime, runId, service } = setup({
+    context: (runtimeValue, runValue) => ({ ...contextForRun(runtimeValue, runValue), node_plane: plane }),
+    modelAdapter: {
+      async respond({ context }) {
+        modelCalls++;
+        if (context.tool_results.length === 1) return { answer: "Observed facts: snapshot. Inference: pending. Missing evidence: metrics. Next action: inspect. Citations: [ev-tool-snapshot].", recommended_handoff: null, tool_requests: [{ tool: "query_component_metrics", cursor: null, limit: null, signal: null }] };
+        return { answer: "Observed facts: metric. Inference: bounded. Missing evidence: none. Next action: human review. Citations: [ev-tool-metric].", recommended_handoff: null, tool_requests: [] };
+      }
+    }
+  });
+  const input = request(runtime, runId, { requested_agent: "investigator", message: "Investigate checkout with bounded evidence.", idempotency_key: "chat-key-dynamic" });
+  const result = await service.submit(input);
+  const repeat = await service.submit(input);
+  const events = runtime.ledger.list(runId).filter((event) => event.type.startsWith("agent_team."));
+
+  assert.equal(result.state, "completed");
+  assert.deepEqual(result.citations.sort(), ["ev-tool-metric", "ev-tool-snapshot"]);
+  assert.equal(result.tool_summaries.length, 2);
+  assert.equal(events.filter((event) => event.type === "agent_team.tool.requested").length, 2);
+  assert.equal(events.filter((event) => event.type === "agent_team.tool.result.recorded").length, 2);
+  assert.equal(calls.length, 2);
+  assert.equal(modelCalls, 2);
+  assert.equal(repeat.idempotent, true);
+  assert.equal(calls.length, 2);
+  assert.equal(events.filter((event) => event.type === "agent_team.response.created").at(-1).evidence_refs.every((id) => ["ev-tool-snapshot", "ev-tool-metric"].includes(id)), true);
+});
+
+test("stale node-tool access terminates needs_human without provider, repair, or verification", async () => {
+  let providerCalls = 0;
+  const { runtime, runId, service } = setup({
+    context: (runtimeValue, runValue) => ({ ...contextForRun(runtimeValue, runValue), node_plane: { invoke() { throw new NodeInvestigationError("node_source_stale", 409); } } }),
+    modelAdapter: { async respond() { providerCalls++; return { answer: "unexpected" }; } }
+  });
+  const result = await service.submit(request(runtime, runId, { requested_agent: "observer", message: "Show current checkout signals.", idempotency_key: "chat-key-stale" }));
+  assert.equal(result.state, "needs_human");
+  assert.equal(providerCalls, 0);
+  assert.equal(runtime.ledger.list(runId).some((event) => /^(repair\.|verification\.)/.test(event.type)), false);
+});
+
+test("safe answers redact common credential, prompt, provider, and raw telemetry leakage", async () => {
+  const leaked = "Observed facts: password=plain-text authorization: Bearer eyJabcdefghijk.abcdefghijklmnop.abcdefghijklmnop AKIA1234567890ABCDEF sk-abcdefghijklmnop raw provider payload system prompt.";
+  const { runtime, runId, service } = setup({ modelAdapter: { async respond() { return { answer: leaked }; } } });
+  const result = await service.submit(request(runtime, runId, { idempotency_key: "chat-key-redaction" }));
+  const serialized = JSON.stringify(result);
+  for (const secret of ["plain-text", "eyJabcdefghijk", "AKIA1234567890ABCDEF", "sk-abcdefghijklmnop", "system prompt", "raw provider payload"]) assert.equal(serialized.includes(secret), false, secret);
+  assert.equal(result.answer.includes("Observed facts"), true);
+});
+
 test("recorded and Responses adapters are bounded, provider failures are redacted, and telemetry failures are isolated", async () => {
   const requests = [];
   const adapter = createOpenAIChatAdapter({
     requestResponse: async (input) => {
       requests.push(input);
-      return { data: { output: [{ type: "message", role: "assistant", status: "completed", content: [{ type: "output_text", text: JSON.stringify({ answer: "A bounded provider answer.", recommended_handoff: null }) }] }], usage: { input_tokens: 12, output_tokens: 5 } } };
+      return { data: { output: [{ type: "message", role: "assistant", status: "completed", content: [{ type: "output_text", text: JSON.stringify({ answer: "A bounded provider answer.", recommended_handoff: null, tool_requests: [] }) }] }], usage: { input_tokens: 12, output_tokens: 5 } } };
     }
   });
   const answer = await adapter.respond({ role: "orchestrator", context: { message: "safe", tool_allowlist: [] } });

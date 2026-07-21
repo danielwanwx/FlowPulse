@@ -17,7 +17,7 @@ test("interactive loop starts asynchronously, streams safe events, resumes, and 
       FLOWPULSE_DB: join(root, "ledger.db"),
       FLOWPULSE_AGENT_PROVIDER: "codex-local",
       NODE_ENV: "test",
-      FLOWPULSE_TEST_CODEX_RESPONSE: "{\"answer\":\"Bounded local role response cites ev-local-safe-1.\",\"recommended_handoff\":null}",
+      FLOWPULSE_TEST_CODEX_RESPONSE: "{\"answer\":\"Bounded local role response cites ev-local-safe-1.\",\"recommended_handoff\":null,\"tool_requests\":[]}",
       FLOWPULSE_TEST_CODEX_DELAY_MS: "300",
       OPENAI_API_KEY: ""
     },
@@ -103,7 +103,7 @@ test("a restarted server terminalizes an expired reservation without replaying m
     FLOWPULSE_AGENT_PROVIDER: "codex-local",
     FLOWPULSE_AGENT_LOOP_LEASE_MS: "1000",
     NODE_ENV: "test",
-    FLOWPULSE_TEST_CODEX_RESPONSE: "{\"answer\":\"Bounded local role response cites ev-local-safe-1.\",\"recommended_handoff\":null}",
+    FLOWPULSE_TEST_CODEX_RESPONSE: "{\"answer\":\"Bounded local role response cites ev-local-safe-1.\",\"recommended_handoff\":null,\"tool_requests\":[]}",
     OPENAI_API_KEY: ""
   };
   const firstChild = spawn(process.execPath, ["src/server.mjs"], { cwd: new URL("..", import.meta.url), env: { ...sharedEnv, PORT: String(firstPort), FLOWPULSE_TEST_CODEX_DELAY_MS: "10000" }, stdio: ["ignore", "pipe", "pipe"] });
