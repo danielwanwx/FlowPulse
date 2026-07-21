@@ -96,6 +96,7 @@ let state;
 let developmentStatus;
 let mode = "architecture";
 let renderedMode = null;
+let renderedCanvasKey = null;
 let cursor = 0;
 let playing = false;
 let busy = false;
@@ -119,6 +120,9 @@ let liveSignalFrames = new Set();
 let liveSignalGeneration = 0;
 let componentCatalogSource = null;
 let componentCatalogCache = new Map();
+const liveComponentDetails = new Map();
+const pendingLiveComponentDetails = new Set();
+const unavailableLiveComponentDetails = new Set();
 let selectedCollaboratorId = "commander";
 const recoveryDrafts = new Map();
 
@@ -189,6 +193,7 @@ async function refresh() {
     connectAgentStream();
     hideError();
     render();
+    ensureSelectedLiveComponentDetail();
     // Local-development diagnostics can spend seconds probing Docker and the
     // optional flag API. They must never delay the canonical browser state.
     void refreshDevelopmentStatus();
@@ -212,10 +217,12 @@ async function refreshDevelopmentStatus() {
 
 function render() {
   if (!state) return;
-  const previousPositions = renderedMode && renderedMode !== mode ? captureCanvasNodePositions() : new Map();
+  const canvasKey = canvasProjectionKey();
+  const shouldRenderCanvas = canvasKey !== renderedCanvasKey;
+  const previousPositions = shouldRenderCanvas && renderedMode && renderedMode !== mode ? captureCanvasNodePositions() : new Map();
   renderHeader();
   renderMetrics();
-  renderCanvas();
+  if (shouldRenderCanvas) renderCanvas();
   renderTimeline();
   renderApproval();
   renderDevelopmentControl();
@@ -223,8 +230,20 @@ function render() {
   renderOperationsTeamRail();
   renderManager();
   updateControls();
-  animateCanvasTransition(previousPositions);
+  if (shouldRenderCanvas) animateCanvasTransition(previousPositions);
   renderedMode = mode;
+  renderedCanvasKey = canvasKey;
+}
+
+function canvasProjectionKey() {
+  if (mode === "architecture") {
+    const detail = architectureDetail?.scope === "architecture"
+      ? `${architectureDetail.nodeId}:${architectureDetail.loading ? "loading" : architectureDetail.failed ? "unavailable" : architectureDetail.detail?.detail_revision || "compact"}`
+      : "compact";
+    return `architecture:${architectureView()?.projection_revision || "unavailable"}:${detail}`;
+  }
+  if (mode === "live") return `live:${liveTopologyView()?.projection_revision || "unavailable"}`;
+  return `${mode}:${state?.run_id || "unavailable"}:${state?.topology_views?.projection_revision || "unavailable"}:${cursor}`;
 }
 
 function renderHeader() {
@@ -1296,9 +1315,20 @@ function drawerTabsForSelection(focus) {
 
 function sourceDrawerTabs(context) {
   const tabs = [["overview", "Overview"]];
-  if (context.architecture ? context.node.signal_types.length : context.evidence.length) tabs.push(["signals", "Signals"]);
+  const detail = context.detail;
+  const hasSignals = context.architecture
+    ? context.node.signal_types.length
+    : detail
+      ? detail.observability.metrics.length + detail.observability.traces.length + detail.observability.logs.length + detail.observability.changes.length
+      : context.evidence.length;
+  const hasEvidence = context.architecture
+    ? context.node.provenance_refs.length
+    : detail
+      ? detail.component.provenance_refs.length || detail.observability.logs.length || detail.observability.changes.length
+      : context.evidence.length;
+  if (hasSignals) tabs.push(["signals", "Signals"]);
   if (context.incoming.length || context.outgoing.length) tabs.push(["dependencies", "Dependencies"]);
-  if (context.architecture ? context.node.provenance_refs.length : context.evidence.length) tabs.push(["evidence", "Evidence"]);
+  if (hasEvidence) tabs.push(["evidence", "Evidence"]);
   return tabs;
 }
 
@@ -1390,6 +1420,9 @@ function renderSourceDrawerContent(tab, context) {
     if (tab === "evidence") return renderArchitectureProvenance(context);
     return emptyDetail("No bounded architecture detail is available for this component.");
   }
+  if (context.detailLoading) return liveComponentDetailLoadingMarkup(context);
+  if (context.detail) return renderLiveComponentDetail(context, tab);
+  if (context.detailUnavailable) return emptyDetail("Safe component detail is unavailable from the current backend projection.");
   if (tab === "overview") return `${renderSourceComponentContext(context)}${liveAgentAssessment(context)}`;
   if (tab === "signals") return renderSourceSignalSummary(context);
   if (tab === "dependencies") return renderSourceDependencies(context);
@@ -1397,6 +1430,74 @@ function renderSourceDrawerContent(tab, context) {
     ? [...context.evidence].sort((a, b) => String(b.at || "").localeCompare(String(a.at || ""))).slice(0, 6).map(renderEvidenceRecord).join("")
     : emptyDetail("No component-scoped evidence is available in the current authoritative window.");
   return emptyDetail("No detail is available for this component.");
+}
+
+function liveComponentDetailLoadingMarkup(context) {
+  return `<section class="live-component-detail live-component-detail-state">
+    <span>Loading safe backend detail</span>
+    <strong>${escapeHtml(context.node.label)}</strong>
+    <p>The runtime canvas remains active while this bounded read model is loaded.</p>
+  </section>`;
+}
+
+function renderLiveComponentDetail(context, tab) {
+  const detail = context.detail;
+  const dependencySections = liveComponentRelationSections(detail.relationships);
+  const signalSections = liveComponentObservabilitySections(detail.observability);
+  const evidenceSections = liveComponentEvidenceSections(detail);
+  if (tab === "signals") return signalSections || emptyDetail("No safe telemetry summary is available for this component in the current backend projection.");
+  if (tab === "dependencies") return dependencySections || emptyDetail("No backend-projected dependency is available for this component.");
+  if (tab === "evidence") return evidenceSections || emptyDetail("No bounded evidence or provenance is available for this component.");
+  const statusFacts = [
+    ["Current state", sourceStatusLabel(context.status, detail.runtime.status)],
+    ["Source truth", detail.runtime.label],
+    ["Source health", detail.component.source_health],
+    detail.runtime.observed_at ? ["Observed at", formatTime(detail.runtime.observed_at)] : null,
+    detail.runtime.freshness_ms != null ? ["Source age", formatAge(detail.runtime.freshness_ms)] : null,
+    detail.component.signal_types.length ? ["Signal types", detail.component.signal_types.join(" · ")] : null
+  ].filter(Boolean);
+  return `<section class="live-component-detail">
+    <header>
+      <span class="node-icon" aria-hidden="true"><i class="ph ph-${iconForLive(detail.component)}"></i></span>
+      <div><span>${escapeHtml(kindLabel(detail.component.kind))}</span><strong>${escapeHtml(detail.component.label)}</strong></div>
+      <span class="node-status-dot is-${escapeHtml(context.status)}" aria-label="${escapeHtml(sourceStatusLabel(context.status, detail.runtime.status))}"></span>
+    </header>
+    <section class="live-component-purpose"><span>Operational role</span><strong>${escapeHtml(detail.purpose.business_role)}</strong><p>${escapeHtml(detail.purpose.description)}</p></section>
+    <dl class="live-component-facts">${statusFacts.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("")}</dl>
+    ${dependencySections}
+    ${signalSections}
+    ${evidenceSections}
+  </section>${liveAgentAssessment(context)}`;
+}
+
+function liveComponentRelationSections(relationships) {
+  const group = (label, values) => values.length ? `<section class="live-component-section"><span>${escapeHtml(label)}</span><div class="live-component-relation-list">${values.map((related) => `<button type="button" data-focus-entity="${escapeHtml(related.id)}"><strong>${escapeHtml(related.label)}</strong><small>${escapeHtml(related.relation)}</small></button>`).join("")}</div></section>` : "";
+  return `${group("Upstream dependencies", relationships.upstream)}${group("Downstream dependencies", relationships.downstream)}`;
+}
+
+function liveComponentObservabilitySections(observability) {
+  const metricValue = (item) => [
+    item.name,
+    item.before != null && item.after != null ? `${item.before} → ${item.after}${item.unit ? ` ${item.unit}` : ""}` : item.value != null ? `${item.value}${item.unit ? ` ${item.unit}` : ""}` : null,
+    item.aggregation,
+    item.threshold
+  ].filter(Boolean).join(" · ");
+  const traceValue = (item) => [item.operation, item.peer_target, item.status, item.error, item.trace_ref ? `trace ${item.trace_ref}` : null].filter(Boolean).join(" · ");
+  const changeValue = (item) => [item.target, item.flag, item.before != null && item.after != null ? `${item.before} → ${item.after}` : null, item.applied_at ? formatTime(item.applied_at) : null].filter(Boolean).join(" · ");
+  const group = (label, items, describe) => items.length ? `<section class="live-component-section"><span>${escapeHtml(label)}</span><div class="live-component-observability">${items.map((item) => `<article><strong>${escapeHtml(item.title)}</strong>${describe(item) ? `<p>${escapeHtml(describe(item))}</p>` : ""}<small>${escapeHtml(item.source)} · ${escapeHtml(formatTime(item.observed_at))}</small><code>${escapeHtml(item.evidence_id)} · ${escapeHtml(item.record_sha256.slice(0, 12))}</code></article>`).join("")}</div></section>` : "";
+  return [
+    group("Metrics", observability.metrics, metricValue),
+    group("Traces", observability.traces, traceValue),
+    group("Recorded log events", observability.logs, () => "Sanitized event metadata"),
+    group("Configuration changes", observability.changes, changeValue)
+  ].join("");
+}
+
+function liveComponentEvidenceSections(detail) {
+  const provenance = detail.component.provenance_refs;
+  const records = [...detail.observability.logs, ...detail.observability.changes];
+  if (!provenance.length && !records.length) return "";
+  return `<section class="live-component-section"><span>Evidence and provenance</span><div class="live-component-evidence">${provenance.map((reference) => `<code>${escapeHtml(reference)}</code>`).join("")}${records.map((item) => `<code>${escapeHtml(item.evidence_id)} · ${escapeHtml(item.record_sha256.slice(0, 12))}</code>`).join("")}</div></section>`;
 }
 
 function liveAgentAssessment(context) {
@@ -1623,8 +1724,13 @@ function openDrawer(focus, tab = "evidence") {
   }
   selected = focus;
   activeTab = tab;
+  if (mode === "live" && focus?.type === "node") void requestLiveComponentDetail(focus.id);
   renderDrawer();
   renderOperationsTeamRail();
+}
+
+function ensureSelectedLiveComponentDetail() {
+  if (mode === "live" && selected?.type === "node") void requestLiveComponentDetail(selected.id);
 }
 
 function closeDrawer() {
@@ -2164,6 +2270,7 @@ function sourceComponentContext(id) {
   if (!topology) return null;
   const node = topology.nodes.find((item) => item.id === id);
   if (!node) return null;
+  const detailKey = liveComponentDetailKey(node.id, view?.projection_revision);
   const incoming = topology.edges.filter((edge) => edge.to === id).map((edge) => topology.nodes.find((item) => item.id === edge.from)).filter(Boolean);
   const outgoing = topology.edges.filter((edge) => edge.from === id).map((edge) => topology.nodes.find((item) => item.id === edge.to)).filter(Boolean);
   return {
@@ -2173,8 +2280,38 @@ function sourceComponentContext(id) {
     outgoing,
     evidence: [],
     status: node.connectivity === "unlinked" ? "unlinked" : node.status || "dormant",
-    source
+    source,
+    detail: detailKey ? liveComponentDetails.get(detailKey) || null : null,
+    detailLoading: detailKey ? pendingLiveComponentDetails.has(detailKey) : false,
+    detailUnavailable: detailKey ? unavailableLiveComponentDetails.has(detailKey) : false
   };
+}
+
+function liveComponentDetailKey(id, projectionRevision = liveTopologyView()?.projection_revision) {
+  return typeof id === "string" && /^[a-z0-9][a-z0-9-]{0,79}$/.test(id) && typeof projectionRevision === "string" && /^[a-f0-9]{64}$/.test(projectionRevision)
+    ? `${projectionRevision}:${id}`
+    : null;
+}
+
+async function requestLiveComponentDetail(id) {
+  if (mode !== "live") return;
+  const view = liveTopologyView();
+  const key = liveComponentDetailKey(id, view?.projection_revision);
+  if (!key || liveComponentDetails.has(key) || pendingLiveComponentDetails.has(key) || unavailableLiveComponentDetails.has(key)) return;
+  pendingLiveComponentDetails.add(key);
+  if (selected?.type === "node" && selected.id === id) renderDrawer();
+  try {
+    const value = await request(`/api/components/${encodeURIComponent(id)}`);
+    const detail = componentDetailProjection(value, { nodeId: id, topologyRevision: view.projection_revision });
+    if (!detail || liveTopologyView()?.projection_revision !== view.projection_revision) throw new Error("component_detail_unavailable");
+    if (liveComponentDetails.size >= 22) liveComponentDetails.clear();
+    liveComponentDetails.set(key, detail);
+  } catch {
+    unavailableLiveComponentDetails.add(key);
+  } finally {
+    pendingLiveComponentDetails.delete(key);
+    if (selected?.type === "node" && selected.id === id && mode === "live") renderDrawer();
+  }
 }
 
 function architectureDetailContext(id) {
@@ -2658,6 +2795,7 @@ function connectAgentStream() {
         state = await request("/api/state");
         cursor = availableStage(state.events);
         render();
+        ensureSelectedLiveComponentDetail();
       } catch { /* the stream will retry without replacing the last valid projection */ }
     }, 80);
   });

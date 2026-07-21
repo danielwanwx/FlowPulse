@@ -973,6 +973,29 @@ test("source component drawers expose only data-bearing topology, signals, and i
   assert.match(stylesCss, /\.telemetry-preview/);
 });
 
+test("Live node detail is revision-bound, comprehensive, and never remounts the active runtime canvas", () => {
+  const detailLoader = appJs.slice(appJs.indexOf("function liveComponentDetailKey"), appJs.indexOf("function architectureDetailContext"));
+  const liveDetail = appJs.slice(appJs.indexOf("function renderLiveComponentDetail"), appJs.indexOf("function liveAgentAssessment"));
+  const drawerOpen = appJs.slice(appJs.indexOf("function openDrawer"), appJs.indexOf("function closeDrawer"));
+  const rootRender = appJs.slice(appJs.indexOf("function render()"), appJs.indexOf("function renderHeader"));
+  assert.match(detailLoader, /componentDetailProjection/);
+  assert.match(detailLoader, /\/api\/components\//);
+  assert.match(detailLoader, /renderDrawer\(\)/);
+  assert.doesNotMatch(detailLoader, /renderCanvas\(|\brender\(\)/);
+  assert.match(liveDetail, /purpose\.business_role/);
+  assert.match(liveDetail, /relationships\.upstream/);
+  assert.match(liveDetail, /relationships\.downstream/);
+  assert.match(liveDetail, /observability\.metrics/);
+  assert.match(liveDetail, /observability\.traces/);
+  assert.match(liveDetail, /observability\.logs/);
+  assert.match(liveDetail, /observability\.changes/);
+  assert.match(liveDetail, /record_sha256/);
+  assert.doesNotMatch(liveDetail, /payload|prompt|token|secret|raw_log/i);
+  assert.doesNotMatch(drawerOpen, /\brender\(\)|\brenderCanvas\(/);
+  assert.match(rootRender, /canvasProjectionKey\(\)/);
+  assert.match(rootRender, /canvasKey !== renderedCanvasKey/);
+});
+
 test("timeline renders only recorded milestones and labels the next evidence requirement", () => {
   assert.match(appJs, /const visible = stages\.slice\(0, available \+ 1\)/);
   assert.match(appJs, /function nextTimelineRequirement\(index\)/);

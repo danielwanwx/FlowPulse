@@ -3186,6 +3186,137 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .team-rail-detail dd { margin: 0; color: #111827; font-size: 12px; font-weight: 500; line-height: 1.45; overflow-wrap: anywhere; }
 .team-rail-note { margin: 0; color: #64748b; font-size: 11px; line-height: 1.45; }
 
+/* Live details render the already bounded component projection without changing
+   the runtime canvas or introducing a second card system. */
+.app-shell[data-mode="live"] .live-component-detail {
+  display: grid;
+  gap: 12px;
+  color: var(--architecture-copy);
+}
+.app-shell[data-mode="live"] .live-component-detail > header {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 2px 0;
+}
+.app-shell[data-mode="live"] .live-component-detail > header .node-icon {
+  width: 36px;
+  height: 36px;
+  border: 0;
+  border-radius: var(--architecture-control-radius);
+  color: var(--architecture-vector);
+  background: rgba(211, 220, 226, .52);
+  box-shadow: none;
+}
+.app-shell[data-mode="live"] .live-component-detail > header div { display: grid; gap: 2px; }
+.app-shell[data-mode="live"] .live-component-detail > header div span,
+.app-shell[data-mode="live"] .live-component-section > span,
+.app-shell[data-mode="live"] .live-component-purpose > span {
+  color: var(--architecture-muted);
+  font-size: 11px;
+  font-weight: 500;
+}
+.app-shell[data-mode="live"] .live-component-detail > header strong {
+  color: var(--architecture-copy);
+  font-size: 17px;
+  font-weight: 600;
+}
+.app-shell[data-mode="live"] .live-component-detail > header .node-status-dot { position: static; }
+.app-shell[data-mode="live"] .live-component-purpose,
+.app-shell[data-mode="live"] .live-component-section,
+.app-shell[data-mode="live"] .live-component-detail-state {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border: 0;
+  border-radius: var(--architecture-node-radius);
+  background: rgba(255, 255, 255, .74);
+  box-shadow: none;
+}
+.app-shell[data-mode="live"] .live-component-purpose strong { font-size: 14px; font-weight: 600; }
+.app-shell[data-mode="live"] .live-component-purpose p,
+.app-shell[data-mode="live"] .live-component-detail-state p {
+  margin: 0;
+  color: var(--architecture-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.app-shell[data-mode="live"] .live-component-facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+.app-shell[data-mode="live"] .live-component-facts > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 9px;
+  border: 0;
+  border-radius: var(--architecture-control-radius);
+  background: rgba(211, 220, 226, .38);
+}
+.app-shell[data-mode="live"] .live-component-facts dt {
+  color: var(--architecture-muted);
+  font-size: 10px;
+  font-weight: 500;
+}
+.app-shell[data-mode="live"] .live-component-facts dd {
+  overflow-wrap: anywhere;
+  margin: 0;
+  color: var(--architecture-copy);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+.app-shell[data-mode="live"] .live-component-relation-list,
+.app-shell[data-mode="live"] .live-component-observability,
+.app-shell[data-mode="live"] .live-component-evidence {
+  display: grid;
+  gap: 7px;
+}
+.app-shell[data-mode="live"] .live-component-relation-list button,
+.app-shell[data-mode="live"] .live-component-observability article,
+.app-shell[data-mode="live"] .live-component-evidence code {
+  min-width: 0;
+  border: 0;
+  border-radius: var(--architecture-control-radius);
+  background: rgba(211, 220, 226, .38);
+  box-shadow: none;
+}
+.app-shell[data-mode="live"] .live-component-relation-list button {
+  display: grid;
+  gap: 2px;
+  width: 100%;
+  padding: 9px;
+  color: var(--architecture-copy);
+  text-align: left;
+  cursor: pointer;
+}
+.app-shell[data-mode="live"] .live-component-relation-list button:hover,
+.app-shell[data-mode="live"] .live-component-relation-list button:focus-visible { background: rgba(255, 255, 255, .92); }
+.app-shell[data-mode="live"] .live-component-relation-list button strong { font-size: 12px; font-weight: 600; }
+.app-shell[data-mode="live"] .live-component-relation-list button small,
+.app-shell[data-mode="live"] .live-component-observability small {
+  color: var(--architecture-muted);
+  font-size: 10px;
+}
+.app-shell[data-mode="live"] .live-component-observability article { display: grid; gap: 4px; padding: 10px; }
+.app-shell[data-mode="live"] .live-component-observability strong { font-size: 12px; font-weight: 600; }
+.app-shell[data-mode="live"] .live-component-observability p { margin: 0; color: var(--architecture-muted); font-size: 11px; line-height: 1.4; }
+.app-shell[data-mode="live"] .live-component-observability code,
+.app-shell[data-mode="live"] .live-component-evidence code {
+  overflow-wrap: anywhere;
+  color: var(--architecture-muted);
+  font-family: var(--mono);
+  font-size: 10px;
+}
+.app-shell[data-mode="live"] .live-component-evidence code { display: block; padding: 8px 9px; }
+@media (max-width: 720px) {
+  .app-shell[data-mode="live"] .live-component-facts { grid-template-columns: 1fr; }
+}
+
 @media (max-width: 1320px) {
   .operations-team-rail { width: 272px; }
 }
