@@ -549,6 +549,26 @@ test("judge API serves state and advances the replay", async (context) => {
   const architectureIds = new Set(initial.topology_views.architecture.runtime_data.graph.nodes.map((node) => node.id));
   assert.equal(initial.topology_views.architecture.runtime_data.graph.edges.every((edge) => architectureIds.has(edge.from) && architectureIds.has(edge.to)), true);
 
+  const detailEventCount = new Ledger(dbPath).list(initial.run_id).length;
+  const componentDetailResponse = await fetch(`http://127.0.0.1:${port}/api/components/checkout`);
+  assert.equal(componentDetailResponse.status, 200);
+  const componentDetail = await componentDetailResponse.json();
+  assert.equal(new Ledger(dbPath).list(initial.run_id).length, detailEventCount);
+  assert.equal(componentDetail.schema_version, "flowpulse.component-detail.v1");
+  assert.equal(componentDetail.topology_projection_revision, initial.topology_views.projection_revision);
+  assert.equal(componentDetail.component.id, "checkout");
+  assert.equal(componentDetail.relationships.upstream.map(({ id }) => id).includes("frontend"), true);
+  assert.equal(componentDetail.relationships.downstream.map(({ id }) => id).includes("payment"), true);
+  assert.equal(componentDetail.observability.metrics.some(({ evidence_id }) => evidence_id === "ev-metric-checkout-errors"), true);
+  assert.equal(componentDetail.observability.traces.some(({ evidence_id }) => evidence_id === "ev-trace-payment-refused"), true);
+  assert.equal(componentDetail.observability.logs.some(({ evidence_id }) => evidence_id === "ev-log-endpoint-fallback"), true);
+  assert.equal(componentDetail.configuration.changes.some(({ evidence_id }) => evidence_id === "ev-deploy-checkout"), true);
+  const componentSerialized = JSON.stringify(componentDetail);
+  for (const forbidden of ["Error rate rose", "PAYMENT_ADDR", "\"fact\"", "\"payload\"", "provider-response"]) assert.equal(componentSerialized.includes(forbidden), false, forbidden);
+  assert.equal(componentDetail.raw_payload_excluded, true);
+  assert.equal((await fetch(`http://127.0.0.1:${port}/api/components/not-a-runtime-node`)).status, 409);
+  assert.equal((await fetch(`http://127.0.0.1:${port}/api/components/%FF`)).status, 404);
+
   const rawMarker = "PROVIDER_BODY_SECRET::<img src=x onerror=alert(1)>";
   new Ledger(dbPath).append({
     id: "browser-redaction-marker",

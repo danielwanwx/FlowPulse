@@ -227,12 +227,35 @@ function matches({ kind, entity }) {
 function safeValue(value = {}) {
   return {
     services: Array.isArray(value.services) ? value.services.slice(0, 12).map((item) => sanitizeTelemetryText(item, { limit: 120 })) : [],
-    trace: safeTrace(value.trace),
+    trace: safeTrace(value.trace || legacyTrace(value)),
     log: safeObject(value.log, ["severity", "message", "trace_ref", "span_ref", "observed_at"]),
-    metric: safeObject(value.metric, ["name", "value", "unit", "aggregation", "observed_at"]),
-    change: safeObject(value.change, ["id", "target", "flag", "before", "after", "repair_id", "repair_command_id", "applied_at"]),
+    metric: safeMetric(value.metric, value),
+    change: safeChange(value.change, value),
     code: safeObject(value.code, ["id", "repository", "commit", "path", "line_start", "line_end", "content_sha256", "target", "flag", "bad_address", "charge_operation", "semantic_fact", "verified_from_git_object"])
   };
+}
+
+function legacyTrace(value) {
+  return value && (value.operation || value.target || value.error || value.trace_id)
+    ? { operation: value.operation, peer_target: value.target, status: value.status, error: value.error, trace_ref: value.trace_id, span_ref: value.span_id, observed_at: value.observed_at }
+    : null;
+}
+
+function safeMetric(metric, legacy) {
+  const result = safeObject(metric, ["name", "value", "before", "after", "unit", "aggregation", "threshold", "observed_at"])
+    || safeObject(legacy, ["name", "value", "before", "after", "unit", "aggregation", "threshold", "observed_at"]);
+  return result && Object.keys(result).length ? result : null;
+}
+
+function safeChange(change, legacy) {
+  const result = safeObject(change, ["id", "target", "flag", "before", "after", "repair_id", "repair_command_id", "applied_at"])
+    || safeObject(legacy, ["id", "target", "flag", "from", "to", "before", "after", "applied_at"]);
+  if (!result) return null;
+  if (result.from != null && result.before == null) result.before = result.from;
+  if (result.to != null && result.after == null) result.after = result.to;
+  delete result.from;
+  delete result.to;
+  return Object.keys(result).length ? result : null;
 }
 
 function safeTrace(trace) {
@@ -297,11 +320,17 @@ function assertAppliedChange(manifest = {}, applied = {}, ledgerEvent = {}) {
 
 function safeObject(value, fields) {
   if (!value || typeof value !== "object") return null;
-  return Object.fromEntries(fields.filter((key) => value[key] != null).map((key) => [key, safeField(key, value[key])]));
+  const entries = fields
+    .filter((key) => value[key] != null)
+    .map((key) => [key, safeField(key, value[key])])
+    .filter(([, item]) => item != null);
+  return entries.length ? Object.fromEntries(entries) : null;
 }
 
 function safeField(key, value) {
-  if (typeof value !== "string") return value;
+  if (typeof value === "number") return Number.isFinite(value) && Math.abs(value) <= 1_000_000_000 ? value : null;
+  if (typeof value === "boolean") return value;
+  if (typeof value !== "string") return null;
   if (["trace_ref", "span_ref", "parent_ref"].includes(key) && /^[a-f0-9]{12}$/.test(value)) return value;
   if (key === "content_sha256" && /^[a-f0-9]{64}$/.test(value)) return value;
   if (key === "commit" && /^[a-f0-9]{40}$/.test(value)) return value;

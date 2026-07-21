@@ -13,6 +13,7 @@ import {
   activeIncidentState,
   architectureBoundaries,
   architectureViewTopology,
+  componentDetailProjection,
   availableStage,
   architecturePositions,
   compareFrames,
@@ -125,6 +126,47 @@ function controlDetail(id) {
     activity: { summary: id === "observer" ? "Captured source intake" : null, stage: null, last_sequence: id === "ledger" ? 4 : null, last_recorded_at: id === "ledger" ? "2026-07-20T11:00:00.000Z" : null, evidence_refs: [], gate: "unavailable", source_health: "unavailable" }
   };
 }
+
+function componentDetailPayload() {
+  const topology = backendArchitectureView();
+  const component = topology.architecture.runtime_data.graph.nodes.find(({ id }) => id === "checkout");
+  const hash = "b".repeat(64);
+  return {
+    schema_version: "flowpulse.component-detail.v1",
+    topology_projection_revision: topology.projection_revision,
+    detail_revision: "c".repeat(64),
+    component,
+    purpose: { business_role: "Order orchestration", description: "Coordinates order placement across payment and downstream services." },
+    runtime: { mode: "deterministic_replay", status: "captured", label: "deterministic replay", freshness_ms: null, observed_at: null },
+    relationships: {
+      upstream: [{ id: "frontend", label: "Frontend", kind: "service", relation: "calls", provenance_refs: ["capture://otel-demo-system-v1#edge-frontend-checkout"] }],
+      downstream: [{ id: "payment", label: "Payment", kind: "service", relation: "calls", provenance_refs: ["capture://otel-demo-system-v1#edge-checkout-payment"] }]
+    },
+    observability: {
+      metrics: [{ evidence_id: "ev-metric-checkout-errors", title: "Checkout error rate", source: "otel.metric", observed_at: "2026-07-16T15:43:00.000Z", record_sha256: hash, name: null, value: null, before: 0.7, after: 38.4, unit: "percent", aggregation: null, threshold: null }],
+      traces: [{ evidence_id: "ev-trace-payment-refused", title: "Payment span failure", source: "otel.trace", observed_at: "2026-07-16T15:43:06.000Z", record_sha256: hash, operation: null, peer_target: "payment:9090", status: null, error: "ECONNREFUSED", trace_ref: "4f91d2b7", span_ref: null }],
+      logs: [{ evidence_id: "ev-log-endpoint-fallback", title: "Checkout endpoint selection", source: "otel.log", observed_at: "2026-07-16T15:42:11.000Z", record_sha256: hash }],
+      changes: [{ evidence_id: "ev-deploy-checkout", title: "Checkout deployment", source: "deployment.change", observed_at: "2026-07-16T15:42:00.000Z", record_sha256: hash, target: null, flag: null, before: "checkout:2.17.3", after: "checkout:2.18.0", applied_at: null }]
+    },
+    configuration: { changes: [{ evidence_id: "ev-deploy-checkout", title: "Checkout deployment", source: "deployment.change", observed_at: "2026-07-16T15:42:00.000Z", record_sha256: hash, target: null, flag: null, before: "checkout:2.17.3", after: "checkout:2.18.0", applied_at: null }] },
+    data_resources: [],
+    raw_payload_excluded: true
+  };
+}
+
+test("component detail accepts only the exact bounded, revision-bound browser read model", () => {
+  const value = componentDetailPayload();
+  const accepted = componentDetailProjection(value, { nodeId: "checkout", topologyRevision: "a".repeat(64) });
+  assert.equal(accepted?.component.id, "checkout");
+  assert.equal(accepted?.raw_payload_excluded, true);
+  assert.equal(componentDetailProjection({ ...value, raw_log: "forged" }, { nodeId: "checkout", topologyRevision: "a".repeat(64) }), null);
+  assert.equal(componentDetailProjection({ ...value, topology_projection_revision: "d".repeat(64) }, { nodeId: "checkout", topologyRevision: "a".repeat(64) }), null);
+  const forged = structuredClone(value);
+  forged.observability.logs[0].fact = "must never cross the browser boundary";
+  assert.equal(componentDetailProjection(forged, { nodeId: "checkout", topologyRevision: "a".repeat(64) }), null);
+  assert.match(appJs, /componentDetailProjection/);
+  assert.match(appJs, /\/api\/components\//);
+});
 
 test("Architecture accepts only the strict v2 backend topology view and retains separate control evidence", () => {
   const view = architectureViewTopology(backendArchitectureView());
@@ -284,7 +326,7 @@ test("architecture is a static four-layer overview with backend-owned status dot
   assert.match(appJs, /closeArchitectureDetail\(\{ restoreFocus: true \}\)/);
   assert.match(appJs, /architectureDetail\?\.scope === mode && event\.key === "Escape"/);
   assert.match(appJs, /data-architecture-detail-id="\$\{escapeHtml\(node\.id\)\}" tabindex="-1"/);
-  assert.match(appJs, /function openArchitectureDetail\(id\)/);
+  assert.match(appJs, /async function openArchitectureDetail\(id\)/);
   assert.match(appJs, /function closeArchitectureDetail\(\{ restoreFocus = false \} = \{\}\)/);
   assert.match(appJs, /event\.target\.matches\("\[data-architecture-thumbnail-id\]"\)/);
   assert.match(appJs, /mode === "architecture" \|\| !selected/);
@@ -292,8 +334,9 @@ test("architecture is a static four-layer overview with backend-owned status dot
   assert.match(appJs, /nodeById\.has\(edge\.from\) && nodeById\.has\(edge\.to\)/);
   assert.match(appJs, /edge\.from === id \|\| edge\.to === id/);
   assert.match(appJs, /slice\(0, 8\)/);
-  assert.match(architectureComponentDetailSource, /relationList\("Depends on", outgoing\)/);
-  assert.match(architectureComponentDetailSource, /relationList\("Depended on by", incoming\)/);
+  assert.match(architectureComponentDetailSource, /componentRelationsMarkup\("Depends on", projection\.relationships\.downstream\)/);
+  assert.match(architectureComponentDetailSource, /componentRelationsMarkup\("Depended on by", projection\.relationships\.upstream\)/);
+  assert.match(architectureComponentDetailSource, /componentObservabilityMarkup\(projection\.observability\)/);
   assert.doesNotMatch(architectureComponentDetailSource, /relationList\("Uses", incoming/);
   assert.doesNotMatch(architectureComponentDetailSource, /No signal summary|No provenance reference/);
   assert.match(appJs, /node\.layer === layer\.id/);

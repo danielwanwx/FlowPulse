@@ -11,6 +11,7 @@ import {
   architectureBoundaries,
   availableStage,
   architectureViewTopology,
+  componentDetailProjection,
   compareFrames,
   compareProvenance,
   eventsAtStage,
@@ -2110,30 +2111,56 @@ function controlDetailContext(id) {
 }
 
 function architectureComponentDetailMarkup(context) {
-  const { node, incoming, outgoing, source } = context;
-  const relationList = (label, relations) => relations.length ? `<section class="architecture-detail-relations"><span>${label}</span><div>${relations.map(({ edge, node: related }) => `<span><strong>${escapeHtml(related.label)}</strong>${edge.label || edge.kind ? `<small>${escapeHtml(edge.label || edge.kind)}</small>` : ""}</span>`).join("")}</div></section>` : "";
+  const { node } = context;
+  const projection = architectureDetail?.detail || null;
+  if (architectureDetail?.loading) return architectureDetailLoadingMarkup(node);
+  if (!projection || architectureDetail?.failed) return architectureDetailUnavailableMarkup(node);
   const layerLabel = ARCHITECTURE_LAYERS.find((layer) => layer.id === node.layer)?.label;
-  const role = COMPONENT_CAPABILITIES[node.id];
-  const explanation = COMPONENT_EXPLANATIONS[node.id];
-  const signals = Array.isArray(node.signal_types) && node.signal_types.length ? node.signal_types.join(" · ") : null;
-  const provenance = Array.isArray(node.provenance_refs) && node.provenance_refs.length ? node.provenance_refs.slice(0, 4).join(" · ") : null;
+  const signals = projection.component.signal_types.length ? projection.component.signal_types.join(" · ") : null;
+  const provenance = projection.component.provenance_refs.length ? projection.component.provenance_refs.join(" · ") : null;
   const facts = [
-    ["Status", statusLabel(node.status)],
-    ["Component ID", node.id],
+    ["Status", statusLabel(projection.component.status)],
+    ["Component ID", projection.component.id],
     layerLabel ? ["Architecture layer", layerLabel] : null,
-    node.source_health || source.status ? ["Source health", node.source_health || source.status] : null,
+    ["Source health", projection.component.source_health],
+    projection.runtime.label ? ["Source", projection.runtime.label] : null,
     signals ? ["Signals", signals] : null,
     provenance ? ["Provenance", provenance] : null
   ].filter(Boolean);
   return `<section class="architecture-component-detail" data-architecture-detail-id="${escapeHtml(node.id)}" tabindex="-1" aria-label="${escapeHtml(`${node.label} component detail. Click anywhere in this detail or press Escape to return to components.`)}">
-    <div class="architecture-detail-title"><span class="architecture-thumbnail-icon" aria-hidden="true"><i class="ph ph-${iconForLive(node)}"></i></span><div><strong>${escapeHtml(node.label)}</strong><span>${escapeHtml(kindLabel(node.kind))}</span></div><span class="architecture-status-dot is-${escapeHtml(node.status)}" aria-label="${escapeHtml(statusLabel(node.status))}"></span></div>
-    ${role ? `<section class="architecture-detail-purpose"><span>Operational role</span><strong>${escapeHtml(role)}</strong>${explanation ? `<p>${escapeHtml(explanation)}</p>` : ""}</section>` : ""}
+    <div class="architecture-detail-title"><span class="architecture-thumbnail-icon" aria-hidden="true"><i class="ph ph-${iconForLive(node)}"></i></span><div><strong>${escapeHtml(node.label)}</strong><span>${escapeHtml(kindLabel(node.kind))}</span></div><span class="architecture-status-dot is-${escapeHtml(projection.component.status)}" aria-label="${escapeHtml(statusLabel(projection.component.status))}"></span></div>
+    <section class="architecture-detail-purpose"><span>Operational role</span><strong>${escapeHtml(projection.purpose.business_role)}</strong><p>${escapeHtml(projection.purpose.description)}</p></section>
     <dl class="architecture-detail-facts">${facts.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("")}</dl>
-    ${incoming.length || outgoing.length ? `<div class="architecture-detail-related">
-      ${relationList("Depends on", outgoing)}
-      ${relationList("Depended on by", incoming)}
-    </div>` : ""}
+    ${componentRelationsMarkup("Depends on", projection.relationships.downstream)}
+    ${componentRelationsMarkup("Depended on by", projection.relationships.upstream)}
+    ${componentObservabilityMarkup(projection.observability)}
   </section>`;
+}
+
+function architectureDetailLoadingMarkup(node) {
+  return `<section class="architecture-component-detail architecture-component-detail-state" data-architecture-detail-id="${escapeHtml(node.id)}" tabindex="-1" aria-label="${escapeHtml(`${node.label} details loading. Click to return to components.`)}"><div class="architecture-detail-title"><span class="architecture-thumbnail-icon" aria-hidden="true"><i class="ph ph-${iconForLive(node)}"></i></span><div><strong>${escapeHtml(node.label)}</strong><span>Loading bounded backend detail</span></div></div></section>`;
+}
+
+function architectureDetailUnavailableMarkup(node) {
+  return `<section class="architecture-component-detail architecture-component-detail-state" data-architecture-detail-id="${escapeHtml(node.id)}" tabindex="-1" aria-label="${escapeHtml(`${node.label} detail unavailable. Click to return to components.`)}"><div class="architecture-detail-title"><span class="architecture-thumbnail-icon" aria-hidden="true"><i class="ph ph-${iconForLive(node)}"></i></span><div><strong>${escapeHtml(node.label)}</strong><span>Detail unavailable from the current backend projection</span></div></div></section>`;
+}
+
+function componentRelationsMarkup(label, relations = []) {
+  if (!relations.length) return "";
+  return `<section class="architecture-detail-relations"><span>${escapeHtml(label)}</span><div>${relations.map((related) => `<span><strong>${escapeHtml(related.label)}</strong><small>${escapeHtml(related.relation)}</small></span>`).join("")}</div></section>`;
+}
+
+function componentObservabilityMarkup(observability = {}) {
+  const metricValue = (metric) => [metric.name, metric.before != null && metric.after != null ? `${metric.before} → ${metric.after}${metric.unit ? ` ${metric.unit}` : ""}` : metric.value != null ? `${metric.value}${metric.unit ? ` ${metric.unit}` : ""}` : null, metric.aggregation, metric.threshold].filter(Boolean).join(" · ");
+  const traceValue = (trace) => [trace.operation, trace.peer_target, trace.status, trace.error, trace.trace_ref].filter(Boolean).join(" · ");
+  const changeValue = (change) => [change.target, change.flag, change.before != null && change.after != null ? `${change.before} → ${change.after}` : null, change.applied_at ? formatTime(change.applied_at) : null].filter(Boolean).join(" · ");
+  const list = (label, items, value) => items.length ? `<section class="architecture-detail-relations architecture-detail-observability"><span>${escapeHtml(label)}</span><div>${items.map((item) => `<span><strong>${escapeHtml(item.title)}</strong>${value(item) ? `<small>${escapeHtml(value(item))}</small>` : ""}<code>${escapeHtml(item.evidence_id)} · ${escapeHtml(item.record_sha256.slice(0, 12))}</code></span>`).join("")}</div></section>` : "";
+  return [
+    list("Metrics", observability.metrics || [], metricValue),
+    list("Traces", observability.traces || [], traceValue),
+    list("Recorded log events", observability.logs || [], () => "Redacted event metadata"),
+    list("Configuration changes", observability.changes || [], changeValue)
+  ].join("");
 }
 
 function controlComponentDetailMarkup(context) {
@@ -2164,20 +2191,43 @@ function controlActivityMarkup(activity = {}) {
   return `<dl class="control-detail-activity">${entries.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("")}</dl>`;
 }
 
-function openArchitectureDetail(id) {
+async function openArchitectureDetail(id) {
   if (mode !== "architecture") return;
   const context = architectureDetailContext(id);
   if (!context || !ARCHITECTURE_LAYERS.some((layer) => layer.id === context.node.layer)) return;
-  architectureDetail = { nodeId: context.node.id, scope: "architecture" };
+  if (architectureDetail?.scope === "architecture" && architectureDetail.nodeId === context.node.id) {
+    closeArchitectureDetail({ restoreFocus: true });
+    return;
+  }
+  architectureDetail = { nodeId: context.node.id, scope: "architecture", loading: true, failed: false };
   selected = null;
   render();
   requestAnimationFrame(() => els["canvas-layers"].querySelector("[data-architecture-detail-id]")?.focus());
+  const topologyRevision = architectureView()?.projection_revision;
+  try {
+    const value = await request(`/api/components/${encodeURIComponent(context.node.id)}`);
+    const detail = componentDetailProjection(value, { nodeId: context.node.id, topologyRevision });
+    if (!detail) throw new Error("component_detail_unavailable");
+    if (architectureDetail?.scope === "architecture" && architectureDetail.nodeId === context.node.id) {
+      architectureDetail = { nodeId: context.node.id, scope: "architecture", loading: false, failed: false, detail };
+      render();
+    }
+  } catch {
+    if (architectureDetail?.scope === "architecture" && architectureDetail.nodeId === context.node.id) {
+      architectureDetail = { nodeId: context.node.id, scope: "architecture", loading: false, failed: true };
+      render();
+    }
+  }
 }
 
 function openControlDetail(id, { focus = false } = {}) {
   if (mode !== "architecture") return;
   const context = controlDetailContext(id);
   if (!context) return;
+  if (architectureDetail?.scope === "architecture" && architectureDetail.nodeId === context.node.id) {
+    closeArchitectureDetail({ restoreFocus: focus });
+    return;
+  }
   architectureDetail = { nodeId: context.node.id, scope: "architecture" };
   selected = null;
   render();

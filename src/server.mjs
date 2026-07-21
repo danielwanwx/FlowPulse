@@ -24,6 +24,7 @@ import { buildIncidentProjection, INCIDENT_PROJECTION_LIMITS } from "./incident-
 import { validateProjectionCanonicalChain } from "./projection-canonical-validator.mjs";
 import { loadTopologyManifest, validateAstronomyIncidentSubgraph } from "./topology-manifest.mjs";
 import { composeTopologyViews } from "./topology-projection.mjs";
+import { composeComponentDetail, ComponentDetailProjectionError } from "./component-detail-projection.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const publicDir = join(root, "public");
@@ -86,6 +87,30 @@ const server = createServer(async (request, response) => {
     }
     if (url.pathname === "/api/source" && request.method === "GET") {
       return json(response, 200, (await stateWithSource(browserRunId())).source);
+    }
+    if (url.pathname.startsWith("/api/components/") && request.method === "GET") {
+      let nodeId;
+      try {
+        nodeId = decodeURIComponent(url.pathname.slice("/api/components/".length));
+      } catch {
+        return json(response, 404, { error: "component_detail_unavailable" });
+      }
+      if (!safeBrowserId(nodeId)) return json(response, 404, { error: "component_detail_unavailable" });
+      const runId = browserRunId();
+      const state = await stateWithSource(runId);
+      if (!state.topology_views) return json(response, 409, { error: "component_detail_unavailable" });
+      const source = await selectedEvidenceSource(runId, state.mode);
+      try {
+        return json(response, 200, composeComponentDetail({
+          topologyViews: state.topology_views,
+          nodeId,
+          source: source.metadata(),
+          evidence: source.list({ entity: nodeId, limit: 8 }).items
+        }));
+      } catch (error) {
+        if (error instanceof ComponentDetailProjectionError) return json(response, 409, { error: "component_detail_unavailable" });
+        throw error;
+      }
     }
     if (url.pathname === "/api/evidence" && request.method === "GET") {
       const source = await selectedEvidenceSource(url.searchParams.get("run_id") || browserRunId());

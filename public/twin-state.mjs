@@ -420,6 +420,103 @@ export function liveViewTopology(topologyViews = {}) {
   };
 }
 
+// This read model is intentionally separate from topology_views. The browser
+// accepts it only when it is tied to the currently rendered canonical revision
+// and contains no raw evidence body, provider payload, or authority state.
+export function componentDetailProjection(value, { nodeId = null, topologyRevision = null } = {}) {
+  const keys = ["schema_version", "topology_projection_revision", "detail_revision", "component", "purpose", "runtime", "relationships", "observability", "configuration", "data_resources", "raw_payload_excluded"];
+  if (!plainRecord(value) || !sameKeys(value, keys) || value.schema_version !== "flowpulse.component-detail.v1"
+    || !validHash(value.topology_projection_revision) || !validHash(value.detail_revision)
+    || topologyRevision && value.topology_projection_revision !== topologyRevision
+    || !validRuntimeNode(value.component) || nodeId && value.component.id !== nodeId
+    || !validComponentPurpose(value.purpose) || !validComponentRuntime(value.runtime)
+    || !validComponentRelationships(value.relationships) || !validComponentObservability(value.observability)
+    || !plainRecord(value.configuration) || !sameKeys(value.configuration, ["changes"])
+    || JSON.stringify(value.configuration.changes) !== JSON.stringify(value.observability.changes)
+    || !Array.isArray(value.data_resources) || value.data_resources.length !== 0 || value.raw_payload_excluded !== true) return null;
+  return value;
+}
+
+function validComponentPurpose(value) {
+  return plainRecord(value) && sameKeys(value, ["business_role", "description"])
+    && validComponentText(value.business_role, 120) && validComponentText(value.description, 240);
+}
+
+function validComponentRuntime(value) {
+  return plainRecord(value) && sameKeys(value, ["mode", "status", "label", "freshness_ms", "observed_at"])
+    && validComponentText(value.mode, 80) && ["captured", "frozen", "live", "stale", "disconnected", "unavailable"].includes(value.status)
+    && validComponentText(value.label, 160)
+    && (value.freshness_ms === null || Number.isSafeInteger(value.freshness_ms) && value.freshness_ms >= 0 && value.freshness_ms <= 31_536_000_000)
+    && (value.observed_at === null || validTopologyTimestamp(value.observed_at));
+}
+
+function validComponentRelationships(value) {
+  return plainRecord(value) && sameKeys(value, ["upstream", "downstream"])
+    && [value.upstream, value.downstream].every((items) => Array.isArray(items) && items.length <= 8
+      && new Set(items.map(({ id }) => id)).size === items.length && items.every(validComponentRelation)
+      && sameOrdered(items, [...items].sort((left, right) => left.id.localeCompare(right.id))));
+}
+
+function validComponentRelation(value) {
+  return plainRecord(value) && sameKeys(value, ["id", "label", "kind", "relation", "provenance_refs"])
+    && safeTopologyId(value.id) && validComponentText(value.label, 160) && ["service", "job", "topic"].includes(value.kind)
+    && value.relation === "calls" && validProvenanceList(value.provenance_refs, 4);
+}
+
+function validComponentObservability(value) {
+  return plainRecord(value) && sameKeys(value, ["metrics", "traces", "logs", "changes"])
+    && validComponentEvidenceList(value.metrics, validMetricDetail)
+    && validComponentEvidenceList(value.traces, validTraceDetail)
+    && validComponentEvidenceList(value.logs, validLogDetail)
+    && validComponentEvidenceList(value.changes, validChangeDetail);
+}
+
+function validComponentEvidenceList(value, validator) {
+  return Array.isArray(value) && value.length <= 4 && new Set(value.map(({ evidence_id }) => evidence_id)).size === value.length
+    && value.every(validator) && sameOrdered(value, [...value].sort((left, right) => left.observed_at.localeCompare(right.observed_at) || left.evidence_id.localeCompare(right.evidence_id)));
+}
+
+function validEvidenceBase(value, keys) {
+  return plainRecord(value) && sameKeys(value, keys)
+    && safeTopologyId(value.evidence_id) && validComponentText(value.title, 180) && validComponentText(value.source, 160)
+    && validTopologyTimestamp(value.observed_at) && validHash(value.record_sha256);
+}
+
+function validMetricDetail(value) {
+  const keys = ["evidence_id", "title", "source", "observed_at", "record_sha256", "name", "value", "before", "after", "unit", "aggregation", "threshold"];
+  return validEvidenceBase(value, keys) && nullableComponentText(value.name, 120) && nullableDetailNumber(value.value)
+    && nullableDetailNumber(value.before) && nullableDetailNumber(value.after) && nullableComponentText(value.unit, 40)
+    && nullableComponentText(value.aggregation, 40) && nullableComponentText(value.threshold, 80);
+}
+
+function validTraceDetail(value) {
+  const keys = ["evidence_id", "title", "source", "observed_at", "record_sha256", "operation", "peer_target", "status", "error", "trace_ref", "span_ref"];
+  return validEvidenceBase(value, keys) && nullableComponentText(value.operation, 160) && nullableComponentText(value.peer_target, 160)
+    && nullableComponentText(value.status, 40) && nullableComponentText(value.error, 160)
+    && nullableDetailRef(value.trace_ref) && nullableDetailRef(value.span_ref);
+}
+
+function validLogDetail(value) {
+  return validEvidenceBase(value, ["evidence_id", "title", "source", "observed_at", "record_sha256"]);
+}
+
+function validChangeDetail(value) {
+  const keys = ["evidence_id", "title", "source", "observed_at", "record_sha256", "target", "flag", "before", "after", "applied_at"];
+  return validEvidenceBase(value, keys) && (value.target === null || safeTopologyId(value.target))
+    && nullableComponentText(value.flag, 120) && nullableComponentText(value.before, 120)
+    && nullableComponentText(value.after, 120) && (value.applied_at === null || validTopologyTimestamp(value.applied_at));
+}
+
+function validProvenanceList(value, limit) {
+  return Array.isArray(value) && value.length > 0 && value.length <= limit && value.every(validProvenanceRef)
+    && sameOrdered(value, [...value].sort());
+}
+
+function nullableComponentText(value, maximum) { return value === null || validComponentText(value, maximum); }
+function nullableDetailNumber(value) { return value === null || typeof value === "number" && Number.isFinite(value) && Math.abs(value) <= 1_000_000_000; }
+function nullableDetailRef(value) { return value === null || typeof value === "string" && /^[a-f0-9]{8,64}$/i.test(value); }
+function validComponentText(value, maximum) { return typeof value === "string" && value.length > 0 && value.length <= maximum && /^[A-Za-z0-9][A-Za-z0-9 .()/_:+,=-]*$/.test(value); }
+
 function topologyViewsV2(value) {
   const rootKeys = ["schema_version", "projection_revision", "run_id", "incident_id", "truth", "readiness", "architecture", "live", "diagnose", "demo"];
   if (!plainRecord(value) || !sameKeys(value, rootKeys) || value.schema_version !== "flowpulse.topology-views.v2" || !validHash(value.projection_revision) || !nullableTopologyId(value.run_id) || !nullableTopologyId(value.incident_id) || !validTopologyTruth(value.truth) || !validTopologyReadiness(value.readiness)) return null;

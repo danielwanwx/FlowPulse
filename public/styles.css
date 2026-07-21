@@ -2545,6 +2545,19 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .is-architecture-source .architecture-detail-relations div > span { display: flex; align-items: baseline; gap: 7px; }
 .is-architecture-source .architecture-detail-relations strong { font-size: 12px; font-weight: 600; }
 .is-architecture-source .architecture-detail-relations small { color: #64748b; font-size: 11px; }
+.is-architecture-source .architecture-detail-observability div > span {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 2px;
+}
+.is-architecture-source .architecture-detail-observability code {
+  color: #64748b;
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+.is-architecture-source .architecture-component-detail-state {
+  align-content: start;
+}
 .is-architecture-source .architecture-component-detail .architecture-status-dot { position: static; width: 8px; height: 8px; }
 .is-architecture-source .architecture-component-detail .architecture-status-dot.is-root,
 .is-architecture-source .architecture-component-detail .architecture-status-dot.is-impact,
