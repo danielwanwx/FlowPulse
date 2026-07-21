@@ -672,6 +672,67 @@ export function componentDetailProjection(value, { nodeId = null, topologyRevisi
   return value;
 }
 
+// The Inspector owns presentation ranking, not telemetry truth. It receives an
+// already validated v1 detail record and only groups/sorts its safe fields for
+// the compact Live rail. No browser-created metric, event, resource, or health
+// fact crosses this boundary.
+export function nodeLiveInspectorProjection(detail) {
+  const accepted = componentDetailProjection(detail, {
+    nodeId: detail?.component?.id || null,
+    topologyRevision: detail?.topology_projection_revision || null
+  });
+  if (!accepted) return null;
+  const observability = accepted.observability;
+  const events = [
+    ...observability.logs.map((item) => ({ ...item, event_kind: "log", marker: null })),
+    ...observability.traces.map((item) => ({ ...item, event_kind: "trace", marker: item.trace_ref })),
+    ...observability.changes.map((item) => ({ ...item, event_kind: "change", marker: item.flag || item.target }))
+  ].sort((left, right) => right.observed_at.localeCompare(left.observed_at) || right.evidence_id.localeCompare(left.evidence_id));
+  const pulseMetrics = [...observability.metrics]
+    .filter((item) => item.value !== null || item.before !== null || item.after !== null)
+    .sort((left, right) => right.observed_at.localeCompare(left.observed_at) || right.evidence_id.localeCompare(left.evidence_id))
+    .slice(0, 3)
+    .map((item) => ({ kind: "metric", evidence_id: item.evidence_id, title: item.title, value: item.value, before: item.before, after: item.after, unit: item.unit, observed_at: item.observed_at }));
+  const lastEvent = events[0]
+    ? { kind: "event", evidence_id: events[0].evidence_id, title: events[0].title, event_kind: events[0].event_kind, observed_at: events[0].observed_at }
+    : null;
+  const evidenceIds = new Set([
+    ...observability.metrics,
+    ...observability.traces,
+    ...observability.logs,
+    ...observability.changes
+  ].map((item) => item.evidence_id));
+  const group = (items) => ({ visible: items.slice(0, 3), remaining: Math.max(0, items.length - 3) });
+  return {
+    component: accepted.component,
+    purpose: accepted.purpose,
+    runtime: accepted.runtime,
+    live_pulse: [...pulseMetrics, ...(lastEvent ? [lastEvent] : [])].slice(0, 4),
+    event_stream: events,
+    dependencies: {
+      upstream: group(accepted.relationships.upstream),
+      downstream: group(accepted.relationships.downstream)
+    },
+    evidence: {
+      record_count: evidenceIds.size,
+      source_health: accepted.component.source_health,
+      source_mode: accepted.runtime.mode,
+      freshness_ms: accepted.runtime.freshness_ms,
+      observed_at: accepted.runtime.observed_at,
+      provenance_refs: accepted.component.provenance_refs,
+      topology_projection_revision: accepted.topology_projection_revision,
+      detail_revision: accepted.detail_revision,
+      truncated: false
+    },
+    data_resources: accepted.data_resources
+  };
+}
+
+// N1 is intentionally a separate future adapter. No published N1 envelope is
+// available in this frontend checkpoint, so every candidate fails closed rather
+// than letting v1 or a guessed shape masquerade as an event stream.
+export function nodeInvestigationN1Projection(_value) { return null; }
+
 function validComponentPurpose(value) {
   return plainRecord(value) && sameKeys(value, ["business_role", "description"])
     && validComponentText(value.business_role, 120) && validComponentText(value.description, 240);

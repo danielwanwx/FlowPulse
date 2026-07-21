@@ -3507,3 +3507,203 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
     --flowpulse-control-rail-inset-x: 12px;
   }
 }
+
+/* F2A keeps one right-side spatial slot. Live detail replaces Team Home in
+   that slot; it never adds a drawer, moves the canvas, or restarts its pulses. */
+.operations-team-rail .live-node-inspector {
+  min-height: 0;
+  overflow: hidden;
+}
+.operations-team-rail .live-node-inspector-state { justify-content: flex-start; }
+.operations-team-rail .live-node-inspector-state > p {
+  margin: 0;
+  color: var(--architecture-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.live-node-inspector-header {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto 28px;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+.live-node-inspector-header .node-icon {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 12px;
+  color: var(--architecture-vector);
+  background: rgba(255, 255, 255, .7);
+  font-size: 17px;
+}
+.live-node-inspector-header > div { min-width: 0; display: grid; gap: 2px; }
+.live-node-inspector-header strong { overflow: hidden; color: #111827; font-size: 15px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.live-node-inspector-header > div span { overflow: hidden; color: var(--architecture-muted); font-size: 10px; line-height: 1.3; text-overflow: ellipsis; white-space: nowrap; }
+.live-node-inspector-header .node-status-dot { position: static; }
+.live-inspector-close {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 12px;
+  color: var(--architecture-copy);
+  background: rgba(255, 255, 255, .58);
+  cursor: pointer;
+}
+.live-inspector-close:hover,
+.live-inspector-close:focus-visible { outline: none; color: #ffffff; background: var(--blue); }
+.live-node-inspector-actions { flex: 0 0 auto; }
+.live-node-inspector-actions .live-agent-ask { width: 100%; min-height: 34px; }
+.live-node-inspector-body {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 1px 2px 2px 0;
+}
+.live-inspector-section {
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+  border: 0;
+  border-radius: var(--architecture-node-radius);
+  background: rgba(255, 255, 255, .52);
+}
+.live-inspector-section > span,
+.live-inspector-dependency-group > span {
+  color: var(--architecture-muted);
+  font-size: 10px;
+  font-weight: 600;
+}
+.live-inspector-purpose strong { color: #111827; font-size: 13px; font-weight: 600; }
+.live-inspector-purpose p { margin: 0; color: var(--architecture-copy); font-size: 12px; line-height: 1.45; }
+.live-inspector-pulse { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.live-inspector-pulse article {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 8px;
+  border-radius: var(--architecture-control-radius);
+  background: rgba(211, 220, 226, .38);
+}
+.live-inspector-pulse span,
+.live-inspector-pulse small { overflow: hidden; color: var(--architecture-muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.live-inspector-pulse strong { overflow: hidden; color: #111827; font-size: 12px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.live-inspector-events { display: grid; gap: 6px; }
+.live-inspector-events article {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  padding: 7px 8px;
+  border-radius: var(--architecture-control-radius);
+  background: rgba(211, 220, 226, .32);
+}
+.live-inspector-events article > div { min-width: 0; display: grid; gap: 2px; }
+.live-inspector-events strong,
+.live-inspector-events small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.live-inspector-events strong { color: #111827; font-size: 11px; font-weight: 600; }
+.live-inspector-events small { color: var(--architecture-muted); font-size: 10px; }
+.live-inspector-events code,
+.live-inspector-evidence-detail code,
+.live-inspector-data-resources code {
+  overflow: hidden;
+  max-width: 100%;
+  padding: 3px 5px;
+  border-radius: 7px;
+  color: var(--architecture-muted);
+  background: rgba(211, 220, 226, .46);
+  font-family: var(--mono);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.live-inspector-disclosure {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  min-height: 24px;
+  padding: 0;
+  border: 0;
+  color: var(--architecture-copy);
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  text-align: left;
+}
+.live-inspector-disclosure:hover,
+.live-inspector-disclosure:focus-visible { outline: none; color: var(--blue); }
+.live-inspector-evidence .live-inspector-disclosure span { color: var(--architecture-muted); font-size: 10px; font-weight: 600; }
+.live-inspector-evidence .live-inspector-disclosure strong { color: #111827; font-size: 11px; font-weight: 600; }
+.live-inspector-evidence-detail { display: grid; gap: 5px; }
+.live-inspector-evidence-detail p { margin: 0; color: var(--architecture-muted); font-size: 10px; line-height: 1.4; }
+.live-inspector-dependencies { display: grid; gap: 7px; }
+.live-inspector-dependency-group { display: grid; gap: 4px; }
+.live-inspector-dependency-group > div { display: flex; flex-wrap: wrap; gap: 5px; }
+.live-inspector-dependency-group button {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: var(--architecture-control-radius);
+  color: #111827;
+  background: rgba(211, 220, 226, .38);
+  cursor: pointer;
+  text-align: left;
+}
+.live-inspector-dependency-group button:hover,
+.live-inspector-dependency-group button:focus-visible { outline: none; background: rgba(255, 255, 255, .9); }
+.live-inspector-dependency-group button strong { font-size: 11px; font-weight: 600; }
+.live-inspector-dependency-group button small { color: var(--architecture-muted); font-size: 10px; }
+.live-inspector-more { align-self: center; color: var(--architecture-muted); font-size: 11px; font-weight: 600; }
+.live-inspector-data-resources { display: flex; flex-wrap: wrap; gap: 5px; }
+
+/* Agent sessions intentionally expose findings before static product facts.
+   Capability and run metadata are available, but collapsed until requested. */
+.operations-team-rail .agent-team-session { min-height: 0; }
+.agent-team-context { display: block; margin: 0; padding: 0; border: 0; border-radius: 0; color: var(--architecture-muted); background: transparent; font-size: 11px; line-height: 1.4; }
+.agent-team-disclosure { display: grid; gap: 6px; }
+.agent-team-disclosure > button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 26px;
+  padding: 0;
+  border: 0;
+  color: var(--architecture-muted);
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+}
+.agent-team-disclosure > button:hover,
+.agent-team-disclosure > button:focus-visible { outline: none; color: var(--blue); }
+.agent-team-disclosure > div { display: grid; gap: 6px; padding: 9px; border-radius: var(--architecture-control-radius); background: rgba(255, 255, 255, .44); }
+.agent-team-disclosure > div > strong { color: #111827; font-size: 12px; font-weight: 600; }
+.agent-team-disclosure p { display: flex; flex-wrap: wrap; gap: 4px; margin: 0; color: var(--architecture-copy); font-size: 11px; line-height: 1.4; }
+.agent-team-disclosure p > span { width: 100%; color: var(--architecture-muted); font-size: 10px; font-weight: 600; }
+.agent-team-citations { display: grid; gap: 5px; color: var(--architecture-muted); font-size: 10px; }
+.agent-team-citations summary { cursor: pointer; }
+.agent-team-citations > div { display: flex; flex-wrap: wrap; gap: 4px; }
+.agent-team-entry.is-user { opacity: .72; }
+.agent-team-entry.is-handoff { padding: 7px 9px; background: rgba(211, 220, 226, .28); }
+@media (prefers-reduced-transparency: reduce) {
+  .operations-team-rail .architecture-flowpulse-system,
+  .live-inspector-section,
+  .agent-team-disclosure > div { background: #f7f9fa; }
+}
+@media (max-width: 720px) {
+  .live-inspector-pulse { grid-template-columns: 1fr; }
+}

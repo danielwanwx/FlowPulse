@@ -18,6 +18,7 @@ import {
   agentTeamConversationProjection,
   agentTeamProviderProjection,
   componentDetailProjection,
+  nodeLiveInspectorProjection,
   compareFrames,
   compareProvenance,
   eventsAtStage,
@@ -135,6 +136,7 @@ let agentTeamEventSource;
 let agentLoopEventSource;
 let agentTeamRestoreAttempted = false;
 let agentTeam = restoreAgentTeamState();
+let liveInspector = emptyLiveInspector();
 
 for (const button of document.querySelectorAll("[data-mode]")) button.addEventListener("click", () => setMode(button.dataset.mode));
 for (const button of document.querySelectorAll("[data-nav-tab]")) button.addEventListener("click", () => handleNavigation(button.dataset.navTab));
@@ -174,6 +176,9 @@ els["compare-control"].addEventListener("click", handleCompareFocus);
 els["compare-review-rail"].addEventListener("click", handleCompareReview);
 els["operations-team-rail"].addEventListener("click", handleOperationsTeamRail);
 els["operations-team-rail"].addEventListener("submit", handleAgentTeamSubmit);
+els["operations-team-rail"].addEventListener("scroll", (event) => {
+  if (event.target.matches("[data-live-inspector-scroll]")) liveInspector = { ...liveInspector, scroll_top: event.target.scrollTop };
+}, true);
 els["theme-toggle"].addEventListener("click", toggleTheme);
 els["zoom-out"].addEventListener("click", () => setLiveZoom(liveView.scale - LIVE_WORLD.step));
 els["zoom-in"].addEventListener("click", () => setLiveZoom(liveView.scale + LIVE_WORLD.step));
@@ -1256,7 +1261,10 @@ async function sendRecoveryCommand(form) {
 }
 
 function renderDrawer() {
-  if (mode === "architecture" || !selected || !state || agentTeam.panel === "session") {
+  // Live component detail is intentionally rendered in the persistent Team rail.
+  // Keeping the canvas drawer out of this path preserves the graph and avoids
+  // presenting two competing detail surfaces for the same selected node.
+  if (mode === "architecture" || (mode === "live" && selected?.type === "node") || !selected || !state || agentTeam.panel === "session") {
     els["context-drawer"].hidden = true;
     return;
   }
@@ -1285,17 +1293,54 @@ function renderOperationsTeamRail() {
   // The Team rail is one persistent spatial slot. A component inspector takes
   // that slot only while the Team is at home; an open Agent session deliberately
   // replaces the inspector without rebuilding the Live canvas.
-  rail.hidden = !controls.length || (Boolean(selected) && agentTeam.panel === "home");
+  const liveInspectorOpen = mode === "live" && selected?.type === "node" && agentTeam.panel === "home";
+  rail.hidden = !controls.length || (Boolean(selected) && agentTeam.panel === "home" && !liveInspectorOpen);
   if (rail.hidden) {
     rail.innerHTML = "";
     return;
   }
-  rail.innerHTML = agentTeam.panel === "home"
-    ? agentTeamHomeMarkup(controls)
-    : agentTeamSessionMarkup(controls);
+  rail.innerHTML = liveInspectorOpen
+    ? liveNodeInspectorRailMarkup()
+    : agentTeam.panel === "home"
+      ? agentTeamHomeMarkup(controls)
+      : agentTeamSessionMarkup(controls);
+  restoreLiveInspectorSnapshot();
 }
 
 function handleOperationsTeamRail(event) {
+  const inspectorClose = event.target.closest("[data-live-inspector-close]");
+  if (inspectorClose) {
+    closeDrawer();
+    return;
+  }
+  const inspectorDisclosure = event.target.closest("[data-live-inspector-disclosure]");
+  if (inspectorDisclosure) {
+    const key = inspectorDisclosure.dataset.liveInspectorDisclosure;
+    if (["evidence", "events"].includes(key)) {
+      liveInspector = { ...liveInspector, disclosures: { ...liveInspector.disclosures, [key]: !liveInspector.disclosures[key] } };
+      renderOperationsTeamRail();
+    }
+    return;
+  }
+  const agentDisclosure = event.target.closest("[data-agent-team-disclosure]");
+  if (agentDisclosure) {
+    const key = agentDisclosure.dataset.agentTeamDisclosure;
+    if (["capability", "run"].includes(key)) {
+      agentTeam = { ...agentTeam, disclosures: { ...agentTeam.disclosures, [key]: !agentTeam.disclosures[key] } };
+      renderOperationsTeamRail();
+    }
+    return;
+  }
+  const inspectorFocus = event.target.closest("[data-focus-entity]");
+  if (inspectorFocus) {
+    openDrawer({ type: "node", id: inspectorFocus.dataset.focusEntity }, "overview");
+    return;
+  }
+  const askObserver = event.target.closest("[data-ask-observer]");
+  if (askObserver) {
+    void openAgentTeamSession("observer", { restoreInspector: true, inspectorSnapshot: captureLiveInspectorSnapshot() });
+    return;
+  }
   const send = event.target.closest("[data-agent-team-send]");
   if (send) {
     const form = send.closest("[data-agent-team-composer]");
@@ -1305,7 +1350,7 @@ function handleOperationsTeamRail(event) {
   }
   const roleTile = event.target.closest("[data-agent-team-role]");
   if (roleTile) {
-    void openAgentTeamSession(roleTile.dataset.agentTeamRole, { restoreInspector: Boolean(selected) });
+    void openAgentTeamSession(roleTile.dataset.agentTeamRole, { restoreInspector: Boolean(selected), inspectorSnapshot: captureLiveInspectorSnapshot() });
     return;
   }
   if (event.target.closest("[data-agent-team-back]")) {
@@ -1331,6 +1376,118 @@ async function handleAgentTeamSubmit(event) {
   if (!form) return;
   event.preventDefault();
   await sendAgentTeamMessage(new FormData(form).get("message"));
+}
+
+function emptyLiveInspector(nodeId = null) {
+  return {
+    node_id: nodeId,
+    disclosures: { evidence: false, events: false },
+    scroll_top: 0,
+    restore_pending: false
+  };
+}
+
+function captureLiveInspectorSnapshot() {
+  const body = els["operations-team-rail"].querySelector("[data-live-inspector-scroll]");
+  return {
+    node_id: selected?.type === "node" ? selected.id : null,
+    disclosures: { ...liveInspector.disclosures },
+    scroll_top: body?.scrollTop ?? liveInspector.scroll_top
+  };
+}
+
+function restoreLiveInspectorSnapshot() {
+  if (!liveInspector.restore_pending || selected?.type !== "node" || selected.id !== liveInspector.node_id) return;
+  const body = els["operations-team-rail"].querySelector("[data-live-inspector-scroll]");
+  if (!body) return;
+  body.scrollTop = liveInspector.scroll_top;
+  liveInspector = { ...liveInspector, restore_pending: false };
+}
+
+function liveNodeInspectorRailMarkup() {
+  const context = selected?.type === "node" ? sourceComponentContext(selected.id) : null;
+  if (!context) return agentTeamUnavailableMarkup("The selected runtime component is unavailable from the current topology projection.");
+  if (context.detailLoading) return liveNodeInspectorLoadingMarkup(context);
+  if (context.detailUnavailable || !context.detail) return liveNodeInspectorUnavailableMarkup(context);
+  const inspector = nodeLiveInspectorProjection(context.detail);
+  if (!inspector) return liveNodeInspectorUnavailableMarkup(context);
+  const status = sourceStatusLabel(context.status, inspector.runtime.status);
+  const freshness = inspector.runtime.freshness_ms == null ? null : formatAge(inspector.runtime.freshness_ms);
+  const sourceLine = [inspector.runtime.label, freshness ? `captured ${freshness} ago` : null].filter(Boolean).join(" · ");
+  return `<section class="architecture-system architecture-flowpulse-system live-node-inspector" aria-label="${escapeHtml(inspector.component.label)} live inspector">
+    <header class="live-node-inspector-header">
+      <span class="node-icon" aria-hidden="true"><i class="ph ph-${iconForLive(inspector.component)}"></i></span>
+      <div><strong>${escapeHtml(inspector.component.label)}</strong><span>${escapeHtml(status)}${sourceLine ? ` · ${escapeHtml(sourceLine)}` : ""}</span></div>
+      <span class="node-status-dot is-${escapeHtml(context.status)}" aria-label="${escapeHtml(status)}"></span>
+      <button type="button" class="live-inspector-close" data-live-inspector-close aria-label="Close component inspector"><i class="ph ph-x" aria-hidden="true"></i></button>
+    </header>
+    <div class="live-node-inspector-actions">
+      <button type="button" class="live-agent-ask" data-ask-observer="${escapeHtml(inspector.component.id)}">Ask Observer</button>
+    </div>
+    <div class="live-node-inspector-body" data-live-inspector-scroll>
+      ${liveInspectorPurposeMarkup(inspector)}
+      ${liveInspectorPulseMarkup(inspector.live_pulse)}
+      ${liveInspectorEventStreamMarkup(inspector.event_stream)}
+      ${liveInspectorDependenciesMarkup(inspector.dependencies)}
+      ${liveInspectorEvidenceMarkup(inspector.evidence)}
+      ${liveInspectorDataResourcesMarkup(inspector.data_resources)}
+    </div>
+  </section>`;
+}
+
+function liveNodeInspectorLoadingMarkup(context) {
+  return `<section class="architecture-system architecture-flowpulse-system live-node-inspector live-node-inspector-state" aria-label="Loading ${escapeHtml(context.node.label)} detail">
+    <header class="live-node-inspector-header"><span class="node-icon" aria-hidden="true"><i class="ph ph-${iconForLive(context.node)}"></i></span><div><strong>${escapeHtml(context.node.label)}</strong><span>Loading safe runtime detail</span></div><button type="button" class="live-inspector-close" data-live-inspector-close aria-label="Close component inspector"><i class="ph ph-x" aria-hidden="true"></i></button></header>
+    <p>Loading the bounded server projection. The runtime canvas remains active.</p>
+  </section>`;
+}
+
+function liveNodeInspectorUnavailableMarkup(context) {
+  return `<section class="architecture-system architecture-flowpulse-system live-node-inspector live-node-inspector-state" aria-label="${escapeHtml(context.node.label)} detail unavailable">
+    <header class="live-node-inspector-header"><span class="node-icon" aria-hidden="true"><i class="ph ph-${iconForLive(context.node)}"></i></span><div><strong>${escapeHtml(context.node.label)}</strong><span>${escapeHtml(sourceStatusLabel(context.status))}</span></div><button type="button" class="live-inspector-close" data-live-inspector-close aria-label="Close component inspector"><i class="ph ph-x" aria-hidden="true"></i></button></header>
+    <p>Safe runtime detail is unavailable from the current backend projection.</p>
+  </section>`;
+}
+
+function liveInspectorPurposeMarkup(inspector) {
+  return `<section class="live-inspector-section live-inspector-purpose"><span>Operational role</span><strong>${escapeHtml(inspector.purpose.business_role)}</strong><p>${escapeHtml(inspector.purpose.description)}</p></section>`;
+}
+
+function liveInspectorPulseMarkup(items) {
+  if (!items.length) return "";
+  const value = (item) => item.kind === "event"
+    ? item.title
+    : item.value != null ? `${item.value}${item.unit ? ` ${item.unit}` : ""}` : item.after != null ? `${item.after}${item.unit ? ` ${item.unit}` : ""}` : item.before != null ? `${item.before}${item.unit ? ` ${item.unit}` : ""}` : null;
+  const cards = items.map((item) => `<article><span>${escapeHtml(item.kind === "event" ? "Last event" : item.title)}</span>${value(item) ? `<strong>${escapeHtml(value(item))}</strong>` : ""}${item.observed_at ? `<small>${escapeHtml(formatTime(item.observed_at))}</small>` : ""}</article>`).join("");
+  return `<section class="live-inspector-section"><span>Live pulse</span><div class="live-inspector-pulse">${cards}</div></section>`;
+}
+
+function liveInspectorEventStreamMarkup(events) {
+  if (!events.length) return "";
+  const visible = liveInspector.disclosures.events ? events : events.slice(0, 5);
+  return `<section class="live-inspector-section"><span>Event stream</span><div class="live-inspector-events">${visible.map((event) => `<article><div><strong>${escapeHtml(event.title)}</strong><small>${escapeHtml(event.event_kind)} · ${escapeHtml(formatTime(event.observed_at))}</small></div>${event.marker ? `<code>${escapeHtml(event.marker)}</code>` : ""}</article>`).join("")}</div>${events.length > 5 ? `<button type="button" class="live-inspector-disclosure" data-live-inspector-disclosure="events" aria-expanded="${String(liveInspector.disclosures.events)}">${liveInspector.disclosures.events ? "Show recent events" : `View ${events.length - 5} more`}</button>` : ""}</section>`;
+}
+
+function liveInspectorDependenciesMarkup(dependencies) {
+  const group = (label, relation) => {
+    const values = relation.visible;
+    if (!values.length) return "";
+    return `<div class="live-inspector-dependency-group"><span>${label}</span><div>${values.map((node) => `<button type="button" data-focus-entity="${escapeHtml(node.id)}"><strong>${escapeHtml(node.label)}</strong><small>${escapeHtml(node.relation)}</small></button>`).join("")}${relation.remaining ? `<span class="live-inspector-more">+${relation.remaining}</span>` : ""}</div></div>`;
+  };
+  const markup = `${group("Upstream", dependencies.upstream)}${group("Downstream", dependencies.downstream)}`;
+  return markup ? `<section class="live-inspector-section"><span>Dependency impact</span><div class="live-inspector-dependencies">${markup}</div></section>` : "";
+}
+
+function liveInspectorEvidenceMarkup(evidence) {
+  const freshness = evidence.freshness_ms == null ? null : `captured ${formatAge(evidence.freshness_ms)} ago`;
+  const summary = `${evidence.record_count} evidence record${evidence.record_count === 1 ? "" : "s"}${freshness ? ` · ${freshness}` : ""}`;
+  const open = liveInspector.disclosures.evidence;
+  return `<section class="live-inspector-section live-inspector-evidence"><button type="button" class="live-inspector-disclosure" data-live-inspector-disclosure="evidence" aria-expanded="${String(open)}"><span>Evidence &amp; source</span><strong>${escapeHtml(summary)}</strong></button>${open ? `<div class="live-inspector-evidence-detail"><p>${escapeHtml(evidence.source_mode)} · ${escapeHtml(evidence.source_health)}</p>${evidence.observed_at ? `<p>Last event ${escapeHtml(formatTime(evidence.observed_at))}</p>` : ""}${evidence.provenance_refs.map((ref) => `<code>${escapeHtml(ref)}</code>`).join("")}<code>${escapeHtml(evidence.topology_projection_revision.slice(0, 12))}…</code><code>${escapeHtml(evidence.detail_revision.slice(0, 12))}…</code></div>` : ""}</section>`;
+}
+
+function liveInspectorDataResourcesMarkup(resources) {
+  if (!resources.length) return "";
+  return `<section class="live-inspector-section"><span>Data resources</span><div class="live-inspector-data-resources">${resources.map((resource) => `<code>${escapeHtml(resource)}</code>`).join("")}</div></section>`;
 }
 
 function agentTeamHomeMarkup(controls) {
@@ -1359,6 +1516,10 @@ function agentTeamSessionMarkup(controls) {
   const activity = detail.activity?.summary || null;
   const canCompose = role !== "ledger";
   const title = role === "ledger" ? "Evidence Ledger" : node.label;
+  const context = [workspace, component, sourceTruthLabel()].filter(Boolean).join(" · ");
+  const providerLabel = provider ? (provider.availability === "available" ? provider.truth_label : "Provider unavailable") : null;
+  const runId = agentTeam.loop?.run_id || agentTeam.run_id;
+  const incidentId = agentTeam.loop?.incident_id || agentTeam.incident_id;
   return `<section class="architecture-system architecture-flowpulse-system agent-team-session" aria-label="${escapeHtml(title)} session">
     <header class="agent-team-session-header">
       <button type="button" class="agent-team-back" data-agent-team-back aria-label="Back to FlowPulse Team"><i class="ph ph-arrow-left" aria-hidden="true"></i></button>
@@ -1366,25 +1527,19 @@ function agentTeamSessionMarkup(controls) {
       <div><strong>${escapeHtml(title)}</strong><span>${escapeHtml(detail.summary || "Server-projected capability")}</span></div>
       <span class="node-status-dot is-${escapeHtml(node.status || "idle")}" aria-label="${escapeHtml(statusLabel(node.status || "idle"))}"></span>
     </header>
-    <section class="agent-team-context" aria-label="Current context">
-      <span>${escapeHtml(workspace)}</span>${component ? `<span>${escapeHtml(component)}</span>` : ""}
-      ${agentTeam.loop?.run_id ? `<code>${escapeHtml(agentTeam.loop.run_id)}</code>` : agentTeam.run_id ? `<code>${escapeHtml(agentTeam.run_id)}</code>` : ""}
-      ${agentTeam.loop?.incident_id ? `<code>${escapeHtml(agentTeam.loop.incident_id)}</code>` : agentTeam.incident_id ? `<code>${escapeHtml(agentTeam.incident_id)}</code>` : ""}
-      ${sourceTruthLabel() ? `<span>${escapeHtml(sourceTruthLabel())}</span>` : ""}
-      ${provider ? `<span>${escapeHtml(provider.availability === "available" ? provider.truth_label : "Provider unavailable")}</span>` : ""}
-    </section>
-    <section class="agent-team-capability">
-      <strong>${escapeHtml(detail.summary || "Capability details unavailable")}</strong>
-      ${boundedListMarkup("Inputs", detail.inputs)}${boundedListMarkup("Outputs", detail.outputs)}
-      ${detail.authority ? `<p><span>Boundary</span>${escapeHtml(detail.authority)}</p>` : ""}
-      ${detail.provenance_refs?.length ? `<p><span>Provenance</span>${detail.provenance_refs.map((ref) => `<code>${escapeHtml(ref)}</code>`).join("")}</p>` : ""}
-      ${activity ? `<p><span>Current activity</span>${escapeHtml(activity)}</p>` : ""}
-    </section>
+    <p class="agent-team-context" aria-label="Current context">${escapeHtml(context)}${providerLabel ? ` · ${escapeHtml(providerLabel)}` : ""}${activity ? ` · ${escapeHtml(activity)}` : ""}</p>
+    ${agentTeamDisclosureMarkup("capability", "Agent capability", `<strong>${escapeHtml(detail.summary || "Capability details unavailable")}</strong>${boundedListMarkup("Inputs", detail.inputs)}${boundedListMarkup("Outputs", detail.outputs)}${detail.authority ? `<p><span>Boundary</span>${escapeHtml(detail.authority)}</p>` : ""}${detail.provenance_refs?.length ? `<p><span>Provenance</span>${detail.provenance_refs.map((ref) => `<code>${escapeHtml(ref)}</code>`).join("")}</p>` : ""}`)}
+    ${runId || incidentId ? agentTeamDisclosureMarkup("run", "Run details", `${runId ? `<code>${escapeHtml(runId)}</code>` : ""}${incidentId ? `<code>${escapeHtml(incidentId)}</code>` : ""}`) : ""}
     ${agentTeam.error ? `<p class="agent-team-error" role="alert">${escapeHtml(agentTeam.error)}</p>` : ""}
     <section class="agent-team-timeline" aria-live="polite">${agentTeamTimelineMarkup()}</section>
     ${agentTeamWorkspaceActionsMarkup()}
     ${canCompose ? `<form class="agent-team-composer" data-agent-team-composer><input name="message" maxlength="1500" required autocomplete="off" placeholder="Ask ${escapeHtml(node.label)}" ${agentTeam.sending ? "disabled" : ""}/><button type="submit" data-agent-team-send ${agentTeam.sending ? "disabled" : ""}>${agentTeam.sending ? "Sending…" : "Send"}</button></form>` : `<p class="agent-team-readonly">Evidence Ledger is read-only. It records cited evidence, hashes, and provenance.</p>`}
   </section>`;
+}
+
+function agentTeamDisclosureMarkup(key, title, content) {
+  const open = Boolean(agentTeam.disclosures?.[key]);
+  return `<section class="agent-team-disclosure"><button type="button" data-agent-team-disclosure="${key}" aria-expanded="${String(open)}"><span>${escapeHtml(title)}</span><i class="ph ph-caret-down" aria-hidden="true"></i></button>${open ? `<div>${content}</div>` : ""}</section>`;
 }
 
 function boundedListMarkup(label, items) {
@@ -1404,7 +1559,7 @@ function agentTeamTimelineMarkup() {
 
 function agentTeamMessageMarkup(message) {
   if (message.kind === "handoff") return `<article class="agent-team-entry is-handoff"><strong>${escapeHtml(message.from)} → ${escapeHtml(message.to)}</strong><p>${escapeHtml(message.reason)}</p></article>`;
-  if (message.kind === "assistant") return `<article class="agent-team-entry is-answer"><strong>${escapeHtml(message.responding_agent)}</strong><p>${escapeHtml(message.text)}</p>${message.citations?.length ? `<div>${message.citations.map((ref) => `<code>${escapeHtml(ref)}</code>`).join("")}</div>` : ""}</article>`;
+  if (message.kind === "assistant") return `<article class="agent-team-entry is-answer"><strong>${escapeHtml(message.responding_agent)}</strong><p>${escapeHtml(message.text)}</p>${message.citations?.length ? `<details class="agent-team-citations"><summary>${message.citations.length} cited record${message.citations.length === 1 ? "" : "s"}</summary><div>${message.citations.map((ref) => `<code>${escapeHtml(ref)}</code>`).join("")}</div></details>` : ""}</article>`;
   if (message.kind === "user") return `<article class="agent-team-entry is-user"><strong>You → ${escapeHtml(message.requested_agent)}</strong><p>${escapeHtml(message.text)}</p></article>`;
   if (message.kind === "tool_summary") return `<article class="agent-team-entry is-tool"><strong>${escapeHtml(message.agent)}</strong><p>${message.tools.map((tool) => `${escapeHtml(tool.tool)} · ${tool.result_count}`).join(" · ")}</p></article>`;
   if (message.kind === "working") return `<article class="agent-team-entry is-state"><strong>${escapeHtml(message.responding_agent)}</strong><p>Working from cited, bounded evidence.</p></article>`;
@@ -1416,7 +1571,7 @@ function agentTeamMessageMarkup(message) {
 
 function agentLoopItemMarkup(item) {
   if (item.kind === "handoff") return `<article class="agent-team-entry is-handoff"><strong>${escapeHtml(item.from)} → ${escapeHtml(item.to)}</strong><p>${escapeHtml(item.reason)}</p></article>`;
-  if (item.kind === "answer") return `<article class="agent-team-entry is-answer"><strong>${escapeHtml(item.role)}</strong><p>${escapeHtml(item.answer)}</p>${item.citations.length ? `<div>${item.citations.map((ref) => `<code>${escapeHtml(ref)}</code>`).join("")}</div>` : ""}</article>`;
+  if (item.kind === "answer") return `<article class="agent-team-entry is-answer"><strong>${escapeHtml(item.role)}</strong><p>${escapeHtml(item.answer)}</p>${item.citations.length ? `<details class="agent-team-citations"><summary>${item.citations.length} cited record${item.citations.length === 1 ? "" : "s"}</summary><div>${item.citations.map((ref) => `<code>${escapeHtml(ref)}</code>`).join("")}</div></details>` : ""}</article>`;
   return `<article class="agent-team-entry is-state"><strong>${escapeHtml(item.label)}</strong></article>`;
 }
 
@@ -1442,10 +1597,10 @@ function restoreAgentTeamState() {
   try {
     const saved = JSON.parse(sessionStorage.getItem("flowpulse.agent-team.v1") || "null");
     if (saved && typeof saved === "object" && ["home", "session"].includes(saved.panel) && (saved.role === null || AGENT_TEAM_ROLES.includes(saved.role))) {
-      return { panel: saved.panel, role: saved.role, conversation_id: typeof saved.conversation_id === "string" ? saved.conversation_id : null, run_id: typeof saved.run_id === "string" ? saved.run_id : null, incident_id: typeof saved.incident_id === "string" ? saved.incident_id : null, provider: null, conversation: null, loop: null, loop_items: [], error: null, sending: false, starting: false, restore_inspector: false, stream_after: 0, loop_after: 0 };
+      return { panel: saved.panel, role: saved.role, conversation_id: typeof saved.conversation_id === "string" ? saved.conversation_id : null, run_id: typeof saved.run_id === "string" ? saved.run_id : null, incident_id: typeof saved.incident_id === "string" ? saved.incident_id : null, provider: null, conversation: null, loop: null, loop_items: [], error: null, sending: false, starting: false, restore_inspector: false, inspector_snapshot: null, disclosures: { capability: false, run: false }, stream_after: 0, loop_after: 0 };
     }
   } catch { /* session restoration is optional and never becomes authority */ }
-  return { panel: "home", role: null, conversation_id: null, run_id: null, incident_id: null, provider: null, conversation: null, loop: null, loop_items: [], error: null, sending: false, starting: false, restore_inspector: false, stream_after: 0, loop_after: 0 };
+  return { panel: "home", role: null, conversation_id: null, run_id: null, incident_id: null, provider: null, conversation: null, loop: null, loop_items: [], error: null, sending: false, starting: false, restore_inspector: false, inspector_snapshot: null, disclosures: { capability: false, run: false }, stream_after: 0, loop_after: 0 };
 }
 
 function persistAgentTeamState() {
@@ -1493,7 +1648,7 @@ function agentTeamIncidentId() {
   return state?.incident?.id || state?.topology_views?.incident_id || null;
 }
 
-async function openAgentTeamSession(role, { restoreInspector = false } = {}) {
+async function openAgentTeamSession(role, { restoreInspector = false, inspectorSnapshot = null } = {}) {
   if (!AGENT_TEAM_ROLES.includes(role)) return;
   if (agentTeam.panel === "session" && agentTeam.role === role) {
     closeAgentTeamSession({ restoreInspector: true });
@@ -1513,6 +1668,8 @@ async function openAgentTeamSession(role, { restoreInspector = false } = {}) {
     error: null,
     sending: false,
     restore_inspector: restoreInspector,
+    inspector_snapshot: restoreInspector ? inspectorSnapshot || captureLiveInspectorSnapshot() : null,
+    disclosures: { capability: false, run: false },
     conversation: null
   };
   persistAgentTeamState();
@@ -1524,8 +1681,17 @@ async function openAgentTeamSession(role, { restoreInspector = false } = {}) {
 function closeAgentTeamSession({ restoreInspector = false } = {}) {
   agentTeamEventSource?.close();
   agentTeamEventSource = null;
-  const restore = restoreInspector && agentTeam.restore_inspector && Boolean(selected);
-  agentTeam = { ...agentTeam, panel: "home", role: null, conversation: null, error: null, sending: false, restore_inspector: false };
+  const inspectorSnapshot = agentTeam.inspector_snapshot;
+  const restore = restoreInspector && agentTeam.restore_inspector && Boolean(selected) && inspectorSnapshot?.node_id === selected.id;
+  agentTeam = { ...agentTeam, panel: "home", role: null, conversation: null, error: null, sending: false, restore_inspector: false, inspector_snapshot: null, disclosures: { capability: false, run: false } };
+  if (restore) {
+    liveInspector = {
+      node_id: inspectorSnapshot.node_id,
+      disclosures: { ...emptyLiveInspector().disclosures, ...inspectorSnapshot.disclosures },
+      scroll_top: inspectorSnapshot.scroll_top || 0,
+      restore_pending: true
+    };
+  }
   persistAgentTeamState();
   renderDrawer();
   renderOperationsTeamRail();
@@ -2092,7 +2258,7 @@ function handleDrawerTab(event) {
 function handleDrawerEntityFocus(event) {
   const askObserver = event.target.closest("[data-ask-observer]");
   if (askObserver) {
-    void openAgentTeamSession("observer", { restoreInspector: true });
+    void openAgentTeamSession("observer", { restoreInspector: true, inspectorSnapshot: captureLiveInspectorSnapshot() });
     return;
   }
   const target = event.target.closest("[data-focus-entity]");
@@ -2108,6 +2274,7 @@ function openDrawer(focus, tab = "evidence") {
     return;
   }
   selected = focus;
+  if (mode === "live" && focus?.type === "node" && liveInspector.node_id !== focus.id) liveInspector = emptyLiveInspector(focus.id);
   activeTab = tab;
   if (mode === "live" && focus?.type === "node") void requestLiveComponentDetail(focus.id);
   renderDrawer();
@@ -2120,6 +2287,7 @@ function ensureSelectedLiveComponentDetail() {
 
 function closeDrawer() {
   selected = null;
+  liveInspector = emptyLiveInspector();
   renderDrawer();
   renderOperationsTeamRail();
   els["details-button"].focus();
@@ -2684,7 +2852,10 @@ async function requestLiveComponentDetail(id) {
   const key = liveComponentDetailKey(id, view?.projection_revision);
   if (!key || liveComponentDetails.has(key) || pendingLiveComponentDetails.has(key) || unavailableLiveComponentDetails.has(key)) return;
   pendingLiveComponentDetails.add(key);
-  if (selected?.type === "node" && selected.id === id) renderDrawer();
+  if (selected?.type === "node" && selected.id === id) {
+    renderDrawer();
+    renderOperationsTeamRail();
+  }
   try {
     const value = await request(`/api/components/${encodeURIComponent(id)}`);
     const detail = componentDetailProjection(value, { nodeId: id, topologyRevision: view.projection_revision });
@@ -2695,7 +2866,10 @@ async function requestLiveComponentDetail(id) {
     unavailableLiveComponentDetails.add(key);
   } finally {
     pendingLiveComponentDetails.delete(key);
-    if (selected?.type === "node" && selected.id === id && mode === "live") renderDrawer();
+    if (selected?.type === "node" && selected.id === id && mode === "live") {
+      renderDrawer();
+      renderOperationsTeamRail();
+    }
   }
 }
 

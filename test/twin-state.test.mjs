@@ -18,6 +18,8 @@ import {
   agentTeamProviderProjection,
   architectureViewTopology,
   componentDetailProjection,
+  nodeInvestigationN1Projection,
+  nodeLiveInspectorProjection,
   availableStage,
   architecturePositions,
   compareFrames,
@@ -282,6 +284,31 @@ test("component detail accepts only the exact bounded, revision-bound browser re
   assert.match(appJs, /\/api\/components\//);
 });
 
+test("Node Live Inspector derives a compact, ordered v1 narrative without inventing data or accepting N1 early", () => {
+  const detail = componentDetailProjection(componentDetailPayload(), { nodeId: "checkout", topologyRevision: "a".repeat(64) });
+  const inspector = nodeLiveInspectorProjection(detail);
+  assert.ok(inspector);
+  assert.equal(inspector.component.id, "checkout");
+  assert.equal(inspector.live_pulse.length <= 4, true);
+  assert.equal(inspector.event_stream.length, 3);
+  assert.deepEqual(inspector.event_stream.map(({ evidence_id }) => evidence_id), ["ev-trace-payment-refused", "ev-log-endpoint-fallback", "ev-deploy-checkout"]);
+  assert.equal(inspector.dependencies.upstream.visible.length, 1);
+  assert.equal(inspector.dependencies.downstream.visible.length, 1);
+  assert.equal(inspector.dependencies.upstream.remaining, 0);
+  assert.equal(inspector.evidence.record_count, 4);
+  assert.equal(inspector.data_resources.length, 0);
+  const empty = componentDetailPayload();
+  empty.observability = { metrics: [], traces: [], logs: [], changes: [] };
+  empty.configuration = { changes: [] };
+  const emptyDetail = componentDetailProjection(empty, { nodeId: "checkout", topologyRevision: "a".repeat(64) });
+  assert.deepEqual(nodeLiveInspectorProjection(emptyDetail)?.event_stream, []);
+  const unsafe = componentDetailPayload();
+  unsafe.observability.logs[0].title = "raw <payload> must never render";
+  assert.equal(nodeLiveInspectorProjection(componentDetailProjection(unsafe, { nodeId: "checkout", topologyRevision: "a".repeat(64) })), null);
+  assert.equal(nodeInvestigationN1Projection({ schema_version: "flowpulse.component-detail.v1" }), null);
+  assert.equal(nodeInvestigationN1Projection({ schema_version: "flowpulse.node-investigation.n1", events: [] }), null);
+});
+
 test("Architecture accepts only the strict v2 backend topology view and retains separate control evidence", () => {
   const view = architectureViewTopology(backendArchitectureView());
   assert.ok(view);
@@ -455,7 +482,7 @@ test("architecture is a static four-layer overview with backend-owned status dot
   assert.match(appJs, /async function openArchitectureDetail\(id\)/);
   assert.match(appJs, /function closeArchitectureDetail\(\{ restoreFocus = false \} = \{\}\)/);
   assert.match(appJs, /event\.target\.matches\("\[data-architecture-thumbnail-id\]"\)/);
-  assert.match(appJs, /mode === "architecture" \|\| !selected/);
+  assert.match(appJs, /mode === "architecture" \|\| \(mode === "live" && selected\?\.type === "node"\)/);
   assert.match(appJs, /item\?\.id === id && \["runtime", "data"\]\.includes\(item\.plane\)/);
   assert.match(appJs, /nodeById\.has\(edge\.from\) && nodeById\.has\(edge\.to\)/);
   assert.match(appJs, /edge\.from === id \|\| edge\.to === id/);
@@ -689,7 +716,8 @@ test("Live reuses the canonical navigation and exposes only safe projected Team 
   assert.match(indexHtml, /id="operations-team-rail"[^>]+aria-label="FlowPulse Team"/);
   assert.match(appJs, /function renderOperationsTeamRail\(\)/);
   assert.match(appJs, /const controls = controlSystemNodes\(\)/);
-  assert.match(appJs, /rail\.hidden = !controls\.length \|\| \(Boolean\(selected\) && agentTeam\.panel === "home"\)/);
+  assert.match(appJs, /const liveInspectorOpen = mode === "live" && selected\?\.type === "node" && agentTeam\.panel === "home"/);
+  assert.match(appJs, /rail\.hidden = !controls\.length \|\| \(Boolean\(selected\) && agentTeam\.panel === "home" && !liveInspectorOpen\)/);
   assert.match(appJs, /controlSystemTileMarkup\(node, \{ rail: true \}\)/);
   assert.match(stylesCss, /\.operations-team-rail > \.architecture-flowpulse-system \{ height: 100%; \}/);
   assert.match(stylesCss, /\.twin-workspace \{[\s\S]*?--flowpulse-control-rail-width: 272px;[\s\S]*?--flowpulse-control-rail-inset-y: 16px;[\s\S]*?--flowpulse-control-rail-inset-x: 20px;/);
@@ -734,11 +762,32 @@ test("Agent Team rail is session-driven, retains Live selection, and never uses 
   assert.match(roleSelectionSource, /hydrateAgentTeamSession\(\)/);
   assert.doesNotMatch(roleSelectionSource, /method:\s*"POST"/);
   assert.match(liveDetailSource, /data-ask-observer/);
-  assert.match(appJs, /openAgentTeamSession\("observer", \{ restoreInspector: true \}\)/);
+  assert.match(appJs, /openAgentTeamSession\("observer", \{ restoreInspector: true, inspectorSnapshot: captureLiveInspectorSnapshot\(\) \}\)/);
   assert.match(appJs, /agentTeam\.panel === "session"/);
   assert.match(appJs, /renderDrawer\(\);\n  renderOperationsTeamRail\(\);/);
   assert.match(stylesCss, /\.agent-team-timeline \{[\s\S]+?overflow: auto;/);
   assert.match(stylesCss, /\.agent-team-composer \{[\s\S]+?grid-template-columns: minmax\(0, 1fr\) auto;/);
+});
+
+test("Live Inspector owns the rail, preserves canvas continuity, and keeps its progressive disclosures closed by default", () => {
+  const railSource = appJs.slice(appJs.indexOf("function renderOperationsTeamRail"), appJs.indexOf("function handleOperationsTeamRail"));
+  const inspectorSource = appJs.slice(appJs.indexOf("function liveNodeInspectorRailMarkup"), appJs.indexOf("function agentTeamHomeMarkup"));
+  const sessionSource = appJs.slice(appJs.indexOf("function agentTeamSessionMarkup"), appJs.indexOf("function boundedListMarkup"));
+  assert.match(railSource, /mode === "live" && selected\?\.type === "node" && agentTeam\.panel === "home"/);
+  assert.match(railSource, /liveNodeInspectorRailMarkup\(/);
+  assert.match(inspectorSource, /data-live-inspector-close/);
+  assert.match(inspectorSource, /data-live-inspector-disclosure/);
+  assert.match(inspectorSource, /data-ask-observer/);
+  assert.match(inspectorSource, /data-focus-entity/);
+  assert.match(inspectorSource, /aria-expanded="\$\{String\(liveInspector\.disclosures/);
+  assert.match(sessionSource, /Agent capability/);
+  assert.match(sessionSource, /Run details/);
+  assert.doesNotMatch(sessionSource, /<code>\$\{escapeHtml\(agentTeam\.loop\?\.run_id\)/);
+  assert.match(appJs, /captureLiveInspectorSnapshot\(\)/);
+  assert.match(appJs, /restoreLiveInspectorSnapshot\(\)/);
+  assert.match(stylesCss, /\.operations-team-rail \.live-node-inspector \{[\s\S]+?overflow: hidden;/);
+  assert.match(stylesCss, /\.live-node-inspector-body \{[\s\S]+?overflow: auto;/);
+  assert.doesNotMatch(railSource, /\/api\/agent-control\/message/);
 });
 
 test("B1 recovery console keeps six collaborators visible while owner approval stays separate", () => {
@@ -1143,6 +1192,27 @@ test("Live node detail is revision-bound, comprehensive, and never remounts the 
   assert.doesNotMatch(drawerOpen, /\brender\(\)|\brenderCanvas\(/);
   assert.match(rootRender, /canvasProjectionKey\(\)/);
   assert.match(rootRender, /canvasKey !== renderedCanvasKey/);
+});
+
+test("Live Inspector owns the existing rail and preserves the running canvas while an agent session is opened and restored", () => {
+  const railRender = appJs.slice(appJs.indexOf("function renderOperationsTeamRail"), appJs.indexOf("function resolveOperationsTeamControls"));
+  const drawerOpen = appJs.slice(appJs.indexOf("function openDrawer"), appJs.indexOf("function closeDrawer"));
+  const detailLoader = appJs.slice(appJs.indexOf("function requestLiveComponentDetail"), appJs.indexOf("function architectureDetailContext"));
+  assert.match(railRender, /mode === "live" && selected\?\.type === "node"/);
+  assert.match(railRender, /liveNodeInspectorRailMarkup/);
+  assert.match(appJs, /captureLiveInspectorSnapshot/);
+  assert.match(appJs, /restoreLiveInspectorSnapshot/);
+  assert.match(appJs, /data-live-inspector-close/);
+  assert.match(appJs, /data-live-inspector-disclosure/);
+  assert.match(appJs, /data-focus-entity/);
+  assert.match(appJs, /Agent capability/);
+  assert.match(appJs, /Run details/);
+  assert.match(appJs, /agent-team-citations/);
+  assert.match(appJs, /const canCompose = role !== "ledger"/);
+  assert.doesNotMatch(railRender, /legacy|\/api\/agent-control\/message/);
+  assert.doesNotMatch(drawerOpen, /\brender\(\)|\brenderCanvas\(|startLiveSignals|stopLiveSignals/);
+  assert.doesNotMatch(detailLoader, /\brender\(\)|\brenderCanvas\(|startLiveSignals|stopLiveSignals/);
+  assert.match(stylesCss, /\.live-node-inspector-body \{[\s\S]+?overflow: auto;[\s\S]+?overscroll-behavior: contain;/);
 });
 
 test("timeline renders only recorded milestones and labels the next evidence requirement", () => {
