@@ -79,17 +79,24 @@ function canonicalRuntime(views) {
   const graph = views?.schema_version === "flowpulse.topology-views.v2" && HASH.test(views?.projection_revision || "")
     ? views.architecture?.runtime_data?.graph
     : null;
-  const supporting = views?.architecture?.runtime_data?.supporting_relations ?? [];
   if (!graph || !Number.isSafeInteger(graph.total_nodes) || !Number.isSafeInteger(graph.total_edges)
     || !Array.isArray(graph.nodes) || !Array.isArray(graph.edges)
     || graph.total_nodes < 1 || graph.total_nodes > MAX_GRAPH_NODES || graph.total_edges < 0 || graph.total_edges > MAX_GRAPH_EDGES
-    || graph.nodes.length !== graph.total_nodes || graph.edges.length !== graph.total_edges || !Array.isArray(supporting)
-    || supporting.length > MAX_GRAPH_EDGES || !graph.nodes.every(validRuntimeNode)) fail("component_detail_topology_invalid");
+    || graph.nodes.length !== graph.total_nodes || graph.edges.length !== graph.total_edges || !graph.nodes.every(validRuntimeNode)) fail("component_detail_topology_invalid");
   const ids = new Set(graph.nodes.map((node) => node.id));
-  const allEdges = [...graph.edges, ...supporting];
-  if (ids.size !== graph.nodes.length || !allEdges.every((edge) => validRuntimeEdge(edge, ids))
-    || new Set(allEdges.map((edge) => edge.id)).size !== allEdges.length) fail("component_detail_topology_invalid");
-  return { nodes: graph.nodes, edges: allEdges };
+  if (ids.size !== graph.nodes.length || !graph.edges.every((edge) => validRuntimeEdge(edge, ids))) fail("component_detail_topology_invalid");
+  // `supporting_relations` is an optional, additive topology-v2 extension.
+  // It is safe to omit an obsolete or malformed relation (for example after a
+  // future graph node rename), but never to let it weaken canonical graph
+  // validation or displace an observed graph edge.
+  const seen = new Set(graph.edges.map((edge) => edge.id));
+  const supporting = Array.isArray(views?.architecture?.runtime_data?.supporting_relations)
+    ? views.architecture.runtime_data.supporting_relations
+      .filter((edge) => validRuntimeEdge(edge, ids) && !seen.has(edge.id))
+      .filter((edge) => (seen.add(edge.id), true))
+      .slice(0, MAX_GRAPH_EDGES)
+    : [];
+  return { nodes: graph.nodes, edges: [...graph.edges, ...supporting] };
 }
 
 function validRuntimeNode(node) {

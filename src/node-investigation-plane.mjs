@@ -240,15 +240,19 @@ function pageRecords(records, query, componentId) {
 
 function safeEvidence(value) {
   if (!plain(value) || !safeId(value.id)) return null;
-  const safeValue = safeEvidenceValue(value.value, value.fact);
+  const kind = safeText(value.kind, 80) || "unknown";
+  const safeValue = safeEvidenceValue(value.value, value.fact, kind);
   const resource = safeValue.resource;
   const record_sha256 = safeHash(value.hash || value.record_sha256 || value.provenance?.sha256) || canonicalSha256({ id: value.id, kind: value.kind, signal: value.signal || null, title: value.title, entity: value.entity, source: value.source, observed_at: value.at || value.observed_at || null, value: safeValue });
   return {
     id: value.id,
-    kind: safeText(value.kind, 80) || "unknown",
+    kind,
     signal: safeText(value.signal, 80) || "unknown",
     title: safeText(value.title, 180) || "Bounded evidence",
-    summary: typeof value.fact === "string" ? redactText(value.fact).slice(0, 360) || null : null,
+    // A node page exposes structured metric/trace/change fields, not the
+    // source record's free-form fact. Logs are the one bounded exception: a
+    // redacted safe summary is useful for investigation and remains capped.
+    summary: kind === "log" && typeof value.fact === "string" ? redactText(value.fact).slice(0, 360) || null : null,
     entity: safeId(value.entity) || "unknown",
     source: safeText(value.source, 160) || "unknown",
     observed_at: safeTimestamp(value.at || value.observed_at),
@@ -278,7 +282,7 @@ function componentEvidence(record) {
   };
 }
 
-function safeEvidenceValue(value, fact = null) {
+function safeEvidenceValue(value, fact = null, kind = "unknown") {
   const source = plain(value) ? value : {};
   const metric = plain(source.metric) ? {
     name: safeText(source.metric.name, 120),
@@ -291,7 +295,7 @@ function safeEvidenceValue(value, fact = null) {
   } : null;
   const log = plain(source.log) ? {
     severity: safeText(source.log.severity, 32), message: redactText(safeText(source.log.message, 280) || ""), trace_ref: safeRef(source.log.trace_ref), span_ref: safeRef(source.log.span_ref)
-  } : typeof fact === "string" ? { severity: null, message: redactText(fact).slice(0, 280), trace_ref: null, span_ref: null } : null;
+  } : kind === "log" && typeof fact === "string" ? { severity: null, message: redactText(fact).slice(0, 280), trace_ref: null, span_ref: null } : null;
   const change = plain(source.change) ? {
     target: safeId(source.change.target), flag: safeText(source.change.flag, 120), before: safeText(source.change.before, 120), after: safeText(source.change.after, 120), applied_at: safeTimestamp(source.change.applied_at)
   } : null;

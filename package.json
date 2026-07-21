@@ -15,7 +15,8 @@
     "live:start": "node scripts/live-demo.mjs start",
     "live:case": "node scripts/live-demo.mjs case",
     "live:stop": "node scripts/live-demo.mjs stop",
-    "demo:multi-case-loop": "node scripts/run-local-fault-loop.mjs"
+    "demo:multi-case-loop": "node scripts/run-local-fault-loop.mjs",
+    "demo:e2e-check": "node scripts/demo-e2e-check.mjs"
   },
   "engines": {
     "node": ">=20"
