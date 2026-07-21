@@ -49,6 +49,8 @@ The same object is available as `agent_team_provider` in `/api/agent-control` an
 
 For `codex-local`, FlowPulse invokes `codex exec` once per explicit non-idempotent message with an ephemeral session, strict JSON output schema, output/event caps, hard timeout, read-only sandbox, approvals disabled, web search disabled, and an empty temporary working directory outside this repository. FlowPulse sends the complete bounded context on each invocation and keeps the Ledger—not a hidden Codex thread—as conversation truth. It does not read, copy, log, commit, or pass through Codex auth files or tokens; normal Codex CLI authentication remains entirely inside the CLI.
 
+The strict provider result is always an object with both `answer` and `recommended_handoff`. `recommended_handoff` is either `null` or a `{ "to", "reason" }` recommendation for one of the four role IDs. FlowPulse validates it before recording any handoff; provider stderr, JSONL events, schema diagnostics, and output payloads are never exposed to the browser. Internal adapter diagnostics use only fixed classifications such as `codex_exec/nonzero` or `codex_response/provider_output_schema_invalid`.
+
 ## Submit a message
 
 `POST /api/agent-control/chat` accepts `application/json` and rejects every unknown field. It is the only operation that can invoke a model adapter. Opening a role, loading a conversation, switching page, selecting a component, and SSE reads never invoke a model.
@@ -74,6 +76,20 @@ Rules:
 - `selected_component` is `null` or an exact canonical runtime node from the current topology view. The server rejects browser-invented nodes.
 - `message` is required and capped at 1,500 UTF-8 bytes. The service redacts secret-shaped values before recording or projecting them.
 - Fields such as authority/truth/approval/repair/evidence/verification/provider payloads are not accepted in the request envelope; they fail as `forbidden_request_field` or `unknown_request_field`.
+- A human gate is reserved for a command to approve, grant, apply, execute, run, bypass, or mutate protected state. Read questions such as “is approval granted?”, “do not claim approval”, and “explain the owner gate” remain ordinary read-only chat requests.
+
+### Bounded context selected at submit time
+
+Each explicit message re-reads the canonical run and the selected evidence source; changing a page or node without submitting remains model-free. In replay, the source status is truthfully `captured` and the topology revision/node set stays bound to the current `topology-views.v2` projection. FlowPulse uses the existing evidence-source and component-detail projections, never raw rows, to assemble this role-specific context:
+
+| Responding role | Bounded context supplied to the provider |
+| --- | --- |
+| Observer | Captured/live source status and freshness plus cited signal summaries. |
+| Orchestrator | Current incident workflow stage, status, and canonical human-gate state. |
+| Investigator | Cited evidence summaries and the selected canonical component detail when one was supplied. |
+| Evaluator | Canonically recorded hypotheses/verdict references when available, plus cited evidence summaries. |
+
+Evidence is capped at 12 references, selected-component detail uses its existing cap of eight source records, and the total provider context is capped at 24 KiB. The response projection exposes only citation IDs and count-only tool activity; it does not expose source facts, raw telemetry/logs/traces, or component-detail payloads.
 
 Success returns a final (or safely failed) chat state plus the entire bounded conversation projection:
 

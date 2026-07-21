@@ -50,7 +50,23 @@ function contextForRun(runtime, runId) {
         record_sha256: "c".repeat(64)
       }]
     },
-    source: { status: "captured", freshness_ms: 0 }
+    source: { status: "captured", freshness_ms: 0, evidence_count: 1 },
+    source_evidence: [{
+      id: "ev-captured-checkout-metric",
+      kind: "metric",
+      signal: "metric",
+      title: "Captured checkout error rate",
+      fact: "Captured checkout error rate rose after the observed payment refusal.",
+      entity: "checkout",
+      source: "captured fixture",
+      at: "2026-07-20T00:00:00.000Z",
+      hash: "d".repeat(64)
+    }],
+    selected_component_detail: {
+      component: { id: "checkout", label: "Checkout", kind: "service", status: "captured", source_health: "captured" },
+      runtime: { status: "captured", freshness_ms: 0 },
+      observability: { metrics: [{ evidence_id: "ev-captured-checkout-metric" }], traces: [], logs: [], changes: [] }
+    }
   };
 }
 
@@ -128,7 +144,7 @@ test("routing is explicit, persisted in order, and duplicate idempotency keys do
   assert.equal(rendered.tool_summary.tools.every((tool) => tool.raw_payload_excluded), true);
   assert.equal(rendered.assistant.state, "completed");
   assert.equal(rendered.assistant.responding_agent, "investigator");
-  assert.deepEqual(first.citations, ["ev-checkout-test"]);
+  assert.deepEqual(first.citations, ["ev-captured-checkout-metric", "ev-checkout-test"]);
   assert.equal(repeat.idempotent, true);
   assert.equal(repeat.message_id, first.message_id);
   assert.equal(calls, 1);
@@ -244,12 +260,49 @@ test("authority requests stop at the human gate and redact secrets without provi
   assert.equal(runtime.ledger.list(runId).some((event) => event.type === "agent_team.human_gate.required"), true);
 });
 
+test("four role prompts preserve the requested role, avoid read-question gates, and cite captured bounded source evidence", async () => {
+  const contexts = [];
+  const { runtime, runId, service } = setup({ modelAdapter: {
+    async respond({ role, context }) {
+      contexts.push({ role, context });
+      return { answer: `${role} bounded answer.` };
+    }
+  } });
+  const prompts = [
+    ["observer", "Report captured source freshness, current signals, and anomalies for checkout."],
+    ["orchestrator", "Explain the architecture workflow and owner gate for checkout; do not claim approval."],
+    ["investigator", "Investigate the checkout root cause using bounded evidence."],
+    ["evaluator", "Evaluate the causal evidence and state whether human approval is granted."]
+  ];
+
+  for (const [requested_agent, message] of prompts) {
+    const result = await service.submit(request(runtime, runId, {
+      requested_agent,
+      message,
+      conversation_id: `conv-${requested_agent}-001`,
+      idempotency_key: `chat-key-${requested_agent}`
+    }));
+    assert.equal(result.responding_agent, requested_agent);
+    assert.equal(result.state, "completed");
+    assert.notEqual(result.state, "needs_human");
+    assert.equal(result.citations.includes("ev-captured-checkout-metric"), true);
+    assert.equal(result.tool_summaries.some((item) => item.result_count > 0), true);
+  }
+
+  assert.equal(contexts.length, 4);
+  assert.equal(contexts[0].context.source_truth.source_status, "captured");
+  assert.equal(contexts[0].context.role_context.signal_summaries.length > 0, true);
+  assert.equal(contexts[1].context.role_context.workflow.stage, "Monitor");
+  assert.equal(contexts[2].context.role_context.selected_component.component.id, "checkout");
+  assert.equal(contexts[3].context.role_context.cited_evidence.length > 0, true);
+});
+
 test("recorded and Responses adapters are bounded, provider failures are redacted, and telemetry failures are isolated", async () => {
   const requests = [];
   const adapter = createOpenAIChatAdapter({
     requestResponse: async (input) => {
       requests.push(input);
-      return { data: { output: [{ type: "message", role: "assistant", status: "completed", content: [{ type: "output_text", text: JSON.stringify({ answer: "A bounded provider answer." }) }] }], usage: { input_tokens: 12, output_tokens: 5 } } };
+      return { data: { output: [{ type: "message", role: "assistant", status: "completed", content: [{ type: "output_text", text: JSON.stringify({ answer: "A bounded provider answer.", recommended_handoff: null }) }] }], usage: { input_tokens: 12, output_tokens: 5 } } };
     }
   });
   const answer = await adapter.respond({ role: "orchestrator", context: { message: "safe", tool_allowlist: [] } });

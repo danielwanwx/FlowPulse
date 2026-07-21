@@ -8,6 +8,7 @@ import {
   createCodexLocalAdapter,
   createOpenAIResponsesAdapter,
   createRecordedChatAdapter,
+  agentTeamResponseSchema,
   validateProviderResponse
 } from "../src/agent-team-provider.mjs";
 
@@ -40,7 +41,7 @@ test("provider selection is explicit and recorded remains truthfully labeled wit
 });
 
 test("Codex local preflight and invocation use an ephemeral read-only temp workspace with no auth or API-key environment", async () => {
-  const fixture = scriptedSpawn({ output: JSON.stringify({ answer: "Local Codex answer." }) });
+  const fixture = scriptedSpawn({ output: JSON.stringify({ answer: "Local Codex answer.", recommended_handoff: null }) });
   const provider = createCodexLocalAdapter({ spawnImpl: fixture.spawn, timeoutMs: 100 });
 
   assert.equal((await provider.preflight()).availability, "available");
@@ -69,7 +70,8 @@ test("Codex local reports unavailable, unauthenticated, timeout, nonzero, invali
   const timedOut = createCodexLocalAdapter({ spawnImpl: scriptedSpawn({ neverClose: true }).spawn, timeoutMs: 5 });
   assert.equal((await timedOut.preflight()).failure_reason, "codex_timeout");
 
-  const nonzero = createCodexLocalAdapter({ spawnImpl: scriptedSpawn({ execCode: 2 }).spawn, timeoutMs: 100 });
+  const diagnostics = [];
+  const nonzero = createCodexLocalAdapter({ spawnImpl: scriptedSpawn({ execCode: 2 }).spawn, timeoutMs: 100, diagnostic: (value) => diagnostics.push(value) });
   await nonzero.preflight();
   await assert.rejects(() => nonzero.respond({ role: "observer", context: CONTEXT }), (error) => error instanceof AgentTeamProviderError && error.code === "codex_exec_nonzero");
   assert.deepEqual(nonzero.capability(), {
@@ -79,6 +81,7 @@ test("Codex local reports unavailable, unauthenticated, timeout, nonzero, invali
     model_label: "Codex CLI",
     failure_reason: "codex_exec_nonzero"
   });
+  assert.deepEqual(diagnostics, [{ phase: "codex_exec", outcome: "nonzero" }]);
 
   const invalid = createCodexLocalAdapter({ spawnImpl: scriptedSpawn({ output: "not-json" }).spawn, timeoutMs: 100 });
   await invalid.preflight();
@@ -107,16 +110,36 @@ test("Codex cancellation terminates its child and cleans up, while output labels
 test("recorded, Responses, and Codex adapters share the same validated output envelope", async () => {
   const recorded = await createRecordedChatAdapter().respond({ role: "observer", context: CONTEXT });
   const responses = await createOpenAIResponsesAdapter({
-    requestResponse: async () => ({ output: [{ type: "message", role: "assistant", status: "completed", content: [{ type: "output_text", text: JSON.stringify({ answer: "OpenAI answer." }) }] }] })
+    requestResponse: async () => ({ output: [{ type: "message", role: "assistant", status: "completed", content: [{ type: "output_text", text: JSON.stringify({ answer: "OpenAI answer.", recommended_handoff: null }) }] }] })
   }).respond({ role: "observer", context: CONTEXT });
-  const codex = createCodexLocalAdapter({ spawnImpl: scriptedSpawn({ output: JSON.stringify({ answer: "Codex answer." }) }).spawn, timeoutMs: 100 });
+  const codex = createCodexLocalAdapter({ spawnImpl: scriptedSpawn({ output: JSON.stringify({ answer: "Codex answer.", recommended_handoff: null }) }).spawn, timeoutMs: 100 });
   await codex.preflight();
   const local = await codex.respond({ role: "observer", context: CONTEXT });
 
-  for (const result of [recorded, responses, local]) assert.equal(Object.keys(result).sort().join(","), "answer,model,provider,usage");
+  for (const result of [recorded, responses, local]) {
+    assert.equal(Object.keys(result).sort().join(","), "answer,model,provider,recommended_handoff,usage");
+    assert.equal(result.recommended_handoff, null);
+  }
 });
 
-function scriptedSpawn({ versionCode = 0, loginCode = 0, login = "Logged in", execCode = 0, output = JSON.stringify({ answer: "ok" }), stdout = "", neverClose = false, holdExec = false } = {}) {
+test("the strict Codex and Responses schema requires a nullable handoff property", () => {
+  const schema = agentTeamResponseSchema();
+  assert.deepEqual(schema.required, ["answer", "recommended_handoff"]);
+  assert.deepEqual(schema.properties.recommended_handoff.type, ["object", "null"]);
+  assert.deepEqual(validateProviderResponse({ answer: "fine", recommended_handoff: null }), { answer: "fine", recommended_handoff: null });
+  assert.throws(() => validateProviderResponse({ answer: "fine" }), /provider_output_schema_invalid/);
+});
+
+test("real local Codex structured response succeeds when explicitly enabled", { skip: process.env.FLOWPULSE_AGENT_REAL_CODEX_TEST === "1" ? false : "set FLOWPULSE_AGENT_REAL_CODEX_TEST=1" }, async () => {
+  const provider = createCodexLocalAdapter({ timeoutMs: 60_000 });
+  assert.equal((await provider.preflight()).availability, "available");
+  const result = await provider.respond({ role: "observer", context: CONTEXT });
+  assert.equal(typeof result.answer, "string");
+  assert.equal(result.answer.length > 0, true);
+  assert.equal(result.recommended_handoff, null);
+});
+
+function scriptedSpawn({ versionCode = 0, loginCode = 0, login = "Logged in", execCode = 0, output = JSON.stringify({ answer: "ok", recommended_handoff: null }), stdout = "", neverClose = false, holdExec = false } = {}) {
   const calls = [];
   const spawn = (_command, args, options) => {
     const child = new EventEmitter();

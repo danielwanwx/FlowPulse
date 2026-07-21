@@ -26,6 +26,8 @@ test("Agent Team HTTP and SSE projections preserve a chat's transparent routing 
   const initial = await getJson(port, "/api/state");
   assert.equal(initial.status, 200);
   assert.equal(initial.body.agent_control.agent_team_provider.truth_label, "RECORDED/DEMO");
+  assert.equal(initial.body.source.status, "captured");
+  assert.equal(initial.body.topology_views.architecture.runtime_data.graph.total_nodes, 22);
   const provider = await getJson(port, "/api/agent-control/provider");
   assert.deepEqual(provider.body, initial.body.agent_control.agent_team_provider);
 
@@ -48,6 +50,8 @@ test("Agent Team HTTP and SSE projections preserve a chat's transparent routing 
     reason: "Causal investigation belongs to Investigator."
   });
   assert.equal(chat.body.provider.truth_label, "RECORDED/DEMO");
+  assert.equal(chat.body.citations.length > 0, true);
+  assert.equal(chat.body.tool_summaries.some((item) => item.result_count > 0), true);
   assert.deepEqual(chat.body.conversation.messages.map((message) => message.kind), ["user", "handoff", "context", "tool_summary", "working", "assistant"]);
   assert.equal(chat.body.conversation.messages[0].selected_component, "checkout");
 

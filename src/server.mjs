@@ -76,12 +76,36 @@ const langfuseEnabled = await initializeObservability().catch(() => {
 const agentControl = new AgentControlService({ runtime, langfuseEnabled });
 const agentTeamChat = new AgentTeamChatService({
   runtime,
-  contextForRun: async (_runtime, runId) => {
+  contextForRun: async (_runtime, runId, request = {}) => {
     const state = await stateWithSource(runId);
+    const source = await selectedEvidenceSource(runId, state.mode);
+    const selectedComponent = typeof request.selected_component === "string" ? request.selected_component : null;
+    const sourceEvidence = source.list({ entity: selectedComponent || undefined, limit: 12 }).items;
+    let selectedComponentDetail = null;
+    if (selectedComponent) {
+      try {
+        selectedComponentDetail = composeComponentDetail({
+          topologyViews: state.topology_views,
+          nodeId: selectedComponent,
+          source: source.metadata(),
+          evidence: source.list({ entity: selectedComponent, limit: 8 }).items
+        });
+      } catch (error) {
+        if (!(error instanceof ComponentDetailProjectionError)) throw error;
+      }
+    }
+    const sourceMetadata = source.metadata();
+    const sourceState = await sourceProjection(runId, source);
     return {
       topology_views: state.topology_views,
       incident_projection: state.incident_projection,
-      source: state.source
+      source: {
+        status: sourceMetadata.status,
+        freshness_ms: sourceState.freshness_ms,
+        evidence_count: sourceMetadata.evidence_count
+      },
+      source_evidence: sourceEvidence,
+      selected_component_detail: selectedComponentDetail
     };
   }
 });

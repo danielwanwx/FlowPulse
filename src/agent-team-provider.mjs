@@ -87,7 +87,8 @@ export function createCodexLocalAdapter({
   tempRoot = tmpdir(),
   timeoutMs = providerTimeout(),
   outputLimitBytes = OUTPUT_LIMIT_BYTES,
-  eventLimit = EVENT_LIMIT
+  eventLimit = EVENT_LIMIT,
+  diagnostic = null
 } = {}) {
   let capability = staticCapability("codex-local", "preflight_required", "LOCAL CODEX", "Codex CLI");
   let preflightPromise = null;
@@ -125,11 +126,22 @@ export function createCodexLocalAdapter({
           eventLimit,
           signal
         });
-        if (result.reason) throw new AgentTeamProviderError(result.reason);
-        if (result.code !== 0) throw new AgentTeamProviderError("codex_exec_nonzero");
+        if (result.reason) {
+          reportDiagnostic(diagnostic, { phase: "codex_exec", outcome: result.reason });
+          throw new AgentTeamProviderError(result.reason);
+        }
+        if (result.code !== 0) {
+          reportDiagnostic(diagnostic, { phase: "codex_exec", outcome: "nonzero" });
+          throw new AgentTeamProviderError("codex_exec_nonzero");
+        }
         let text = null;
         try { text = await filesystem.readFile(outputPath, "utf8"); } catch { text = lastAgentMessage(result.stdout); }
-        return providerResponse({ ...parseOutput(text), provider: "codex-local", model: "Codex CLI", usage: { input_tokens: null, output_tokens: null } });
+        try {
+          return providerResponse({ ...parseOutput(text), provider: "codex-local", model: "Codex CLI", usage: { input_tokens: null, output_tokens: null } });
+        } catch (error) {
+          reportDiagnostic(diagnostic, { phase: "codex_response", outcome: error instanceof AgentTeamProviderError ? error.code : "invalid" });
+          throw error;
+        }
       } catch (error) {
         const reason = error instanceof AgentTeamProviderError ? error.code : "codex_response_failed";
         capability = staticCapability("codex-local", "unavailable", "LOCAL CODEX", "Codex CLI", reason);
@@ -142,16 +154,21 @@ export function createCodexLocalAdapter({
 }
 
 export function validateProviderResponse(value) {
-  if (!plain(value) || Object.keys(value).some((key) => !["answer", "recommended_handoff"].includes(key)) || !safeText(value.answer, 1_200)) {
+  if (!plain(value) || Object.keys(value).sort().join(",") !== "answer,recommended_handoff" || !safeText(value.answer, 1_200)) {
     throw new AgentTeamProviderError("provider_output_schema_invalid");
   }
-  if (value.recommended_handoff !== undefined) {
+  if (value.recommended_handoff !== null) {
     const handoff = value.recommended_handoff;
     if (!plain(handoff) || Object.keys(handoff).sort().join(",") !== "reason,to" || !ROLES.has(handoff.to) || !safeText(handoff.reason, 200)) {
       throw new AgentTeamProviderError("provider_output_schema_invalid");
     }
   }
-  return { answer: value.answer.trim(), ...(value.recommended_handoff ? { recommended_handoff: { to: value.recommended_handoff.to, reason: value.recommended_handoff.reason.trim() } } : {}) };
+  return {
+    answer: value.answer.trim(),
+    recommended_handoff: value.recommended_handoff
+      ? { to: value.recommended_handoff.to, reason: value.recommended_handoff.reason.trim() }
+      : null
+  };
 }
 
 function unavailableProvider(providerKind, reason) {
@@ -269,15 +286,15 @@ function runChild({ command, args, cwd, env, spawnImpl, timeoutMs, outputLimitBy
   });
 }
 
-function responseSchema() {
+export function agentTeamResponseSchema() {
   return {
     type: "object",
     additionalProperties: false,
-    required: ["answer"],
+    required: ["answer", "recommended_handoff"],
     properties: {
       answer: { type: "string", minLength: 1, maxLength: 1200 },
       recommended_handoff: {
-        type: "object",
+        type: ["object", "null"],
         additionalProperties: false,
         required: ["to", "reason"],
         properties: {
@@ -305,8 +322,8 @@ function lastAgentMessage(stdout) {
   return null;
 }
 
-function providerResponse({ answer, recommended_handoff, provider, model, usage }) {
-  return { ...validateProviderResponse({ answer, ...(recommended_handoff ? { recommended_handoff } : {}) }), provider, model, usage: boundedUsage(usage) };
+function providerResponse({ answer, recommended_handoff = null, provider, model, usage }) {
+  return { ...validateProviderResponse({ answer, recommended_handoff }), provider, model, usage: boundedUsage(usage) };
 }
 
 function outputText(response) {
@@ -326,6 +343,7 @@ function modelContext(context) {
     incident: context.incident,
     human_gate: context.human_gate,
     evidence: context.evidence,
+    role_context: context.role_context,
     tool_allowlist: context.tool_allowlist,
     rules: ["Use only the bounded context.", "Do not claim approval, execute repair, or mutate truth.", "Do not output raw prompts, traces, logs, provider payloads, or secrets.", "Cite only evidence IDs provided in context."]
   };
@@ -337,6 +355,12 @@ function roleInstructions(role) {
 
 function staticCapability(provider_kind, availability, truth_label, model_label, failure_reason = null) {
   return { provider_kind, availability, truth_label, model_label, failure_reason };
+}
+function responseSchema() { return agentTeamResponseSchema(); }
+function reportDiagnostic(callback, value) {
+  try {
+    if (typeof callback === "function") callback({ phase: value.phase, outcome: value.outcome });
+  } catch {}
 }
 function providerTimeout() { const value = Number(process.env.FLOWPULSE_AGENT_CODEX_TIMEOUT_MS || TIMEOUT_MS); return Number.isInteger(value) && value >= 1_000 && value <= 60_000 ? value : TIMEOUT_MS; }
 function boundedUsage(value) { return { input_tokens: safeInt(value?.input_tokens, 100_000), output_tokens: safeInt(value?.output_tokens, 100_000) }; }

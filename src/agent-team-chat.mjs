@@ -64,7 +64,7 @@ export class AgentTeamChatService {
       throw new AgentTeamChatError("conversation_record_budget_exhausted", 429);
     }
 
-    const external = await this.readContext(request.run_id);
+    const external = await this.readContext(request.run_id, request);
     validateSelectedComponent(request.selected_component, state, external);
     const received = this.append(request.run_id, "agent_team.message.received", "human", {
       conversation_id: request.conversation_id,
@@ -264,8 +264,8 @@ export class AgentTeamChatService {
     };
   }
 
-  async readContext(runId) {
-    return this.contextForRun ? await this.contextForRun(this.runtime, runId) : {};
+  async readContext(runId, request) {
+    return this.contextForRun ? await this.contextForRun(this.runtime, runId, request) : {};
   }
 
   providerCapability() {
@@ -324,7 +324,19 @@ function validateSelectedComponent(selected, state, external) {
 function buildContext({ request, state, external, role }) {
   const projection = external?.incident_projection || {};
   const topologyViews = external?.topology_views || {};
-  const evidence = boundedEvidence(state, projection, request.selected_component);
+  const evidence = boundedEvidence(state, projection, external?.source_evidence, request.selected_component);
+  const source = {
+    status: safeEnum(external?.source?.status, ["captured", "frozen", "live", "stale", "disconnected", "unavailable"], "unavailable"),
+    freshness_ms: safeInt(external?.source?.freshness_ms, 86_400_000),
+    evidence_count: safeInt(external?.source?.evidence_count, 10_000) ?? evidence.length
+  };
+  const incident = {
+    run_id: state.run_id,
+    incident_id: state.incident.id,
+    stage: safeText(projection.stage?.label || state.stage, 120) || "Unavailable",
+    stage_status: safeText(projection.stage_status || state.status, 80) || "unavailable"
+  };
+  const humanGate = { status: safeEnum(projection.human_gate?.status, ["requested", "granted", "not_required", "not_actionable"], state.waiting_for_approval ? "requested" : "not_required") };
   const context = {
     role,
     message: redactText(request.message),
@@ -338,33 +350,44 @@ function buildContext({ request, state, external, role }) {
       source_health: safeEnum(projection.source_health, ["live", "stale", "disconnected", "unavailable"], "unavailable"),
       evidence_mode: safeEnum(projection.evidence_mode, ["captured_fixture", "frozen_real_snapshot", "live_stream"], "captured_fixture"),
       execution_mode: safeEnum(projection.execution_mode, ["deterministic_replay", "gpt_model_only", "real_local_development", "captured_simulation"], "deterministic_replay"),
-      source_status: safeText(external?.source?.status, 80) || "unavailable",
-      freshness_ms: safeInt(external?.source?.freshness_ms, 86_400_000)
+      source_status: source.status,
+      freshness_ms: source.freshness_ms
     },
-    incident: {
-      run_id: state.run_id,
-      incident_id: state.incident.id,
-      stage: safeText(projection.stage?.label || state.stage, 120) || "Unavailable",
-      stage_status: safeText(projection.stage_status || state.status, 80) || "unavailable"
-    },
-    human_gate: { status: safeEnum(projection.human_gate?.status, ["requested", "granted", "not_required", "not_actionable"], state.waiting_for_approval ? "requested" : "not_required") },
+    incident,
+    human_gate: humanGate,
     evidence,
     citations: evidence.map((item) => item.id),
-    tool_allowlist: [...ROLE_TOOLS[role]]
+    tool_allowlist: [...ROLE_TOOLS[role]],
+    role_context: roleContextFor({ role, source, incident, humanGate, evidence, projection, componentDetail: external?.selected_component_detail })
   };
   if (Buffer.byteLength(JSON.stringify(context), "utf8") > AGENT_TEAM_CHAT_LIMITS.max_context_bytes) throw new AgentTeamChatError("context_byte_budget_exhausted", 429);
   return context;
 }
 
-function boundedEvidence(state, projection, selectedComponent) {
+function boundedEvidence(state, projection, sourceEvidence, selectedComponent) {
+  const source = Array.isArray(sourceEvidence) ? sourceEvidence : [];
   const projectionEvidence = Array.isArray(projection?.evidence) ? projection.evidence : [];
   const fallback = Array.isArray(state.evidence) ? state.evidence : [];
-  const candidates = projectionEvidence.length ? projectionEvidence : fallback;
-  const selected = selectedComponent ? candidates.filter((item) => item?.entity === selectedComponent) : candidates;
-  const entries = (selected.length ? selected : candidates).slice(0, AGENT_TEAM_CHAT_LIMITS.max_evidence_refs);
+  const selected = (items) => selectedComponent ? items.filter((item) => item?.entity === selectedComponent) : items;
+  const groups = [selected(source), selected(projectionEvidence), selected(fallback), source, projectionEvidence, fallback];
+  const entries = [];
+  const seen = new Set();
+  for (const group of groups) {
+    for (const item of group) {
+      const id = safeIdValue(item?.id);
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      entries.push(item);
+      if (entries.length >= AGENT_TEAM_CHAT_LIMITS.max_evidence_refs) break;
+    }
+    if (entries.length >= AGENT_TEAM_CHAT_LIMITS.max_evidence_refs) break;
+  }
   return entries.map((item) => ({
     id: safeIdValue(item?.id),
     kind: safeText(item?.kind, 80) || "unknown",
+    signal: safeText(item?.signal, 80) || "unknown",
+    title: redactText(safeText(item?.title, 180) || "Bounded evidence"),
+    summary: redactText(safeText(item?.fact || item?.summary, 360) || "" ) || null,
     entity: safeText(item?.entity, 120) || "unknown",
     source: safeText(item?.source, 160) || "unknown",
     observed_at: safeText(item?.observed_at || item?.at, 40) || null,
@@ -372,16 +395,81 @@ function boundedEvidence(state, projection, selectedComponent) {
   })).filter((item) => item.id);
 }
 
+function roleContextFor({ role, source, incident, humanGate, evidence, projection, componentDetail }) {
+  const workflow = {
+    stage: incident.stage,
+    stage_status: incident.stage_status,
+    human_gate: humanGate.status
+  };
+  const hypotheses = boundedHypotheses(projection?.investigation);
+  if (role === "observer") return {
+    source: { status: source.status, freshness_ms: source.freshness_ms, evidence_count: source.evidence_count },
+    signal_summaries: evidence.map(({ id, kind, signal, title, entity, observed_at }) => ({ id, kind, signal, title, entity, observed_at }))
+  };
+  if (role === "orchestrator") return { workflow };
+  if (role === "investigator") return {
+    selected_component: boundedComponentDetail(componentDetail),
+    evidence_summaries: evidence.map(({ id, kind, signal, title, summary, entity, observed_at }) => ({ id, kind, signal, title, summary, entity, observed_at }))
+  };
+  return {
+    hypotheses,
+    evaluator: {
+      verdict: safeEnum(projection?.investigation?.evaluator?.verdict, ["accepted", "rejected", "pending", "unavailable"], "pending"),
+      evidence_refs: safeIds(projection?.investigation?.evaluator?.evidence_refs)
+    },
+    cited_evidence: evidence.map(({ id, kind, title, entity, observed_at }) => ({ id, kind, title, entity, observed_at }))
+  };
+}
+
+function boundedHypotheses(value) {
+  const candidates = Array.isArray(value?.hypotheses) ? value.hypotheses : [];
+  return candidates.slice(0, 8).map((item) => ({
+    id: safeIdValue(item?.id),
+    status: safeText(item?.status, 80) || "recorded",
+    evidence_refs: safeIds(item?.evidence_refs)
+  })).filter((item) => item.id);
+}
+
+function boundedComponentDetail(value) {
+  if (!plain(value) || !plain(value.component)) return null;
+  const component = {
+    id: safeIdValue(value.component.id),
+    label: safeText(value.component.label, 160) || null,
+    kind: safeText(value.component.kind, 80) || null,
+    status: safeText(value.component.status, 80) || null,
+    source_health: safeText(value.component.source_health, 80) || null
+  };
+  if (!component.id) return null;
+  const observability = plain(value.observability) ? value.observability : {};
+  const evidenceIds = [
+    ...(Array.isArray(observability.metrics) ? observability.metrics : []),
+    ...(Array.isArray(observability.traces) ? observability.traces : []),
+    ...(Array.isArray(observability.logs) ? observability.logs : []),
+    ...(Array.isArray(observability.changes) ? observability.changes : [])
+  ].map((item) => safeIdValue(item?.evidence_id)).filter(Boolean).slice(0, AGENT_TEAM_CHAT_LIMITS.max_evidence_refs);
+  return {
+    component,
+    runtime: {
+      status: safeText(value.runtime?.status, 80) || "unavailable",
+      freshness_ms: safeInt(value.runtime?.freshness_ms, 86_400_000)
+    },
+    evidence_ids: evidenceIds
+  };
+}
+
 function routeFor(requested, message) {
   const text = message.toLowerCase();
-  const category = /\b(ledger|fresh|connect|source|signal|anomal|metric|trace|log)\b/.test(text) ? "observer"
-    : /\b(evaluat|adversarial|challenge|verdict|quality)\b/.test(text) ? "evaluator"
-      : /\b(why|cause|investigat|hypothesis|component|evidence|replan)\b/.test(text) ? "investigator"
-        : /\b(workflow|architecture|route|stage|next step|human gate)\b/.test(text) ? "orchestrator" : "generic";
+  const match = {
+    evaluator: /\b(?:evaluate|evaluates|evaluated|evaluating|evaluation|evaluator|adversarial|challenge|verdict|quality)\b/.test(text),
+    investigator: /\b(?:investigate|investigates|investigated|investigating|investigation|investigator|hypothesis|root cause|causal|replan)\b/.test(text),
+    observer: /\b(?:freshness|fresh|connect(?:ion|ivity)?|source|signals?|anomal(?:y|ies|ous)|metrics?|traces?|logs?)\b/.test(text),
+    orchestrator: /\b(?:architecture|workflow|routing|route|stage|next steps?|human gate)\b/.test(text)
+  };
+  const category = ["evaluator", "investigator", "observer", "orchestrator"].find((role) => match[role]) || "generic";
   let to = requested;
   let reason = null;
   if (/\bledger\b/.test(text)) {
-    to = /\b(verdict|evaluat|challenge)\b/.test(text) ? "evaluator" : "observer";
+    to = match.evaluator ? "evaluator" : match.investigator ? "investigator" : "observer";
     reason = "Evidence Ledger is a source; the selected conversational role can summarize its bounded records.";
   } else if (category !== "generic" && category !== requested) {
     to = category;
@@ -396,15 +484,25 @@ function routeFor(requested, message) {
 }
 
 function isAuthorityRequest(message) {
-  return /\b(approve|approval|execute|run the repair|apply the repair|bypass (?:owner|gate)|mark (?:as )?(?:true|verified)|change (?:the )?truth)\b/i.test(message);
+  const text = message.toLowerCase();
+  return /\b(?:approve|grant)\s+(?:the\s+|this\s+|a\s+)?(?:repair|remediation|change|action|owner approval)\b/.test(text)
+    || /\b(?:can|could|will|would)\s+you\s+(?:approve|grant)\s+(?:the\s+|this\s+|a\s+)?(?:repair|remediation|change|action|owner approval)\b/.test(text)
+    || /\b(?:apply|execute|run)\s+(?:the\s+|this\s+|a\s+)?(?:repair|remediation|fix|change)\b/.test(text)
+    || /\bbypass\s+(?:the\s+)?(?:owner\s+)?gate\b/.test(text)
+    || /\b(?:mark|set)\s+(?:the\s+)?(?:truth|verification|status)\s+(?:as\s+)?(?:true|verified|approved)\b/.test(text)
+    || /\b(?:change|mutate)\s+(?:the\s+)?truth\b/.test(text);
 }
 
 function toolSummariesFor(context) {
-  return context.tool_allowlist.map((tool) => ({
-    tool,
-    result_count: tool === "read_selected_component" && !context.selected_component ? 0 : context.evidence.length,
-    raw_payload_excluded: true
-  }));
+  const counts = {
+    read_source_freshness: context.role_context?.source ? 1 : 0,
+    read_signal_summaries: context.evidence.length,
+    read_workflow_projection: context.role_context?.workflow ? 1 : 0,
+    read_evidence_summaries: context.evidence.length,
+    read_selected_component: context.role_context?.selected_component ? 1 : 0,
+    read_cited_hypotheses: context.role_context?.hypotheses?.length || 0
+  };
+  return context.tool_allowlist.map((tool) => ({ tool, result_count: counts[tool] || 0, raw_payload_excluded: true }));
 }
 
 function responsePayload({ request, messageId, route, state, answer, citations, handoff, toolSummaries, model = null, provider = null, humanGate = null }) {
