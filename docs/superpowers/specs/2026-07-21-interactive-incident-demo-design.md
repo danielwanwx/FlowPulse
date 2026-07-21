@@ -23,15 +23,62 @@ The UI must render backend state. It must not simulate backend progress with tim
 
 ## Product layout
 
-The Live page remains the primary workspace:
+The Live page remains the primary monitoring workspace:
 
 - **Center:** shared runtime graph and animated data flow.
 - **Top action:** `Simulate Incident`; the control is visibly demo-only and cannot target an external system.
-- **Right drawer:** selected component evidence plus persistent Agent Team conversation.
+- **Right drawer:** selected component evidence plus persistent Agent Team conversation and contextual workspace actions.
 - **Timeline:** ordered backend milestones from baseline through recovery.
 - **Compare:** unavailable until verification produces a terminal result.
 
-Architecture remains a layered overview. Diagnose and Recovery may remain routes or modes for deep inspection, but the primary demo must not require page-hopping to understand the loop.
+Architecture remains a layered overview. Diagnose, Recovery Console, and Compare remain full deep-inspection workspaces; they are not removed or compressed into Live.
+
+In the healthy state, these workspaces are hidden from the primary navigation because there is no incident to inspect. Once an incident exists, the Agent Team conversation becomes the contextual launcher:
+
+- `View Diagnosis` appears after Observer creates a bounded incident.
+- `Open Recovery Console` appears after an evaluated remediation plan exists or repair begins.
+- `Compare Recovery` appears only after independent verification reaches a terminal result.
+
+Selecting an action opens the existing workspace as an overlay, expanded canvas, or seamless route transition while preserving the active `run_id`, `incident_id`, selected component, conversation, and timeline position. Returning to Live restores the same graph state.
+
+These actions reveal work; they do not authorize or start it. Observer and the remaining Agent Team continue the approved autonomous low-risk loop even if the presenter never opens a workspace. This preserves the product claim that monitoring, diagnosis, repair, and verification can run without human intervention.
+
+### Diagnosis workspace
+
+Diagnosis focuses on the faulted component and the minimum relevant upstream/downstream subgraph rather than repeating the entire Live topology. It shows:
+
+- initiating node and affected path;
+- ordered hypotheses and rejected alternatives;
+- exact evidence citations;
+- Observer → Orchestrator → Investigator → Evaluator handoffs;
+- current agent, task, stage, progress, and bounded tool activity;
+- safe agent messages explaining what is known, uncertain, or being checked.
+
+### Recovery Console
+
+Recovery Console shows execution rather than a static remediation card:
+
+- proposed repair, target, risk, reversibility, and authority decision;
+- which agent/runtime actor owns each step;
+- current action state and safe operational log;
+- information passed between agents;
+- repair, rollback, retry, and verification events;
+- live node and data-flow recovery signals.
+
+Raw prompts, chain of thought, credentials, unrestricted command output, and provider payloads remain excluded. “Transparent” means observable actions, evidence, decisions, handoffs, and safe summaries—not private model reasoning.
+
+### Compare workspace
+
+Compare is the final proof surface. It aligns before/after values for the same run and shows:
+
+- root condition before and after repair;
+- direct symptom before and after repair;
+- downstream lag/backlog convergence;
+- topology and data-flow health;
+- verification checks and final result;
+- links back to the evidence and actions that produced the change.
+
+Compare remains locked while repair is merely proposed or executed. It unlocks only after backend verification records `recovered`, `needs_human`, or `failed`, and must never imply success for a non-recovered terminal state.
 
 ## Role boundaries
 
@@ -124,6 +171,9 @@ Frontend acceptance follows only after this contract passes independent review:
 - Simulate Incident visibly changes the graph from healthy to faulted using backend events.
 - Selecting a red component opens its real incident evidence.
 - The Agent Team conversation renders live role responses and transparent handoffs.
+- The contextual drawer reveals `View Diagnosis`, `Open Recovery Console`, and `Compare Recovery` only when their backend prerequisites exist.
+- Each contextual action opens its complete deep workspace with the same run, incident, component, conversation, and timeline context.
+- Diagnosis renders the bounded causal subgraph and active Agent Team work; Recovery Console renders safe execution activity; Compare renders verified before/after evidence.
 - The autonomous low-risk repair visibly restores the graph.
 - Compare unlocks only after backend verification.
 - No frontend timer invents a stage or health transition.
