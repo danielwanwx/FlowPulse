@@ -1,6 +1,6 @@
 # FlowPulse Node Investigation Plane — Backend Phase N1
 
-**Status:** owner approved for bounded N1 implementation  
+**Status:** owner approved for bounded N1 implementation
 **Scope:** backend worktree `codex/backend-agent-team-chat` only; no frontend, deployment, paid connector, production write, or remediation-authority change.
 
 ## Goal

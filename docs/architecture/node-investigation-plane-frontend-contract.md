@@ -1,7 +1,7 @@
 # Node Investigation Plane frontend contract
 
-**Backend phase:** N1  
-**Read model schema:** `flowpulse.node-investigation.v1`  
+**Backend phase:** N1
+**Read model schema:** `flowpulse.node-investigation.v1`
 **Compatibility:** `GET /api/components/:id` continues to return its existing `flowpulse.component-detail.v1` top-level fields. The additive `node_investigation` field is the versioned N1 projection.
 
 The component drawer and Agent Team use the same canonical component ID, topology revision, source truth, evidence IDs, and record hashes. A selection or read does not invoke a model.
@@ -146,7 +146,7 @@ The final assistant event has `safe_answer`, requested/responding role, transpar
 | `node_evidence_run_unavailable` | keep current drawer state; report unavailable run |
 | `component_detail_unavailable` | clear unsafe selection; do not invent a node |
 | `node_evidence_window_invalid`, `node_evidence_limit_invalid`, `node_evidence_cursor_invalid` | client request error; use an allowed control value |
-| `node_source_stale`, `node_source_disconnected`, `node_source_unavailable` | show evidence gap; Agent ends blocked/needs-human; no repair | 
+| `node_source_stale`, `node_source_disconnected`, `node_source_unavailable` | show evidence gap; Agent ends blocked/needs-human; no repair |
 | `node_tool_budget_exhausted`, `node_tool_request_invalid` | show bounded investigation stop; no retry loop |
 | provider failure | show failed provider state; never label recorded text as local Codex or OpenAI API |
 
