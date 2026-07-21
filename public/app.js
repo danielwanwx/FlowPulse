@@ -415,7 +415,7 @@ function renderHeader() {
   els["incident-title"].textContent = shared ? (shared.state === "needs_human" ? "Evidence gap incident" : "Checkout / payment incident") : state.incident.title;
   els["incident-summary"].textContent = shared ? `Canonical run ${shared.run_id} · ${shared.events.length} ordered immutable events` : state.incident.summary;
   els.severity.textContent = shared ? (shared.state === "needs_human" ? "Unknown" : "SEV-2") : state.incident.severity;
-  els.environment.textContent = shared ? "Isolated local fixture" : state.incident.environment;
+  els.environment.textContent = shared ? "Captured evidence" : state.incident.environment;
   els["incident-stage"].textContent = shared?.stage || state.stage;
   els["workspace-title"].textContent = titles[mode];
   els["canvas-title"].textContent = canvasTitles[mode];
@@ -1553,7 +1553,7 @@ function liveNodeInspectorRailMarkup() {
   const status = sourceStatusLabel(context.status, inspector.runtime.status);
   const freshness = inspector.runtime.freshness_ms == null ? null : formatAge(inspector.runtime.freshness_ms);
   const sourceLine = sharedRunModel()
-    ? "isolated fixture evidence"
+    ? "captured evidence"
     : [inspector.runtime.label, freshness ? `captured ${freshness} ago` : null].filter(Boolean).join(" · ");
   return `<section class="architecture-system architecture-flowpulse-system live-node-inspector" aria-label="${escapeHtml(inspector.component.label)} live inspector">
     <header class="live-node-inspector-header">
@@ -1905,7 +1905,7 @@ function workspaceLabel() {
 }
 
 function sourceTruthLabel() {
-  if (sharedRunModel()) return "ISOLATED FIXTURE EVIDENCE";
+  if (sharedRunModel()) return "CAPTURED EVIDENCE";
   const view = mode === "live" ? liveTopologyView() : architectureView();
   return view?.truth?.label || state?.topology_views?.truth?.label || null;
 }
@@ -3565,7 +3565,7 @@ function captureLabel() {
 }
 
 function sourceOrigin(layout) {
-  if (sharedRunModel()) return "ISOLATED FIXTURE EVIDENCE";
+  if (sharedRunModel()) return "CAPTURED EVIDENCE";
   if (layout === "architecture") return architectureView()?.truth.label || "UNAVAILABLE";
   if (layout === "live") return liveTopologyView()?.truth.label || "UNAVAILABLE";
   const source = sourceState();

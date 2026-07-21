@@ -117,6 +117,46 @@ function backendArchitectureView() {
   };
 }
 
+function activeDemoTopologyView() {
+  const view = backendArchitectureView();
+  const affectedNodes = ["accounting", "checkout", "fraud-detection", "frontend", "kafka", "payment"];
+  const affectedEdges = ["checkout->kafka", "checkout->payment", "frontend->checkout", "kafka->accounting", "kafka->fraud-detection"];
+  const incidentNodeIds = new Set(affectedNodes);
+  const incidentEdgeIds = new Set(affectedEdges);
+  for (const node of view.live.runtime_data.graph.nodes) node.status = incidentNodeIds.has(node.id) ? "incident" : "healthy";
+  for (const edge of view.live.runtime_data.graph.edges) edge.status = incidentEdgeIds.has(edge.id) ? "incident" : "healthy";
+  for (const edge of view.live.runtime_data.supporting_relations) edge.status = incidentEdgeIds.has(edge.id) ? "incident" : "healthy";
+  view.live.incident_overlay = {
+    status: "active",
+    node_ids: affectedNodes,
+    edges: [
+      { id: "checkout->kafka", from: "checkout", to: "kafka", relation: "evidence_grounded_relation", status: "incident" },
+      { id: "checkout->payment", from: "checkout", to: "payment", relation: "observed_dependency", status: "incident" },
+      { id: "frontend->checkout", from: "frontend", to: "checkout", relation: "observed_dependency", status: "incident" },
+      { id: "kafka->accounting", from: "kafka", to: "accounting", relation: "evidence_grounded_relation", status: "incident" },
+      { id: "kafka->fraud-detection", from: "kafka", to: "fraud-detection", relation: "evidence_grounded_relation", status: "incident" }
+    ]
+  };
+  view.diagnose.overlay = {
+    status: "available",
+    node_ids: affectedNodes,
+    edges: view.live.incident_overlay.edges.map(({ status, ...edge }) => edge)
+  };
+  view.readiness = { architecture_available: true, live_available: true, incident_detected: true, diagnose_available: true, agent_available: false, compare_available: false };
+  view.demo = {
+    ...view.demo,
+    phase: "INCIDENT_DETECTED",
+    frames: [
+      view.demo.frames[0],
+      { id: "injecting", order: 1, phase: "INJECTING", node_ids: ["checkout", "payment"], relation_ids: ["checkout->payment"], evidence_refs: ["ev-deploy-checkout", "ev-trace-payment-refused"] },
+      { id: "payment_checkout_impact", order: 2, phase: "PAYMENT_CHECKOUT_IMPACT", node_ids: ["checkout", "payment"], relation_ids: ["checkout->payment"], evidence_refs: ["ev-metric-checkout-errors"] },
+      { id: "downstream_propagation", order: 3, phase: "DOWNSTREAM_PROPAGATION", node_ids: ["kafka", "accounting", "fraud-detection"], relation_ids: ["checkout->kafka", "kafka->accounting", "kafka->fraud-detection"], evidence_refs: ["ev-metric-kafka-lag", "ev-log-consumer-delay"] },
+      { id: "incident_detected", order: 4, phase: "INCIDENT_DETECTED", node_ids: affectedNodes, relation_ids: affectedEdges, evidence_refs: ["ev-metric-checkout-errors", "ev-metric-kafka-lag", "ev-log-consumer-delay"] }
+    ]
+  };
+  return view;
+}
+
 function controlDetail(id) {
   const provenance = {
     observer: ["code://flowpulse/connector-manifest", "code://flowpulse/evidence-source", "code://flowpulse/live-source"],
@@ -415,6 +455,20 @@ test("Architecture accepts only the strict v2 backend topology view and retains 
   assert.match(appJs, /architectureThumbnailMarkup/);
   assert.match(appJs, /controlSystemTileMarkup/);
   assert.doesNotMatch(appJs, /Cross-boundary evidence summary|architectureComponentContext/);
+});
+
+test("active demo topology preserves the bounded causal evidence order and renders the incident overlay", () => {
+  const active = activeDemoTopologyView();
+  const architecture = architectureViewTopology(active);
+  const live = liveViewTopology(active);
+  assert.ok(architecture);
+  assert.ok(live);
+  assert.equal(live.incident_overlay.status, "active");
+  assert.deepEqual(live.incident_overlay.node_ids, ["accounting", "checkout", "fraud-detection", "frontend", "kafka", "payment"]);
+  assert.deepEqual(active.demo.frames[3].evidence_refs, ["ev-metric-kafka-lag", "ev-log-consumer-delay"]);
+  const unsafe = activeDemoTopologyView();
+  unsafe.demo.frames[4].evidence_refs.push("ev-untrusted");
+  assert.equal(architectureViewTopology(unsafe), null);
 });
 
 test("light and pure-black themes have a persisted accessible toggle", () => {

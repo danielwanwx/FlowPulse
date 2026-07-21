@@ -1079,9 +1079,12 @@ function parseDemoTopology(value, runId, runtimeData) {
     || !Array.isArray(value.frames) || value.frames.length !== expectedPhases.length) return undefined;
   const valid = value.frames.every((frame, index) => plainRecord(frame) && sameKeys(frame, ["id", "order", "phase", "node_ids", "relation_ids", "evidence_refs"])
     && frame.id === expectedPhases[index].toLowerCase() && frame.order === index && frame.phase === expectedPhases[index]
-    && Array.isArray(frame.node_ids) && frame.node_ids.length <= 6 && new Set(frame.node_ids).size === frame.node_ids.length && frame.node_ids.every((id) => nodeIds.has(id)) && sameOrdered(frame.node_ids, [...frame.node_ids].sort())
-    && Array.isArray(frame.relation_ids) && frame.relation_ids.length <= 5 && new Set(frame.relation_ids).size === frame.relation_ids.length && frame.relation_ids.every((id) => edgeIds.has(id)) && sameOrdered(frame.relation_ids, [...frame.relation_ids].sort())
-    && Array.isArray(frame.evidence_refs) && frame.evidence_refs.length <= 6 && new Set(frame.evidence_refs).size === frame.evidence_refs.length && frame.evidence_refs.every((id) => evidenceRefs.has(id)) && sameOrdered(frame.evidence_refs, [...frame.evidence_refs].sort()));
+    // Node, relation, and evidence references retain the server's causal-frame
+    // order. It is deterministic but meaningful, so a browser must not reject the
+    // active incident merely because that order is not lexical.
+    && Array.isArray(frame.node_ids) && frame.node_ids.length <= 6 && new Set(frame.node_ids).size === frame.node_ids.length && frame.node_ids.every((id) => nodeIds.has(id))
+    && Array.isArray(frame.relation_ids) && frame.relation_ids.length <= 5 && new Set(frame.relation_ids).size === frame.relation_ids.length && frame.relation_ids.every((id) => edgeIds.has(id))
+    && Array.isArray(frame.evidence_refs) && frame.evidence_refs.length <= 6 && new Set(frame.evidence_refs).size === frame.evidence_refs.length && frame.evidence_refs.every((id) => evidenceRefs.has(id)));
   return valid ? { schema_version: value.schema_version, run_id: value.run_id, scenario_id: value.scenario_id, phase: value.phase, frames: value.frames.map((frame) => ({ ...frame, node_ids: [...frame.node_ids], relation_ids: [...frame.relation_ids], evidence_refs: [...frame.evidence_refs] })) } : undefined;
 }
 
