@@ -450,13 +450,12 @@ function renderSourceCanvas(layout) {
   // Node coordinates and every port are derived from the same fixed world, so a
   // route always lands on the visible component that owns the dependency.
   const liveEdges = plannedEdges.map((edge) => {
-    const lane = edge.order % 2 ? Math.ceil(edge.order / 2) : -Math.ceil((edge.order + 1) / 2);
     const path = liveEdgePath(positions.get(edge.from), positions.get(edge.to), {
       canvasWidth: LIVE_WORLD.width,
       canvasHeight: LIVE_WORLD.height,
       nodeWidth: 180,
       nodeHeight: 60,
-      lane
+      lane: edge.order
     });
     return fixedLiveEdgeMarkup(edge, path, positions.get(edge.from)?.label || edge.from, positions.get(edge.to)?.label || edge.to);
   }).join("");

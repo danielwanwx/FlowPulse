@@ -737,8 +737,10 @@ test("live connector paths terminate at card boundaries for target viewport widt
   });
   assert.ok(Math.abs(crossLayer[0].x - (31 / 100 * 1440 + 72)) < 0.01);
   assert.ok(Math.abs(crossLayer.at(-1).x - (68 / 100 * 1440 - 72)) < 0.01);
-  assert.ok(crossLayer.some(({ y }) => y < 10 || y > 600));
-  assert.match(liveEdgePath(from, to), /^M .+ C /);
+  assert.ok(crossLayer.some(({ y }) => [112, 270, 410, 562].includes(y)));
+  const path = liveEdgePath(from, to, { lane: 1 });
+  assert.match(path, /^M .+ Q /);
+  assert.doesNotMatch(path, /\bC\b/);
 });
 
 test("reserved live routes avoid every non-endpoint card", () => {

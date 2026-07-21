@@ -50,6 +50,11 @@ test("authored Live routes start and end on the rendered component boundaries wi
     const route = routeFor(edge, index, positions);
     assert.equal(onBoundary(route[0], rectFor(byId.get(edge.from))), true, `${edge.id} must leave ${edge.from}`);
     assert.equal(onBoundary(route.at(-1), rectFor(byId.get(edge.to))), true, `${edge.id} must enter ${edge.to}`);
+    for (let point = 1; point < route.length; point += 1) {
+      const previous = route[point - 1];
+      const current = route[point];
+      assert.equal(previous.x === current.x || previous.y === current.y, true, `${edge.id} must use only orthogonal route segments`);
+    }
     for (const node of positions) {
       if ([edge.from, edge.to].includes(node.id)) continue;
       const rect = rectFor(node);
@@ -60,7 +65,7 @@ test("authored Live routes start and end on the rendered component boundaries wi
   }
 });
 
-test("authored Live paths are deterministic and use a direct curve only in an adjacent-column gutter", () => {
+test("authored Live paths are deterministic circuit-board routes with one rounded-corner grammar", () => {
   const positions = livePositions(manifest.nodes);
   const first = manifest.edges.map((edge, index) => ({ id: edge.id, route: routeFor(edge, index, positions) }));
   const second = manifest.edges.map((edge, index) => ({ id: edge.id, route: routeFor(edge, index, positions) }));
@@ -74,6 +79,27 @@ test("authored Live paths are deterministic and use a direct curve only in an ad
   });
 
   assert.deepEqual(second, first);
-  assert.match(direct, /^M [^]+ C /);
+  assert.match(direct, /^M [^]+ Q /);
+  assert.doesNotMatch(direct, /\bC\b/);
   assert.equal(first.some(({ route }) => route.length > 2), true);
+});
+
+test("every captured dependency has one endpoint-valid route and no implicit topology relation is added", () => {
+  const positions = livePositions(manifest.nodes);
+  const routed = manifest.edges.map((edge, index) => ({ edge, route: routeFor(edge, index, positions) }));
+  const routeIds = routed.map(({ edge }) => edge.id).sort();
+
+  assert.equal(routed.length, 22);
+  assert.deepEqual(routeIds, manifest.edges.map(({ id }) => id).sort());
+  assert.equal(new Set(routeIds).size, routeIds.length);
+  for (const { edge, route } of routed) {
+    const path = liveEdgePath(
+      positions.find((node) => node.id === edge.from),
+      positions.find((node) => node.id === edge.to),
+      { canvasWidth: WORLD.width, canvasHeight: WORLD.height, nodeWidth: WORLD.nodeWidth, nodeHeight: WORLD.nodeHeight }
+    );
+    assert.equal(route.length >= 2, true, `${edge.id} needs an authored route`);
+    assert.match(path, /^M /, `${edge.id} needs an SVG path`);
+    assert.doesNotMatch(path, /\bC\b/, `${edge.id} must not mix Bezier routing into the shared grammar`);
+  }
 });

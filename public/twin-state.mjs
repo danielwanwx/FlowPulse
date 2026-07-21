@@ -1047,12 +1047,6 @@ export function liveEdgePath(from, to, {
   lane = 0
 } = {}) {
   const points = liveEdgeRoute(from, to, { canvasWidth, canvasHeight, nodeWidth, nodeHeight, lane });
-  if (points.length === 2) {
-    const [start, end] = points;
-    const direction = Math.sign(end.x - start.x) || 1;
-    const handle = Math.min(96, Math.max(34, Math.abs(end.x - start.x) * .46));
-    return `M ${round(start.x)} ${round(start.y)} C ${round(start.x + direction * handle)} ${round(start.y)} ${round(end.x - direction * handle)} ${round(end.y)} ${round(end.x)} ${round(end.y)}`;
-  }
   if (points.length < 3) return points.map((point, index) => `${index ? "L" : "M"} ${round(point.x)} ${round(point.y)}`).join(" ");
   const commands = [`M ${round(points[0].x)} ${round(points[0].y)}`];
   for (let index = 1; index < points.length - 1; index += 1) {
@@ -1090,34 +1084,61 @@ export function liveEdgeRoute(from, to, {
   const endCenter = { x: Number(to.x) / 100 * canvasWidth, y: Number(to.y) / 100 * canvasHeight };
   const halfWidth = nodeWidth / 2;
   const halfHeight = nodeHeight / 2;
-  const portOffset = Math.max(-halfHeight + 8, Math.min(halfHeight - 8, lane * 2.6));
-  const sameColumn = Math.abs(endCenter.x - startCenter.x) < 1;
-  const direction = sameColumn ? (lane >= 0 ? 1 : -1) : Math.sign(endCenter.x - startCenter.x) || 1;
+  const fromColumn = liveRouteColumn(from, startCenter.x, canvasWidth);
+  const toColumn = liveRouteColumn(to, endCenter.x, canvasWidth);
+  const laneIndex = Math.abs(Math.trunc(Number(lane) || 0));
+  const portOffsets = [0, -6, 6, -12, 12];
+  const portOffset = Math.max(-halfHeight + 8, Math.min(halfHeight - 8, portOffsets[laneIndex % portOffsets.length]));
+  const sameColumn = fromColumn === toColumn;
+  const direction = sameColumn ? (fromColumn === 0 ? -1 : 1) : Math.sign(endCenter.x - startCenter.x) || 1;
   const start = { x: startCenter.x + direction * halfWidth, y: startCenter.y + portOffset };
   const end = { x: endCenter.x + (sameColumn ? direction : -direction) * halfWidth, y: endCenter.y - portOffset };
-  const gutterOffset = 18 + Math.min(32, Math.abs(lane) * 3);
-  const sourceGutter = start.x + direction * gutterOffset;
-  const targetGutter = end.x - direction * gutterOffset;
 
+  // Every runtime dependency follows this one circuit-board grammar: leave a
+  // card from its calculated side port, travel through a reserved lane, turn
+  // only at right angles, and enter the exact destination card boundary. The
+  // path renderer rounds those corners uniformly with quadratic segments.
   if (sameColumn) {
-    return [start, { x: sourceGutter, y: start.y }, { x: sourceGutter, y: end.y }, { x: end.x + direction * gutterOffset, y: end.y }, end];
+    const laneX = sameColumnLaneX(start, fromColumn, laneIndex, canvasWidth);
+    return compactRoute([start, { x: laneX, y: start.y }, { x: laneX, y: end.y }, end]);
   }
 
-  // Adjacent technology columns have a reserved clear gutter. A simple Bezier
-  // shares that gap without crossing a component. Longer hops use one of the
-  // two authored outer corridors, which keeps a full-system dependency legible
-  // instead of letting a generic router weave through the grid.
-  if (Math.abs(endCenter.x - startCenter.x) <= canvasWidth * .25) return [start, end];
-  const laneIndex = Math.abs(Math.trunc(lane));
-  const corridorY = lane < 0 ? 2 + Math.min(4, laneIndex) : canvasHeight - 8 - Math.min(5, laneIndex);
-  return [
+  const columnDistance = Math.abs(toColumn - fromColumn);
+  if (columnDistance === 1) {
+    const gutterMidpoint = (start.x + end.x) / 2;
+    const laneX = gutterMidpoint + (((laneIndex % 7) - 3) * 12);
+    return compactRoute([start, { x: laneX, y: start.y }, { x: laneX, y: end.y }, end]);
+  }
+
+  const sourceLane = start.x + direction * (14 + (laneIndex % 5) * 7);
+  const targetLane = end.x - direction * (14 + (laneIndex % 5) * 7);
+  const crossesSparseDataColumn = Math.min(fromColumn, toColumn) === 1 && Math.max(fromColumn, toColumn) === 3;
+  const corridorY = crossesSparseDataColumn
+    ? [112, 270, 410, 562][laneIndex % 4]
+    : (laneIndex % 2 ? 8 : canvasHeight - 8);
+  return compactRoute([
     start,
-    { x: sourceGutter, y: start.y },
-    { x: sourceGutter, y: corridorY },
-    { x: targetGutter, y: corridorY },
-    { x: targetGutter, y: end.y },
+    { x: sourceLane, y: start.y },
+    { x: sourceLane, y: corridorY },
+    { x: targetLane, y: corridorY },
+    { x: targetLane, y: end.y },
     end
-  ];
+  ]);
+}
+
+function liveRouteColumn(node, centerX, canvasWidth) {
+  if (Number.isInteger(node?.layerIndex)) return node.layerIndex;
+  return Math.max(0, Math.min(4, Math.round((centerX / canvasWidth * 100 - 10) / 20)));
+}
+
+function sameColumnLaneX(start, column, laneIndex, canvasWidth) {
+  if (column === 0) return Math.max(8, start.x - (8 + (laneIndex % 7) * 7));
+  if (column >= 3) return Math.min(canvasWidth - 8, start.x + 14 + (laneIndex % 7) * 10);
+  return start.x + 14 + (laneIndex % 7) * 10;
+}
+
+function compactRoute(points) {
+  return points.filter((point, index) => index === 0 || point.x !== points[index - 1].x || point.y !== points[index - 1].y);
 }
 
 function stageEventTypes(index) {
