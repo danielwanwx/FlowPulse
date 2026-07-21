@@ -521,6 +521,9 @@ test("Live keeps shared node identities while rendering every canonical runtime 
 test("Live keeps the shared header fixed, hides metric noise, and uses a bounded 2D detail surface", () => {
   assert.match(stylesCss, /\.mode-button\.is-active\s*\{\s*color: #ffffff;\s*background: var\(--blue\);\s*\}/);
   assert.match(stylesCss, /\.app-shell\[data-mode="architecture"\] \.mission-bar,\s*\.app-shell\[data-mode="live"\] \.mission-bar/s);
+  assert.match(stylesCss, /Architecture\/Live shared shell[\s\S]+?\.app-shell\[data-mode="architecture"\],\s*\.app-shell\[data-mode="live"\]/);
+  assert.match(stylesCss, /Architecture\/Live shared shell[\s\S]+?\.mission-bar\s*\{[\s\S]+?height: 64px;/);
+  assert.match(stylesCss, /Architecture\/Live shared shell[\s\S]+?\.mode-switch\s*\{[\s\S]+?width: 710px;[\s\S]+?min-width: 710px;/);
   assert.match(stylesCss, /\.app-shell\[data-mode="live"\] \.metric-cluster\s*\{\s*display: none;/);
   assert.match(stylesCss, /\.app-shell\[data-mode="live"\] \.canvas-toolbar\s*\{\s*grid-template-columns: minmax\(0, 1fr\) auto auto;/);
   assert.match(stylesCss, /\.app-shell\[data-mode="live"\]\s*\{[\s\S]*?--architecture-system-radius: 20px;[\s\S]*?--architecture-node-radius: 16px;[\s\S]*?--architecture-control-radius: 12px;/);

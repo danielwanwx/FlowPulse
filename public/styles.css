@@ -2870,6 +2870,41 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
   .is-live-source .source-node { background: #ffffff; }
 }
 
+/* Architecture/Live shared shell: fixed navigation and canvas origin. The two
+   operating modes share this chrome verbatim; only their workspace content differs. */
+.app-shell[data-mode="architecture"],
+.app-shell[data-mode="live"] {
+  background: #e9eef1;
+}
+.app-shell[data-mode="architecture"] .topbar,
+.app-shell[data-mode="live"] .topbar {
+  flex: 0 0 48px;
+  height: 48px;
+  min-height: 48px;
+  background: #e9eef1;
+}
+.app-shell[data-mode="architecture"] .mission-bar,
+.app-shell[data-mode="live"] .mission-bar {
+  flex: 0 0 64px;
+  height: 64px;
+  min-height: 64px;
+  padding: 8px 22px;
+  background: #e9eef1;
+}
+.app-shell[data-mode="architecture"] .mode-switch,
+.app-shell[data-mode="live"] .mode-switch {
+  width: 710px;
+  min-width: 710px;
+  height: 40px;
+  min-height: 40px;
+  margin: 0;
+  transform: none;
+}
+.app-shell[data-mode="architecture"] .mode-button,
+.app-shell[data-mode="live"] .mode-button {
+  min-height: 40px;
+}
+
 /* Live runtime continuity: same fixed shell as Architecture, with topology motion
    carried by paths instead of by moving cards or a second visual language. */
 .app-shell[data-mode="live"] {
@@ -2878,15 +2913,6 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
   --architecture-control-radius: 12px;
   --architecture-copy: #111827;
   --architecture-muted: #475569;
-}
-.app-shell[data-mode="architecture"] .mission-bar,
-.app-shell[data-mode="live"] .mission-bar {
-  min-height: 64px;
-}
-.app-shell[data-mode="architecture"] .mode-switch,
-.app-shell[data-mode="live"] .mode-switch {
-  width: 710px;
-  min-width: 710px;
 }
 .app-shell[data-mode="live"] .metric-cluster { display: none; }
 .app-shell[data-mode="live"] .canvas-toolbar { grid-template-columns: minmax(0, 1fr) auto auto; }
