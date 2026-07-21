@@ -825,6 +825,39 @@ test("Unified Context Rail replaces legacy commander and duplicated control surf
   assert.equal(AGENT_COLLABORATORS.length, 6);
 });
 
+test("F3A.1 keeps primary workspace identity explicit and reserves the Compare rail exactly once", () => {
+  const primaryModes = [...indexHtml.matchAll(/<button class="mode-button[^>]*data-mode="([^"]+)"[^>]*>([^<]+)<\/button>/g)]
+    .map(([, id, label]) => ({ id, label: label.trim() }));
+  assert.deepEqual(primaryModes, [
+    { id: "architecture", label: "Architecture" },
+    { id: "live", label: "Live" },
+    { id: "replay", label: "Diagnose" },
+    { id: "agents", label: "Recovery Console" },
+    { id: "compare", label: "Compare" }
+  ]);
+
+  const modeSource = appJs.slice(appJs.indexOf("function setMode"), appJs.indexOf("function configureCanvasWorld"));
+  assert.match(modeSource, /mode = nextMode;[\s\S]+?render\(\);/);
+  assert.match(appJs, /if \(mode === "agents"\) return \{[\s\S]+?title: "Recovery Status"/);
+  assert.doesNotMatch(stylesCss, /\.app-shell\[data-mode="compare"\] \.twin-scroll \{ padding-right: 348px; \}/);
+  assert.match(stylesCss, /\.app-shell\[data-mode="compare"\] \.canvas-shell \{ padding-right: calc\(var\(--flowpulse-control-rail-width\) \+ var\(--flowpulse-control-rail-inset-x\) \* 2\); \}/);
+  assert.match(stylesCss, /\.app-shell\[data-mode="compare"\] \.twin-canvas \{ min-width: 0; width: 100%; \}/);
+});
+
+test("F3A.1 keeps one rounded frosted rail silhouette for every workspace and rail state", () => {
+  const railSource = appJs.slice(appJs.indexOf("function renderOperationsTeamRail"), appJs.indexOf("function handleOperationsTeamRail"));
+  assert.match(indexHtml, /<aside id="operations-team-rail" class="operations-team-rail is-architecture-source"/);
+  assert.match(railSource, /agentTeamHomeMarkup\(controls\)/);
+  assert.match(railSource, /liveNodeInspectorRailMarkup\(\)/);
+  assert.match(railSource, /workspaceSummaryRailMarkup\(\)/);
+  assert.match(railSource, /workspaceEvidenceRailMarkup\(\)/);
+  assert.match(railSource, /agentTeamSessionMarkup\(controls\)/);
+  assert.match(stylesCss, /--flowpulse-control-rail-radius: 22px;/);
+  assert.match(stylesCss, /\.operations-team-rail \{[\s\S]+?border-radius: var\(--flowpulse-control-rail-radius\);[\s\S]+?background: var\(--flowpulse-control-rail-surface\);[\s\S]+?box-shadow: var\(--flowpulse-control-rail-shadow\);[\s\S]+?backdrop-filter: blur\(18px\) saturate\(118%\);[\s\S]+?overflow: hidden;/);
+  assert.match(stylesCss, /\.operations-team-rail > \.architecture-flowpulse-system \{[\s\S]+?height: 100%;[\s\S]+?border-radius: inherit;[\s\S]+?background: transparent;[\s\S]+?box-shadow: none;/);
+  assert.doesNotMatch(stylesCss, /\.app-shell\[data-mode="(?:architecture|live|replay|agents|compare)"\] \.operations-team-rail \{[^}]*border-radius:\s*0/);
+});
+
 test("collaborator projection deterministically aggregates isolated backend roles", () => {
   const control = {
     current_agent_id: "owner",
