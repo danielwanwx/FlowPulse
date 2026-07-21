@@ -2946,10 +2946,18 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .is-live-source .pulse-flow.is-root,
 .is-live-source .pulse-flow.is-rejected { --edge-signal: var(--red); }
 .is-live-source .pulse-flow.is-verified { --edge-signal: var(--green); }
-.is-live-source .signal-projectile { display: none; pointer-events: none; }
+.is-live-source .signal-projectile {
+  display: none;
+  fill: none;
+  pointer-events: none;
+  stroke: var(--edge-signal);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
 .is-live-source .edge-group.is-signal-active .signal-projectile { display: block; }
-.is-live-source .signal-projectile-halo { fill: var(--edge-signal); opacity: .16; }
-.is-live-source .signal-projectile-core { fill: var(--edge-signal); opacity: .96; }
+.is-live-source .signal-projectile-halo { stroke: var(--edge-signal); stroke-width: 5; opacity: .16; }
+.is-live-source .signal-projectile-core { stroke: var(--edge-signal); stroke-width: 2.2; opacity: .96; }
 .is-live-source .source-node.is-signal-launch,
 .is-live-source .source-node.is-signal-arrival { animation: live-node-activity .16s ease-out both; }
 

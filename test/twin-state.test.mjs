@@ -521,11 +521,14 @@ test("Live keeps shared node identities while rendering every canonical runtime 
   const fixedRouteRendererSource = appJs.slice(appJs.indexOf("function fixedLiveEdgeMarkup"), appJs.indexOf("function positionLiveProjectile"));
   assert.doesNotMatch(fixedRouteRendererSource, /getBoundingClientRect\(\)/);
   assert.match(appJs, /data-live-route="canonical-authored"/);
-  assert.match(appJs, /class="signal-projectile signal-projectile-core"/);
+  assert.match(appJs, /class="signal-projectile signal-projectile-core" pathLength="1000" d="\$\{path\}"/);
   assert.match(appJs, /function positionLiveProjectile\(path, projectile, progress, pathLength\)/);
-  assert.match(appJs, /path\.getPointAtLength\(pathLength \* progress\)/);
+  assert.match(appJs, /const packetLength = Math\.min\(68, Math\.max\(32, pathLength \* \.065\)\);/);
+  assert.match(appJs, /projectile\.setAttribute\("stroke-dasharray",/);
   assert.doesNotMatch(appJs, /function pathTrail\(/);
+  assert.doesNotMatch(appJs, /<circle class="signal-projectile/);
   assert.match(stylesCss, /\.is-live-source \.edge-group \.edge-line \{[\s\S]*?stroke-width: 1\.45;[\s\S]*?stroke-dasharray: 1000;/);
+  assert.match(stylesCss, /\.is-live-source \.signal-projectile-halo \{ stroke: var\(--edge-signal\); stroke-width: 5;/);
   assert.doesNotMatch(stylesCss, /relation-telemetry_export \.edge-line \{[^}]*stroke-dasharray/);
   assert.match(renderSourceCanvasSource, /\$\{runtimeEdges\.length\} projected dependency paths are rendered/);
   assert.match(indexHtml, /id="operations-team-rail"/);
@@ -859,6 +862,9 @@ test("Live pulse ordering remains deterministic across the complete backend runt
   assert.doesNotMatch(renderSourceCanvasSource, /class="pulse-flow/);
   assert.match(appJs, /classList\.toggle\("is-live-source", mode === "live"\)/);
   assert.match(appJs, /function startLiveSignalLoop\(/);
+  assert.match(appJs, /const concurrentPulseCount = Math\.min\(3, groups\.length\);/);
+  assert.match(appJs, /groups\.slice\(0, concurrentPulseCount\)\.forEach\(/);
+  assert.match(appJs, /let liveSignalFrames = new Set\(\);/);
   assert.match(appJs, /function liveSignalTiming\(pathLength\)/);
   assert.match(appJs, /liveSignalDuration\(pathLength, 760, launch, terminal\)/);
   assert.match(appJs, /liveSignalProgress\(elapsed, pathLength, timing\.speed, timing\.launch, timing\.terminal\)/);

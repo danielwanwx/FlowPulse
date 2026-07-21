@@ -115,7 +115,7 @@ let livePan = null;
 let compareDrag = null;
 let liveSignalTimers = [];
 let liveSignalIndex = 0;
-let liveSignalFrame = null;
+let liveSignalFrames = new Set();
 let liveSignalGeneration = 0;
 let componentCatalogSource = null;
 let componentCatalogCache = new Map();
@@ -553,17 +553,20 @@ function applyLiveRouteDelays() {
 function fixedLiveEdgeMarkup(edge, path, fromLabel, toLabel) {
   const label = `${edge.label} from ${fromLabel} to ${toLabel}`;
   const pulse = edge.pulse ? `data-live-edge-id="${escapeHtml(edge.id)}" data-live-projectile="single" data-signal-from="${escapeHtml(edge.from)}" data-signal-to="${escapeHtml(edge.to)}" data-signal-order="${edge.order}"` : "";
-  return `<g class="edge-group path-runtime relation-${escapeHtml(edge.kind)} signal-${escapeHtml(edge.tone)}" ${pulse} data-live-route="canonical-authored" data-route-order="${edge.routeOrder}"><path class="edge-line is-${escapeHtml(edge.tone)}" pathLength="1000" d="${path}"/><circle class="signal-projectile signal-projectile-halo" r="5" aria-hidden="true"/><circle class="signal-projectile signal-projectile-core" r="2" aria-hidden="true"/><path class="edge-hit" d="${path}" role="button" tabindex="0" aria-label="${escapeHtml(label)}" data-edge-id="${escapeHtml(edge.id)}" data-edge-from="${escapeHtml(edge.from)}" data-edge-to="${escapeHtml(edge.to)}"/></g>`;
+  return `<g class="edge-group path-runtime relation-${escapeHtml(edge.kind)} signal-${escapeHtml(edge.tone)}" ${pulse} data-live-route="canonical-authored" data-route-order="${edge.routeOrder}"><path class="edge-line is-${escapeHtml(edge.tone)}" pathLength="1000" d="${path}"/><path class="signal-projectile signal-projectile-halo" pathLength="1000" d="${path}" aria-hidden="true"/><path class="signal-projectile signal-projectile-core" pathLength="1000" d="${path}" aria-hidden="true"/><path class="edge-hit" d="${path}" role="button" tabindex="0" aria-label="${escapeHtml(label)}" data-edge-id="${escapeHtml(edge.id)}" data-edge-from="${escapeHtml(edge.from)}" data-edge-to="${escapeHtml(edge.to)}"/></g>`;
 }
 
 function positionLiveProjectile(path, projectile, progress, pathLength) {
-  if (!projectile) return;
-  // The projectile is sampled directly from the one canonical rendered SVG
-  // path. Unlike a reconstructed trail, it cannot cut a rounded corner or
-  // drift from a port when the view is scaled.
-  const point = path.getPointAtLength(pathLength * progress);
-  projectile.setAttribute("cx", point.x.toFixed(2));
-  projectile.setAttribute("cy", point.y.toFixed(2));
+  if (!projectile || !pathLength) return;
+  // The packet is a short visible section of the exact canonical path, so it
+  // follows every rounded elbow without reconstructing or drifting from it.
+  const packetLength = Math.min(68, Math.max(32, pathLength * .065));
+  const end = Math.max(0, Math.min(1000, progress * 1000));
+  const normalizedPacketLength = Math.min(1000, packetLength * 1000 / pathLength);
+  const start = Math.max(0, end - normalizedPacketLength);
+  const visible = end - start;
+  projectile.setAttribute("stroke-dasharray", `${visible.toFixed(3)} 1000`);
+  projectile.setAttribute("stroke-dashoffset", `${(visible + 1000 - start).toFixed(3)}`);
 }
 
 function liveSignalTiming(pathLength) {
@@ -578,10 +581,11 @@ function liveSignalTiming(pathLength) {
 function scheduleLiveSignalFrame(callback) {
   // A timer-driven frame keeps the continuous pulse active in embedded review
   // webviews that throttle requestAnimationFrame for non-focused canvases.
-  liveSignalFrame = setTimeout(() => {
-    liveSignalFrame = null;
+  const frame = setTimeout(() => {
+    liveSignalFrames.delete(frame);
     callback(Date.now());
   }, 16);
+  liveSignalFrames.add(frame);
 }
 
 function startLiveSignalLoop() {
@@ -591,7 +595,9 @@ function startLiveSignalLoop() {
   const nodes = new Map([...els["canvas-layers"].querySelectorAll("[data-node-id]")].map((node) => [node.dataset.nodeId, node]));
   const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
   const generation = liveSignalGeneration;
-  const remaining = new Set(groups.map((group) => group.dataset.liveEdgeId));
+  // A bounded set of staggered lanes depicts concurrent captured traffic
+  // without claiming that the browser observed live parallel execution.
+  const concurrentPulseCount = Math.min(3, groups.length);
   const schedule = (callback, delay) => {
     const timer = setTimeout(() => {
       liveSignalTimers = liveSignalTimers.filter((candidate) => candidate !== timer);
@@ -600,19 +606,11 @@ function startLiveSignalLoop() {
     liveSignalTimers.push(timer);
   };
   const nextGroup = (group) => {
-    remaining.delete(group.dataset.liveEdgeId);
-    let next = groups.find((candidate) => remaining.has(candidate.dataset.liveEdgeId) && candidate.dataset.signalFrom === group.dataset.signalTo);
-    next ||= groups.find((candidate) => remaining.has(candidate.dataset.liveEdgeId));
-    if (!next) {
-      for (const candidate of groups) remaining.add(candidate.dataset.liveEdgeId);
-      next = groups[0];
-    }
-    liveSignalIndex = groups.indexOf(next);
-    return next;
+    const index = groups.indexOf(group);
+    return groups[(index + concurrentPulseCount) % groups.length];
   };
   const activate = (group) => {
     if (generation !== liveSignalGeneration) return;
-    clearLiveSignalClasses();
     const from = nodes.get(group.dataset.signalFrom);
     const to = nodes.get(group.dataset.signalTo);
     from?.classList.add("is-signal-launch");
@@ -651,6 +649,7 @@ function startLiveSignalLoop() {
         group.classList.remove("is-signal-active");
         from?.classList.remove("is-signal-launch");
         to?.classList.add("is-signal-arrival");
+        schedule(() => to?.classList.remove("is-signal-arrival"), 320);
         schedule(() => activate(nextGroup(group)), 180);
       });
     };
@@ -658,14 +657,14 @@ function startLiveSignalLoop() {
   };
 
   liveSignalIndex = Math.min(liveSignalIndex, groups.length - 1);
-  activate(groups[liveSignalIndex]);
+  clearLiveSignalClasses();
+  groups.slice(0, concurrentPulseCount).forEach((group, index) => schedule(() => activate(group), index * 120));
 }
 
 function stopLiveSignalLoop() {
   liveSignalGeneration += 1;
-  if (liveSignalFrame !== null) cancelAnimationFrame(liveSignalFrame);
-  if (liveSignalFrame !== null) clearTimeout(liveSignalFrame);
-  liveSignalFrame = null;
+  for (const frame of liveSignalFrames) clearTimeout(frame);
+  liveSignalFrames.clear();
   for (const timer of liveSignalTimers) clearTimeout(timer);
   liveSignalTimers = [];
   clearLiveSignalClasses();
