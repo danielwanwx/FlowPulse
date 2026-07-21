@@ -370,6 +370,11 @@ test("Live telemetry is a bounded projection of component evidence and backend r
   assert.doesNotMatch(liveTelemetryRender, /live-source-label"\]\.textContent = source\.label/);
   assert.match(appJs, /new Set\(\["stream", "topic", "worker", "job", "database"\]\)/);
   assert.match(stylesCss, /\.live-telemetry-strip:not\(\[hidden\]\)/);
+  assert.match(appJs, /LIVE_WORLD = Object\.freeze\(\{ width: 1480, height: 680, nodeWidth: 180, nodeHeight: 64/);
+  assert.match(appJs, /nodeWidth: LIVE_WORLD\.nodeWidth,[\s\S]*?nodeHeight: LIVE_WORLD\.nodeHeight/);
+  assert.match(stylesCss, /\.is-live-source \.source-node \{[\s\S]*?width: 180px;[\s\S]*?height: 64px;/);
+  assert.match(stylesCss, /\.is-live-source \.source-node strong \{[^}]*font-size: 16px;/);
+  assert.match(stylesCss, /\.live-telemetry-reading\[data-tone="critical"\] strong \{ color: #c81e3a;/);
 });
 
 test("Architecture accepts only the strict v2 backend topology view and retains separate control evidence", () => {
@@ -758,7 +763,7 @@ test("Live keeps the shared header fixed, hides metric noise, and uses a bounded
   assert.match(stylesCss, /Architecture\/Live shared shell[\s\S]+?\.mission-bar\s*\{[\s\S]+?height: 64px;/);
   assert.match(stylesCss, /Architecture\/Live shared shell[\s\S]+?\.mode-switch\s*\{[\s\S]+?width: 710px;[\s\S]+?min-width: 710px;/);
   assert.match(stylesCss, /\.app-shell\[data-mode="live"\] \.metric-cluster\s*\{\s*display: none;/);
-  assert.match(stylesCss, /\.app-shell\[data-mode="live"\] \.canvas-toolbar\s*\{\s*grid-template-columns: minmax\(0, 1fr\) auto;/);
+  assert.match(stylesCss, /\.app-shell\[data-mode="live"\] \.canvas-toolbar\s*\{[^}]*grid-template-columns: minmax\(0, 1fr\) auto;/);
   assert.match(stylesCss, /\.live-telemetry-strip:not\(\[hidden\]\)/);
   assert.match(stylesCss, /\.app-shell\[data-mode="live"\]\s*\{[\s\S]*?--architecture-system-radius: 20px;[\s\S]*?--architecture-node-radius: 16px;[\s\S]*?--architecture-control-radius: 12px;/);
   const liveNodeInteractionCss = stylesCss.slice(stylesCss.indexOf(".app-shell[data-mode=\"live\"] .is-live-source .source-node:hover"), stylesCss.indexOf(".is-live-source .source-node:focus-visible"));
@@ -1119,7 +1124,7 @@ test("complete captured Live topology routes meet exactly at node boundaries wit
   const positions = livePositions(topology.nodes);
   const byId = new Map(positions.map((node) => [node.id, node]));
   const halfWidth = 180 / 2;
-  const halfHeight = 60 / 2;
+  const halfHeight = 64 / 2;
   const slots = livePulseSlots(topology);
   const ordered = orderedSignalEdges(topology.edges, slots);
   const rectFor = (node) => ({
@@ -1143,7 +1148,7 @@ test("complete captured Live topology routes meet exactly at node boundaries wit
       canvasWidth: 1480,
       canvasHeight: 680,
       nodeWidth: 180,
-      nodeHeight: 60,
+      nodeHeight: 64,
       lane
     });
     assert.equal(isOnBoundary(route[0], rectFor(byId.get(edge.from))), true, `${edge.id} starts outside ${edge.from}`);

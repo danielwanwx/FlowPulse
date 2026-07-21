@@ -5,7 +5,7 @@ import { readFile } from "node:fs/promises";
 import { liveEdgePath, liveEdgeRoute, livePositions, orderedLiveRouteBuildEdges } from "../public/twin-state.mjs";
 
 const manifest = JSON.parse(await readFile(new URL("../data/topology/otel-demo-system-v1.json", import.meta.url), "utf8"));
-const WORLD = Object.freeze({ width: 1480, height: 680, nodeWidth: 180, nodeHeight: 60 });
+const WORLD = Object.freeze({ width: 1480, height: 680, nodeWidth: 180, nodeHeight: 64 });
 const relations = Object.freeze([...manifest.edges, ...manifest.supporting_relations]);
 
 function rectFor(node) {

@@ -2792,10 +2792,10 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .is-live-source .source-node {
   --live-status: var(--faint);
   width: 180px;
-  height: 60px;
-  min-height: 60px;
+  height: 64px;
+  min-height: 64px;
   display: grid;
-  grid-template-columns: 30px minmax(0, 1fr);
+  grid-template-columns: 32px minmax(0, 1fr);
   align-content: center;
   gap: 8px;
   padding: 8px 10px;
@@ -2816,8 +2816,8 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 }
 .is-live-source .source-node:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
 .is-live-source .source-node .node-icon {
-  width: 30px;
-  height: 30px;
+  width: 32px;
+  height: 32px;
   display: grid;
   place-items: center;
   border: 0;
@@ -2828,11 +2828,11 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
   font-size: 16px;
 }
 .is-live-source .source-node .node-copy { min-width: 0; display: grid; align-content: center; gap: 2px; }
-.is-live-source .source-node strong { overflow: hidden; color: var(--architecture-copy); font-size: 13px; font-weight: 600; line-height: 1.2; text-overflow: ellipsis; white-space: nowrap; }
+.is-live-source .source-node strong { overflow: hidden; color: var(--architecture-copy); font-size: 16px; font-weight: 650; line-height: 1.16; text-overflow: ellipsis; white-space: nowrap; }
 .is-live-source .source-node .node-origin,
 .is-live-source .source-node .node-detail { display: none; }
 .is-live-source .source-node .node-status { margin: 0; color: #64748b; font-size: 10px; line-height: 1.2; }
-.is-live-source .source-node .node-status-dot { top: 8px; right: 8px; width: 7px; height: 7px; background: var(--live-status); }
+.is-live-source .source-node .node-status-dot { top: 8px; right: 8px; width: 8px; height: 8px; background: var(--live-status); }
 .is-live-source .source-node.is-healthy,
 .is-live-source .source-node.is-observed,
 .is-live-source .source-node.is-recording,
@@ -2911,7 +2911,7 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
   --architecture-muted: #475569;
 }
 .app-shell[data-mode="live"] .metric-cluster { display: none; }
-.app-shell[data-mode="live"] .canvas-toolbar { grid-template-columns: minmax(0, 1fr) auto; gap: 10px; }
+.app-shell[data-mode="live"] .canvas-toolbar { min-height: 68px; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; }
 .app-shell[data-mode="live"] .canvas-toolbar > div:first-child,
 .app-shell[data-mode="live"] .legend-menu { display: none; }
 .live-telemetry-strip[hidden] { display: none; }
@@ -2925,16 +2925,17 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .live-telemetry-reading {
   min-width: 0;
   display: grid;
-  gap: 1px;
-  padding: 5px 7px;
+  min-height: 52px;
+  gap: 2px;
+  padding: 7px 10px;
   border-radius: var(--architecture-control-radius);
-  background: rgba(255, 255, 255, .42);
+  background: rgba(255, 255, 255, .56);
 }
 .live-telemetry-reading small,
 .live-telemetry-reading em {
   overflow: hidden;
   color: var(--architecture-muted);
-  font-size: 9px;
+  font-size: 10px;
   font-style: normal;
   line-height: 1.1;
   text-overflow: ellipsis;
@@ -2943,8 +2944,8 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .live-telemetry-reading strong {
   overflow: hidden;
   color: #111827;
-  font-size: 11px;
-  font-weight: 600;
+  font-size: 17px;
+  font-weight: 720;
   line-height: 1.15;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2953,25 +2954,37 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
   display: flex;
   flex-wrap: wrap;
   gap: 3px;
-  margin-top: 3px;
+  margin-top: 4px;
 }
 .is-live-source .node-live-telemetry[hidden] { display: none; }
 .is-live-source .node-live-telemetry span {
   max-width: 100%;
   overflow: hidden;
-  padding: 1px 4px;
+  padding: 2px 5px;
   border-radius: 7px;
-  color: var(--architecture-copy);
-  background: rgba(211, 220, 226, .5);
-  font-size: 8px;
-  font-weight: 600;
+  color: #27537c;
+  background: rgba(219, 235, 253, .78);
+  font-size: 10px;
+  font-weight: 700;
   line-height: 1.2;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.live-telemetry-reading[data-tone="critical"] { background: rgba(255, 232, 236, .78); }
+.live-telemetry-reading[data-tone="critical"] strong { color: #c81e3a; }
+.live-telemetry-reading[data-tone="warning"] { background: rgba(255, 243, 221, .82); }
+.live-telemetry-reading[data-tone="warning"] strong { color: #a85f00; }
+.live-telemetry-reading[data-tone="healthy"] { background: rgba(225, 247, 237, .8); }
+.live-telemetry-reading[data-tone="healthy"] strong { color: #087a4b; }
+.live-telemetry-reading[data-tone="info"] { background: rgba(225, 238, 255, .8); }
+.live-telemetry-reading[data-tone="info"] strong { color: #1d5fbf; }
+.live-telemetry-reading[data-tone="muted"] strong { color: #64748b; }
+.is-live-source .node-live-telemetry[data-tone="critical"] span { color: #c81e3a; background: rgba(255, 232, 236, .84); }
+.is-live-source .node-live-telemetry[data-tone="warning"] span { color: #a85f00; background: rgba(255, 243, 221, .84); }
+.is-live-source .node-live-telemetry[data-tone="healthy"] span { color: #087a4b; background: rgba(225, 247, 237, .84); }
 @media (max-width: 1150px) {
   .live-telemetry-strip:not([hidden]) { grid-template-columns: repeat(2, minmax(92px, 1fr)); }
-  .app-shell[data-mode="live"] .canvas-toolbar { flex-basis: 74px; }
+  .app-shell[data-mode="live"] .canvas-toolbar { flex-basis: 116px; }
 }
 @media (prefers-reduced-transparency: reduce) {
   .live-telemetry-reading,

@@ -42,7 +42,9 @@ const els = Object.fromEntries([...document.querySelectorAll("[id]")].map((eleme
 const IMPACT_SEQUENCE = { checkout: 0, payment: 1, kafka: 2, accounting: 3, fraud: 4 };
 const NODE_BY_ID = new Map(TWIN_NODES.map((node) => [node.id, node]));
 const EDGE_BY_ID = new Map(TWIN_EDGES.map((edge) => [edge.id, edge]));
-const LIVE_WORLD = Object.freeze({ width: 1480, height: 680, minScale: .6, maxScale: 1.6, step: .1 });
+// Cards and routes share this fixed world, including the measured card bounds
+// used by deterministic endpoint-valid routes.
+const LIVE_WORLD = Object.freeze({ width: 1480, height: 680, nodeWidth: 180, nodeHeight: 64, minScale: .6, maxScale: 1.6, step: .1 });
 const COMPONENT_CAPABILITIES = Object.freeze({
   "load-generator": "Traffic simulation",
   "frontend-web": "Customer web experience",
@@ -380,21 +382,36 @@ function renderLiveTelemetry() {
   const telemetry = liveTelemetryProjection({ topologyViews: state?.topology_views, details, replayStage: availableStage(state?.events || []), sseConnected: telemetrySseConnected });
   const source = telemetry?.source || { label: "UNAVAILABLE", status: "unavailable", observed_at: null };
   const activity = telemetry?.activity || { label: "Unavailable", tone: "unavailable" };
-  setLiveTelemetryReading("throughput", telemetry?.global.throughput || null);
-  setLiveTelemetryReading("error-rate", telemetry?.global.error_rate || null);
+  setLiveTelemetryReading("throughput", telemetry?.global.throughput || null, telemetry?.global.throughput ? "info" : "muted");
+  setLiveTelemetryReading("error-rate", telemetry?.global.error_rate || null, metricTone(activity.tone, Boolean(telemetry?.global.error_rate)));
   els["live-incident-state"].textContent = activity.label;
   els["live-incident-state-note"].textContent = activity.tone === "incident" ? "Backend incident projection" : "Backend replay projection";
+  setLiveTelemetryTone("incident-state", metricTone(activity.tone, true));
   // The operating canvas reports activity and recency. Source mode/provenance
   // remains in the revision-bound Inspector/Evidence projection.
   const telemetryAvailable = source.status !== "unavailable";
   els["live-source-label"].textContent = telemetryAvailable ? (source.status === "stale" ? "Stale" : "Active") : "Unavailable";
   els["live-source-note"].textContent = source.observed_at ? `Last update ${formatTime(source.observed_at)} UTC` : "Last update unavailable";
+  setLiveTelemetryTone("source-label", source.status === "stale" ? "warning" : telemetryAvailable ? "info" : "muted");
   renderLiveNodeTelemetry(telemetry?.nodes || {});
 }
 
-function setLiveTelemetryReading(key, metric) {
+function metricTone(activityTone, hasMetric) {
+  if (!hasMetric) return "muted";
+  if (activityTone === "incident") return "critical";
+  if (activityTone === "recovered" || activityTone === "normal") return "healthy";
+  return "info";
+}
+
+function setLiveTelemetryReading(key, metric, tone) {
   els[`live-${key}`].textContent = metric ? formatLiveTelemetryValue(metric) : "—";
   els[`live-${key}-note`].textContent = metric ? metric.label : "Unavailable";
+  setLiveTelemetryTone(key, tone);
+}
+
+function setLiveTelemetryTone(key, tone) {
+  const reading = els[`live-${key}`]?.closest(".live-telemetry-reading");
+  if (reading) reading.dataset.tone = tone;
 }
 
 function formatLiveTelemetryValue(metric) {
@@ -407,6 +424,11 @@ function renderLiveNodeTelemetry(nodes) {
     const metrics = Array.isArray(nodes[element.dataset.liveNodeMetrics]) ? nodes[element.dataset.liveNodeMetrics] : [];
     element.innerHTML = metrics.map((metric) => `<span title="${escapeHtml(metric.label)} · ${escapeHtml(metric.evidence_id)}">${escapeHtml(formatLiveTelemetryValue(metric))}</span>`).join("");
     element.hidden = metrics.length === 0;
+    const status = element.closest(".source-node")?.dataset.status;
+    element.dataset.tone = status === "impact" || status === "root" || status === "fault" ? "critical"
+      : status === "warning" || status === "pending" ? "warning"
+      : status === "verified" ? "healthy"
+      : "info";
   }
 }
 
@@ -539,8 +561,8 @@ function renderSourceCanvas(layout) {
     const path = liveEdgePath(positions.get(edge.from), positions.get(edge.to), {
       canvasWidth: LIVE_WORLD.width,
       canvasHeight: LIVE_WORLD.height,
-      nodeWidth: 180,
-      nodeHeight: 60,
+      nodeWidth: LIVE_WORLD.nodeWidth,
+      nodeHeight: LIVE_WORLD.nodeHeight,
       lane: edge.order
     });
     return fixedLiveEdgeMarkup(edge, path, positions.get(edge.from)?.label || edge.from, positions.get(edge.to)?.label || edge.to);
@@ -2162,10 +2184,14 @@ function resetLiveView() {
 
 function containedLiveView(rect = els["twin-canvas"].getBoundingClientRect()) {
   const inset = 24;
-  const scale = Math.max(LIVE_WORLD.minScale, Math.min(1, (rect.width - inset * 2) / LIVE_WORLD.width, (rect.height - inset * 2) / LIVE_WORLD.height));
+  const fittedScale = Math.min(1, (rect.width - inset * 2) / LIVE_WORLD.width, (rect.height - inset * 2) / LIVE_WORLD.height);
+  // The 22-node runtime graph has its canonical components in the first four
+  // columns. Use the unused right-side world gutter for a modest readability
+  // boost while keeping every rendered component and its fixed route visible.
+  const scale = Math.max(LIVE_WORLD.minScale, Math.min(1, fittedScale * 1.08));
   return {
     scale,
-    x: (rect.width - LIVE_WORLD.width * scale) / 2,
+    x: Math.max(inset, (rect.width - LIVE_WORLD.width * scale) / 2),
     y: (rect.height - LIVE_WORLD.height * scale) / 2,
     initialized: true
   };
