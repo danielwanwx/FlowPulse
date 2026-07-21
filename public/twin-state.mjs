@@ -728,6 +728,138 @@ export function nodeLiveInspectorProjection(detail) {
   };
 }
 
+// Live telemetry is deliberately a read-only, evidence-backed summary. The
+// topology projection supplies the current replay/live state and component
+// detail supplies only safe metric samples. This function never manufactures a
+// value, advances time, or accepts an unvalidated detail envelope.
+export function liveTelemetryProjection({ topologyViews, details = [], replayStage = null, sseConnected = false } = {}) {
+  const view = liveViewTopology(topologyViews);
+  if (!view || !Array.isArray(details) || details.length > 22 || typeof sseConnected !== "boolean" || replayStage !== null && (!Number.isSafeInteger(replayStage) || replayStage < 0 || replayStage > 7)) return null;
+  const nodes = view.runtime_data?.graph?.nodes;
+  if (!Array.isArray(nodes)) return null;
+  const nodesById = new Map(nodes.map((node) => [node.id, node]));
+  if (nodesById.size !== 22) return null;
+
+  const projected = {};
+  const allMetrics = [];
+  for (const candidate of details) {
+    const nodeId = candidate?.component?.id;
+    const detail = componentDetailProjection(candidate, {
+      nodeId,
+      topologyRevision: view.projection_revision
+    });
+    const node = detail && nodesById.get(detail.component.id);
+    if (!detail || !node || Object.hasOwn(projected, node.id)) return null;
+    const metrics = liveMetricsForComponent(detail, node.status, { incident: view.readiness.incident_detected, recovered: replayStage !== null && replayStage >= 6 });
+    projected[node.id] = metrics;
+    allMetrics.push(...metrics);
+  }
+
+  const source = liveTelemetrySource(view.truth, sseConnected);
+  const activity = replayStage !== null && replayStage >= 6
+    ? { label: "Recovery verified", tone: "recovered" }
+    : view.readiness.incident_detected
+    ? { label: "Incident detected", tone: "incident" }
+    : { label: "No active incident", tone: "normal" };
+  const observedAt = allMetrics.map((metric) => metric.observed_at).sort().at(-1) || null;
+  return {
+    source: { ...source, observed_at: observedAt },
+    activity,
+    global: {
+      throughput: preferredLiveMetric(allMetrics, "throughput"),
+      error_rate: preferredLiveMetric(allMetrics, "error_rate")
+    },
+    nodes: projected
+  };
+}
+
+function liveTelemetrySource(truth, sseConnected) {
+  if (!plainRecord(truth)) return { label: "DISCONNECTED", status: "disconnected" };
+  if (truth.source_health === "live" && truth.evidence_mode === "live_stream" && truth.execution_mode !== "deterministic_replay" && sseConnected) {
+    return { label: "LIVE", status: "live" };
+  }
+  if (truth.source_health === "stale") return { label: "STALE", status: "stale" };
+  if (truth.evidence_mode === "captured_fixture" || truth.execution_mode === "deterministic_replay") {
+    return { label: "CAPTURED REPLAY", status: "captured" };
+  }
+  return { label: "DISCONNECTED", status: truth.source_health === "disconnected" ? "disconnected" : "unavailable" };
+}
+
+function liveMetricsForComponent(detail, status, phase) {
+  const allowed = liveMetricFamiliesFor(detail.component);
+  const grouped = new Map();
+  for (const metric of detail.observability.metrics) {
+    const family = liveMetricFamily(metric) || continuedLiveMetricFamily(metric, detail.observability.metrics);
+    if (!family || !allowed.has(family)) continue;
+    const items = grouped.get(family) || [];
+    items.push(metric);
+    grouped.set(family, items);
+  }
+  const result = [];
+  for (const [family, metrics] of grouped) {
+    const metric = [...metrics].sort((left, right) => left.observed_at.localeCompare(right.observed_at) || left.evidence_id.localeCompare(right.evidence_id));
+    const selected = phase.recovered ? metric.at(-1) : metric[0];
+    const value = liveMetricValue(selected, status, phase);
+    if (value === null) continue;
+    result.push({
+      component_id: detail.component.id,
+      label: selected.title,
+      value,
+      unit: selected.unit,
+      evidence_id: selected.evidence_id,
+      observed_at: selected.observed_at,
+      family
+    });
+  }
+  return result.sort((left, right) => left.family.localeCompare(right.family) || left.observed_at.localeCompare(right.observed_at)).slice(0, 2);
+}
+
+function continuedLiveMetricFamily(metric, metrics) {
+  if (!/\b(?:recover|recovered|recovery)\b/i.test(metric.title || "") || metric.before === null) return null;
+  const prior = metrics.find((candidate) => candidate !== metric && candidate.after === metric.before && candidate.unit === metric.unit && liveMetricFamily(candidate));
+  return prior ? liveMetricFamily(prior) : null;
+}
+
+function liveMetricFamiliesFor(component) {
+  if (component.kind === "topic" || component.display_class === "stream") return new Set(["throughput", "lag"]);
+  if (component.kind === "job" || component.display_class === "worker") return new Set(["throughput", "failures", "backlog"]);
+  if (component.kind === "database" || component.display_class === "database") return new Set(["connections", "saturation", "p95", "error_rate"]);
+  return new Set(["throughput", "p95", "error_rate"]);
+}
+
+function liveMetricFamily(metric) {
+  const text = `${metric.name || ""} ${metric.title || ""}`.toLowerCase();
+  if (/\b(?:error|errors|failure|failures)\b/.test(text)) return "error_rate";
+  if (/\b(?:p95|latency|duration)\b/.test(text)) return "p95";
+  if (/\b(?:throughput|request|requests|rps|events)\b/.test(text)) return "throughput";
+  if (/\b(?:lag|consumer lag)\b/.test(text)) return "lag";
+  if (/\b(?:backlog|queue depth)\b/.test(text)) return "backlog";
+  if (/\b(?:connection|pool)\b/.test(text)) return "connections";
+  if (/\b(?:saturation|utilization)\b/.test(text)) return "saturation";
+  return null;
+}
+
+function liveMetricValue(metric, status, phase) {
+  if (metric.value !== null) return metric.value;
+  if (phase.recovered || ["verified", "recovered"].includes(status)) return metric.after;
+  if (phase.incident || ["incident", "impact", "root", "warning", "fault"].includes(status)) return metric.after;
+  return metric.before;
+}
+
+function preferredLiveMetric(metrics, family) {
+  const candidates = metrics.filter((metric) => metric.family === family);
+  if (!candidates.length) return null;
+  const candidate = [...candidates].sort((left, right) => left.component_id.localeCompare(right.component_id) || left.observed_at.localeCompare(right.observed_at))[0];
+  return {
+    component_id: candidate.component_id,
+    label: candidate.label,
+    value: candidate.value,
+    unit: candidate.unit,
+    evidence_id: candidate.evidence_id,
+    observed_at: candidate.observed_at
+  };
+}
+
 // N1 is intentionally a separate future adapter. No published N1 envelope is
 // available in this frontend checkpoint, so every candidate fails closed rather
 // than letting v1 or a guessed shape masquerade as an event stream.

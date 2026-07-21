@@ -91,6 +91,12 @@
                   <span id="metric-kafka-label">Kafka lag</span><strong id="metric-kafka">182</strong><small id="metric-kafka-note">lag baseline</small>
                 </button>
               </div>
+              <div id="live-telemetry-strip" class="live-telemetry-strip" aria-label="Backend-projected Live telemetry" hidden>
+                <span class="live-telemetry-reading"><small>Throughput</small><strong id="live-throughput">—</strong><em id="live-throughput-note">Unavailable</em></span>
+                <span class="live-telemetry-reading"><small>Error rate</small><strong id="live-error-rate">—</strong><em id="live-error-rate-note">Unavailable</em></span>
+                <span class="live-telemetry-reading"><small>State</small><strong id="live-incident-state">Loading</strong><em id="live-incident-state-note">Backend projection</em></span>
+                <span class="live-telemetry-reading"><small>Telemetry</small><strong id="live-source-label">Unavailable</strong><em id="live-source-note">Last update unavailable</em></span>
+              </div>
               <div id="zoom-controls" class="zoom-controls" aria-label="Live canvas zoom" hidden>
                 <button id="zoom-out" class="icon-button" type="button" aria-label="Zoom out"><i class="ph ph-minus" aria-hidden="true"></i></button>
                 <output id="zoom-level" aria-live="polite">100%</output>

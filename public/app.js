@@ -18,6 +18,7 @@ import {
   agentTeamConversationProjection,
   agentTeamProviderProjection,
   componentDetailProjection,
+  liveTelemetryProjection,
   nodeLiveInspectorProjection,
   compareFrames,
   compareProvenance,
@@ -108,6 +109,7 @@ let toastTimer;
 let eventSource;
 let streamedRunId;
 let streamRefreshTimer;
+let telemetrySseConnected = false;
 let liveView = { scale: 1, x: 0, y: 0, initialized: false };
 let livePan = null;
 let compareDrag = null;
@@ -195,6 +197,7 @@ async function refresh() {
     hideError();
     render();
     ensureSelectedLiveComponentDetail();
+    void ensureLiveTelemetryDetails();
     void restoreAgentTeamSession();
     // Local-development diagnostics can spend seconds probing Docker and the
     // optional flag API. They must never delay the canonical browser state.
@@ -225,6 +228,7 @@ function render() {
   renderHeader();
   renderMetrics();
   if (shouldRenderCanvas) renderCanvas();
+  if (mode === "live") renderLiveTelemetry();
   renderTimeline();
   renderApproval();
   renderDevelopmentControl();
@@ -304,6 +308,7 @@ function renderThemeToggle() {
 }
 
 function renderMetrics() {
+  els["live-telemetry-strip"].hidden = mode !== "live";
   if (mode === "agents") {
     const control = agentControl();
     const team = projectAgentCollaborators(control);
@@ -328,6 +333,10 @@ function renderMetrics() {
     return;
   }
   if (mode === "live" || state.mode === "development") {
+    if (mode === "live") {
+      renderLiveTelemetry();
+      return;
+    }
     const live = mode === "live" ? liveTopologyView() : null;
     const source = mode === "live" ? liveSource(live) : sourceState();
     const topology = mode === "live"
@@ -358,6 +367,47 @@ function renderMetrics() {
 function setMetric(name, value, note) {
   els[`metric-${name}`].textContent = value;
   els[`metric-${name}-note`].textContent = note;
+}
+
+function renderLiveTelemetry() {
+  const view = liveTopologyView();
+  const revision = view?.projection_revision;
+  const details = revision
+    ? [...liveComponentDetails.entries()]
+      .filter(([key]) => key.startsWith(`${revision}:`))
+      .map(([, detail]) => detail)
+    : [];
+  const telemetry = liveTelemetryProjection({ topologyViews: state?.topology_views, details, replayStage: availableStage(state?.events || []), sseConnected: telemetrySseConnected });
+  const source = telemetry?.source || { label: "UNAVAILABLE", status: "unavailable", observed_at: null };
+  const activity = telemetry?.activity || { label: "Unavailable", tone: "unavailable" };
+  setLiveTelemetryReading("throughput", telemetry?.global.throughput || null);
+  setLiveTelemetryReading("error-rate", telemetry?.global.error_rate || null);
+  els["live-incident-state"].textContent = activity.label;
+  els["live-incident-state-note"].textContent = activity.tone === "incident" ? "Backend incident projection" : "Backend replay projection";
+  // The operating canvas reports activity and recency. Source mode/provenance
+  // remains in the revision-bound Inspector/Evidence projection.
+  const telemetryAvailable = source.status !== "unavailable";
+  els["live-source-label"].textContent = telemetryAvailable ? (source.status === "stale" ? "Stale" : "Active") : "Unavailable";
+  els["live-source-note"].textContent = source.observed_at ? `Last update ${formatTime(source.observed_at)} UTC` : "Last update unavailable";
+  renderLiveNodeTelemetry(telemetry?.nodes || {});
+}
+
+function setLiveTelemetryReading(key, metric) {
+  els[`live-${key}`].textContent = metric ? formatLiveTelemetryValue(metric) : "—";
+  els[`live-${key}-note`].textContent = metric ? metric.label : "Unavailable";
+}
+
+function formatLiveTelemetryValue(metric) {
+  if (metric.unit === "percent") return `${metric.value}%`;
+  return metric.unit ? `${metric.value} ${metric.unit}` : String(metric.value);
+}
+
+function renderLiveNodeTelemetry(nodes) {
+  for (const element of els["canvas-layers"].querySelectorAll("[data-live-node-metrics]")) {
+    const metrics = Array.isArray(nodes[element.dataset.liveNodeMetrics]) ? nodes[element.dataset.liveNodeMetrics] : [];
+    element.innerHTML = metrics.map((metric) => `<span title="${escapeHtml(metric.label)} · ${escapeHtml(metric.evidence_id)}">${escapeHtml(formatLiveTelemetryValue(metric))}</span>`).join("");
+    element.hidden = metrics.length === 0;
+  }
 }
 
 function renderCanvas() {
@@ -544,7 +594,8 @@ function sourceNodeMarkup(node, { layout, source, nodeStates }) {
   // card placement cannot drift apart at a given viewport.
   const livePositionClass = layout === "live" ? ` live-column-${node.layerIndex} live-count-${node.layerSize} live-index-${node.layerPosition}` : "";
   const activeStatus = ["impact", "root", "rejected", "warning", "pending", "active", "recording", "verified"].includes(nodeState) ? `<span class="node-status">${escapeHtml(nodeStatus)}</span>` : "";
-  const copy = `<span class="node-copy"><strong>${escapeHtml(node.label)}</strong>${activeStatus}</span>`;
+  const telemetry = layout === "live" ? `<span class="node-live-telemetry" data-live-node-metrics="${escapeHtml(node.id)}" aria-live="polite"></span>` : "";
+  const copy = `<span class="node-copy"><strong>${escapeHtml(node.label)}</strong>${activeStatus}${telemetry}</span>`;
   return `<button class="twin-node source-node plane-${escapeHtml(node.plane || "runtime")} kind-${escapeHtml(node.kind)} is-${nodeState}${livePositionClass}" type="button" data-node-id="${escapeHtml(node.id)}" data-status="${escapeHtml(nodeState)}" data-transition-key="${escapeHtml(transitionKey(node.id))}" aria-label="${escapeHtml(profile.capability)}, ${escapeHtml(kindLabel(node.kind))}, ${escapeHtml(profile.runtimeIdentity)}, ${escapeHtml(ariaStatus)}">
     <span class="node-icon" aria-hidden="true"><i class="ph ph-${iconForLive(node)}"></i></span>
     ${copy}
@@ -2044,6 +2095,15 @@ function ensureSelectedLiveComponentDetail() {
   if ((mode === "live" || isUnifiedRailWorkspace()) && selected?.type === "node" && isRailRuntimeNode(selected.id)) void requestLiveComponentDetail(selected.id);
 }
 
+async function ensureLiveTelemetryDetails() {
+  if (mode !== "live") return;
+  const nodes = liveTopologyView()?.runtime_data?.graph?.nodes;
+  if (!Array.isArray(nodes)) return;
+  const telemetryKinds = new Set(["stream", "topic", "worker", "job", "database"]);
+  const candidates = nodes.filter((node) => node.signal_types?.includes("metric") || telemetryKinds.has(node.kind) || ["incident", "warning", "impact", "root", "verified"].includes(node.status));
+  await Promise.all(candidates.map((node) => requestLiveComponentDetail(node.id)));
+}
+
 function closeDrawer() {
   selected = null;
   liveInspector = emptyLiveInspector();
@@ -2063,6 +2123,7 @@ function setMode(nextMode) {
   if (architectureDetail?.scope !== mode) architectureDetail = null;
   if (mode === "live" || mode === "agents") cursor = availableStage(state.events);
   render();
+  void ensureLiveTelemetryDetails();
 }
 
 function configureCanvasWorld(active) {
@@ -2615,12 +2676,15 @@ async function requestLiveComponentDetail(id) {
     const value = await request(`/api/components/${encodeURIComponent(id)}`);
     const detail = componentDetailProjection(value, { nodeId: id, topologyRevision: view.projection_revision });
     if (!detail || liveTopologyView()?.projection_revision !== view.projection_revision) throw new Error("component_detail_unavailable");
-    if (liveComponentDetails.size >= 22) liveComponentDetails.clear();
+    for (const cachedKey of liveComponentDetails.keys()) {
+      if (!cachedKey.startsWith(`${view.projection_revision}:`)) liveComponentDetails.delete(cachedKey);
+    }
     liveComponentDetails.set(key, detail);
   } catch {
     unavailableLiveComponentDetails.add(key);
   } finally {
     pendingLiveComponentDetails.delete(key);
+    if (mode === "live") renderLiveTelemetry();
     if (selected?.type === "node" && selected.id === id && (mode === "live" || isUnifiedRailWorkspace())) {
       renderDrawer();
       renderOperationsTeamRail();
@@ -3096,9 +3160,14 @@ function connectAgentStream() {
   if (!state?.run_id || typeof EventSource !== "function") return;
   if (streamedRunId === state.run_id && eventSource) return;
   eventSource?.close();
+  telemetrySseConnected = false;
   streamedRunId = state.run_id;
   const after = state.agent_control?.last_sequence || 0;
   eventSource = new EventSource(`/api/agent-control/events?run_id=${encodeURIComponent(state.run_id)}&after=${after}`);
+  eventSource.onopen = () => {
+    telemetrySseConnected = true;
+    if (mode === "live") renderLiveTelemetry();
+  };
   eventSource.addEventListener("agent-control", (event) => {
     const projection = JSON.parse(event.data);
     if (projection.run_id !== state?.run_id || projection.last_sequence <= (state.agent_control?.last_sequence || 0)) return;
@@ -3110,10 +3179,14 @@ function connectAgentStream() {
         cursor = availableStage(state.events);
         render();
         ensureSelectedLiveComponentDetail();
+        void ensureLiveTelemetryDetails();
       } catch { /* the stream will retry without replacing the last valid projection */ }
     }, 80);
   });
-  eventSource.onerror = () => {};
+  eventSource.onerror = () => {
+    telemetrySseConnected = false;
+    if (mode === "live") renderLiveTelemetry();
+  };
 }
 
 function escapeHtml(value) {

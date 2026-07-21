@@ -18,6 +18,7 @@ import {
   agentTeamProviderProjection,
   architectureViewTopology,
   componentDetailProjection,
+  liveTelemetryProjection,
   nodeInvestigationN1Projection,
   nodeLiveInspectorProjection,
   availableStage,
@@ -307,6 +308,68 @@ test("Node Live Inspector derives a compact, ordered v1 narrative without invent
   assert.equal(nodeLiveInspectorProjection(componentDetailProjection(unsafe, { nodeId: "checkout", topologyRevision: "a".repeat(64) })), null);
   assert.equal(nodeInvestigationN1Projection({ schema_version: "flowpulse.component-detail.v1" }), null);
   assert.equal(nodeInvestigationN1Projection({ schema_version: "flowpulse.node-investigation.n1", events: [] }), null);
+});
+
+test("Live telemetry is a bounded projection of component evidence and backend replay state", () => {
+  const topology = backendArchitectureView();
+  topology.readiness.incident_detected = true;
+  const checkout = topology.live.runtime_data.graph.nodes.find(({ id }) => id === "checkout");
+  checkout.status = "incident";
+  const detail = componentDetailPayload();
+  detail.observability.metrics.push({
+    evidence_id: "ev-verify-checkout",
+    title: "Checkout recovered",
+    source: "otel.metric",
+    observed_at: "2026-07-16T16:03:00.000Z",
+    record_sha256: "d".repeat(64),
+    name: null,
+    value: null,
+    before: 38.4,
+    after: 0.8,
+    unit: "percent",
+    aggregation: null,
+    threshold: null
+  });
+  detail.configuration.changes = [...detail.observability.changes];
+
+  const incident = liveTelemetryProjection({ topologyViews: topology, details: [detail] });
+  assert.equal(incident?.source.label, "CAPTURED REPLAY");
+  assert.equal(incident?.activity.label, "Incident detected");
+  assert.deepEqual(incident?.global.error_rate, {
+    component_id: "checkout",
+    label: "Checkout error rate",
+    value: 38.4,
+    unit: "percent",
+    evidence_id: "ev-metric-checkout-errors",
+    observed_at: "2026-07-16T15:43:00.000Z"
+  });
+  assert.equal(incident?.global.throughput, null, "unsupported throughput must remain absent");
+  assert.equal(incident?.nodes.checkout.length, 1);
+  assert.equal(incident?.nodes.checkout[0].family, "error_rate");
+  assert.equal(incident?.nodes.checkout[0].value, incident?.global.error_rate?.value);
+
+  topology.readiness.incident_detected = false;
+  checkout.status = "captured";
+  const recovered = liveTelemetryProjection({ topologyViews: topology, details: [detail], replayStage: 6 });
+  assert.equal(recovered?.activity.label, "Recovery verified");
+  assert.equal(recovered?.global.error_rate?.value, 0.8);
+
+  assert.equal(liveTelemetryProjection({ topologyViews: topology, details: [{ ...detail, unsafe: "forged" }] }), null);
+  assert.equal(liveTelemetryProjection({ topologyViews: topology, details: [] })?.global.error_rate, null);
+  const live = backendArchitectureView();
+  live.truth = { source_health: "live", evidence_mode: "live_stream", execution_mode: "real_local_development", label: "LIVE" };
+  assert.equal(liveTelemetryProjection({ topologyViews: live, details: [], sseConnected: false })?.source.label, "DISCONNECTED");
+  assert.equal(liveTelemetryProjection({ topologyViews: live, details: [], sseConnected: true })?.source.label, "LIVE");
+
+  const liveTelemetryRender = appJs.slice(appJs.indexOf("function renderLiveTelemetry"), appJs.indexOf("function renderCanvas"));
+  assert.match(indexHtml, /id="live-telemetry-strip"/);
+  assert.match(liveTelemetryRender, /liveTelemetryProjection/);
+  assert.match(liveTelemetryRender, /data-live-node-metrics/);
+  assert.doesNotMatch(liveTelemetryRender, /setInterval|setTimeout|Math\.random|Date\.now/);
+  assert.match(liveTelemetryRender, /const telemetryAvailable = source\.status !== "unavailable"/);
+  assert.doesNotMatch(liveTelemetryRender, /live-source-label"\]\.textContent = source\.label/);
+  assert.match(appJs, /new Set\(\["stream", "topic", "worker", "job", "database"\]\)/);
+  assert.match(stylesCss, /\.live-telemetry-strip:not\(\[hidden\]\)/);
 });
 
 test("Architecture accepts only the strict v2 backend topology view and retains separate control evidence", () => {
@@ -695,7 +758,8 @@ test("Live keeps the shared header fixed, hides metric noise, and uses a bounded
   assert.match(stylesCss, /Architecture\/Live shared shell[\s\S]+?\.mission-bar\s*\{[\s\S]+?height: 64px;/);
   assert.match(stylesCss, /Architecture\/Live shared shell[\s\S]+?\.mode-switch\s*\{[\s\S]+?width: 710px;[\s\S]+?min-width: 710px;/);
   assert.match(stylesCss, /\.app-shell\[data-mode="live"\] \.metric-cluster\s*\{\s*display: none;/);
-  assert.match(stylesCss, /\.app-shell\[data-mode="live"\] \.canvas-toolbar\s*\{\s*grid-template-columns: minmax\(0, 1fr\) auto auto;/);
+  assert.match(stylesCss, /\.app-shell\[data-mode="live"\] \.canvas-toolbar\s*\{\s*grid-template-columns: minmax\(0, 1fr\) auto;/);
+  assert.match(stylesCss, /\.live-telemetry-strip:not\(\[hidden\]\)/);
   assert.match(stylesCss, /\.app-shell\[data-mode="live"\]\s*\{[\s\S]*?--architecture-system-radius: 20px;[\s\S]*?--architecture-node-radius: 16px;[\s\S]*?--architecture-control-radius: 12px;/);
   const liveNodeInteractionCss = stylesCss.slice(stylesCss.indexOf(".app-shell[data-mode=\"live\"] .is-live-source .source-node:hover"), stylesCss.indexOf(".is-live-source .source-node:focus-visible"));
   assert.match(liveNodeInteractionCss, /\.app-shell\[data-mode="live"\] \.is-live-source \.source-node:hover,[\s\S]+?transform: translate\(-50%, -50%\);/);
@@ -729,7 +793,8 @@ test("Live reuses the canonical navigation and exposes only safe projected Team 
   assert.match(appJs, /Agent conversation and consequential actions remain unavailable here\./);
   assert.doesNotMatch(appJs.slice(appJs.indexOf("function controlDrawerContent"), appJs.indexOf("function architectureComponentDetailMarkup")), /payload|prompt|token|secret|raw_log/i);
   assert.match(stylesCss, /\.app-shell\[data-mode\] \.mode-switch\s*\{[\s\S]+?border-radius: 12px;/);
-  assert.match(stylesCss, /\.app-shell\[data-mode="live"\] \.canvas-toolbar \{ display: none; \}/);
+  assert.match(stylesCss, /\.app-shell\[data-mode="live"\] \.canvas-toolbar \{ display: grid; \}/);
+  assert.match(indexHtml, /id="live-telemetry-strip"/);
 });
 
 test("Agent Team rail is session-driven, retains Live selection, and never uses the legacy manager message route", () => {

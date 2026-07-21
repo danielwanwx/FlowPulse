@@ -2911,8 +2911,72 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
   --architecture-muted: #475569;
 }
 .app-shell[data-mode="live"] .metric-cluster { display: none; }
-.app-shell[data-mode="live"] .canvas-toolbar { grid-template-columns: minmax(0, 1fr) auto auto; }
-.app-shell[data-mode="live"] #canvas-caption { display: none; }
+.app-shell[data-mode="live"] .canvas-toolbar { grid-template-columns: minmax(0, 1fr) auto; gap: 10px; }
+.app-shell[data-mode="live"] .canvas-toolbar > div:first-child,
+.app-shell[data-mode="live"] .legend-menu { display: none; }
+.live-telemetry-strip[hidden] { display: none; }
+.live-telemetry-strip:not([hidden]) {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(70px, 1fr));
+  align-items: stretch;
+  gap: 6px;
+}
+.live-telemetry-reading {
+  min-width: 0;
+  display: grid;
+  gap: 1px;
+  padding: 5px 7px;
+  border-radius: var(--architecture-control-radius);
+  background: rgba(255, 255, 255, .42);
+}
+.live-telemetry-reading small,
+.live-telemetry-reading em {
+  overflow: hidden;
+  color: var(--architecture-muted);
+  font-size: 9px;
+  font-style: normal;
+  line-height: 1.1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.live-telemetry-reading strong {
+  overflow: hidden;
+  color: #111827;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.15;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.is-live-source .node-live-telemetry {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  margin-top: 3px;
+}
+.is-live-source .node-live-telemetry[hidden] { display: none; }
+.is-live-source .node-live-telemetry span {
+  max-width: 100%;
+  overflow: hidden;
+  padding: 1px 4px;
+  border-radius: 7px;
+  color: var(--architecture-copy);
+  background: rgba(211, 220, 226, .5);
+  font-size: 8px;
+  font-weight: 600;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+@media (max-width: 1150px) {
+  .live-telemetry-strip:not([hidden]) { grid-template-columns: repeat(2, minmax(92px, 1fr)); }
+  .app-shell[data-mode="live"] .canvas-toolbar { flex-basis: 74px; }
+}
+@media (prefers-reduced-transparency: reduce) {
+  .live-telemetry-reading,
+  .is-live-source .node-live-telemetry span { background: #f7f9fa; }
+}
 
 .is-live-source .edge-map { z-index: 1; pointer-events: none; }
 .is-live-source .source-node { z-index: 3; }
@@ -3091,7 +3155,7 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .app-shell[data-mode] .mode-button:hover { color: #1f2937; background: rgba(255, 255, 255, .24); }
 .app-shell[data-mode] .mode-button.is-active { color: #ffffff; background: var(--blue); font-weight: 500; }
 
-.app-shell[data-mode="live"] .canvas-toolbar { display: none; }
+.app-shell[data-mode="live"] .canvas-toolbar { display: grid; }
 .app-shell[data-mode="live"] .live-guides { display: none; }
 .is-live-source .fixed-live-edge-map { z-index: 1; pointer-events: none; }
 .is-live-source .edge-group .edge-line {
@@ -3808,6 +3872,7 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 }
 .unified-agent-switcher button { display: flex; align-items: center; gap: 6px; }
 .unified-agent-switcher i { flex: 0 0 auto; font-size: 13px; }
+.app-shell[data-mode="live"] .canvas-shell,
 .app-shell[data-mode="replay"] .canvas-shell,
 .app-shell[data-mode="agents"] .canvas-shell,
 .app-shell[data-mode="compare"] .canvas-shell { padding-right: calc(var(--flowpulse-control-rail-width) + var(--flowpulse-control-rail-inset-x) * 2); }
@@ -3838,6 +3903,7 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .recovery-workflow-node strong { overflow: hidden; color: #111827; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .recovery-workflow-node small { overflow: hidden; color: var(--architecture-muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 @media (max-width: 900px) {
+  .app-shell[data-mode="live"] .canvas-shell,
   .app-shell[data-mode="replay"] .canvas-shell,
   .app-shell[data-mode="agents"] .canvas-shell,
   .app-shell[data-mode="compare"] .canvas-shell { padding-right: 0; }
