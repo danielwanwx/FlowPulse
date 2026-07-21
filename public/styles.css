@@ -2915,10 +2915,12 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .is-live-source .edge-group { --edge-signal: #2563eb; pointer-events: none; }
 .is-live-source .edge-group .edge-line {
   stroke: #9ca7b1;
-  stroke-width: 1.65;
+  stroke-width: 1.45;
   opacity: .8;
-  stroke-dasharray: 1;
-  stroke-dashoffset: 1;
+  /* pathLength=1000 makes this a single solid route at rest. The build
+     animation only reveals that same route, so no dashed residue remains. */
+  stroke-dasharray: 1000;
+  stroke-dashoffset: 1000;
   /* Keep timing longhands here. WebKit drops the custom delay when it is
      embedded in the animation shorthand on an SVG path, which previously
      made every connection appear at once. */
@@ -2930,7 +2932,7 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 }
 .is-live-source .edge-group.relation-declared_async_dependency .edge-line { stroke: rgba(70, 104, 132, .62); }
 .is-live-source .edge-group.relation-configuration_route .edge-line,
-.is-live-source .edge-group.relation-telemetry_export .edge-line { stroke: rgba(96, 111, 126, .48); stroke-dasharray: .035 .035; }
+.is-live-source .edge-group.relation-telemetry_export .edge-line { stroke: rgba(96, 111, 126, .48); }
 .is-live-source .edge-group.signal-impact .edge-line,
 .is-live-source .edge-group.signal-root .edge-line,
 .is-live-source .edge-group.signal-rejected .edge-line { stroke: var(--red); opacity: .9; }
@@ -2944,10 +2946,10 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .is-live-source .pulse-flow.is-root,
 .is-live-source .pulse-flow.is-rejected { --edge-signal: var(--red); }
 .is-live-source .pulse-flow.is-verified { --edge-signal: var(--green); }
-.is-live-source .signal-trail { display: none; fill: none; pointer-events: none; stroke-linecap: round; stroke-linejoin: round; }
-.is-live-source .edge-group.is-signal-active .signal-trail { display: block; }
-.is-live-source .signal-trail-halo { stroke: var(--edge-signal); stroke-width: 5; opacity: .16; }
-.is-live-source .signal-trail-core { stroke: var(--edge-signal); stroke-width: 2; opacity: .92; }
+.is-live-source .signal-projectile { display: none; pointer-events: none; }
+.is-live-source .edge-group.is-signal-active .signal-projectile { display: block; }
+.is-live-source .signal-projectile-halo { fill: var(--edge-signal); opacity: .16; }
+.is-live-source .signal-projectile-core { fill: var(--edge-signal); opacity: .96; }
 .is-live-source .source-node.is-signal-launch,
 .is-live-source .source-node.is-signal-arrival { animation: live-node-activity .16s ease-out both; }
 
@@ -3026,7 +3028,7 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 }
 
 @keyframes live-connection-build {
-  from { stroke-dashoffset: 1; opacity: 0; }
+  from { stroke-dashoffset: 1000; opacity: 0; }
   to { stroke-dashoffset: 0; opacity: .72; }
 }
 
@@ -3036,7 +3038,7 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 }
 @media (prefers-reduced-motion: reduce) {
   .is-live-source .edge-group .edge-line { animation: none; stroke-dashoffset: 0; }
-  .is-live-source .edge-group.is-signal-active .signal-trail { display: none; }
+  .is-live-source .edge-group.is-signal-active .signal-projectile { display: none; }
   .is-live-source .source-node.is-signal-launch,
   .is-live-source .source-node.is-signal-arrival { animation: none; }
 }
@@ -3085,8 +3087,8 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
   stroke-width: 1.45;
   opacity: .72;
 }
-.is-live-source .signal-trail-halo { stroke-width: 4.5; opacity: .14; }
-.is-live-source .signal-trail-core { stroke-width: 1.8; opacity: .96; }
+.is-live-source .signal-projectile-halo { opacity: .14; }
+.is-live-source .signal-projectile-core { opacity: .96; }
 
 /* The persistent Team rail mounts the exact Architecture Control System shell.
    A selected component drawer deliberately occupies the same right-side slot. */

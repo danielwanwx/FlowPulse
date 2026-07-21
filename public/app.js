@@ -550,20 +550,17 @@ function applyLiveRouteDelays() {
 function fixedLiveEdgeMarkup(edge, path, fromLabel, toLabel) {
   const label = `${edge.label} from ${fromLabel} to ${toLabel}`;
   const pulse = edge.pulse ? `data-live-edge-id="${escapeHtml(edge.id)}" data-live-projectile="single" data-signal-from="${escapeHtml(edge.from)}" data-signal-to="${escapeHtml(edge.to)}" data-signal-order="${edge.order}"` : "";
-  return `<g class="edge-group path-runtime relation-${escapeHtml(edge.kind)} signal-${escapeHtml(edge.tone)}" ${pulse} data-live-route="canonical-authored" data-route-order="${edge.order}"><path class="edge-line is-${escapeHtml(edge.tone)}" pathLength="1" d="${path}"/><path class="signal-trail signal-trail-halo" aria-hidden="true"/><path class="signal-trail signal-trail-core" aria-hidden="true"/><path class="edge-hit" d="${path}" role="button" tabindex="0" aria-label="${escapeHtml(label)}" data-edge-id="${escapeHtml(edge.id)}" data-edge-from="${escapeHtml(edge.from)}" data-edge-to="${escapeHtml(edge.to)}"/></g>`;
+  return `<g class="edge-group path-runtime relation-${escapeHtml(edge.kind)} signal-${escapeHtml(edge.tone)}" ${pulse} data-live-route="canonical-authored" data-route-order="${edge.order}"><path class="edge-line is-${escapeHtml(edge.tone)}" pathLength="1000" d="${path}"/><circle class="signal-projectile signal-projectile-halo" r="5" aria-hidden="true"/><circle class="signal-projectile signal-projectile-core" r="2" aria-hidden="true"/><path class="edge-hit" d="${path}" role="button" tabindex="0" aria-label="${escapeHtml(label)}" data-edge-id="${escapeHtml(edge.id)}" data-edge-from="${escapeHtml(edge.from)}" data-edge-to="${escapeHtml(edge.to)}"/></g>`;
 }
 
-function pathTrail(path, progress, fraction = .075) {
-  const total = path.getTotalLength();
-  // A very short dependency hop still needs a legible single pulse. Keep the
-  // trailing laser bounded so it reads as a moving packet instead of a second
-  // full edge or a dense repeated dash pattern.
-  const tailLength = Math.min(64, Math.max(22, total * fraction));
-  const visibleFraction = Math.min(.6, tailLength / Math.max(1, total));
-  const start = Math.max(0, progress - visibleFraction);
-  const samples = Math.max(2, Math.ceil((progress - start) * 36));
-  const points = Array.from({ length: samples + 1 }, (_, index) => path.getPointAtLength(total * (start + (progress - start) * index / samples)));
-  return points.map((point, index) => `${index ? "L" : "M"} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`).join(" ");
+function positionLiveProjectile(path, projectile, progress, pathLength) {
+  if (!projectile) return;
+  // The projectile is sampled directly from the one canonical rendered SVG
+  // path. Unlike a reconstructed trail, it cannot cut a rounded corner or
+  // drift from a port when the view is scaled.
+  const point = path.getPointAtLength(pathLength * progress);
+  projectile.setAttribute("cx", point.x.toFixed(2));
+  projectile.setAttribute("cy", point.y.toFixed(2));
 }
 
 function liveSignalTiming(pathLength) {
@@ -622,8 +619,8 @@ function startLiveSignalLoop() {
       return;
     }
     const path = group.querySelector(".edge-line");
-    const halo = group.querySelector(".signal-trail-halo");
-    const core = group.querySelector(".signal-trail-core");
+    const halo = group.querySelector(".signal-projectile-halo");
+    const core = group.querySelector(".signal-projectile-core");
     if (!path || !core) return;
     const pathLength = path.getTotalLength();
     const timing = liveSignalTiming(pathLength);
@@ -640,9 +637,8 @@ function startLiveSignalLoop() {
       const elapsed = timestamp - startedAt;
       const progress = liveSignalProgress(elapsed, pathLength, timing.speed, timing.launch, timing.terminal);
       group.dataset.signalProgress = progress.toFixed(3);
-      const trail = pathTrail(path, progress);
-      halo?.setAttribute("d", trail);
-      core.setAttribute("d", trail);
+      positionLiveProjectile(path, halo, progress, pathLength);
+      positionLiveProjectile(path, core, progress, pathLength);
       if (elapsed < duration && progress < 1) {
         scheduleLiveSignalFrame(travel);
         return;

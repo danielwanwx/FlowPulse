@@ -518,10 +518,15 @@ test("Live keeps shared node identities while rendering every canonical runtime 
   assert.doesNotMatch(renderSourceCanvasSource, /plannedLiveRoutes/);
   assert.doesNotMatch(renderSourceCanvasSource, /renderLiveChange\(/);
   assert.doesNotMatch(appJs, /function renderMeasuredLiveRoutes\(/);
-  const fixedRouteRendererSource = appJs.slice(appJs.indexOf("function fixedLiveEdgeMarkup"), appJs.indexOf("function pathTrail"));
+  const fixedRouteRendererSource = appJs.slice(appJs.indexOf("function fixedLiveEdgeMarkup"), appJs.indexOf("function positionLiveProjectile"));
   assert.doesNotMatch(fixedRouteRendererSource, /getBoundingClientRect\(\)/);
   assert.match(appJs, /data-live-route="canonical-authored"/);
-  assert.match(appJs, /class="signal-trail signal-trail-core"/);
+  assert.match(appJs, /class="signal-projectile signal-projectile-core"/);
+  assert.match(appJs, /function positionLiveProjectile\(path, projectile, progress, pathLength\)/);
+  assert.match(appJs, /path\.getPointAtLength\(pathLength \* progress\)/);
+  assert.doesNotMatch(appJs, /function pathTrail\(/);
+  assert.match(stylesCss, /\.is-live-source \.edge-group \.edge-line \{[\s\S]*?stroke-width: 1\.45;[\s\S]*?stroke-dasharray: 1000;/);
+  assert.doesNotMatch(stylesCss, /relation-telemetry_export \.edge-line \{[^}]*stroke-dasharray/);
   assert.match(renderSourceCanvasSource, /\$\{runtimeEdges\.length\} projected dependency paths are rendered/);
   assert.match(indexHtml, /id="operations-team-rail"/);
 });
@@ -856,7 +861,7 @@ test("Live pulse ordering remains deterministic across the complete backend runt
   assert.match(appJs, /function liveSignalTiming\(pathLength\)/);
   assert.match(appJs, /liveSignalDuration\(pathLength, 760, launch, terminal\)/);
   assert.match(appJs, /liveSignalProgress\(elapsed, pathLength, timing\.speed, timing\.launch, timing\.terminal\)/);
-  assert.match(appJs, /function pathTrail\(/);
+  assert.match(appJs, /function positionLiveProjectile\(path, projectile, progress, pathLength\)/);
   assert.match(stylesCss, /\.is-live-source \.edge-group \.edge-line \{[\s\S]*?animation-delay: 0ms;[\s\S]*?animation-fill-mode: both;/);
   assert.match(appJs, /function applyLiveRouteDelays\(\)/);
   assert.match(appJs, /line\.style\.animationDelay = `\$\{delay\}ms`/);
