@@ -3979,3 +3979,96 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
   .app-shell[data-mode] .twin-workspace { padding: 10px 12px; }
   .app-shell[data-mode] #timeline-dock { margin: 0 12px 12px; }
 }
+
+/* P0.6 canvas-first convergence */
+/* Replay workspaces reserve detail for the rail and keep only the current,
+   adjacent evidence milestones on-screen. */
+.app-shell[data-mode="replay"] main,
+.app-shell[data-mode="agents"] main,
+.app-shell[data-mode="compare"] main {
+  grid-template-rows: 64px minmax(0, 1fr) 72px;
+}
+.app-shell[data-mode="replay"] .mission-summary,
+.app-shell[data-mode="replay"] .mission-actions,
+.app-shell[data-mode="agents"] .mission-summary,
+.app-shell[data-mode="agents"] .mission-actions,
+.app-shell[data-mode="compare"] .mission-summary,
+.app-shell[data-mode="compare"] .mission-actions {
+  display: none;
+}
+.app-shell[data-mode="replay"] .mission-bar,
+.app-shell[data-mode="agents"] .mission-bar,
+.app-shell[data-mode="compare"] .mission-bar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-height: 64px;
+  padding: 0 20px;
+}
+.app-shell[data-mode="replay"] .mode-switch,
+.app-shell[data-mode="agents"] .mode-switch,
+.app-shell[data-mode="compare"] .mode-switch { justify-self: center; }
+.app-shell[data-mode="replay"] .canvas-toolbar,
+.app-shell[data-mode="agents"] .canvas-toolbar,
+.app-shell[data-mode="compare"] .canvas-toolbar {
+  grid-template-columns: minmax(0, 1fr);
+  min-height: 48px;
+  padding: 0 18px;
+}
+.app-shell[data-mode="replay"] .canvas-toolbar > div:first-child,
+.app-shell[data-mode="agents"] .canvas-toolbar > div:first-child,
+.app-shell[data-mode="compare"] .canvas-toolbar > div:first-child,
+.app-shell[data-mode="replay"] .legend-menu,
+.app-shell[data-mode="agents"] .legend-menu,
+.app-shell[data-mode="compare"] .legend-menu,
+.app-shell[data-mode="replay"] .zoom-controls,
+.app-shell[data-mode="agents"] .zoom-controls,
+.app-shell[data-mode="compare"] .zoom-controls { display: none; }
+.app-shell[data-mode="replay"] .metric-cluster,
+.app-shell[data-mode="agents"] .metric-cluster,
+.app-shell[data-mode="compare"] .metric-cluster {
+  width: min(100%, 720px);
+  justify-self: center;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+.app-shell[data-mode="replay"] .twin-workspace,
+.app-shell[data-mode="agents"] .twin-workspace,
+.app-shell[data-mode="compare"] .twin-workspace { padding-block: 10px; }
+.app-shell[data-mode="replay"] #timeline-dock,
+.app-shell[data-mode="agents"] #timeline-dock,
+.app-shell[data-mode="compare"] #timeline-dock {
+  height: 72px;
+  min-height: 72px;
+  max-height: 72px;
+  grid-template-areas: "transport main current";
+  grid-template-columns: max-content minmax(0, 1fr) max-content;
+  gap: 10px;
+  padding: 7px 14px;
+}
+.app-shell[data-mode="agents"] #timeline-dock { grid-template-areas: "main current"; grid-template-columns: minmax(0, 1fr) max-content; }
+.app-shell[data-mode="agents"] #timeline-dock .transport { display: none; }
+.app-shell[data-mode="compare"] #timeline-dock { grid-template-areas: "main compare"; grid-template-columns: minmax(0, 1fr) minmax(180px, 240px); }
+.app-shell[data-mode="compare"] #timeline-dock .transport,
+.app-shell[data-mode="compare"] #timeline-dock .compare-control > div,
+.app-shell[data-mode="compare"] #timeline-dock .compare-presets,
+.app-shell[data-mode="compare"] #timeline-dock .compare-focus-controls { display: none !important; }
+.app-shell[data-mode="compare"] #timeline-dock .compare-control { min-width: 0; }
+.app-shell[data-mode="replay"] #timeline-dock .speed-control { display: none; }
+.app-shell[data-mode] #timeline-dock .timeline-range,
+.app-shell[data-mode] #timeline-dock .timeline-next,
+.app-shell[data-mode] #timeline-dock .stage-marker span { display: none; }
+.app-shell[data-mode] #timeline-dock .stage-track { grid-template-columns: repeat(var(--stage-count, 1), minmax(88px, max-content)); justify-content: center; }
+.app-shell[data-mode] #timeline-dock .stage-track::before { left: 16%; right: 16%; top: 10px; }
+.app-shell[data-mode] #timeline-dock .stage-marker { padding-inline: 8px; }
+.app-shell[data-mode] #timeline-dock .stage-marker::before { width: 9px; height: 9px; margin: 6px auto 4px; }
+.app-shell[data-mode] #timeline-dock .stage-marker strong { font-size: 10px; }
+.app-shell[data-mode] #timeline-dock .timeline-current { max-width: 150px; }
+.app-shell[data-mode] #timeline-dock .timeline-current small { font-family: inherit; font-weight: 600; }
+@media (max-width: 900px) {
+  .app-shell[data-mode="replay"] main,
+  .app-shell[data-mode="agents"] main,
+  .app-shell[data-mode="compare"] main { grid-template-rows: auto minmax(0, 1fr) 72px; }
+  .app-shell[data-mode="replay"] .metric-cluster,
+  .app-shell[data-mode="agents"] .metric-cluster,
+  .app-shell[data-mode="compare"] .metric-cluster { width: 100%; }
+}

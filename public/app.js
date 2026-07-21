@@ -39,6 +39,12 @@ import {
   topologyIntegrity
 } from "./twin-state.mjs";
 
+try {
+  const cookieTheme = document.cookie.split("; ").find((value) => value.startsWith("flowpulse-theme="))?.split("=")[1];
+  const savedTheme = localStorage.getItem("flowpulse-theme") || cookieTheme;
+  if (savedTheme === "light" || savedTheme === "dark") document.documentElement.dataset.theme = savedTheme;
+} catch { /* the light document default remains available */ }
+
 const els = Object.fromEntries([...document.querySelectorAll("[id]")].map((element) => [element.id, element]));
 const IMPACT_SEQUENCE = { checkout: 0, payment: 1, kafka: 2, accounting: 3, fraud: 4 };
 const NODE_BY_ID = new Map(TWIN_NODES.map((node) => [node.id, node]));
@@ -963,12 +969,16 @@ function renderAgentCanvas() {
   const team = projectAgentCollaborators(control);
   const report = control.report;
   const currentStage = report.stage || state.stage;
-  const summaryLabel = report.human_gate ? "Owner gate" : report.verification ? "Verified" : "Current investigation";
-  const summaryDetail = report.human_gate ? "Human approval required before remediation" : currentStage ? `Ledger stage · ${currentStage}` : "Awaiting the next ledger event";
+  const reportTitle = /^legacy_|_unavailable$/.test(report.title || "") ? "Recovery details unavailable" : report.title;
+  const reportNarrative = /^(legacy_|.*_unavailable$)/.test(report.root_cause || report.summary || "")
+    ? ""
+    : (report.root_cause || report.summary || "");
+  const summaryLabel = report.human_gate ? "Human review required" : report.verification ? "Verification status" : "Recovery status";
+  const summaryDetail = report.human_gate ? "Human approval is required before remediation" : currentStage ? `Current stage · ${currentStage}` : "Awaiting the next recorded event";
   els["canvas-layers"].innerHTML = `<div class="recovery-console-layout">
     <section class="recovery-diagnosis" aria-label="Current diagnosis">
-      <div class="diagnosis-state"><span>${escapeHtml(summaryLabel)}</span><strong>${escapeHtml(report.title)}</strong><small>${escapeHtml(summaryDetail)}</small></div>
-      <p>${escapeHtml(report.root_cause || report.summary)}</p>
+      <div class="diagnosis-state"><span>${escapeHtml(summaryLabel)}</span><strong>${escapeHtml(reportTitle)}</strong><small>${escapeHtml(summaryDetail)}</small></div>
+      ${reportNarrative ? `<p>${escapeHtml(reportNarrative)}</p>` : ""}
       ${report.rejected_diagnosis ? `<div class="diagnosis-rejection"><span>Rejected hypothesis</span><strong>${escapeHtml(report.rejected_diagnosis.hypothesis_id)}</strong></div>` : ""}
       ${report.confidence != null ? `<div class="diagnosis-score"><span>Evaluator confidence</span><strong>${Math.round(report.confidence * 100)}%</strong></div>` : ""}
     </section>
@@ -980,7 +990,7 @@ function renderAgentCanvas() {
   setAnnotations([]);
   els["compare-handle"].hidden = true;
   els["compare-canvas-range"].hidden = true;
-  els["twin-canvas"].setAttribute("aria-label", `Recovery Console. ${control.report.title}.`);
+  els["twin-canvas"].setAttribute("aria-label", `Recovery Console. ${reportTitle}.`);
 }
 
 function renderSharedRecoveryCanvas(shared) {
@@ -1086,9 +1096,7 @@ function renderTwinLayer(frame, layerName, interactive, { runtimeOnly = false } 
     return `<button class="twin-node plane-${node.plane} node-${node.id} sequence-${sequence} kind-${node.kind} is-${status}${entering}" type="button" data-status="${escapeHtml(status)}" data-transition-key="${escapeHtml(transitionKey(node.id))}" ${interaction}>
       <span class="node-icon icon-${node.id}" aria-hidden="true"><i class="ph ph-${TWIN_ICONS[node.id]}"></i></span>
       <span class="node-copy">
-        <span class="node-origin">${escapeHtml(nodeOrigin(node))}</span>
         <strong>${escapeHtml(node.label)}</strong>
-        <span class="node-detail">${escapeHtml(node.detail)}</span>
         <span class="node-status">${escapeHtml(statusLabel(status))}</span>
       </span>
       <span class="node-status-dot" aria-hidden="true"></span>
@@ -1216,8 +1224,9 @@ function renderTimeline() {
     const events = shared?.events || sharedRun.loop.events || [];
     const currentIndex = Math.max(0, Math.min(cursor, Math.max(0, events.length - 1)));
     const markers = sharedTimelineMarkers(events);
-    els["stage-track"].style.setProperty("--stage-count", String(Math.max(1, markers.length)));
-    els["stage-track"].innerHTML = markers.map((marker) => `<button class="stage-marker stage-${escapeHtml(marker.stage)} stage-group-incident ${marker.index <= currentIndex ? "is-available" : ""} ${marker.index === currentIndex ? "is-current" : ""}" type="button" data-shared-event-index="${marker.index}"><span>${escapeHtml(formatTime(marker.event.recorded_at))}</span><strong>${escapeHtml(marker.label)}</strong></button>`).join("");
+    const compactMarkers = markers.filter((marker) => Math.abs(marker.index - currentIndex) <= 1);
+    els["stage-track"].style.setProperty("--stage-count", String(Math.max(1, compactMarkers.length)));
+    els["stage-track"].innerHTML = compactMarkers.map((marker) => `<button class="stage-marker stage-${escapeHtml(marker.stage)} stage-group-incident ${marker.index <= currentIndex ? "is-available" : ""} ${marker.index === currentIndex ? "is-current" : ""}" type="button" data-shared-event-index="${marker.index}"><span>${escapeHtml(formatTime(marker.event.recorded_at))}</span><strong>${escapeHtml(marker.label)}</strong></button>`).join("");
     for (const button of els["stage-track"].querySelectorAll("[data-shared-event-index]")) button.addEventListener("click", () => seekSharedEvent(Number(button.dataset.sharedEventIndex)));
     els["timeline-range"].max = String(Math.max(0, events.length - 1));
     els["timeline-range"].value = String(currentIndex);
@@ -1225,7 +1234,7 @@ function renderTimeline() {
     const event = events[currentIndex];
     els["timeline-time"].textContent = event ? formatTime(event.recorded_at) : "Awaiting event";
     els["timeline-title"].textContent = event ? sharedEventLabel(event) : "Awaiting canonical event";
-    els["timeline-copy"].textContent = event ? `Sequence ${event.sequence} · ${event.actor} · ${event.evidence_refs.length} cited record${event.evidence_refs.length === 1 ? "" : "s"}` : "The server has reserved the run; no event has arrived yet.";
+    els["timeline-copy"].textContent = event ? "View history" : "Awaiting event history";
     els["compare-control"].hidden = mode !== "compare";
     els["timeline-current"].hidden = mode === "compare";
     return;
@@ -1233,8 +1242,10 @@ function renderTimeline() {
   const available = availableStage(state.events);
   const stages = timelineStages();
   const visible = stages.slice(0, available + 1);
-  els["stage-track"].style.setProperty("--stage-count", String(visible.length));
-  els["stage-track"].innerHTML = visible.map((stage, index) => {
+  const compactStages = visible.filter((_, index) => Math.abs(index - Math.min(cursor, available)) <= 1);
+  els["stage-track"].style.setProperty("--stage-count", String(Math.max(1, compactStages.length)));
+  els["stage-track"].innerHTML = compactStages.map((stage) => {
+    const index = stages.indexOf(stage);
     const enabled = index <= available || (index === 1 && available >= 2);
     return `<button class="stage-marker stage-${stage.id} stage-group-${stageGroup(index)} ${enabled ? "is-available" : ""} ${index === cursor && mode !== "compare" ? "is-current" : ""}" type="button" data-stage-index="${index}" ${enabled ? "" : "disabled"}>
       <span>${stage.time}</span><strong>${escapeHtml(stage.label)}</strong>
@@ -1246,7 +1257,7 @@ function renderTimeline() {
   els["timeline-range"].disabled = mode !== "replay";
   els["timeline-time"].textContent = mode === "compare" ? "Before / after" : stages[cursor].time;
   els["timeline-title"].textContent = mode === "compare" ? "Incident vs verified" : stages[cursor].label;
-  els["timeline-copy"].textContent = timelineCopy(mode === "compare" ? 6 : cursor);
+  els["timeline-copy"].textContent = "View history";
   els["compare-control"].hidden = mode !== "compare";
   els["timeline-current"].hidden = mode === "compare";
 }

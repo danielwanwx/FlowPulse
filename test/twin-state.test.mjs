@@ -1327,6 +1327,20 @@ test("timeline renders only recorded milestones and labels the next evidence req
   assert.match(stylesCss, /--stage-count/);
 });
 
+test("P0.6 makes Diagnose, Recovery, and Compare canvas-first without technical node chrome", () => {
+  const p06Css = stylesCss.slice(stylesCss.lastIndexOf("/* P0.6 canvas-first convergence */"));
+  const timelineSource = appJs.slice(appJs.indexOf("function renderTimeline"), appJs.indexOf("function sharedTimelineMarkers"));
+  const twinLayerSource = appJs.slice(appJs.indexOf("function renderTwinLayer"), appJs.indexOf("function renderAnnotation"));
+  assert.match(p06Css, /grid-template-rows: 64px minmax\(0, 1fr\) 72px;/);
+  assert.match(p06Css, /#timeline-dock\s*\{[\s\S]*?height: 72px;/);
+  assert.match(p06Css, /\[data-mode="replay"\] \.canvas-toolbar > div:first-child,[\s\S]*?display: none;/);
+  assert.match(p06Css, /\[data-mode="agents"\] \.canvas-toolbar > div:first-child,[\s\S]*?display: none;/);
+  assert.match(p06Css, /\[data-mode="compare"\] \.canvas-toolbar > div:first-child,[\s\S]*?display: none;/);
+  assert.match(timelineSource, /const compactStages = visible\.filter/);
+  assert.match(timelineSource, /View history/);
+  assert.doesNotMatch(twinLayerSource, /node-origin|node-detail/);
+});
+
 test("recovery console keeps workflow facts in the canvas while the Unified Context Rail owns interaction", () => {
   assert.match(stylesCss, /\[data-mode="agents"\] \.metric-cluster, \.app-shell\[data-mode="agents"\] \.legend-menu \{ display: none;/);
   assert.match(appJs, /Projected recovery workflow/);
