@@ -294,14 +294,16 @@ function renderMetrics() {
   }
   if (mode === "live" || state.mode === "development") {
     const live = mode === "live" ? liveTopologyView() : null;
-    const source = live ? liveSource(live) : sourceState();
-    const topology = live?.runtime_data.graph ? topologyIntegrity(live.runtime_data.graph) : topologyIntegrity(source.topology);
+    const source = mode === "live" ? liveSource(live) : sourceState();
+    const topology = mode === "live"
+      ? topologyIntegrity(live?.runtime_data.graph || { nodes: [], edges: [] })
+      : topologyIntegrity(source.topology);
     const visibleDependencies = mode === "live" ? 0 : topology?.edges?.length || 0;
     els["metric-checkout-label"].textContent = "Services";
     els["metric-payment-label"].textContent = "Dependencies";
     els["metric-kafka-label"].textContent = "Source age";
     setMetric("checkout", String(topology?.nodes?.length || 0), "");
-    setMetric("payment", String(topology?.edges?.length || 0), mode === "live" ? "paths deferred for shared layout review" : `${visibleDependencies} primary paths shown${topology.unlinked_node_ids.length ? ` · ${topology.unlinked_node_ids.length} gaps` : ""}`);
+    setMetric("payment", String(topology?.edges?.length || 0), mode === "live" ? "projected runtime paths" : `${visibleDependencies} primary paths shown${topology.unlinked_node_ids.length ? ` · ${topology.unlinked_node_ids.length} gaps` : ""}`);
     setMetric("kafka", source.freshness_ms == null ? source.label : formatAge(source.freshness_ms), "");
     return;
   }
@@ -430,19 +432,39 @@ function renderSourceCanvas(layout) {
     return;
   }
   const positions = new Map(positioned.map((node) => [node.id, node]));
-  // Stage C keeps runtime paths and packets deferred until the shared-node relayout is reviewed.
-  const edges = "";
+  // Live renders the complete canonical runtime graph. The source projection owns
+  // endpoint validity, status and identity; this layer only assigns deterministic
+  // visual routes and pulse timing.
+  const runtimeEdges = topology.edges.filter((edge) => positions.has(edge.from) && positions.has(edge.to));
+  const pulseSlots = livePulseSlots({ ...topology, edges: runtimeEdges });
+  const signalOrder = new Map(orderedSignalEdges(runtimeEdges, pulseSlots).map((edge, index) => [edge.id, index]));
+  const edgeLayout = {
+    canvasWidth: LIVE_WORLD.width,
+    canvasHeight: LIVE_WORLD.height,
+    nodeWidth: 180,
+    nodeHeight: 60
+  };
+  const edges = runtimeEdges.map((edge, index) => {
+    const from = positions.get(edge.from);
+    const to = positions.get(edge.to);
+    const order = signalOrder.get(edge.id) ?? index;
+    const lane = order % 2 ? Math.ceil(order / 2) : -Math.ceil((order + 1) / 2);
+    const path = liveEdgePath(from, to, { ...edgeLayout, lane });
+    const edgeState = liveSignalTone(edge, nodeStates);
+    return `<g class="edge-group path-runtime signal-${edgeState}" data-live-edge-id="${escapeHtml(edge.id)}" data-signal-from="${escapeHtml(edge.from)}" data-signal-to="${escapeHtml(edge.to)}" data-signal-order="${order}"><path class="edge-line is-${edgeState}" d="${path}"/><path class="pulse-flow is-${edgeState}" d="${path}" pathLength="1" aria-hidden="true" style="animation-delay:${(order % 6) * .22}s"/><g class="signal-droplet" aria-hidden="true"><circle class="signal-droplet-halo" r="5"/><circle class="signal-droplet-tail signal-droplet-tail-far" r=".7"/><circle class="signal-droplet-tail signal-droplet-tail-near" r="1.15"/><circle class="signal-droplet-body" r="2.15"/><circle class="signal-droplet-specular" r=".55"/></g><path class="edge-hit" d="${path}" role="button" tabindex="0" aria-label="${escapeHtml(edge.label)} from ${escapeHtml(from.label)} to ${escapeHtml(to.label)}" data-edge-id="${escapeHtml(edge.id)}" data-edge-from="${escapeHtml(edge.from)}" data-edge-to="${escapeHtml(edge.to)}"/></g>`;
+  }).join("");
   const nodes = positioned.map((node) => sourceNodeMarkup(node, { layout, source, nodeStates })).join("");
   const unlinkedPositionedNodes = positioned.filter((node) => node.layer === LIVE_UNLINKED_LAYER.id).length;
   const guideLayers = [...LIVE_LAYERS, ...(unlinkedPositionedNodes ? [LIVE_UNLINKED_LAYER] : [])];
   const guides = `<div class="live-guides" aria-hidden="true">${guideLayers.map((layer, index) => `<span class="live-guide-${index}">${escapeHtml(layer.label)}</span>`).join("")}</div>${topology.invalid_edges.length ? `<div class="topology-warning"><i class="ph ph-warning" aria-hidden="true"></i>${topology.invalid_edges.length} invalid dependency endpoint${topology.invalid_edges.length === 1 ? "" : "s"} omitted</div>` : ""}`;
-  els["canvas-layers"].innerHTML = `${guides}<div class="twin-layer layer-current">${edges}${nodes}</div>`;
+  els["canvas-layers"].innerHTML = `${guides}<div class="twin-layer layer-current"><svg class="edge-map" viewBox="0 0 1000 520" preserveAspectRatio="none">${edges}</svg>${nodes}</div>`;
+  startLiveSignalLoop();
   els["twin-canvas"].dataset.invalidEdges = String(topology.invalid_edges.length);
   els["twin-canvas"].dataset.unlinkedNodes = String(topology.unlinked_node_ids.length);
   els["twin-canvas"].dataset.observedEdges = String(topology.edges.length);
-  els["twin-canvas"].dataset.displayedEdges = "0";
+  els["twin-canvas"].dataset.displayedEdges = String(runtimeEdges.length);
   setAnnotations(mode === "replay" ? developmentAnnotations(cursor) : []);
-  els["twin-canvas"].setAttribute("aria-label", `Runtime topology with ${positioned.length} observed services. Runtime paths are deferred until the shared-node relayout is reviewed. ${topology.edges.length} authoritative dependencies remain backend-projected${unlinkedPositionedNodes ? `, with ${unlinkedPositionedNodes} components lacking dependency evidence` : ""}.`);
+  els["twin-canvas"].setAttribute("aria-label", `Runtime topology with ${positioned.length} observed services. ${runtimeEdges.length} projected dependency paths are rendered from ${topology.edges.length} authoritative dependencies${unlinkedPositionedNodes ? `, with ${unlinkedPositionedNodes} components lacking dependency evidence` : ""}.`);
 }
 
 function architectureLayerStatus(nodes) {
@@ -1270,13 +1292,20 @@ function renderSourceDrawerContent(tab, context) {
     if (tab === "evidence") return renderArchitectureProvenance(context);
     return emptyDetail("No bounded architecture detail is available for this component.");
   }
-  if (tab === "overview") return renderSourceComponentContext(context);
+  if (tab === "overview") return `${renderSourceComponentContext(context)}${liveAgentAssessment(context)}`;
   if (tab === "signals") return renderSourceSignalSummary(context);
   if (tab === "dependencies") return renderSourceDependencies(context);
   if (tab === "evidence") return context.evidence.length
     ? [...context.evidence].sort((a, b) => String(b.at || "").localeCompare(String(a.at || ""))).slice(0, 6).map(renderEvidenceRecord).join("")
     : emptyDetail("No component-scoped evidence is available in the current authoritative window.");
   return emptyDetail("No detail is available for this component.");
+}
+
+function liveAgentAssessment(context) {
+  if (!["impact", "root", "rejected", "fault", "warning", "pending"].includes(context.status)) return "";
+  const report = agentControl().report;
+  if (!report?.summary || report.title === "Agent control unavailable" || report.summary === "No agent projection is available.") return "";
+  return `<section class="live-agent-assessment"><span>Run-level agent assessment</span><strong>${escapeHtml(report.title)}</strong><p>${escapeHtml(report.summary)}</p></section>`;
 }
 
 function renderAgentOperationDetail(id) {
@@ -2198,10 +2227,17 @@ function sourceComponentCatalog() {
 }
 
 function renderSourceComponentContext(context) {
-  const { node, profile, incoming, outgoing, evidence, status, source } = context;
+  const { node, profile, incoming, outgoing, status, source } = context;
+  const facts = [
+    ["Current state", sourceStatusLabel(status, source.status)],
+    ["Source truth", source.label],
+    profile.runtimeSummary ? ["Runtime", profile.runtimeSummary] : null,
+    profile.signals.length ? ["Signals", profile.signals.join(" · ")] : null,
+    incoming.length || outgoing.length ? ["Dependencies", `${incoming.length} upstream · ${outgoing.length} downstream`] : null
+  ].filter(Boolean);
   return `<section class="component-context is-${escapeHtml(status)}">
     <header><div><span>${escapeHtml(kindLabel(node.kind))}</span><strong>${escapeHtml(profile.capability)}</strong></div><span class="component-health">${escapeHtml(sourceStatusLabel(status, source.status))}</span></header>
-    <dl><div><dt>Source</dt><dd>${escapeHtml(source.status === "live" ? "Live OTLP" : source.label)}</dd></div><div><dt>Runtime</dt><dd>${escapeHtml(profile.language || "Not declared")}</dd></div><div><dt>Cited</dt><dd>${evidence.length} record${evidence.length === 1 ? "" : "s"}</dd></div></dl>
+    <dl>${facts.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("")}</dl>
     <div class="component-runtime"><code>${escapeHtml(`service.name=${node.id}`)}</code>${source.freshness_ms != null ? `<span>${escapeHtml(formatAge(source.freshness_ms))} source age</span>` : ""}</div>
   </section>`;
 }

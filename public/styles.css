@@ -182,7 +182,7 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .mode-button { min-height: 36px; padding: 6px 14px; border: 0; border-right: 1px solid var(--line-strong); color: var(--muted); background: var(--surface); font-size: 12px; font-weight: 700; cursor: pointer; }
 .mode-button:last-child { border-right: 0; }
 .mode-button:hover { color: var(--ink); background: var(--surface-2); }
-.mode-button.is-active { color: var(--on-inverse); background: var(--inverse); }
+.mode-button.is-active { color: #ffffff; background: var(--blue); }
 
 .mission-actions { position: absolute; right: 22px; display: flex; align-items: center; justify-content: flex-end; gap: 8px; min-width: 0; }
 .stage-readout { display: none; min-width: 145px; padding-right: 12px; border-right: 1px solid var(--line); }
@@ -2754,7 +2754,9 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .app-shell[data-mode="live"] .metric { background: rgba(255, 255, 255, .5); }
 .twin-canvas.is-live-source {
   --architecture-page-radius: 24px;
+  --architecture-system-radius: 20px;
   --architecture-node-radius: 16px;
+  --architecture-control-radius: 12px;
   --architecture-copy: #111827;
   --architecture-muted: #475569;
   min-width: 0;
@@ -2795,12 +2797,12 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
   box-shadow: none;
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", sans-serif;
 }
-.is-live-source .source-node:hover,
-.is-live-source .source-node.is-selected {
-  transform: translateY(-2px);
+.app-shell[data-mode="live"] .is-live-source .source-node:hover,
+.app-shell[data-mode="live"] .is-live-source .source-node.is-selected {
+  transform: translate(-50%, -50%);
   border: 0;
   outline: none;
-  background: #ffffff;
+  background: rgba(255, 255, 255, .94);
   box-shadow: none;
 }
 .is-live-source .source-node:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
@@ -2853,4 +2855,143 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
   .app-shell[data-mode="live"] .canvas-shell,
   .app-shell[data-mode="live"] .twin-scroll { background: #e9eef1; }
   .is-live-source .source-node { background: #ffffff; }
+}
+
+/* Live runtime continuity: same fixed shell as Architecture, with topology motion
+   carried by paths instead of by moving cards or a second visual language. */
+.app-shell[data-mode="live"] {
+  --architecture-system-radius: 20px;
+  --architecture-node-radius: 16px;
+  --architecture-control-radius: 12px;
+  --architecture-copy: #111827;
+  --architecture-muted: #475569;
+}
+.app-shell[data-mode="architecture"] .mission-bar,
+.app-shell[data-mode="live"] .mission-bar {
+  min-height: 64px;
+}
+.app-shell[data-mode="architecture"] .mode-switch,
+.app-shell[data-mode="live"] .mode-switch {
+  width: 710px;
+  min-width: 710px;
+}
+.app-shell[data-mode="live"] .metric-cluster { display: none; }
+.app-shell[data-mode="live"] .canvas-toolbar { grid-template-columns: minmax(0, 1fr) auto auto; }
+.app-shell[data-mode="live"] #canvas-caption { display: none; }
+
+.is-live-source .edge-map { z-index: 2; pointer-events: none; }
+.is-live-source .edge-group { --edge-signal: #2563eb; pointer-events: none; }
+.is-live-source .edge-group .edge-line {
+  stroke: #9ca7b1;
+  stroke-width: 1.65;
+  opacity: .8;
+}
+.is-live-source .edge-group.signal-impact .edge-line,
+.is-live-source .edge-group.signal-root .edge-line,
+.is-live-source .edge-group.signal-rejected .edge-line { stroke: var(--red); opacity: .9; }
+.is-live-source .edge-group.signal-verified .edge-line { stroke: var(--green); opacity: .9; }
+.is-live-source .edge-group .edge-hit { pointer-events: stroke; }
+.is-live-source .pulse-flow {
+  display: block;
+  stroke: var(--edge-signal);
+  stroke-width: 2.3;
+  stroke-dasharray: .02 .15;
+  stroke-dashoffset: 1;
+  opacity: .78;
+  animation: live-runtime-pulse 1.8s linear infinite;
+}
+.is-live-source .pulse-flow.is-impact,
+.is-live-source .pulse-flow.is-root,
+.is-live-source .pulse-flow.is-rejected { --edge-signal: var(--red); }
+.is-live-source .pulse-flow.is-verified { --edge-signal: var(--green); }
+.is-live-source .signal-droplet { filter: none; }
+.is-live-source .source-node.is-signal-launch,
+.is-live-source .source-node.is-signal-arrival { animation: live-node-activity .16s ease-out both; }
+
+.app-shell[data-mode="live"] .context-drawer {
+  inset: 12px 14px 12px auto;
+  width: min(380px, calc(100% - 28px));
+  border: 0;
+  border-radius: var(--architecture-system-radius);
+  background: rgba(255, 255, 255, .82);
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+.app-shell[data-mode="live"] .drawer-header,
+.app-shell[data-mode="live"] .drawer-tabs {
+  border: 0;
+  box-shadow: none;
+}
+.app-shell[data-mode="live"] .drawer-header { padding: 16px 16px 10px; }
+.app-shell[data-mode="live"] .drawer-header span { color: var(--architecture-muted); }
+.app-shell[data-mode="live"] .drawer-header h2 { color: var(--architecture-copy); font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", sans-serif; font-size: 18px; font-weight: 600; }
+.app-shell[data-mode="live"] .drawer-header p { color: var(--architecture-muted); }
+.app-shell[data-mode="live"] .drawer-header .icon-button,
+.app-shell[data-mode="live"] .drawer-tab {
+  border: 0;
+  border-radius: var(--architecture-control-radius);
+  background: rgba(211, 220, 226, .42);
+  box-shadow: none;
+}
+.app-shell[data-mode="live"] .drawer-tabs { gap: 6px; padding: 0 16px 10px; }
+.app-shell[data-mode="live"] .drawer-tab[aria-selected="true"] { color: var(--architecture-copy); background: rgba(255, 255, 255, .92); box-shadow: none; }
+.app-shell[data-mode="live"] .drawer-content { padding: 14px 16px 16px; }
+.app-shell[data-mode="live"] .component-context,
+.app-shell[data-mode="live"] .detail-record,
+.app-shell[data-mode="live"] .signal-summary article,
+.app-shell[data-mode="live"] .dependency-summary > article,
+.app-shell[data-mode="live"] .drawer-empty,
+.app-shell[data-mode="live"] .live-agent-assessment {
+  border: 0;
+  border-radius: var(--architecture-node-radius);
+  background: rgba(255, 255, 255, .78);
+  box-shadow: none;
+}
+.app-shell[data-mode="live"] .component-context { padding: 13px; }
+.app-shell[data-mode="live"] .component-context > header { align-items: center; }
+.app-shell[data-mode="live"] .component-context > header div > span,
+.app-shell[data-mode="live"] .component-dependencies > span { color: var(--architecture-muted); font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", sans-serif; font-size: 11px; font-weight: 500; letter-spacing: 0; text-transform: none; }
+.app-shell[data-mode="live"] .component-health { border: 0; border-radius: 999px; color: var(--architecture-copy); background: rgba(211, 220, 226, .52); font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", sans-serif; font-size: 10px; }
+.app-shell[data-mode="live"] .component-context dl { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; border: 0; }
+.app-shell[data-mode="live"] .component-context dl div { padding: 8px; border: 0; border-radius: var(--architecture-control-radius); background: rgba(211, 220, 226, .36); }
+.app-shell[data-mode="live"] .component-context dt { color: var(--architecture-muted); font-size: 10px; }
+.app-shell[data-mode="live"] .component-context dd { color: var(--architecture-copy); font-size: 11px; }
+.app-shell[data-mode="live"] .component-runtime code,
+.app-shell[data-mode="live"] .component-runtime span,
+.app-shell[data-mode="live"] .component-dependencies button {
+  border: 0;
+  border-radius: var(--architecture-control-radius);
+  background: rgba(211, 220, 226, .42);
+  box-shadow: none;
+}
+.app-shell[data-mode="live"] .component-dependencies button:hover { border: 0; background: rgba(255, 255, 255, .92); }
+.app-shell[data-mode="live"] .detail-record { padding: 13px; }
+.app-shell[data-mode="live"] .detail-record.is-rejected,
+.app-shell[data-mode="live"] .detail-record.is-accepted,
+.app-shell[data-mode="live"] .detail-record.is-verified,
+.app-shell[data-mode="live"] .detail-record.is-change,
+.app-shell[data-mode="live"] .detail-record.is-approval { border-left: 0; }
+.app-shell[data-mode="live"] .live-agent-assessment { display: grid; gap: 4px; margin-top: 12px; padding: 13px; }
+.app-shell[data-mode="live"] .live-agent-assessment > span { color: var(--architecture-muted); font-size: 11px; font-weight: 500; }
+.app-shell[data-mode="live"] .live-agent-assessment strong { color: var(--architecture-copy); font-size: 13px; font-weight: 600; }
+.app-shell[data-mode="live"] .live-agent-assessment p { margin: 0; color: var(--architecture-muted); font-size: 12px; line-height: 1.45; }
+
+@keyframes live-runtime-pulse {
+  from { stroke-dashoffset: 1; }
+  to { stroke-dashoffset: 0; }
+}
+@keyframes live-node-activity {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .82; }
+}
+
+@media (max-width: 1320px) {
+  .app-shell[data-mode="architecture"] .mode-switch,
+  .app-shell[data-mode="live"] .mode-switch { width: 710px; min-width: 710px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .is-live-source .pulse-flow { animation: none; opacity: .34; }
+  .is-live-source .source-node.is-signal-launch,
+  .is-live-source .source-node.is-signal-arrival { animation: none; }
 }

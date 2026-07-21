@@ -431,6 +431,9 @@ test("Live consumes only the strict v2 runtime view and never uses the six-node 
   assert.match(appJs, /const live = layout === "live" \? liveTopologyView\(\) : null;/);
   assert.match(appJs, /const topology = architecture \? architecture\.graph : live\?\.runtime_data\.graph/);
   assert.doesNotMatch(appJs.match(/function renderSourceCanvas\(layout\) \{[\s\S]+?\n\}/)?.[0] || "", /source\.topology/);
+  const metricsSource = appJs.slice(appJs.indexOf("function renderMetrics"), appJs.indexOf("function setMetric"));
+  assert.match(metricsSource, /const source = mode === "live" \? liveSource\(live\) : sourceState\(\);/);
+  assert.match(metricsSource, /topologyIntegrity\(live\?\.runtime_data\.graph \|\| \{ nodes: \[\], edges: \[\] \}\)/);
   assert.match(appJs, /Live projection unavailable/);
   assert.match(stylesCss, /\.twin-canvas\.is-live-source \{[\s\S]+?border-radius: var\(--architecture-page-radius\);/);
   assert.match(stylesCss, /\.is-live-source \.source-node \{[\s\S]+?border: 0;[\s\S]+?border-radius: var\(--architecture-node-radius\);[\s\S]+?box-shadow: none;/);
@@ -450,17 +453,44 @@ test("control details use a supported Observer glyph and render only bounded pro
   assert.doesNotMatch(controlDetailSource, /payload|prompt|token|secret|raw_log/i);
 });
 
-test("Stage C keeps a shared keyed 22-node surface while Live defers runtime paths and packets", () => {
+test("Live keeps shared node identities while rendering every canonical runtime path and repeated pulses", () => {
   const renderSourceCanvasSource = appJs.slice(appJs.indexOf("function renderSourceCanvas"), appJs.indexOf("function architectureLayerStatus"));
+  const runtime = topologyIntegrity({ nodes: topologyManifest.nodes, edges: topologyManifest.edges });
   assert.match(appJs, /data-transition-key="\$\{escapeHtml\(transitionKey\(node\.id\)\)\}"/);
   assert.match(appJs, /querySelectorAll\("\[data-transition-key\]"\)/);
   assert.match(appJs, /node\.classList\.contains\("twin-node"\)/);
-  assert.match(renderSourceCanvasSource, /const edges = "";/);
-  assert.match(renderSourceCanvasSource, /Stage C keeps runtime paths and packets deferred/);
+  assert.equal(runtime.nodes.length, 22);
+  assert.equal(runtime.edges.length, 22);
+  assert.equal(runtime.edges.every((edge) => runtime.nodes.some((node) => node.id === edge.from) && runtime.nodes.some((node) => node.id === edge.to)), true);
+  assert.match(renderSourceCanvasSource, /const runtimeEdges = topology\.edges/);
+  assert.match(renderSourceCanvasSource, /data-live-edge-id/);
+  assert.match(renderSourceCanvasSource, /data-signal-order/);
+  assert.match(renderSourceCanvasSource, /class="pulse-flow is-\$\{edgeState\}"/);
+  assert.match(renderSourceCanvasSource, /startLiveSignalLoop\(\);/);
   assert.doesNotMatch(renderSourceCanvasSource, /renderLiveChange\(/);
-  assert.doesNotMatch(renderSourceCanvasSource, /startLiveSignalLoop\(/);
-  assert.match(renderSourceCanvasSource, /positioned\.length\} observed services\. Runtime paths are deferred/);
+  assert.match(renderSourceCanvasSource, /\$\{runtimeEdges\.length\} projected dependency paths are rendered/);
   assert.doesNotMatch(appJs, /live-control-system|data-live-control|data-control-scope/);
+});
+
+test("Live keeps the shared header fixed, hides metric noise, and uses a bounded 2D detail surface", () => {
+  assert.match(stylesCss, /\.mode-button\.is-active\s*\{\s*color: #ffffff;\s*background: var\(--blue\);\s*\}/);
+  assert.match(stylesCss, /\.app-shell\[data-mode="architecture"\] \.mission-bar,\s*\.app-shell\[data-mode="live"\] \.mission-bar/s);
+  assert.match(stylesCss, /\.app-shell\[data-mode="live"\] \.metric-cluster\s*\{\s*display: none;/);
+  assert.match(stylesCss, /\.app-shell\[data-mode="live"\] \.canvas-toolbar\s*\{\s*grid-template-columns: minmax\(0, 1fr\) auto auto;/);
+  assert.match(stylesCss, /\.app-shell\[data-mode="live"\]\s*\{[\s\S]*?--architecture-system-radius: 20px;[\s\S]*?--architecture-node-radius: 16px;[\s\S]*?--architecture-control-radius: 12px;/);
+  const liveNodeInteractionCss = stylesCss.slice(stylesCss.indexOf(".app-shell[data-mode=\"live\"] .is-live-source .source-node:hover"), stylesCss.indexOf(".is-live-source .source-node:focus-visible"));
+  assert.match(liveNodeInteractionCss, /\.app-shell\[data-mode="live"\] \.is-live-source \.source-node:hover,[\s\S]+?transform: translate\(-50%, -50%\);/);
+  assert.doesNotMatch(liveNodeInteractionCss, /translateY\(/);
+  assert.match(stylesCss, /@keyframes live-node-activity[\s\S]+?opacity:/);
+  const liveContinuityCss = stylesCss.slice(stylesCss.lastIndexOf("/* Live runtime continuity"));
+  assert.doesNotMatch(liveContinuityCss, /drop-shadow\(/);
+  assert.match(stylesCss, /\.app-shell\[data-mode="live"\] \.context-drawer\s*\{[\s\S]+?border-radius: var\(--architecture-system-radius\);[\s\S]+?box-shadow: none;/);
+  const liveDrawerSource = appJs.slice(appJs.indexOf("function renderSourceDrawerContent"), appJs.indexOf("function renderAgentOperationDetail"));
+  assert.match(liveDrawerSource, /liveAgentAssessment\(context\)/);
+  const assessmentSource = appJs.slice(appJs.indexOf("function liveAgentAssessment"), appJs.indexOf("function renderAgentOperationDetail"));
+  assert.match(assessmentSource, /agentControl\(\)\.report/);
+  assert.match(assessmentSource, /Run-level agent assessment/);
+  assert.doesNotMatch(assessmentSource, /payload|prompt|token|secret|raw_log/i);
 });
 
 test("B1 recovery console keeps six collaborators visible while owner approval stays separate", () => {
@@ -678,7 +708,7 @@ function segmentHitsRect(a, b, rect) {
   return false;
 }
 
-test("Stage C retains deterministic runtime ordering while deferring rendered paths and packets", () => {
+test("Live pulse ordering remains deterministic across the complete backend runtime graph", () => {
   const topology = {
     nodes: ["frontend", "checkout", "payment", "kafka", "accounting"].map((id) => ({ id })),
     edges: [
@@ -701,9 +731,10 @@ test("Stage C retains deterministic runtime ordering while deferring rendered pa
     "checkout->payment"
   ]);
   const renderSourceCanvasSource = appJs.slice(appJs.indexOf("function renderSourceCanvas"), appJs.indexOf("function architectureLayerStatus"));
-  assert.match(renderSourceCanvasSource, /const edges = "";/);
-  assert.match(renderSourceCanvasSource, /runtime paths and packets deferred/i);
-  assert.doesNotMatch(renderSourceCanvasSource, /data-live-edge-id|data-signal-order|signal-droplet/);
+  assert.match(renderSourceCanvasSource, /const pulseSlots = livePulseSlots\(\{ \.\.\.topology, edges: runtimeEdges \}\);/);
+  assert.match(renderSourceCanvasSource, /orderedSignalEdges\(runtimeEdges, pulseSlots\)/);
+  assert.match(renderSourceCanvasSource, /data-live-edge-id/);
+  assert.match(renderSourceCanvasSource, /pulse-flow/);
   assert.match(appJs, /classList\.toggle\("is-live-source", mode === "live"\)/);
   assert.match(appJs, /function startLiveSignalLoop\(/);
   assert.match(appJs, /liveSignalDuration\(pathLength\)/);
@@ -712,7 +743,7 @@ test("Stage C retains deterministic runtime ordering while deferring rendered pa
   assert.match(appJs, /sendRecoveryCommand\(commandButton\.closest\("form"\)\)/);
 });
 
-test("future primary dependency selection remains deterministic without changing the Stage C canvas", () => {
+test("future primary dependency selection remains deterministic while Live renders the complete canonical canvas", () => {
   const topology = topologyIntegrity({
     nodes: ["load-generator", "frontend-web", "frontend-proxy", "frontend", "checkout", "cart", "payment", "flagd"].map((id) => ({ id, kind: "service" })),
     edges: [
@@ -739,10 +770,10 @@ test("future primary dependency selection remains deterministic without changing
   assert.deepEqual(selectedReversed.map(({ id }) => id), selected.map(({ id }) => id));
   const inboundCounts = selected.reduce((counts, { to }) => counts.set(to, (counts.get(to) || 0) + 1), new Map());
   assert.equal(Math.max(...inboundCounts.values()), 2);
-  assert.match(appJs, /Stage C keeps runtime paths and packets deferred/);
+  assert.match(appJs, /Live renders the complete canonical runtime graph/);
   assert.match(appJs, /dataset\.observedEdges/);
   assert.match(appJs, /dataset\.displayedEdges/);
-  assert.match(appJs, /dataset\.displayedEdges = "0"/);
+  assert.match(appJs, /dataset\.displayedEdges = String\(runtimeEdges\.length\)/);
 });
 
 test("live signal travel keeps one physical speed and slows only at the destination", () => {
