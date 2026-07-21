@@ -453,7 +453,7 @@ function buildContext({ request, state, external, role }) {
       projection_revision: safeHash(topologyViews.projection_revision)
     },
     source_truth: {
-      source_health: safeEnum(projection.source_health, ["live", "stale", "disconnected", "unavailable"], "unavailable"),
+      source_health: safeEnum(source.status, ["live", "stale", "disconnected"], "unavailable"),
       evidence_mode: safeEnum(projection.evidence_mode, ["captured_fixture", "frozen_real_snapshot", "live_stream"], "captured_fixture"),
       execution_mode: safeEnum(projection.execution_mode, ["deterministic_replay", "gpt_model_only", "real_local_development", "captured_simulation"], "deterministic_replay"),
       source_status: source.status,
