@@ -1786,14 +1786,6 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 
 .is-live-source .edge-group { --edge-signal: var(--live-pulse); }
 .is-live-source .edge-group .edge-line { stroke: #9ca5b0; stroke-width: 1.5; opacity: .82; }
-.is-live-source .signal-droplet { display: none; pointer-events: none; }
-.is-live-source .edge-group.is-signal-active .signal-droplet { display: block; }
-.is-live-source .signal-droplet { filter: drop-shadow(0 0 2px var(--live-pulse-glow)) drop-shadow(0 0 5px var(--live-pulse-glow)); }
-.is-live-source .signal-droplet-body, .is-live-source .signal-droplet-tail { fill: var(--edge-signal); }
-.is-live-source .signal-droplet-halo { fill: var(--edge-signal); opacity: .15; }
-.is-live-source .signal-droplet-tail-near { opacity: .34; }
-.is-live-source .signal-droplet-tail-far { opacity: .13; }
-.is-live-source .signal-droplet-specular { fill: var(--live-pulse-core); opacity: .92; }
 .is-live-source .source-node { --active-signal: var(--ink); }
 .is-live-source .source-node.is-signal-launch { animation: signal-node-launch .16s ease-out both; }
 .is-live-source .source-node.is-signal-arrival { animation: signal-node-arrival .16s ease-out both; }
@@ -2429,7 +2421,7 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
   .is-architecture-source .architecture-workspace-turn.is-entering-back { transform: none; opacity: 1; }
   .pulse-flow { animation: none !important; opacity: .68; stroke-dasharray: .025 .975; stroke-dashoffset: .4; }
   .node-status-dot, .twin-node.is-entering { animation: none !important; }
-  .is-live-source .edge-group.is-signal-active .signal-droplet { display: none; }
+  .is-live-source .edge-group.is-signal-active .signal-trail { display: none; }
   .is-live-source .source-node.is-signal-launch, .is-live-source .source-node.is-signal-arrival { box-shadow: 0 10px 24px var(--signal-lift), 0 0 0 1px var(--signal-ring); }
 }
 
@@ -2918,7 +2910,8 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .app-shell[data-mode="live"] .canvas-toolbar { grid-template-columns: minmax(0, 1fr) auto auto; }
 .app-shell[data-mode="live"] #canvas-caption { display: none; }
 
-.is-live-source .edge-map { z-index: 2; pointer-events: none; }
+.is-live-source .edge-map { z-index: 1; pointer-events: none; }
+.is-live-source .source-node { z-index: 3; }
 .is-live-source .edge-group { --edge-signal: #2563eb; pointer-events: none; }
 .is-live-source .edge-group .edge-line {
   stroke: #9ca7b1;
@@ -2938,13 +2931,10 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .is-live-source .pulse-flow.is-root,
 .is-live-source .pulse-flow.is-rejected { --edge-signal: var(--red); }
 .is-live-source .pulse-flow.is-verified { --edge-signal: var(--green); }
-.is-live-source .edge-group .signal-droplet { display: none; filter: none; }
-.is-live-source .edge-group.is-signal-active .signal-droplet { display: block; }
-.is-live-source .signal-droplet-streak { stroke: var(--edge-signal); stroke-width: 1.8; stroke-linecap: round; opacity: .62; }
-.is-live-source .signal-droplet-body { fill: var(--edge-signal); }
-.is-live-source .signal-droplet-halo { fill: var(--edge-signal); opacity: .2; }
-.is-live-source .signal-droplet-tail-near { fill: var(--edge-signal); opacity: .42; }
-.is-live-source .signal-droplet-tail-far { fill: var(--edge-signal); opacity: .16; }
+.is-live-source .signal-trail { display: none; fill: none; pointer-events: none; stroke-linecap: round; stroke-linejoin: round; }
+.is-live-source .edge-group.is-signal-active .signal-trail { display: block; }
+.is-live-source .signal-trail-halo { stroke: var(--edge-signal); stroke-width: 5; opacity: .16; }
+.is-live-source .signal-trail-core { stroke: var(--edge-signal); stroke-width: 2; opacity: .92; }
 .is-live-source .source-node.is-signal-launch,
 .is-live-source .source-node.is-signal-arrival { animation: live-node-activity .16s ease-out both; }
 
@@ -3027,7 +3017,7 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
   .app-shell[data-mode="live"] .mode-switch { width: 710px; min-width: 710px; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .is-live-source .edge-group.is-signal-active .signal-droplet { display: none; }
+  .is-live-source .edge-group.is-signal-active .signal-trail { display: none; }
   .is-live-source .source-node.is-signal-launch,
   .is-live-source .source-node.is-signal-arrival { animation: none; }
 }

@@ -16,7 +16,6 @@ import {
   compareProvenance,
   eventsAtStage,
   frameFor,
-  liveEdgePath,
   liveIncidentNodeStates,
   liveSignalDuration,
   liveSignalProgress,
@@ -28,6 +27,7 @@ import {
   projectAgentCollaborators,
   topologyIntegrity
 } from "./twin-state.mjs";
+import { measuredLiveRoute, roundedMeasuredRoutePath } from "./live-routing.mjs";
 
 const els = Object.fromEntries([...document.querySelectorAll("[id]")].map((element) => [element.id, element]));
 const IMPACT_SEQUENCE = { checkout: 0, payment: 1, kafka: 2, accounting: 3, fraud: 4 };
@@ -116,6 +116,11 @@ let liveSignalTimers = [];
 let liveSignalIndex = 0;
 let liveSignalFrame = null;
 let liveSignalGeneration = 0;
+let liveRouteFrame = null;
+let liveRouteTimer = null;
+let liveRouteResizeHandler = null;
+let liveRouteContext = null;
+let liveRouteAttempts = 0;
 let componentCatalogSource = null;
 let componentCatalogCache = new Map();
 let selectedCollaboratorId = "commander";
@@ -328,6 +333,10 @@ function setMetric(name, value, note) {
 
 function renderCanvas() {
   stopLiveSignalLoop();
+  cancelMeasuredLiveRouteRender();
+  disconnectMeasuredLiveRouteObserver();
+  liveRouteContext = null;
+  liveRouteAttempts = 0;
   els["twin-canvas"].classList.toggle("is-compare-mode", mode === "compare");
   els["twin-canvas"].classList.toggle("is-source-topology", mode === "architecture" || mode === "live");
   els["twin-canvas"].classList.toggle("is-architecture-source", mode === "architecture");
@@ -439,27 +448,16 @@ function renderSourceCanvas(layout) {
   const runtimeEdges = topology.edges.filter((edge) => positions.has(edge.from) && positions.has(edge.to));
   const pulseSlots = livePulseSlots({ ...topology, edges: runtimeEdges });
   const signalOrder = new Map(orderedSignalEdges(runtimeEdges, pulseSlots).map((edge, index) => [edge.id, index]));
-  const edgeLayout = {
-    canvasWidth: LIVE_WORLD.width,
-    canvasHeight: LIVE_WORLD.height,
-    nodeWidth: 180,
-    nodeHeight: 60
-  };
-  const edges = runtimeEdges.map((edge, index) => {
-    const from = positions.get(edge.from);
-    const to = positions.get(edge.to);
-    const order = signalOrder.get(edge.id) ?? index;
-    const lane = order % 2 ? Math.ceil(order / 2) : -Math.ceil((order + 1) / 2);
-    const path = liveEdgePath(from, to, { ...edgeLayout, lane });
-    const edgeState = liveSignalTone(edge, nodeStates);
-    return `<g class="edge-group path-runtime signal-${edgeState}" data-live-edge-id="${escapeHtml(edge.id)}" data-live-projectile="single" data-signal-from="${escapeHtml(edge.from)}" data-signal-to="${escapeHtml(edge.to)}" data-signal-order="${order}"><path class="edge-line is-${edgeState}" d="${path}"/><g class="signal-droplet" aria-hidden="true"><line class="signal-droplet-streak"/><circle class="signal-droplet-halo" r="5"/><circle class="signal-droplet-tail signal-droplet-tail-far" r=".7"/><circle class="signal-droplet-tail signal-droplet-tail-near" r="1.15"/><circle class="signal-droplet-body" r="2.15"/><circle class="signal-droplet-specular" r=".55"/></g><path class="edge-hit" d="${path}" role="button" tabindex="0" aria-label="${escapeHtml(edge.label)} from ${escapeHtml(from.label)} to ${escapeHtml(to.label)}" data-edge-id="${escapeHtml(edge.id)}" data-edge-from="${escapeHtml(edge.from)}" data-edge-to="${escapeHtml(edge.to)}"/></g>`;
-  }).join("");
   const nodes = positioned.map((node) => sourceNodeMarkup(node, { layout, source, nodeStates })).join("");
   const unlinkedPositionedNodes = positioned.filter((node) => node.layer === LIVE_UNLINKED_LAYER.id).length;
   const guideLayers = [...LIVE_LAYERS, ...(unlinkedPositionedNodes ? [LIVE_UNLINKED_LAYER] : [])];
   const guides = `<div class="live-guides" aria-hidden="true">${guideLayers.map((layer, index) => `<span class="live-guide-${index}">${escapeHtml(layer.label)}</span>`).join("")}</div>${topology.invalid_edges.length ? `<div class="topology-warning"><i class="ph ph-warning" aria-hidden="true"></i>${topology.invalid_edges.length} invalid dependency endpoint${topology.invalid_edges.length === 1 ? "" : "s"} omitted</div>` : ""}`;
-  els["canvas-layers"].innerHTML = `${guides}<div class="twin-layer layer-current"><svg class="edge-map" viewBox="0 0 1000 520" preserveAspectRatio="none">${edges}</svg>${nodes}</div>`;
-  startLiveSignalLoop();
+  liveRouteContext = Object.freeze({
+    edges: Object.freeze(runtimeEdges.map((edge, index) => Object.freeze({ ...edge, order: signalOrder.get(edge.id) ?? index, tone: liveSignalTone(edge, nodeStates) }))),
+    nodeLabels: new Map(positioned.map((node) => [node.id, node.label]))
+  });
+  els["canvas-layers"].innerHTML = `${guides}<div class="twin-layer layer-current"><svg class="edge-map measured-live-edge-map" aria-hidden="true"></svg>${nodes}</div>`;
+  queueMeasuredLiveRouteRender({ delay: renderedMode !== "live" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches !== true ? 540 : 0 });
   els["twin-canvas"].dataset.invalidEdges = String(topology.invalid_edges.length);
   els["twin-canvas"].dataset.unlinkedNodes = String(topology.unlinked_node_ids.length);
   els["twin-canvas"].dataset.observedEdges = String(topology.edges.length);
@@ -511,21 +509,140 @@ function liveSignalTone(edge, nodeStates) {
   return "observed";
 }
 
-function renderLiveChange(positioned, edgeLayout) {
-  const repair = [...state.events].reverse().find((event) => event.type === "repair.executed" || event.type === "approval.granted" || event.type === "approval.requested" || event.type === "repair.proposed");
-  if (!repair) return { edge: "", node: "" };
-  const checkout = positioned.find((node) => node.id === "checkout");
-  if (!checkout) return { edge: "", node: "" };
-  const changeNode = { x: 82, y: 8 };
-  const path = liveEdgePath(changeNode, checkout, { ...edgeLayout, lane: -2 });
-  const executed = state.events.some((event) => event.type === "repair.executed");
-  const approved = state.events.some((event) => event.type === "approval.granted");
-  const status = executed ? "verified" : approved ? "active" : "approval";
-  const label = executed ? "Checkout rollback deployed" : approved ? "Rollback deployment queued" : "Checkout rollback proposed";
-  return {
-    edge: `<g class="edge-group path-control"><path class="edge-line is-${status}" d="${path}"/><path class="pulse-flow is-${status}" d="${path}" pathLength="1" aria-hidden="true"/><path class="edge-hit" d="${path}" role="button" tabindex="0" aria-label="${escapeHtml(label)} to checkout" data-edge-id="live-repair-checkout" data-edge-from="deployment" data-edge-to="checkout"/></g>`,
-    node: `<button class="twin-node source-node live-change-node plane-control kind-change is-${status}" type="button" data-node-id="deployment" data-status="${status}" data-transition-key="deployment" aria-label="Deployment change, ${escapeHtml(label)}, ${escapeHtml(statusLabel(status))}"><span class="node-icon" aria-hidden="true"><i class="ph ph-git-commit"></i></span><span class="node-copy"><span class="node-origin">LEDGER CHANGE</span><strong>Checkout recovery</strong><span class="node-detail">${escapeHtml(repair.payload.target || "checkout")}</span><span class="node-status">${escapeHtml(statusLabel(status))}</span></span><span class="node-status-dot" aria-hidden="true"></span></button>`
+function cancelMeasuredLiveRouteRender() {
+  if (liveRouteTimer !== null) clearTimeout(liveRouteTimer);
+  if (liveRouteFrame !== null) cancelAnimationFrame(liveRouteFrame);
+  liveRouteTimer = null;
+  liveRouteFrame = null;
+}
+
+function disconnectMeasuredLiveRouteObserver() {
+  if (liveRouteResizeHandler) window.removeEventListener("resize", liveRouteResizeHandler);
+  liveRouteResizeHandler = null;
+}
+
+function queueMeasuredLiveRouteRender({ delay = 0 } = {}) {
+  cancelMeasuredLiveRouteRender();
+  const frame = () => {
+    liveRouteFrame = requestAnimationFrame(() => {
+      liveRouteFrame = requestAnimationFrame(() => {
+        liveRouteFrame = null;
+        if (mode === "live") renderMeasuredLiveRoutes();
+      });
+    });
   };
+  if (delay > 0) {
+    liveRouteTimer = setTimeout(() => {
+      liveRouteTimer = null;
+      frame();
+    }, delay);
+    return;
+  }
+  frame();
+}
+
+function liveNodeBox(element, layerRect, scaleX, scaleY) {
+  const rect = element.getBoundingClientRect();
+  return {
+    id: element.dataset.nodeId,
+    left: (rect.left - layerRect.left) / scaleX,
+    right: (rect.right - layerRect.left) / scaleX,
+    top: (rect.top - layerRect.top) / scaleY,
+    bottom: (rect.bottom - layerRect.top) / scaleY
+  };
+}
+
+function measuredLiveEdgeMarkup(edge, path, fromLabel, toLabel) {
+  const label = `${edge.label} from ${fromLabel} to ${toLabel}`;
+  return `<g class="edge-group path-runtime signal-${escapeHtml(edge.tone)}" data-live-edge-id="${escapeHtml(edge.id)}" data-live-route="measured" data-live-projectile="single" data-signal-from="${escapeHtml(edge.from)}" data-signal-to="${escapeHtml(edge.to)}" data-signal-order="${edge.order}"><path class="edge-line is-${escapeHtml(edge.tone)}" d="${path}"/><path class="signal-trail signal-trail-halo" aria-hidden="true"/><path class="signal-trail signal-trail-core" aria-hidden="true"/><path class="edge-hit" d="${path}" role="button" tabindex="0" aria-label="${escapeHtml(label)}" data-edge-id="${escapeHtml(edge.id)}" data-edge-from="${escapeHtml(edge.from)}" data-edge-to="${escapeHtml(edge.to)}"/></g>`;
+}
+
+function observeMeasuredLiveRouteLayout() {
+  disconnectMeasuredLiveRouteObserver();
+  liveRouteResizeHandler = () => queueMeasuredLiveRouteRender();
+  window.addEventListener("resize", liveRouteResizeHandler, { passive: true });
+}
+
+function renderMeasuredLiveRoutes() {
+  const context = liveRouteContext;
+  const layer = els["canvas-layers"].querySelector(".twin-layer.layer-current");
+  const map = layer?.querySelector(".measured-live-edge-map");
+  if (!context || !layer || !map || !context.edges.length) return;
+  const layerRect = layer.getBoundingClientRect();
+  const width = layer.clientWidth;
+  const height = layer.clientHeight;
+  if (!width || !height || !layerRect.width || !layerRect.height) return;
+  const scaleX = layerRect.width / width;
+  const scaleY = layerRect.height / height;
+  const boxes = [...layer.querySelectorAll(".source-node[data-node-id]")]
+    .map((node) => liveNodeBox(node, layerRect, scaleX, scaleY))
+    .filter((box) => box.id && box.right > box.left && box.bottom > box.top);
+  const byId = new Map(boxes.map((box) => [box.id, box]));
+  if (byId.size === 0) return;
+  const routes = [];
+  for (const edge of context.edges) {
+    const from = byId.get(edge.from);
+    const to = byId.get(edge.to);
+    if (!from || !to) continue;
+    try {
+      const route = measuredLiveRoute({ from, to, obstacles: boxes, order: edge.order });
+      routes.push(measuredLiveEdgeMarkup(edge, roundedMeasuredRoutePath(route.points), context.nodeLabels.get(edge.from) || edge.from, context.nodeLabels.get(edge.to) || edge.to));
+    } catch {
+      if (liveRouteAttempts < 3) {
+        liveRouteAttempts += 1;
+        map.dataset.routeState = "measuring";
+        queueMeasuredLiveRouteRender({ delay: 180 });
+        return;
+      }
+      map.dataset.routeState = "unavailable";
+      return;
+    }
+  }
+  if (routes.length !== context.edges.length) {
+    if (liveRouteAttempts < 3) {
+      liveRouteAttempts += 1;
+      map.dataset.routeState = "measuring";
+      queueMeasuredLiveRouteRender({ delay: 180 });
+      return;
+    }
+    map.dataset.routeState = "unavailable";
+    return;
+  }
+  map.removeAttribute("aria-hidden");
+  map.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  map.setAttribute("preserveAspectRatio", "none");
+  map.dataset.routeEngine = "measured-card-boundaries";
+  map.dataset.routeState = "ready";
+  map.innerHTML = routes.join("");
+  observeMeasuredLiveRouteLayout();
+  stopLiveSignalLoop();
+  startLiveSignalLoop();
+}
+
+function pathTrail(path, progress, fraction = .075) {
+  const start = Math.max(0, progress - fraction);
+  const length = Math.max(2, Math.ceil((progress - start) * 36));
+  const total = path.getTotalLength();
+  const points = Array.from({ length: length + 1 }, (_, index) => path.getPointAtLength(total * (start + (progress - start) * index / length)));
+  return points.map((point, index) => `${index ? "L" : "M"} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`).join(" ");
+}
+
+function liveSignalTiming(pathLength) {
+  const launch = .12;
+  const terminal = .2;
+  const naturalDuration = liveSignalDuration(pathLength, 760, launch, terminal);
+  const duration = Math.max(720, Math.min(1600, naturalDuration));
+  const speed = Math.max(1, pathLength * (1 + launch + terminal) * 1000 / duration);
+  return { duration, speed, launch, terminal };
+}
+
+function scheduleLiveSignalFrame(callback) {
+  // A timer-driven frame keeps the continuous pulse active in embedded review
+  // webviews that throttle requestAnimationFrame for non-focused canvases.
+  liveSignalFrame = setTimeout(() => {
+    liveSignalFrame = null;
+    callback(Date.now());
+  }, 16);
 }
 
 function startLiveSignalLoop() {
@@ -542,11 +659,6 @@ function startLiveSignalLoop() {
       if (generation === liveSignalGeneration) callback();
     }, delay);
     liveSignalTimers.push(timer);
-  };
-  const pointAt = (path, progress) => path.getPointAtLength(path.getTotalLength() * Math.max(0, Math.min(1, progress)));
-  const place = (circle, point) => {
-    circle?.setAttribute("cx", point.x);
-    circle?.setAttribute("cy", point.y);
   };
   const nextGroup = (group) => {
     remaining.delete(group.dataset.liveEdgeId);
@@ -571,43 +683,32 @@ function startLiveSignalLoop() {
       return;
     }
     const path = group.querySelector(".edge-line");
-    const halo = group.querySelector(".signal-droplet-halo");
-    const body = group.querySelector(".signal-droplet-body");
-    const specular = group.querySelector(".signal-droplet-specular");
-    const nearTail = group.querySelector(".signal-droplet-tail-near");
-    const farTail = group.querySelector(".signal-droplet-tail-far");
-    const streak = group.querySelector(".signal-droplet-streak");
-    if (!path || !body) return;
+    const halo = group.querySelector(".signal-trail-halo");
+    const core = group.querySelector(".signal-trail-core");
+    if (!path || !core) return;
     const pathLength = path.getTotalLength();
-    const duration = liveSignalDuration(pathLength);
+    const timing = liveSignalTiming(pathLength);
+    const duration = timing.duration;
     group.dataset.signalProgress = "0";
     group.dataset.signalPathLength = pathLength.toFixed(1);
     group.dataset.signalDuration = Math.round(duration);
-    group.dataset.signalSpeed = "520";
+    group.dataset.signalSpeed = timing.speed.toFixed(1);
     group.classList.add("is-signal-active");
     let startedAt = null;
     const travel = (timestamp) => {
       if (generation !== liveSignalGeneration) return;
       startedAt ??= timestamp;
       const elapsed = timestamp - startedAt;
-      const progress = liveSignalProgress(elapsed, pathLength);
+      const progress = liveSignalProgress(elapsed, pathLength, timing.speed, timing.launch, timing.terminal);
       group.dataset.signalProgress = progress.toFixed(3);
-      const bodyPoint = pointAt(path, progress);
-      const streakPoint = pointAt(path, progress - .05);
-      place(body, bodyPoint);
-      place(halo, bodyPoint);
-      place(specular, { x: bodyPoint.x - 1.25, y: bodyPoint.y - 1.25 });
-      place(nearTail, pointAt(path, progress - .016));
-      place(farTail, pointAt(path, progress - .034));
-      streak?.setAttribute("x1", streakPoint.x);
-      streak?.setAttribute("y1", streakPoint.y);
-      streak?.setAttribute("x2", bodyPoint.x);
-      streak?.setAttribute("y2", bodyPoint.y);
+      const trail = pathTrail(path, progress);
+      halo?.setAttribute("d", trail);
+      core.setAttribute("d", trail);
       if (elapsed < duration && progress < 1) {
-        liveSignalFrame = requestAnimationFrame(travel);
+        scheduleLiveSignalFrame(travel);
         return;
       }
-      liveSignalFrame = requestAnimationFrame(() => {
+      scheduleLiveSignalFrame(() => {
         if (generation !== liveSignalGeneration) return;
         group.classList.remove("is-signal-active");
         from?.classList.remove("is-signal-launch");
@@ -615,7 +716,7 @@ function startLiveSignalLoop() {
         schedule(() => activate(nextGroup(group)), 180);
       });
     };
-    liveSignalFrame = requestAnimationFrame(travel);
+    scheduleLiveSignalFrame(travel);
   };
 
   liveSignalIndex = Math.min(liveSignalIndex, groups.length - 1);
@@ -625,6 +726,7 @@ function startLiveSignalLoop() {
 function stopLiveSignalLoop() {
   liveSignalGeneration += 1;
   if (liveSignalFrame !== null) cancelAnimationFrame(liveSignalFrame);
+  if (liveSignalFrame !== null) clearTimeout(liveSignalFrame);
   liveSignalFrame = null;
   for (const timer of liveSignalTimers) clearTimeout(timer);
   liveSignalTimers = [];
