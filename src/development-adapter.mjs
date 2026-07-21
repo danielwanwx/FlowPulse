@@ -13,6 +13,7 @@ const integration = join(root, "integrations", "astronomy-shop");
 const runtimeRoot = join(root, "outputs", "live");
 const checkout = join(runtimeRoot, "opentelemetry-demo");
 const capture = join(runtimeRoot, "otel");
+const PINNED_GIT_READ_TIMEOUT_MS = 30_000;
 
 export async function developmentStatus() {
   const pin = await readJson(join(integration, "pin.json"));
@@ -111,9 +112,9 @@ export async function readPinnedCheckoutCodeEvidence() {
     readJson(join(integration, "pin.json")),
     readJson(join(integration, "code-evidence.payment-unreachable.json"))
   ]);
-  const revision = (await execute("git", ["rev-parse", "HEAD"], { cwd: checkout, timeout: 8_000 })).stdout.trim();
-  const source = (await execute("git", ["show", `${pin.commit}:${allowlist.path}`], { cwd: checkout, timeout: 8_000, maxBuffer: 1_000_000 })).stdout;
-  const committedAt = (await execute("git", ["show", "-s", "--format=%cI", pin.commit], { cwd: checkout, timeout: 8_000 })).stdout.trim();
+  const revision = (await execute("git", ["rev-parse", "HEAD"], { cwd: checkout, timeout: PINNED_GIT_READ_TIMEOUT_MS })).stdout.trim();
+  const source = (await execute("git", ["show", `${pin.commit}:${allowlist.path}`], { cwd: checkout, timeout: PINNED_GIT_READ_TIMEOUT_MS, maxBuffer: 1_000_000 })).stdout;
+  const committedAt = (await execute("git", ["show", "-s", "--format=%cI", pin.commit], { cwd: checkout, timeout: PINNED_GIT_READ_TIMEOUT_MS })).stdout.trim();
   return buildPinnedCheckoutCodeEvidence({ pin, allowlist, revision, source, committedAt });
 }
 

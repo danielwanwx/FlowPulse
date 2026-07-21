@@ -14,7 +14,8 @@
     "live:setup": "node scripts/live-demo.mjs setup",
     "live:start": "node scripts/live-demo.mjs start",
     "live:case": "node scripts/live-demo.mjs case",
-    "live:stop": "node scripts/live-demo.mjs stop"
+    "live:stop": "node scripts/live-demo.mjs stop",
+    "demo:multi-case-loop": "node scripts/run-local-fault-loop.mjs"
   },
   "engines": {
     "node": ">=20"
