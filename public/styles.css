@@ -3172,6 +3172,146 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .operations-team-rail .control-system-tile:hover { transform: translateY(-2px); border: 0; outline: none; background: rgba(255, 255, 255, .94); box-shadow: none; }
 .operations-team-rail .control-system-tile:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
 
+/* The persistent Team rail is a view-local projection, not a second product.
+   Every mode reuses this geometry; only the bounded server-projected content
+   inside changes. */
+.architecture-control-slot { min-width: 0; min-height: 1px; }
+.operations-team-rail .agent-team-session { min-height: 0; }
+.operations-team-rail .agent-team-session-header {
+  display: grid;
+  grid-template-columns: 28px 32px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+.operations-team-rail .agent-team-session-header .node-icon,
+.operations-team-rail .agent-team-back {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 12px;
+  color: var(--architecture-vector);
+  background: rgba(255, 255, 255, .56);
+  box-shadow: none;
+}
+.operations-team-rail .agent-team-back { width: 28px; height: 28px; cursor: pointer; }
+.operations-team-rail .agent-team-back:hover,
+.operations-team-rail .agent-team-back:focus-visible { background: rgba(255, 255, 255, .9); outline: none; }
+.operations-team-rail .agent-team-session-header div { min-width: 0; display: grid; gap: 2px; }
+.operations-team-rail .agent-team-session-header strong { overflow: hidden; color: #111827; font-size: 14px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.operations-team-rail .agent-team-session-header div span { overflow: hidden; color: var(--architecture-muted); font-size: 11px; line-height: 1.3; text-overflow: ellipsis; white-space: nowrap; }
+.operations-team-rail .agent-team-session-header .node-status-dot { position: static; }
+.agent-team-primary,
+.agent-team-workspaces button,
+.agent-team-composer button {
+  min-height: 34px;
+  border: 0;
+  border-radius: 12px;
+  color: #ffffff;
+  background: var(--blue);
+  box-shadow: none;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+}
+.agent-team-primary:hover,
+.agent-team-workspaces button:not(:disabled):hover,
+.agent-team-composer button:not(:disabled):hover { background: color-mix(in srgb, var(--blue) 86%, #000); }
+.agent-team-primary:disabled,
+.agent-team-workspaces button:disabled,
+.agent-team-composer button:disabled { cursor: not-allowed; opacity: .45; }
+.agent-team-loop-state,
+.agent-team-empty,
+.agent-team-readonly { margin: 0; color: var(--architecture-muted); font-size: 11px; line-height: 1.45; }
+.agent-team-context {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding: 8px;
+  border: 0;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, .44);
+}
+.agent-team-context span,
+.agent-team-context code,
+.agent-team-capability em,
+.agent-team-capability code,
+.agent-team-entry code {
+  overflow: hidden;
+  max-width: 100%;
+  padding: 2px 5px;
+  border-radius: 7px;
+  color: var(--architecture-muted);
+  background: rgba(211, 220, 226, .42);
+  font-family: var(--mono);
+  font-size: 10px;
+  font-style: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-team-capability { display: grid; gap: 7px; }
+.agent-team-capability > strong { color: #111827; font-size: 12px; font-weight: 600; }
+.agent-team-capability p { display: flex; flex-wrap: wrap; gap: 4px; margin: 0; color: var(--architecture-copy); font-size: 11px; line-height: 1.4; }
+.agent-team-capability p > span { width: 100%; color: var(--architecture-muted); font-size: 10px; font-weight: 600; }
+.agent-team-timeline {
+  display: grid;
+  align-content: start;
+  gap: 7px;
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding-right: 2px;
+}
+.agent-team-entry {
+  display: grid;
+  gap: 4px;
+  padding: 9px;
+  border: 0;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, .52);
+}
+.agent-team-entry strong { color: #111827; font-size: 11px; font-weight: 600; }
+.agent-team-entry p { margin: 0; color: var(--architecture-copy); font-size: 11px; line-height: 1.42; overflow-wrap: anywhere; }
+.agent-team-entry div { display: flex; flex-wrap: wrap; gap: 4px; }
+.agent-team-entry.is-user { background: rgba(219, 232, 255, .58); }
+.agent-team-entry.is-handoff { background: rgba(241, 246, 250, .68); }
+.agent-team-entry.is-state { background: rgba(211, 220, 226, .36); }
+.agent-team-error { margin: 0; padding: 9px; border: 0; border-radius: 12px; color: #991b1b; background: rgba(254, 226, 226, .72); font-size: 11px; line-height: 1.4; }
+.agent-team-workspaces { display: grid; grid-template-columns: 1fr; gap: 6px; }
+.agent-team-workspaces button { min-height: 32px; color: var(--architecture-copy); background: rgba(255, 255, 255, .72); }
+.agent-team-workspaces button:not(:disabled):hover { color: #ffffff; background: var(--blue); }
+.agent-team-composer { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 7px; }
+.agent-team-composer input {
+  min-width: 0;
+  height: 36px;
+  border: 0;
+  border-radius: 12px;
+  outline: none;
+  color: var(--architecture-copy);
+  background: rgba(255, 255, 255, .78);
+  font: inherit;
+  font-size: 12px;
+  padding: 0 10px;
+}
+.agent-team-composer input:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
+.live-agent-ask {
+  min-height: 36px;
+  border: 0;
+  border-radius: var(--architecture-control-radius);
+  color: #ffffff;
+  background: var(--blue);
+  box-shadow: none;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+}
+.live-agent-ask:hover,
+.live-agent-ask:focus-visible { outline: none; background: color-mix(in srgb, var(--blue) 86%, #000); }
+
 .app-shell[data-mode="live"] .context-drawer { z-index: 30; }
 .team-rail-detail { display: grid; gap: 14px; }
 .team-rail-detail > header { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; align-items: center; gap: 10px; }

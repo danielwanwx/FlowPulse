@@ -441,6 +441,220 @@ export function liveViewTopology(topologyViews = {}) {
   };
 }
 
+// Agent Team is a separate, server-owned read model. These parsers deliberately
+// accept only the bounded public envelopes below: chat answers, prompt material,
+// provider payloads, and arbitrary ledger records never become browser state.
+export const AGENT_TEAM_ROLES = Object.freeze(["observer", "orchestrator", "investigator", "evaluator", "ledger"]);
+
+const AGENT_TEAM_CONVERSATIONAL_ROLES = new Set(AGENT_TEAM_ROLES.filter((role) => role !== "ledger"));
+const AGENT_TEAM_PROVIDER_KINDS = new Set(["codex-local", "openai-responses", "recorded"]);
+const AGENT_TEAM_PROVIDER_AVAILABILITY = new Set(["available", "unavailable", "preflight_required"]);
+const AGENT_TEAM_PAGE_MODES = new Set(["architecture", "live", "diagnose", "recovery", "compare", "manager"]);
+const AGENT_TEAM_MESSAGE_STATES = new Set(["completed", "failed", "needs_human", "working", "routing"]);
+const AGENT_TEAM_LOOP_STATES = new Set(["running", "recovered", "needs_human", "failed"]);
+
+export function agentTeamProviderProjection(value) {
+  return validAgentTeamProvider(value) ? value : null;
+}
+
+export function agentTeamConversationProjection(value, { conversationId = null } = {}) {
+  const keys = ["schema_version", "conversation_id", "messages", "truncated", "record_count", "latest"];
+  if (!plainRecord(value) || !sameKeys(value, keys) || value.schema_version !== "flowpulse.agent-team-chat.v1"
+    || !safeAgentTeamId(value.conversation_id) || conversationId && value.conversation_id !== conversationId
+    || !Array.isArray(value.messages) || value.messages.length > 48 || !value.messages.every(validAgentTeamMessage)
+    || !Number.isSafeInteger(value.record_count) || value.record_count < value.messages.length || value.record_count > 48
+    || typeof value.truncated !== "boolean" || !strictAscending(value.messages, "sequence")
+    || new Set(value.messages.map(({ id }) => id)).size !== value.messages.length
+    || !validAgentTeamLatest(value.latest, value.messages)) return null;
+  return value;
+}
+
+export function agentLoopStartProjection(value) {
+  const keys = ["schema_version", "run_id", "incident_id", "state", "stage", "events_url", "contextual_workspaces"];
+  if (!plainRecord(value) || !sameKeys(value, keys) || value.schema_version !== "flowpulse.local-fault-loop.v2"
+    || !safeAgentTeamId(value.run_id) || !safeAgentTeamId(value.incident_id) || value.state !== "running"
+    || !safeAgentTeamText(value.stage, 80) || !validAgentLoopEventsUrl(value.events_url, value.run_id)
+    || !validAgentTeamWorkspaces(value.contextual_workspaces, { runId: value.run_id, incidentId: value.incident_id })) return null;
+  return value;
+}
+
+export function agentLoopProjection(value, { runId = null } = {}) {
+  const keys = ["schema_version", "run_id", "incident_id", "case_id", "round", "state", "stage", "provider", "citations", "role_responses", "contextual_workspaces", "events", "final"];
+  if (!plainRecord(value) || !sameKeys(value, keys) || value.schema_version !== "flowpulse.local-fault-loop.v2"
+    || !safeAgentTeamId(value.run_id) || runId && value.run_id !== runId || !safeAgentTeamId(value.incident_id)
+    || !["checkout-payment-config", "insufficient-evidence"].includes(value.case_id) || !Number.isSafeInteger(value.round) || value.round < 1 || value.round > 3
+    || !AGENT_TEAM_LOOP_STATES.has(value.state) || !safeAgentTeamText(value.stage, 80)
+    || value.provider !== null && !validAgentTeamLoopProvider(value.provider)
+    || !validAgentTeamRefs(value.citations, 64) || !Array.isArray(value.role_responses) || value.role_responses.length > 12 || !value.role_responses.every(validAgentTeamLoopRoleResponse)
+    || !validAgentTeamWorkspaces(value.contextual_workspaces, { runId: value.run_id, incidentId: value.incident_id })
+    || !Array.isArray(value.events) || value.events.length > 160 || !value.events.every(validAgentTeamLoopEvent)
+    || !strictAscending(value.events, "sequence") || !validAgentTeamLoopFinal(value.final, value.state)) return null;
+  return value;
+}
+
+export function agentLoopEventProjection(value, { runId = null } = {}) {
+  const keys = ["schema_version", "run_id", "incident_id", "case_id", "round", "event", "contextual_workspaces"];
+  if (!plainRecord(value) || !sameKeys(value, keys) || value.schema_version !== "flowpulse.local-fault-loop.v2"
+    || !safeAgentTeamId(value.run_id) || runId && value.run_id !== runId || !safeAgentTeamId(value.incident_id)
+    || !["checkout-payment-config", "insufficient-evidence"].includes(value.case_id) || !Number.isSafeInteger(value.round) || value.round < 1 || value.round > 3
+    || !validAgentTeamLoopEvent(value.event) || !validAgentTeamWorkspaces(value.contextual_workspaces, { runId: value.run_id, incidentId: value.incident_id })) return null;
+  return value;
+}
+
+function validAgentTeamProvider(value) {
+  return plainRecord(value) && sameKeys(value, ["provider_kind", "availability", "truth_label", "model_label", "failure_reason"])
+    && AGENT_TEAM_PROVIDER_KINDS.has(value.provider_kind) && AGENT_TEAM_PROVIDER_AVAILABILITY.has(value.availability)
+    && safeAgentTeamText(value.truth_label, 80) && nullableAgentTeamText(value.model_label, 120) && nullableAgentTeamText(value.failure_reason, 120);
+}
+
+function validAgentTeamLoopProvider(value) {
+  return plainRecord(value) && sameKeys(value, ["provider_kind", "truth_label", "model_label"])
+    && ["codex-local", "unavailable"].includes(value.provider_kind) && safeAgentTeamText(value.truth_label, 80) && safeAgentTeamText(value.model_label, 120);
+}
+
+function validAgentTeamMessage(value) {
+  if (!plainRecord(value) || !safeAgentTeamEventBase(value) || !safeAgentTeamText(value.kind, 32)) return false;
+  if (value.kind === "user") return sameKeys(value, ["id", "sequence", "recorded_at", "type", "kind", "agent", "requested_agent", "page_mode", "selected_component", "text"])
+    && value.type === "agent_team.message.received" && value.agent === "human" && validAgentTeamRole(value.requested_agent)
+    && AGENT_TEAM_PAGE_MODES.has(value.page_mode) && nullableAgentTeamId(value.selected_component) && safeAgentTeamText(value.text, 1_500);
+  if (value.kind === "handoff") return sameKeys(value, ["id", "sequence", "recorded_at", "type", "kind", "from", "to", "reason"])
+    && value.type === "agent_team.handoff.recorded" && validAgentTeamHandoff({ from: value.from, to: value.to, reason: value.reason });
+  if (value.kind === "context") return sameKeys(value, ["id", "sequence", "recorded_at", "type", "kind", "agent", "state", "topology", "source_truth", "citations"])
+    && value.type === "agent_team.context.prepared" && validAgentTeamRole(value.agent) && value.state === "routing"
+    && validAgentTeamContextTopology(value.topology) && validAgentTeamSourceTruth(value.source_truth) && validAgentTeamRefs(value.citations, 12);
+  if (value.kind === "tool_summary") return sameKeys(value, ["id", "sequence", "recorded_at", "type", "kind", "agent", "state", "citations", "tools"])
+    && value.type === "agent_team.tool_summary.recorded" && validAgentTeamRole(value.agent) && value.state === "working"
+    && validAgentTeamRefs(value.citations, 12) && validAgentTeamTools(value.tools);
+  if (value.kind === "working") return sameKeys(value, ["id", "sequence", "recorded_at", "type", "kind", "requested_agent", "responding_agent", "state", "citations", "provider"])
+    && value.type === "agent_team.response.working" && validAgentTeamRole(value.requested_agent) && validAgentTeamRole(value.responding_agent)
+    && value.state === "working" && validAgentTeamRefs(value.citations, 12) && validAgentTeamProvider(value.provider);
+  if (value.kind === "assistant") return sameKeys(value, ["id", "sequence", "recorded_at", "type", "kind", "requested_agent", "responding_agent", "agent", "state", "text", "handoff", "citations", "tool_summaries", "human_gate", "provider"])
+    && value.type === "agent_team.response.created" && validAgentTeamRole(value.requested_agent) && validAgentTeamRole(value.responding_agent)
+    && value.agent === value.responding_agent && ["completed", "failed", "needs_human"].includes(value.state)
+    && safeAgentTeamAnswer(value.text) && (value.handoff === null || validAgentTeamHandoff(value.handoff))
+    && validAgentTeamRefs(value.citations, 12) && validAgentTeamTools(value.tool_summaries) && validAgentTeamHumanGate(value.human_gate) && validAgentTeamProvider(value.provider);
+  if (value.kind === "human_gate") return sameKeys(value, ["id", "sequence", "recorded_at", "type", "kind", "requested_agent", "responding_agent", "state", "reason", "human_gate", "citations"])
+    && value.type === "agent_team.human_gate.required" && validAgentTeamRole(value.requested_agent) && validAgentTeamRole(value.responding_agent)
+    && value.state === "needs_human" && safeAgentTeamText(value.reason, 160) && validAgentTeamHumanGate(value.human_gate) && validAgentTeamRefs(value.citations, 12);
+  if (value.kind === "error") return sameKeys(value, ["id", "sequence", "recorded_at", "type", "kind", "code"])
+    && value.type === "agent_team.error.recorded" && safeAgentTeamCode(value.code);
+  return false;
+}
+
+function safeAgentTeamEventBase(value) {
+  return safeAgentTeamId(value.id) && Number.isSafeInteger(value.sequence) && value.sequence >= 1 && validTopologyTimestamp(value.recorded_at)
+    && typeof value.type === "string" && /^agent_team(?:\.[a-z_]{2,80}){1,3}$/.test(value.type);
+}
+
+function validAgentTeamLatest(value, messages) {
+  if (!messages.length) return value === null;
+  const latest = messages.at(-1);
+  return plainRecord(value) && sameKeys(value, ["sequence", "recorded_at"])
+    && value.sequence === latest.sequence && value.recorded_at === latest.recorded_at;
+}
+
+function validAgentTeamHandoff(value) {
+  return plainRecord(value) && sameKeys(value, ["from", "to", "reason"])
+    && validAgentTeamRole(value.from) && validAgentTeamRole(value.to) && value.from !== value.to && safeAgentTeamText(value.reason, 200);
+}
+
+function validAgentTeamContextTopology(value) {
+  return plainRecord(value) && sameKeys(value, ["schema_version", "projection_revision"])
+    && (value.schema_version === null || value.schema_version === "flowpulse.topology-views.v2") && (value.projection_revision === null || validHash(value.projection_revision));
+}
+
+function validAgentTeamSourceTruth(value) {
+  return plainRecord(value) && sameKeys(value, ["source_health", "evidence_mode", "execution_mode"])
+    && ["live", "stale", "disconnected", "unavailable"].includes(value.source_health)
+    && ["captured_fixture", "frozen_real_snapshot", "live_stream"].includes(value.evidence_mode)
+    && ["deterministic_replay", "gpt_model_only", "real_local_development", "captured_simulation"].includes(value.execution_mode);
+}
+
+function validAgentTeamTools(value) {
+  return Array.isArray(value) && value.length <= 4 && value.every((item) => plainRecord(item) && sameKeys(item, ["tool", "result_count", "raw_payload_excluded"])
+    && safeAgentTeamText(item.tool, 120) && Number.isSafeInteger(item.result_count) && item.result_count >= 0 && item.result_count <= 10_000 && item.raw_payload_excluded === true);
+}
+
+function validAgentTeamHumanGate(value) {
+  return plainRecord(value) && sameKeys(value, ["status"]) && ["requested", "granted", "not_required", "not_actionable"].includes(value.status);
+}
+
+function validAgentTeamWorkspaces(value, { runId, incidentId }) {
+  if (!plainRecord(value) || !sameKeys(value, ["context", "actions"]) || !plainRecord(value.context) || !plainRecord(value.actions)
+    || !sameKeys(value.context, ["run_id", "incident_id", "selected_component", "timeline"])
+    || value.context.run_id !== runId || value.context.incident_id !== incidentId || !safeAgentTeamId(value.context.selected_component)
+    || !plainRecord(value.context.timeline) || !sameKeys(value.context.timeline, ["position", "event_id", "stage", "terminal_state"])
+    || !Number.isSafeInteger(value.context.timeline.position) || value.context.timeline.position < 0 || !safeAgentTeamId(value.context.timeline.event_id)
+    || !safeAgentTeamText(value.context.timeline.stage, 80) || !(value.context.timeline.terminal_state === null || AGENT_TEAM_LOOP_STATES.has(value.context.timeline.terminal_state))
+    || !sameKeys(value.actions, ["view_diagnosis", "open_recovery_console", "compare_recovery"])) return false;
+  return [value.actions.view_diagnosis, value.actions.open_recovery_console, value.actions.compare_recovery].every(validAgentTeamWorkspaceAction);
+}
+
+function validAgentTeamWorkspaceAction(value) {
+  return plainRecord(value) && sameKeys(value, ["available", "prerequisites"]) && typeof value.available === "boolean"
+    && Array.isArray(value.prerequisites) && value.prerequisites.length >= 1 && value.prerequisites.length <= 3
+    && value.prerequisites.every((item) => plainRecord(item) && sameKeys(item, ["id", "satisfied"]) && safeAgentTeamCode(item.id) && typeof item.satisfied === "boolean");
+}
+
+function validAgentLoopEventsUrl(value, runId) {
+  return typeof value === "string" && value === `/api/demo/agent-loop/events?run_id=${encodeURIComponent(runId)}&after=0`;
+}
+
+function validAgentTeamLoopRoleResponse(value) {
+  return plainRecord(value) && sameKeys(value, ["role", "requested_agent", "responding_agent", "state", "provider", "safe_answer", "answer_sha256", "answer_bytes", "handoff", "recommended_handoff", "citations", "tools"])
+    && validAgentTeamRole(value.role) && value.requested_agent === value.role && value.responding_agent === value.role && value.state === "completed"
+    && validAgentTeamLoopProvider(value.provider) && safeAgentTeamAnswer(value.safe_answer) && validHash(value.answer_sha256)
+    && Number.isSafeInteger(value.answer_bytes) && value.answer_bytes >= 1 && value.answer_bytes <= 1_200
+    && (value.handoff === null || validAgentTeamLoopHandoff(value.handoff, value.role)) && (value.recommended_handoff === null || validAgentTeamLoopHandoff(value.recommended_handoff, value.role))
+    && validAgentTeamRefs(value.citations, 12) && validAgentTeamLoopTools(value.tools);
+}
+
+function validAgentTeamLoopEvent(value) {
+  return plainRecord(value) && sameKeys(value, ["id", "sequence", "recorded_at", "type", "actor", "evidence_refs", "payload", "contextual_workspaces"])
+    && safeAgentTeamId(value.id) && Number.isSafeInteger(value.sequence) && value.sequence >= 1 && validTopologyTimestamp(value.recorded_at)
+    && safeAgentTeamText(value.type, 120) && safeAgentTeamText(value.actor, 80) && validAgentTeamRefs(value.evidence_refs, 64)
+    && plainRecord(value.payload) && validAgentTeamWorkspacesForEvent(value.contextual_workspaces);
+}
+
+function validAgentTeamWorkspacesForEvent(value) {
+  return value === undefined || plainRecord(value) && sameKeys(value, ["context", "actions"]);
+}
+
+function validAgentTeamLoopFinal(value, state) {
+  if (state === "running") return value === null;
+  return plainRecord(value) && sameKeys(value, ["sequence", "recorded_at", "type", "payload"])
+    && Number.isSafeInteger(value.sequence) && value.sequence >= 1 && validTopologyTimestamp(value.recorded_at)
+    && safeAgentTeamText(value.type, 120) && plainRecord(value.payload);
+}
+
+function validAgentTeamLoopHandoff(value, from) {
+  return plainRecord(value) && sameKeys(value, ["to", "reason"])
+    && AGENT_TEAM_CONVERSATIONAL_ROLES.has(value.to) && value.to !== from && safeAgentTeamText(value.reason, 200);
+}
+
+function validAgentTeamLoopTools(value) {
+  return Array.isArray(value) && value.length <= 4 && value.every((item) => plainRecord(item) && sameKeys(item, ["tool", "result_count"])
+    && safeAgentTeamText(item.tool, 120) && Number.isSafeInteger(item.result_count) && item.result_count >= 0 && item.result_count <= 10_000);
+}
+
+function validAgentTeamRefs(value, limit) {
+  // Citation order is ledger/event order. It is meaningful to the server and
+  // intentionally not re-sorted in the browser projection.
+  return Array.isArray(value) && value.length <= limit && new Set(value).size === value.length && value.every(safeAgentTeamId);
+}
+
+function strictAscending(items, field) {
+  return items.every((item, index) => index === 0 || items[index - 1][field] < item[field]);
+}
+
+function validAgentTeamRole(value) { return AGENT_TEAM_CONVERSATIONAL_ROLES.has(value); }
+function safeAgentTeamId(value) { return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(value); }
+function nullableAgentTeamId(value) { return value === null || safeAgentTeamId(value); }
+function safeAgentTeamCode(value) { return typeof value === "string" && /^[a-z][a-z0-9_]{1,119}$/.test(value); }
+function safeAgentTeamText(value, limit) { return typeof value === "string" && value.length > 0 && value.length <= limit && /^[^\u0000-\u001f\u007f<>&]+$/.test(value); }
+function nullableAgentTeamText(value, limit) { return value === null || safeAgentTeamText(value, limit); }
+function safeAgentTeamAnswer(value) { return safeAgentTeamText(value, 1_200) && !/(?:chain[- ]of[- ]thought|raw\s+(?:prompt|payload|log)|\b(?:api[_ -]?key|token|secret|password)\b)/i.test(value); }
+
 // This read model is intentionally separate from topology_views. The browser
 // accepts it only when it is tied to the currently rendered canonical revision
 // and contains no raw evidence body, provider payload, or authority state.

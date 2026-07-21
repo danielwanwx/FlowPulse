@@ -37,6 +37,7 @@
 .ph-plugs-connected::before { content: "\eb5a"; }
 .ph-shopping-bag::before { content: "\e416"; }
 .ph-truck::before { content: "\e4b4"; }
+.ph-arrow-left::before { content: "\e058"; }
 .ph-arrow-right::before { content: "\e06c"; }
 .ph-binoculars::before { content: "\ea64"; }
 .ph-brain::before { content: "\e74e"; }

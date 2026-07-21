@@ -82,6 +82,19 @@ const agentTeamChat = new AgentTeamChatService({
   contextForRun: async (_runtime, runId, request = {}) => {
     const state = await stateWithSource(runId);
     const source = await selectedEvidenceSource(runId, state.mode);
+    // The Agent Team receives the same canonical source-truth axes as the
+    // browser topology view. A compatibility IncidentProjection can carry
+    // legacy source metadata, but it must not make captured evidence sound
+    // like a live source in a safe answer.
+    const canonicalTruth = state.topology_views?.truth;
+    const incidentProjection = canonicalTruth
+      ? {
+          ...state.incident_projection,
+          source_health: canonicalTruth.source_health,
+          evidence_mode: canonicalTruth.evidence_mode,
+          execution_mode: canonicalTruth.execution_mode
+        }
+      : state.incident_projection;
     const selectedComponent = typeof request.selected_component === "string" ? request.selected_component : null;
     const sourceEvidence = source.list({ entity: selectedComponent || undefined, limit: 12 }).items;
     let selectedComponentDetail = null;
@@ -101,7 +114,7 @@ const agentTeamChat = new AgentTeamChatService({
     const sourceState = await sourceProjection(runId, source);
     return {
       topology_views: state.topology_views,
-      incident_projection: state.incident_projection,
+      incident_projection: incidentProjection,
       source: {
         status: sourceMetadata.status,
         freshness_ms: sourceState.freshness_ms,

@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import {
   ARCHITECTURE_LAYERS,
   AGENT_COLLABORATORS,
+  AGENT_TEAM_ROLES,
   LIVE_LAYERS,
   PULSE_SLOTS,
   TWIN_EDGES,
@@ -12,6 +13,9 @@ import {
   TWIN_STAGES,
   activeIncidentState,
   architectureBoundaries,
+  agentLoopStartProjection,
+  agentTeamConversationProjection,
+  agentTeamProviderProjection,
   architectureViewTopology,
   componentDetailProjection,
   availableStage,
@@ -128,6 +132,114 @@ function controlDetail(id) {
     activity: { summary: id === "observer" ? "Captured source intake" : null, stage: null, last_sequence: id === "ledger" ? 4 : null, last_recorded_at: id === "ledger" ? "2026-07-20T11:00:00.000Z" : null, evidence_refs: [], gate: "unavailable", source_health: "unavailable" }
   };
 }
+
+function agentTeamProviderPayload() {
+  return {
+    provider_kind: "codex-local",
+    availability: "available",
+    truth_label: "LOCAL CODEX",
+    model_label: "Codex CLI",
+    failure_reason: null
+  };
+}
+
+function agentTeamConversationPayload() {
+  const provider = agentTeamProviderPayload();
+  return {
+    schema_version: "flowpulse.agent-team-chat.v1",
+    conversation_id: "conversation-run-topology",
+    messages: [
+      {
+        id: "evt-agent-1",
+        sequence: 1,
+        recorded_at: "2026-07-21T12:00:00.000Z",
+        type: "agent_team.message.received",
+        kind: "user",
+        agent: "human",
+        requested_agent: "observer",
+        page_mode: "live",
+        selected_component: "checkout",
+        text: "Why is checkout failing?"
+      },
+      {
+        id: "evt-agent-2",
+        sequence: 2,
+        recorded_at: "2026-07-21T12:00:01.000Z",
+        type: "agent_team.handoff.recorded",
+        kind: "handoff",
+        from: "observer",
+        to: "investigator",
+        reason: "Causal investigation belongs to Investigator."
+      },
+      {
+        id: "evt-agent-3",
+        sequence: 3,
+        recorded_at: "2026-07-21T12:00:02.000Z",
+        type: "agent_team.response.created",
+        kind: "assistant",
+        requested_agent: "observer",
+        responding_agent: "investigator",
+        agent: "investigator",
+        state: "completed",
+        text: "The bounded trace and change evidence identify the checkout payment endpoint.",
+        handoff: { from: "observer", to: "investigator", reason: "Causal investigation belongs to Investigator." },
+        citations: ["ev-trace-payment-refused"],
+        tool_summaries: [{ tool: "read_evidence_summaries", result_count: 2, raw_payload_excluded: true }],
+        human_gate: { status: "not_required" },
+        provider
+      }
+    ],
+    truncated: false,
+    record_count: 3,
+    latest: { sequence: 3, recorded_at: "2026-07-21T12:00:02.000Z" }
+  };
+}
+
+function agentLoopStartPayload() {
+  return {
+    schema_version: "flowpulse.local-fault-loop.v2",
+    run_id: "local-loop-checkout-payment-config-1-abc123",
+    incident_id: "incident-local-checkout-payment-config-1-abc123",
+    state: "running",
+    stage: "monitor",
+    events_url: "/api/demo/agent-loop/events?run_id=local-loop-checkout-payment-config-1-abc123&after=0",
+    contextual_workspaces: {
+      context: {
+        run_id: "local-loop-checkout-payment-config-1-abc123",
+        incident_id: "incident-local-checkout-payment-config-1-abc123",
+        selected_component: "checkout",
+        timeline: { position: 0, event_id: "evt-loop-1", stage: "monitor", terminal_state: null }
+      },
+      actions: {
+        view_diagnosis: { available: false, prerequisites: [{ id: "bounded_incident_opened", satisfied: false }] },
+        open_recovery_console: { available: false, prerequisites: [{ id: "evaluated_remediation_plan_or_repair_started", satisfied: false }] },
+        compare_recovery: { available: false, prerequisites: [{ id: "independent_verification_completed", satisfied: false }, { id: "implemented_repair_recovered", satisfied: false }] }
+      }
+    }
+  };
+}
+
+test("Agent Team browser projections accept only bounded roles, safe answers, transparent handoffs, and server workspace gates", () => {
+  assert.deepEqual(AGENT_TEAM_ROLES, ["observer", "orchestrator", "investigator", "evaluator", "ledger"]);
+  assert.deepEqual(agentTeamProviderProjection(agentTeamProviderPayload()), agentTeamProviderPayload());
+  assert.deepEqual(agentTeamProviderProjection({ ...agentTeamProviderPayload(), provider_kind: "recorded", truth_label: "RECORDED/DEMO", model_label: "recorded-agent-team-v1" }), { ...agentTeamProviderPayload(), provider_kind: "recorded", truth_label: "RECORDED/DEMO", model_label: "recorded-agent-team-v1" });
+  assert.equal(agentTeamProviderProjection({ ...agentTeamProviderPayload(), secret: "forged" }), null);
+
+  const conversation = agentTeamConversationPayload();
+  const parsedConversation = agentTeamConversationProjection(conversation, { conversationId: conversation.conversation_id });
+  assert.equal(parsedConversation?.messages.length, 3);
+  assert.deepEqual(parsedConversation?.messages[1], conversation.messages[1]);
+  const ledgerOrdered = structuredClone(conversation);
+  ledgerOrdered.messages[2].citations = ["ev-trace-payment-refused", "ev-deploy-checkout"];
+  assert.deepEqual(agentTeamConversationProjection(ledgerOrdered, { conversationId: conversation.conversation_id })?.messages[2].citations, ledgerOrdered.messages[2].citations);
+  assert.equal(agentTeamConversationProjection({ ...conversation, messages: [{ ...conversation.messages[2], raw_prompt: "forged" }] }, { conversationId: conversation.conversation_id }), null);
+
+  const loop = agentLoopStartPayload();
+  const parsedLoop = agentLoopStartProjection(loop);
+  assert.equal(parsedLoop?.contextual_workspaces.actions.compare_recovery.available, false);
+  assert.equal(agentLoopStartProjection({ ...loop, state: "recovered" }), null);
+  assert.equal(agentLoopStartProjection({ ...loop, contextual_workspaces: { ...loop.contextual_workspaces, repair: "forged" } }), null);
+});
 
 function componentDetailPayload() {
   const topology = backendArchitectureView();
@@ -323,7 +435,7 @@ test("architecture is a static four-layer overview with backend-owned status dot
   assert.match(appJs, /function openControlDetail\(id, \{ focus = false \} = \{\}\)/);
   assert.match(appJs, /openControlDetail\(event\.target\.dataset\.controlNodeId, \{ focus: true \}\)/);
   assert.match(appJs, /data-control-detail-id/);
-  assert.match(appJs, /architecture-flowpulse-nodes\$\{selectedControlDetail \? " is-detail" : ""\}/);
+  assert.match(appJs, /class="architecture-control-slot" aria-hidden="true"/);
   assert.match(appJs, /architectureDetail\?\.scope === mode && event\.key === "Escape"/);
   assert.match(appJs, /function controlComponentDetailMarkup\(/);
   assert.doesNotMatch(appJs, /live-control-system|data-live-control|data-control-scope/);
@@ -368,7 +480,7 @@ test("architecture is a static four-layer overview with backend-owned status dot
   assert.doesNotMatch(stylesCss, /live-control-system/);
   assert.match(stylesCss, /\.control-component-detail:focus-visible \{ outline: 2px solid var\(--blue\);/);
   assert.match(stylesCss, /\.control-system-tile \.node-status-dot\.is-recording,[\s\S]+?--control-status: var\(--green\);/);
-  assert.match(appJs, /architecture-flowpulse-system\$\{selectedControlDetail \? " is-detail" : ""\}/);
+  assert.match(appJs, /function agentTeamHomeMarkup\(controls\)/);
   assert.match(stylesCss, /\.architecture-flowpulse-system\.is-detail \{[\s\S]+?background: rgba\(255, 255, 255, \.88\);/);
   assert.match(stylesCss, /\.architecture-flowpulse-nodes\.is-detail \{[\s\S]+?flex: 1;/);
   assert.match(stylesCss, /\.control-component-detail \{[\s\S]+?height: 100%;[\s\S]+?background: transparent;/);
@@ -577,7 +689,7 @@ test("Live reuses the canonical navigation and exposes only safe projected Team 
   assert.match(indexHtml, /id="operations-team-rail"[^>]+aria-label="FlowPulse Team"/);
   assert.match(appJs, /function renderOperationsTeamRail\(\)/);
   assert.match(appJs, /const controls = controlSystemNodes\(\)/);
-  assert.match(appJs, /rail\.hidden = mode === "architecture" \|\| !controls\.length \|\| Boolean\(selected\)/);
+  assert.match(appJs, /rail\.hidden = !controls\.length \|\| \(Boolean\(selected\) && agentTeam\.panel === "home"\)/);
   assert.match(appJs, /controlSystemTileMarkup\(node, \{ rail: true \}\)/);
   assert.match(stylesCss, /\.operations-team-rail > \.architecture-flowpulse-system \{ height: 100%; \}/);
   assert.match(stylesCss, /\.twin-workspace \{[\s\S]*?--flowpulse-control-rail-width: 272px;[\s\S]*?--flowpulse-control-rail-inset-y: 16px;[\s\S]*?--flowpulse-control-rail-inset-x: 20px;/);
@@ -590,6 +702,43 @@ test("Live reuses the canonical navigation and exposes only safe projected Team 
   assert.doesNotMatch(appJs.slice(appJs.indexOf("function controlDrawerContent"), appJs.indexOf("function architectureComponentDetailMarkup")), /payload|prompt|token|secret|raw_log/i);
   assert.match(stylesCss, /\.app-shell\[data-mode\] \.mode-switch\s*\{[\s\S]+?border-radius: 12px;/);
   assert.match(stylesCss, /\.app-shell\[data-mode="live"\] \.canvas-toolbar \{ display: none; \}/);
+});
+
+test("Agent Team rail is session-driven, retains Live selection, and never uses the legacy manager message route", () => {
+  const railSource = appJs.slice(appJs.indexOf("function renderOperationsTeamRail"), appJs.indexOf("function drawerTabsForSelection"));
+  const sessionSource = appJs.slice(appJs.indexOf("function restoreAgentTeamState"), appJs.indexOf("function drawerTabsForSelection"));
+  const liveDetailSource = appJs.slice(appJs.indexOf("function renderLiveComponentDetail"), appJs.indexOf("function liveComponentRelationSections"));
+  assert.match(appJs, /AGENT_TEAM_ROLES,/);
+  assert.match(railSource, /data-agent-team-role/);
+  assert.match(railSource, /data-agent-team-send/);
+  assert.match(railSource, /sendAgentTeamMessage\(input\.value\)/);
+  assert.match(readFileSync(new URL("../public/vendor/phosphor/flowpulse-icons.css", import.meta.url), "utf8"), /\.ph-arrow-left::before/);
+  assert.match(railSource, /role !== "ledger"/);
+  assert.match(railSource, /data-agent-team-composer/);
+  assert.match(railSource, /Evidence Ledger is read-only/);
+  assert.match(railSource, /from\)} → \$\{escapeHtml\(message\.to\)/);
+  assert.match(railSource, /data-agent-team-workspace="\$\{id\}"/);
+  assert.match(railSource, /view_diagnosis: "replay"/);
+  assert.match(railSource, /open_recovery_console: "agents"/);
+  assert.match(railSource, /compare_recovery: "compare"/);
+  assert.match(sessionSource, /\/api\/agent-control\/provider/);
+  assert.match(sessionSource, /\/api\/agent-control\/conversation\?conversation_id=/);
+  assert.match(sessionSource, /\/api\/agent-control\/events\?run_id=/);
+  assert.match(sessionSource, /\/api\/agent-control\/chat/);
+  assert.match(sessionSource, /\/api\/demo\/agent-loop\/run/);
+  assert.match(sessionSource, /agentTeamConversationProjection/);
+  assert.match(sessionSource, /agentLoopStartProjection/);
+  assert.match(sessionSource, /agentLoopEventProjection/);
+  assert.doesNotMatch(sessionSource, /\/api\/agent-control\/message/);
+  const roleSelectionSource = appJs.slice(appJs.indexOf("async function openAgentTeamSession"), appJs.indexOf("function closeAgentTeamSession"));
+  assert.match(roleSelectionSource, /hydrateAgentTeamSession\(\)/);
+  assert.doesNotMatch(roleSelectionSource, /method:\s*"POST"/);
+  assert.match(liveDetailSource, /data-ask-observer/);
+  assert.match(appJs, /openAgentTeamSession\("observer", \{ restoreInspector: true \}\)/);
+  assert.match(appJs, /agentTeam\.panel === "session"/);
+  assert.match(appJs, /renderDrawer\(\);\n  renderOperationsTeamRail\(\);/);
+  assert.match(stylesCss, /\.agent-team-timeline \{[\s\S]+?overflow: auto;/);
+  assert.match(stylesCss, /\.agent-team-composer \{[\s\S]+?grid-template-columns: minmax\(0, 1fr\) auto;/);
 });
 
 test("B1 recovery console keeps six collaborators visible while owner approval stays separate", () => {

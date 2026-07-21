@@ -1,5 +1,6 @@
 import {
   ARCHITECTURE_LAYERS,
+  AGENT_TEAM_ROLES,
   LIVE_LAYERS,
   LIVE_UNLINKED_LAYER,
   PULSE_SLOTS,
@@ -11,6 +12,11 @@ import {
   architectureBoundaries,
   availableStage,
   architectureViewTopology,
+  agentLoopEventProjection,
+  agentLoopProjection,
+  agentLoopStartProjection,
+  agentTeamConversationProjection,
+  agentTeamProviderProjection,
   componentDetailProjection,
   compareFrames,
   compareProvenance,
@@ -125,6 +131,10 @@ const pendingLiveComponentDetails = new Set();
 const unavailableLiveComponentDetails = new Set();
 let selectedCollaboratorId = "commander";
 const recoveryDrafts = new Map();
+let agentTeamEventSource;
+let agentLoopEventSource;
+let agentTeamRestoreAttempted = false;
+let agentTeam = restoreAgentTeamState();
 
 for (const button of document.querySelectorAll("[data-mode]")) button.addEventListener("click", () => setMode(button.dataset.mode));
 for (const button of document.querySelectorAll("[data-nav-tab]")) button.addEventListener("click", () => handleNavigation(button.dataset.navTab));
@@ -163,6 +173,7 @@ els["compare-verified"].addEventListener("click", () => setComparePercent(30));
 els["compare-control"].addEventListener("click", handleCompareFocus);
 els["compare-review-rail"].addEventListener("click", handleCompareReview);
 els["operations-team-rail"].addEventListener("click", handleOperationsTeamRail);
+els["operations-team-rail"].addEventListener("submit", handleAgentTeamSubmit);
 els["theme-toggle"].addEventListener("click", toggleTheme);
 els["zoom-out"].addEventListener("click", () => setLiveZoom(liveView.scale - LIVE_WORLD.step));
 els["zoom-in"].addEventListener("click", () => setLiveZoom(liveView.scale + LIVE_WORLD.step));
@@ -182,6 +193,12 @@ els["canvas-layers"].addEventListener("click", handleRecoveryConsoleAction);
 els["annotation-layer"].addEventListener("click", handleAnnotationSelection);
 els["drawer-tabs"].addEventListener("click", handleDrawerTab);
 els["drawer-content"].addEventListener("click", handleDrawerEntityFocus);
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && agentTeam.panel !== "home") {
+    event.preventDefault();
+    closeAgentTeamSession({ restoreInspector: true });
+  }
+});
 
 await refresh();
 
@@ -194,6 +211,7 @@ async function refresh() {
     hideError();
     render();
     ensureSelectedLiveComponentDetail();
+    void restoreAgentTeamSession();
     // Local-development diagnostics can spend seconds probing Docker and the
     // optional flag API. They must never delay the canonical browser state.
     void refreshDevelopmentStatus();
@@ -449,20 +467,12 @@ function renderSourceCanvas(layout) {
           <span class="architecture-layer-anatomy" role="list" aria-label="${escapeHtml(layer.label)} components" data-architecture-member-count="${layer.members.length}">${anatomy}</span>`;
       return `<article class="architecture-layer-module is-${escapeHtml(layerStatus)}${detail ? " is-detail" : ""}" data-architecture-layer="${escapeHtml(layer.id)}" aria-label="${escapeHtml(detail ? `${detail.node.label} component detail. Click anywhere in this detail or press Escape to return to components.` : `${layer.label}, ${layer.members.length} components.`)}">${content}${detail ? "" : '<span class="architecture-status-dot" aria-hidden="true"></span>'}</article>`;
     }).join("");
-    const selectedControlDetail = ["control", "evidence"].includes(selectedArchitectureDetail?.node.plane) ? selectedArchitectureDetail : null;
-    const controlContent = selectedControlDetail
-      ? controlComponentDetailMarkup(selectedControlDetail)
-      : boundaries.flowpulse.nodes.map((node) => controlSystemTileMarkup(node)).join("");
     els["canvas-layers"].innerHTML = `<div class="twin-layer layer-current architecture-systems is-complete-topology">
       <section class="architecture-system architecture-observed-system" aria-label="Observed System Data Source Architecture">
         <span class="visually-hidden">Observed System Data Source Architecture. ${boundaries.observed.nodes.length} components and ${boundaries.observed.relations.length} backend-projected dependencies.</span>
         <div class="architecture-layer-grid">${layerModules}</div>
       </section>
-      <aside class="architecture-system architecture-flowpulse-system${selectedControlDetail ? " is-detail" : ""}" aria-label="FlowPulse Control System">
-        <span class="visually-hidden">${boundaries.flowpulse.nodes.length} FlowPulse control and evidence components with ${architecture.external_change_evidence.relation_count} backend-projected external change evidence relations.</span>
-        ${selectedControlDetail ? "" : '<header class="architecture-control-heading"><div><span>FlowPulse</span><strong>Control System</strong></div></header>'}
-        <div class="architecture-flowpulse-nodes${selectedControlDetail ? " is-detail" : ""}">${controlContent}</div>
-      </aside>
+      <div class="architecture-control-slot" aria-hidden="true"></div>
     </div>`;
     els["twin-canvas"].dataset.invalidEdges = String(topology.invalid_edges.length);
     els["twin-canvas"].dataset.unlinkedNodes = "0";
@@ -535,7 +545,7 @@ function architectureThumbnailMarkup(node, status = "observed") {
 
 function controlSystemTileMarkup(node, { rail = false } = {}) {
   const interaction = rail
-    ? `data-rail-control-id="${escapeHtml(node.id)}"`
+    ? `data-agent-team-role="${escapeHtml(node.id)}"`
     : `data-control-node-id="${escapeHtml(node.id)}" data-architecture-control-id="${escapeHtml(node.id)}"`;
   return `<button class="source-node is-architecture-compact control-system-tile plane-${escapeHtml(node.plane || "control")} kind-${escapeHtml(node.kind)} is-${escapeHtml(node.status || "idle")}" type="button" ${interaction} aria-label="Show ${escapeHtml(node.label)} details. ${escapeHtml(statusLabel(node.status || "idle"))}">
     <span class="node-icon" aria-hidden="true"><i class="ph ph-${iconForLive(node)}"></i></span>
@@ -1246,7 +1256,7 @@ async function sendRecoveryCommand(form) {
 }
 
 function renderDrawer() {
-  if (mode === "architecture" || !selected || !state) {
+  if (mode === "architecture" || !selected || !state || agentTeam.panel === "session") {
     els["context-drawer"].hidden = true;
     return;
   }
@@ -1272,21 +1282,390 @@ function controlSystemNodes() {
 function renderOperationsTeamRail() {
   const rail = els["operations-team-rail"];
   const controls = controlSystemNodes();
-  rail.hidden = mode === "architecture" || !controls.length || Boolean(selected);
+  // The Team rail is one persistent spatial slot. A component inspector takes
+  // that slot only while the Team is at home; an open Agent session deliberately
+  // replaces the inspector without rebuilding the Live canvas.
+  rail.hidden = !controls.length || (Boolean(selected) && agentTeam.panel === "home");
   if (rail.hidden) {
     rail.innerHTML = "";
     return;
   }
-  rail.innerHTML = `<section class="architecture-system architecture-flowpulse-system" aria-label="FlowPulse Control System">
+  rail.innerHTML = agentTeam.panel === "home"
+    ? agentTeamHomeMarkup(controls)
+    : agentTeamSessionMarkup(controls);
+}
+
+function handleOperationsTeamRail(event) {
+  const send = event.target.closest("[data-agent-team-send]");
+  if (send) {
+    const form = send.closest("[data-agent-team-composer]");
+    const input = form?.elements?.message;
+    if (input) void sendAgentTeamMessage(input.value);
+    return;
+  }
+  const roleTile = event.target.closest("[data-agent-team-role]");
+  if (roleTile) {
+    void openAgentTeamSession(roleTile.dataset.agentTeamRole, { restoreInspector: Boolean(selected) });
+    return;
+  }
+  if (event.target.closest("[data-agent-team-back]")) {
+    closeAgentTeamSession({ restoreInspector: true });
+    return;
+  }
+  const workspace = event.target.closest("[data-agent-team-workspace]");
+  if (workspace && !workspace.disabled) {
+    const modeByAction = {
+      view_diagnosis: "replay",
+      open_recovery_console: "agents",
+      compare_recovery: "compare"
+    };
+    const nextMode = modeByAction[workspace.dataset.agentTeamWorkspace];
+    if (nextMode) setMode(nextMode);
+    return;
+  }
+  if (event.target.closest("[data-agent-team-simulate]")) void runAgentTeamDemo();
+}
+
+async function handleAgentTeamSubmit(event) {
+  const form = event.target.closest("[data-agent-team-composer]");
+  if (!form) return;
+  event.preventDefault();
+  await sendAgentTeamMessage(new FormData(form).get("message"));
+}
+
+function agentTeamHomeMarkup(controls) {
+  const loop = agentTeam.loop;
+  const liveAction = mode === "live"
+    ? `<button type="button" class="agent-team-primary" data-agent-team-simulate ${agentTeam.starting ? "disabled" : ""}>${agentTeam.starting ? "Starting demo…" : "Simulate incident"}</button>`
+    : "";
+  const loopState = loop
+    ? `<p class="agent-team-loop-state" aria-live="polite">${escapeHtml(loop.state === "running" ? "Demo loop is running" : `Demo loop ${loop.state.replaceAll("_", " ")}`)}</p>`
+    : "";
+  return `<section class="architecture-system architecture-flowpulse-system agent-team-home" aria-label="FlowPulse Control System">
     <header class="architecture-control-heading"><div><span>FlowPulse</span><strong>Control System</strong></div></header>
+    ${liveAction}${loopState}
     <div class="architecture-flowpulse-nodes">${controls.map((node) => controlSystemTileMarkup(node, { rail: true })).join("")}</div>
   </section>`;
 }
 
-function handleOperationsTeamRail(event) {
-  const tile = event.target.closest("[data-rail-control-id]");
-  if (!tile) return;
-  openDrawer({ type: "control", id: tile.dataset.railControlId }, "overview");
+function agentTeamSessionMarkup(controls) {
+  const role = agentTeam.role;
+  const node = controls.find((item) => item.id === role);
+  if (!node) return agentTeamUnavailableMarkup("Agent Team projection is unavailable.");
+  const detail = node.detail || {};
+  const provider = agentTeam.provider;
+  const workspace = workspaceLabel();
+  const component = selected?.type === "node" ? sourceComponentContext(selected.id)?.node?.label || selected.id : null;
+  const activity = detail.activity?.summary || null;
+  const canCompose = role !== "ledger";
+  const title = role === "ledger" ? "Evidence Ledger" : node.label;
+  return `<section class="architecture-system architecture-flowpulse-system agent-team-session" aria-label="${escapeHtml(title)} session">
+    <header class="agent-team-session-header">
+      <button type="button" class="agent-team-back" data-agent-team-back aria-label="Back to FlowPulse Team"><i class="ph ph-arrow-left" aria-hidden="true"></i></button>
+      <span class="node-icon" aria-hidden="true"><i class="ph ph-${iconForLive(node)}"></i></span>
+      <div><strong>${escapeHtml(title)}</strong><span>${escapeHtml(detail.summary || "Server-projected capability")}</span></div>
+      <span class="node-status-dot is-${escapeHtml(node.status || "idle")}" aria-label="${escapeHtml(statusLabel(node.status || "idle"))}"></span>
+    </header>
+    <section class="agent-team-context" aria-label="Current context">
+      <span>${escapeHtml(workspace)}</span>${component ? `<span>${escapeHtml(component)}</span>` : ""}
+      ${agentTeam.loop?.run_id ? `<code>${escapeHtml(agentTeam.loop.run_id)}</code>` : agentTeam.run_id ? `<code>${escapeHtml(agentTeam.run_id)}</code>` : ""}
+      ${agentTeam.loop?.incident_id ? `<code>${escapeHtml(agentTeam.loop.incident_id)}</code>` : agentTeam.incident_id ? `<code>${escapeHtml(agentTeam.incident_id)}</code>` : ""}
+      ${sourceTruthLabel() ? `<span>${escapeHtml(sourceTruthLabel())}</span>` : ""}
+      ${provider ? `<span>${escapeHtml(provider.availability === "available" ? provider.truth_label : "Provider unavailable")}</span>` : ""}
+    </section>
+    <section class="agent-team-capability">
+      <strong>${escapeHtml(detail.summary || "Capability details unavailable")}</strong>
+      ${boundedListMarkup("Inputs", detail.inputs)}${boundedListMarkup("Outputs", detail.outputs)}
+      ${detail.authority ? `<p><span>Boundary</span>${escapeHtml(detail.authority)}</p>` : ""}
+      ${detail.provenance_refs?.length ? `<p><span>Provenance</span>${detail.provenance_refs.map((ref) => `<code>${escapeHtml(ref)}</code>`).join("")}</p>` : ""}
+      ${activity ? `<p><span>Current activity</span>${escapeHtml(activity)}</p>` : ""}
+    </section>
+    ${agentTeam.error ? `<p class="agent-team-error" role="alert">${escapeHtml(agentTeam.error)}</p>` : ""}
+    <section class="agent-team-timeline" aria-live="polite">${agentTeamTimelineMarkup()}</section>
+    ${agentTeamWorkspaceActionsMarkup()}
+    ${canCompose ? `<form class="agent-team-composer" data-agent-team-composer><input name="message" maxlength="1500" required autocomplete="off" placeholder="Ask ${escapeHtml(node.label)}" ${agentTeam.sending ? "disabled" : ""}/><button type="submit" data-agent-team-send ${agentTeam.sending ? "disabled" : ""}>${agentTeam.sending ? "Sending…" : "Send"}</button></form>` : `<p class="agent-team-readonly">Evidence Ledger is read-only. It records cited evidence, hashes, and provenance.</p>`}
+  </section>`;
+}
+
+function boundedListMarkup(label, items) {
+  if (!Array.isArray(items) || !items.length) return "";
+  return `<p><span>${escapeHtml(label)}</span>${items.map((item) => `<em>${escapeHtml(item)}</em>`).join("")}</p>`;
+}
+
+function agentTeamTimelineMarkup() {
+  const messages = agentTeam.conversation?.messages || [];
+  const loopItems = agentTeam.loop_items || [];
+  const entries = [...messages.map((message) => ({ source: "conversation", sequence: message.sequence, message })), ...loopItems.map((item) => ({ source: "loop", sequence: item.sequence, item }))]
+    .sort((left, right) => left.sequence - right.sequence)
+    .slice(-32);
+  if (!entries.length) return `<p class="agent-team-empty">${agentTeam.role === "ledger" ? "No bounded ledger references are available for this run." : "Ask a question to start a server-owned conversation."}</p>`;
+  return entries.map((entry) => entry.source === "conversation" ? agentTeamMessageMarkup(entry.message) : agentLoopItemMarkup(entry.item)).join("");
+}
+
+function agentTeamMessageMarkup(message) {
+  if (message.kind === "handoff") return `<article class="agent-team-entry is-handoff"><strong>${escapeHtml(message.from)} → ${escapeHtml(message.to)}</strong><p>${escapeHtml(message.reason)}</p></article>`;
+  if (message.kind === "assistant") return `<article class="agent-team-entry is-answer"><strong>${escapeHtml(message.responding_agent)}</strong><p>${escapeHtml(message.text)}</p>${message.citations?.length ? `<div>${message.citations.map((ref) => `<code>${escapeHtml(ref)}</code>`).join("")}</div>` : ""}</article>`;
+  if (message.kind === "user") return `<article class="agent-team-entry is-user"><strong>You → ${escapeHtml(message.requested_agent)}</strong><p>${escapeHtml(message.text)}</p></article>`;
+  if (message.kind === "tool_summary") return `<article class="agent-team-entry is-tool"><strong>${escapeHtml(message.agent)}</strong><p>${message.tools.map((tool) => `${escapeHtml(tool.tool)} · ${tool.result_count}`).join(" · ")}</p></article>`;
+  if (message.kind === "working") return `<article class="agent-team-entry is-state"><strong>${escapeHtml(message.responding_agent)}</strong><p>Working from cited, bounded evidence.</p></article>`;
+  if (message.kind === "context") return `<article class="agent-team-entry is-state"><strong>${escapeHtml(message.agent)}</strong><p>Context prepared from the current server projection.</p></article>`;
+  if (message.kind === "human_gate") return `<article class="agent-team-entry is-state"><strong>${escapeHtml(message.responding_agent)}</strong><p>${escapeHtml(message.reason)}</p></article>`;
+  if (message.kind === "error") return `<article class="agent-team-entry is-state"><strong>FlowPulse</strong><p>${escapeHtml(message.code)}</p></article>`;
+  return "";
+}
+
+function agentLoopItemMarkup(item) {
+  if (item.kind === "handoff") return `<article class="agent-team-entry is-handoff"><strong>${escapeHtml(item.from)} → ${escapeHtml(item.to)}</strong><p>${escapeHtml(item.reason)}</p></article>`;
+  if (item.kind === "answer") return `<article class="agent-team-entry is-answer"><strong>${escapeHtml(item.role)}</strong><p>${escapeHtml(item.answer)}</p>${item.citations.length ? `<div>${item.citations.map((ref) => `<code>${escapeHtml(ref)}</code>`).join("")}</div>` : ""}</article>`;
+  return `<article class="agent-team-entry is-state"><strong>${escapeHtml(item.label)}</strong></article>`;
+}
+
+function agentTeamWorkspaceActionsMarkup() {
+  const actions = agentTeam.loop?.contextual_workspaces?.actions;
+  if (!actions) return "";
+  const labels = {
+    view_diagnosis: "View Diagnosis",
+    open_recovery_console: "Open Recovery Console",
+    compare_recovery: "Compare Recovery"
+  };
+  return `<div class="agent-team-workspaces">${Object.entries(labels).map(([id, label]) => {
+    const action = actions[id];
+    return `<button type="button" data-agent-team-workspace="${id}" ${action?.available ? "" : "disabled"}>${escapeHtml(label)}</button>`;
+  }).join("")}</div>`;
+}
+
+function agentTeamUnavailableMarkup(message) {
+  return `<section class="architecture-system architecture-flowpulse-system agent-team-session"><p class="agent-team-error" role="alert">${escapeHtml(message)}</p><button type="button" class="agent-team-back" data-agent-team-back>Back to Team</button></section>`;
+}
+
+function restoreAgentTeamState() {
+  try {
+    const saved = JSON.parse(sessionStorage.getItem("flowpulse.agent-team.v1") || "null");
+    if (saved && typeof saved === "object" && ["home", "session"].includes(saved.panel) && (saved.role === null || AGENT_TEAM_ROLES.includes(saved.role))) {
+      return { panel: saved.panel, role: saved.role, conversation_id: typeof saved.conversation_id === "string" ? saved.conversation_id : null, run_id: typeof saved.run_id === "string" ? saved.run_id : null, incident_id: typeof saved.incident_id === "string" ? saved.incident_id : null, provider: null, conversation: null, loop: null, loop_items: [], error: null, sending: false, starting: false, restore_inspector: false, stream_after: 0, loop_after: 0 };
+    }
+  } catch { /* session restoration is optional and never becomes authority */ }
+  return { panel: "home", role: null, conversation_id: null, run_id: null, incident_id: null, provider: null, conversation: null, loop: null, loop_items: [], error: null, sending: false, starting: false, restore_inspector: false, stream_after: 0, loop_after: 0 };
+}
+
+function persistAgentTeamState() {
+  try {
+    sessionStorage.setItem("flowpulse.agent-team.v1", JSON.stringify({
+      panel: agentTeam.panel,
+      role: agentTeam.role,
+      conversation_id: agentTeam.conversation_id,
+      run_id: agentTeam.run_id,
+      incident_id: agentTeam.incident_id
+    }));
+  } catch { /* a private browsing storage failure must not affect the Team */ }
+}
+
+async function restoreAgentTeamSession() {
+  if (agentTeamRestoreAttempted || agentTeam.panel !== "session" || !state) return;
+  agentTeamRestoreAttempted = true;
+  if (agentTeam.run_id !== state.run_id || agentTeam.incident_id !== agentTeamIncidentId()) {
+    agentTeam = { ...restoreAgentTeamState(), panel: "home", role: null, conversation_id: null, run_id: null, incident_id: null };
+    persistAgentTeamState();
+    renderOperationsTeamRail();
+    return;
+  }
+  await hydrateAgentTeamSession();
+}
+
+function workspaceLabel() {
+  return ({ architecture: "Architecture", live: "Live", replay: "Diagnose", agents: "Recovery Console", compare: "Compare" })[mode] || "Workspace";
+}
+
+function sourceTruthLabel() {
+  const view = mode === "live" ? liveTopologyView() : architectureView();
+  return view?.truth?.label || state?.topology_views?.truth?.label || null;
+}
+
+function agentTeamConversationId() {
+  if (agentTeam.conversation_id) return agentTeam.conversation_id;
+  const runId = state?.run_id;
+  if (!runId) return null;
+  const suffix = runId.replace(/[^A-Za-z0-9._:-]/g, "-").slice(-110);
+  return `conversation-${suffix}`;
+}
+
+function agentTeamIncidentId() {
+  return state?.incident?.id || state?.topology_views?.incident_id || null;
+}
+
+async function openAgentTeamSession(role, { restoreInspector = false } = {}) {
+  if (!AGENT_TEAM_ROLES.includes(role)) return;
+  if (agentTeam.panel === "session" && agentTeam.role === role) {
+    closeAgentTeamSession({ restoreInspector: true });
+    return;
+  }
+  const controls = controlSystemNodes();
+  const incidentId = agentTeamIncidentId();
+  if (!controls.some((node) => node.id === role) || !state?.run_id || !incidentId) return;
+  agentTeamEventSource?.close();
+  agentTeam = {
+    ...agentTeam,
+    panel: "session",
+    role,
+    conversation_id: agentTeamConversationId(),
+    run_id: state.run_id,
+    incident_id: incidentId,
+    error: null,
+    sending: false,
+    restore_inspector: restoreInspector,
+    conversation: null
+  };
+  persistAgentTeamState();
+  renderDrawer();
+  renderOperationsTeamRail();
+  await hydrateAgentTeamSession();
+}
+
+function closeAgentTeamSession({ restoreInspector = false } = {}) {
+  agentTeamEventSource?.close();
+  agentTeamEventSource = null;
+  const restore = restoreInspector && agentTeam.restore_inspector && Boolean(selected);
+  agentTeam = { ...agentTeam, panel: "home", role: null, conversation: null, error: null, sending: false, restore_inspector: false };
+  persistAgentTeamState();
+  renderDrawer();
+  renderOperationsTeamRail();
+  if (restore) ensureSelectedLiveComponentDetail();
+}
+
+async function hydrateAgentTeamSession() {
+  if (agentTeam.panel !== "session" || !agentTeam.conversation_id) return;
+  try {
+    const [providerPayload, conversationPayload] = await Promise.all([
+      request("/api/agent-control/provider"),
+      request(`/api/agent-control/conversation?conversation_id=${encodeURIComponent(agentTeam.conversation_id)}`)
+    ]);
+    const provider = agentTeamProviderProjection(providerPayload);
+    const conversation = agentTeamConversationProjection(conversationPayload, { conversationId: agentTeam.conversation_id });
+    if (!provider || !conversation) throw new Error("Agent Team response is incompatible with the safe browser contract.");
+    agentTeam = { ...agentTeam, provider, conversation, error: null };
+    connectAgentTeamConversationStream();
+  } catch (error) {
+    agentTeam = { ...agentTeam, error: error.message || "Agent Team is unavailable." };
+  }
+  renderDrawer();
+  renderOperationsTeamRail();
+}
+
+function connectAgentTeamConversationStream() {
+  if (agentTeam.panel !== "session" || !agentTeam.conversation_id || typeof EventSource !== "function") return;
+  agentTeamEventSource?.close();
+  agentTeamEventSource = new EventSource(`/api/agent-control/events?run_id=${encodeURIComponent(agentTeam.run_id)}&conversation_id=${encodeURIComponent(agentTeam.conversation_id)}&after=${agentTeam.stream_after || 0}`);
+  agentTeamEventSource.addEventListener("agent-control", (event) => {
+    try {
+      const payload = JSON.parse(event.data);
+      const conversation = agentTeamConversationProjection(payload?.conversation, { conversationId: agentTeam.conversation_id });
+      if (!conversation) throw new Error("Agent Team stream schema mismatch.");
+      const lastEvent = Number(event.lastEventId || 0);
+      agentTeam = { ...agentTeam, conversation, stream_after: Number.isSafeInteger(lastEvent) && lastEvent > agentTeam.stream_after ? lastEvent : agentTeam.stream_after, error: null };
+      renderOperationsTeamRail();
+    } catch {
+      agentTeamEventSource?.close();
+      agentTeam = { ...agentTeam, error: "Agent Team stream is unavailable because its response was incompatible." };
+      renderOperationsTeamRail();
+    }
+  });
+  agentTeamEventSource.onerror = () => {};
+}
+
+async function sendAgentTeamMessage(value) {
+  const message = String(value || "").trim();
+  if (!message || agentTeam.panel !== "session" || agentTeam.role === "ledger" || agentTeam.sending || !agentTeam.conversation_id || !agentTeam.run_id || !agentTeam.incident_id) return;
+  const selectedComponent = selected?.type === "node" ? selected.id : null;
+  agentTeam = { ...agentTeam, sending: true, error: null };
+  renderOperationsTeamRail();
+  try {
+    const idempotencyKey = `chat-${agentTeam.conversation_id.slice(-64)}-${crypto.randomUUID().replaceAll("-", "")}`;
+    const result = await request("/api/agent-control/chat", {
+      method: "POST",
+      body: JSON.stringify({
+        run_id: agentTeam.run_id,
+        incident_id: agentTeam.incident_id,
+        conversation_id: agentTeam.conversation_id,
+        idempotency_key: idempotencyKey,
+        requested_agent: agentTeam.role,
+        page_mode: ({ architecture: "architecture", live: "live", replay: "diagnose", agents: "recovery", compare: "compare" })[mode] || "architecture",
+        selected_component: selectedComponent,
+        message
+      })
+    });
+    const conversation = agentTeamConversationProjection(result?.conversation, { conversationId: agentTeam.conversation_id });
+    if (!conversation) throw new Error("Agent Team response is incompatible with the safe browser contract.");
+    agentTeam = { ...agentTeam, conversation, sending: false };
+  } catch (error) {
+    agentTeam = { ...agentTeam, sending: false, error: error.message || "Agent Team message failed." };
+  }
+  renderOperationsTeamRail();
+}
+
+async function runAgentTeamDemo() {
+  if (agentTeam.starting) return;
+  agentTeam = { ...agentTeam, starting: true, error: null };
+  renderOperationsTeamRail();
+  try {
+    const idempotencyKey = `demo-${crypto.randomUUID().replaceAll("-", "")}`;
+    const payload = await request("/api/demo/agent-loop/run", {
+      method: "POST",
+      body: JSON.stringify({ case_id: "checkout-payment-config", round: 1, idempotency_key: idempotencyKey })
+    });
+    const loop = agentLoopStartProjection(payload);
+    if (!loop) throw new Error("Demo loop response is incompatible with the safe browser contract.");
+    agentTeam = { ...agentTeam, loop, loop_items: [], loop_after: 0, starting: false };
+    connectAgentLoopStream();
+  } catch (error) {
+    agentTeam = { ...agentTeam, starting: false, error: error.message || "Demo loop is unavailable." };
+  }
+  renderOperationsTeamRail();
+}
+
+function connectAgentLoopStream() {
+  if (!agentTeam.loop?.run_id || typeof EventSource !== "function") return;
+  agentLoopEventSource?.close();
+  agentLoopEventSource = new EventSource(`/api/demo/agent-loop/events?run_id=${encodeURIComponent(agentTeam.loop.run_id)}&after=${agentTeam.loop_after || 0}`);
+  agentLoopEventSource.addEventListener("local-fault-loop", (event) => {
+    try {
+      const projection = agentLoopEventProjection(JSON.parse(event.data), { runId: agentTeam.loop.run_id });
+      if (!projection) throw new Error("Demo loop stream schema mismatch.");
+      const item = safeAgentLoopTimelineItem(projection.event);
+      const after = Number(event.lastEventId || 0);
+      agentTeam = {
+        ...agentTeam,
+        loop: { ...agentTeam.loop, contextual_workspaces: projection.contextual_workspaces },
+        loop_after: Number.isSafeInteger(after) && after > agentTeam.loop_after ? after : agentTeam.loop_after,
+        loop_items: item && !agentTeam.loop_items.some((entry) => entry.id === item.id) ? [...agentTeam.loop_items, item].slice(-64) : agentTeam.loop_items
+      };
+      renderOperationsTeamRail();
+    } catch {
+      agentLoopEventSource?.close();
+      agentTeam = { ...agentTeam, error: "Demo loop stream is unavailable because its response was incompatible." };
+      renderOperationsTeamRail();
+    }
+  });
+  agentLoopEventSource.addEventListener("local-fault-loop-state", async () => {
+    try {
+      const payload = await request(`/api/demo/agent-loop?run_id=${encodeURIComponent(agentTeam.loop.run_id)}`);
+      const loop = agentLoopProjection(payload, { runId: agentTeam.loop.run_id });
+      if (!loop) throw new Error("Demo loop state is incompatible with the safe browser contract.");
+      agentTeam = { ...agentTeam, loop };
+    } catch {
+      agentTeam = { ...agentTeam, error: "Final demo loop state is unavailable." };
+    }
+    renderOperationsTeamRail();
+  });
+  agentLoopEventSource.onerror = () => {};
+}
+
+function safeAgentLoopTimelineItem(event) {
+  const payload = event?.payload;
+  if (!payload || typeof payload !== "object") return null;
+  if (event.type === "local_fault_loop.handoff.recorded" && AGENT_TEAM_ROLES.includes(payload.from) && AGENT_TEAM_ROLES.includes(payload.to) && typeof payload.reason === "string" && payload.reason.length <= 200) return { id: event.id, sequence: event.sequence, kind: "handoff", from: payload.from, to: payload.to, reason: payload.reason };
+  if (event.type === "local_fault_loop.role.response" && AGENT_TEAM_ROLES.includes(payload.role) && typeof payload.safe_answer === "string" && payload.safe_answer.length <= 1_200 && Array.isArray(payload.citations)) return { id: event.id, sequence: event.sequence, kind: "answer", role: payload.role, answer: payload.safe_answer, citations: payload.citations.filter((ref) => typeof ref === "string").slice(0, 12) };
+  if (["local_fault_loop.repair.executed", "local_fault_loop.verification.completed", "local_fault_loop.recovered", "local_fault_loop.stopped", "local_fault_loop.failed"].includes(event.type)) return { id: event.id, sequence: event.sequence, kind: "state", label: event.type.replace("local_fault_loop.", "").replaceAll(".", " ") };
+  return null;
 }
 
 function drawerTabsForSelection(focus) {
@@ -1467,6 +1846,7 @@ function renderLiveComponentDetail(context, tab) {
     ${dependencySections}
     ${signalSections}
     ${evidenceSections}
+    <button type="button" class="live-agent-ask" data-ask-observer="${escapeHtml(detail.component.id)}">Ask Observer</button>
   </section>${liveAgentAssessment(context)}`;
 }
 
@@ -1710,6 +2090,11 @@ function handleDrawerTab(event) {
 }
 
 function handleDrawerEntityFocus(event) {
+  const askObserver = event.target.closest("[data-ask-observer]");
+  if (askObserver) {
+    void openAgentTeamSession("observer", { restoreInspector: true });
+    return;
+  }
   const target = event.target.closest("[data-focus-entity]");
   if (target) openDrawer({ type: "node", id: target.dataset.focusEntity }, "overview");
 }

@@ -67,6 +67,11 @@ test("Agent Team HTTP and SSE projections preserve a chat's transparent routing 
   assert.equal(chat.body.tool_summaries.some((item) => item.result_count > 0), true);
   assert.deepEqual(chat.body.conversation.messages.map((message) => message.kind), ["user", "handoff", "context", "tool_summary", "working", "assistant"]);
   assert.equal(chat.body.conversation.messages[0].selected_component, "checkout");
+  assert.deepEqual(chat.body.conversation.messages.find((message) => message.kind === "context").source_truth, {
+    source_health: initial.body.topology_views.truth.source_health,
+    evidence_mode: initial.body.topology_views.truth.evidence_mode,
+    execution_mode: initial.body.topology_views.truth.execution_mode
+  });
 
   const conversation = await getJson(port, "/api/agent-control/conversation?conversation_id=conv-sidebar-001");
   assert.equal(conversation.status, 200);
