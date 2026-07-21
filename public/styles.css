@@ -2847,6 +2847,8 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .is-live-source .source-node.is-root,
 .is-live-source .source-node.is-rejected,
 .is-live-source .source-node.is-fault { --live-status: var(--red); }
+.is-live-source .source-node.is-incident { --live-status: var(--red); }
+.is-live-source .source-node.is-incident .node-status { color: #c81e3a; font-weight: 650; }
 .is-live-source .source-node.is-idle,
 .is-live-source .source-node.is-quiet,
 .is-live-source .source-node.is-dormant,

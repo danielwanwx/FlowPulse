@@ -425,7 +425,7 @@ function renderLiveNodeTelemetry(nodes) {
     element.innerHTML = metrics.map((metric) => `<span title="${escapeHtml(metric.label)} · ${escapeHtml(metric.evidence_id)}">${escapeHtml(formatLiveTelemetryValue(metric))}</span>`).join("");
     element.hidden = metrics.length === 0;
     const status = element.closest(".source-node")?.dataset.status;
-    element.dataset.tone = status === "impact" || status === "root" || status === "fault" ? "critical"
+    element.dataset.tone = status === "incident" || status === "impact" || status === "root" || status === "fault" ? "critical"
       : status === "warning" || status === "pending" ? "warning"
       : status === "verified" ? "healthy"
       : "info";
@@ -615,7 +615,7 @@ function sourceNodeMarkup(node, { layout, source, nodeStates }) {
   // same canonical percentages through livePositions(), so port geometry and
   // card placement cannot drift apart at a given viewport.
   const livePositionClass = layout === "live" ? ` live-column-${node.layerIndex} live-count-${node.layerSize} live-index-${node.layerPosition}` : "";
-  const activeStatus = ["impact", "root", "rejected", "warning", "pending", "active", "recording", "verified"].includes(nodeState) ? `<span class="node-status">${escapeHtml(nodeStatus)}</span>` : "";
+  const activeStatus = ["incident", "impact", "root", "rejected", "warning", "pending", "active", "recording", "verified"].includes(nodeState) ? `<span class="node-status">${escapeHtml(nodeStatus)}</span>` : "";
   const telemetry = layout === "live" ? `<span class="node-live-telemetry" data-live-node-metrics="${escapeHtml(node.id)}" aria-live="polite"></span>` : "";
   const copy = `<span class="node-copy"><strong>${escapeHtml(node.label)}</strong>${activeStatus}${telemetry}</span>`;
   return `<button class="twin-node source-node plane-${escapeHtml(node.plane || "runtime")} kind-${escapeHtml(node.kind)} is-${nodeState}${livePositionClass}" type="button" data-node-id="${escapeHtml(node.id)}" data-status="${escapeHtml(nodeState)}" data-transition-key="${escapeHtml(transitionKey(node.id))}" aria-label="${escapeHtml(profile.capability)}, ${escapeHtml(kindLabel(node.kind))}, ${escapeHtml(profile.runtimeIdentity)}, ${escapeHtml(ariaStatus)}">
@@ -626,6 +626,7 @@ function sourceNodeMarkup(node, { layout, source, nodeStates }) {
 }
 
 function liveSignalTone(edge, nodeStates) {
+  if (edge.status === "incident") return "impact";
   if (nodeStates[edge.from] === "impact" || nodeStates[edge.to] === "impact") return "impact";
   const verified = state.events.some((event) => event.type === "verification.completed" && event.payload?.passed === true);
   if (verified && ["checkout", "payment", "kafka", "accounting", "fraud-detection", "fraud"].some((id) => id === edge.from || id === edge.to)) return "verified";
@@ -3114,6 +3115,7 @@ function statusLabel(status) {
 }
 
 function sourceStatusLabel(status, sourceStatus) {
+  if (status === "incident") return "Incident detected";
   if (status === "impact") return "Failure observed";
   if (status === "verified") return "Recovery verified";
   if (status === "unlinked") return "Evidence gap";

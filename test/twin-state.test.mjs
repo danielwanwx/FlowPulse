@@ -375,6 +375,10 @@ test("Live telemetry is a bounded projection of component evidence and backend r
   assert.match(stylesCss, /\.is-live-source \.source-node \{[\s\S]*?width: 180px;[\s\S]*?height: 64px;/);
   assert.match(stylesCss, /\.is-live-source \.source-node strong \{[^}]*font-size: 16px;/);
   assert.match(stylesCss, /\.live-telemetry-reading\[data-tone="critical"\] strong \{ color: #c81e3a;/);
+  assert.match(appJs, /if \(status === "incident"\) return "Incident detected";/);
+  assert.match(appJs, /if \(edge\.status === "incident"\) return "impact";/);
+  assert.match(stylesCss, /\.is-live-source \.source-node\.is-incident \{ --live-status: var\(--red\); \}/);
+  assert.match(stylesCss, /\.is-live-source \.source-node\.is-incident \.node-status \{ color: #c81e3a;/);
 });
 
 test("Architecture accepts only the strict v2 backend topology view and retains separate control evidence", () => {
