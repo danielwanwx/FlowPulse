@@ -119,7 +119,10 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .brand-mark i:nth-child(1) { height: 7px; }
 .brand-mark i:nth-child(2) { height: 18px; }
 .brand-mark i:nth-child(3) { height: 11px; }
-.topbar-status { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; white-space: nowrap; }
+/* The central mode switch is the only workspace navigation chrome. Source
+   capture, theme, and overflow controls stay available to the app internally
+   but are intentionally absent from the judge-facing top bar. */
+.topbar-status { display: none; }
 .environment-label { color: var(--ink); font-family: var(--mono); font-size: 10px; }
 .capture-label { display: inline-flex; align-items: center; gap: 6px; padding: 3px 7px; border: 1px solid var(--line-strong); border-radius: 3px; color: var(--ink); font-weight: 650; }
 .capture-label::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--faint); }

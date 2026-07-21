@@ -269,6 +269,10 @@ test("the product opens on architecture and keeps advanced actions in an accessi
   assert.match(stylesCss, /\.stage-readout \{ display: none;/);
 });
 
+test("the shared header omits nonessential capture, theme, and workspace-menu chrome", () => {
+  assert.match(stylesCss, /\.topbar-status \{ display: none; \}/);
+});
+
 test("initial rendering does not wait for optional development diagnostics", () => {
   const refreshSource = appJs.slice(appJs.indexOf("async function refresh()"), appJs.indexOf("function render()"));
   assert.match(refreshSource, /state = await request\("\/api\/state"\);/);
