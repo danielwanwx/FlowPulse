@@ -41,18 +41,23 @@ export class AgentTeamChatError extends Error {
 }
 
 export class AgentTeamChatService {
-  constructor({ runtime, modelAdapter = null, contextForRun = null, providerKind = undefined } = {}) {
+  constructor({ runtime, modelAdapter = null, contextForRun = null, stateForRun = null, incidentIdForRun = null, providerKind = undefined } = {}) {
     if (!runtime?.ledger?.list || !runtime?.ledger?.appendIfAbsent || !runtime?.bundle?.incident?.id) {
       throw new Error("AgentTeamChatService requires an IncidentRuntime with an append-only ledger");
     }
     this.runtime = runtime;
     this.contextForRun = typeof contextForRun === "function" ? contextForRun : null;
+    // The local fault loop owns a separate canonical run/incident pair in the
+    // same append-only ledger. Keep that identity seam explicit so chat never
+    // silently falls back to the browser runtime's incident.
+    this.stateForRun = typeof stateForRun === "function" ? stateForRun : (runId) => this.runtime.state(runId);
+    this.incidentIdForRun = typeof incidentIdForRun === "function" ? incidentIdForRun : () => this.runtime.bundle.incident.id;
     this.modelAdapter = modelAdapter || createAgentTeamProvider({ providerKind });
   }
 
   async submit(rawRequest, { trace = null, signal = null } = {}) {
     const request = validateAgentTeamChatRequest(rawRequest);
-    const state = this.runtime.state(request.run_id);
+    const state = await this.stateForRun(request.run_id);
     if (state.run_id !== request.run_id || request.incident_id !== state.incident.id) {
       throw new AgentTeamChatError("canonical_identity_mismatch", 409);
     }
@@ -391,7 +396,7 @@ export class AgentTeamChatService {
   append(runId, type, actor, payload, evidenceRefs = [], parentId = null) {
     return this.runtime.ledger.append({
       runId,
-      incidentId: this.runtime.bundle.incident.id,
+      incidentId: this.incidentIdForRun(runId),
       type,
       actor,
       payload,

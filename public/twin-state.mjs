@@ -501,6 +501,114 @@ export function agentLoopEventProjection(value, { runId = null } = {}) {
   return value;
 }
 
+// The shared-run controller stores only this bounded interpretation of the
+// server's immutable loop events. It never creates telemetry, changes state,
+// or infers a recovery that the loop has not recorded.
+export function sharedRunReadModel(loop, { throughSequence = null } = {}) {
+  if (!agentLoopProjection(loop, { runId: loop?.run_id || null })) return null;
+  const events = Number.isSafeInteger(throughSequence) && throughSequence >= 0
+    ? loop.events.filter((event) => event.sequence <= throughSequence)
+    : loop.events;
+  const metricEvents = events.filter((event) => validSharedMetricSample(event.payload?.metric_sample));
+  const baseline = metricEvents.find((event) => event.payload.metric_sample.phase === "baseline") || null;
+  const incident = metricEvents.find((event) => event.payload.metric_sample.phase === "fault") || null;
+  const verified = [...metricEvents].reverse().find((event) => event.payload.metric_sample.phase === "verified") || null;
+  const terminal = [...events].reverse().find((event) => ["local_fault_loop.recovered", "local_fault_loop.stopped", "local_fault_loop.failed"].includes(event.type));
+  const state = terminal?.payload?.state === "recovered" || terminal?.payload?.state === "needs_human" || terminal?.payload?.state === "failed"
+    ? terminal.payload.state
+    : "running";
+  const stage = sharedRunStage(events, state, loop.stage);
+  const current = events.at(-1) || null;
+  return {
+    run_id: loop.run_id,
+    incident_id: loop.incident_id,
+    state,
+    stage,
+    selected_component: loop.contextual_workspaces.context.selected_component,
+    workspace_actions: sharedWorkspaceActions(events, state),
+    timeline: {
+      position: current?.sequence || 0,
+      event_id: current?.id || loop.contextual_workspaces.context.timeline.event_id,
+      stage,
+      terminal_state: ["recovered", "needs_human", "failed"].includes(state) ? state : null
+    },
+    events,
+    metric_samples: {
+      baseline: baseline ? sharedMetricSample(baseline) : null,
+      incident: incident ? sharedMetricSample(incident) : null,
+      verified: verified ? sharedMetricSample(verified) : null,
+      current: sharedMetricSample(verified || incident || baseline)
+    },
+    node_statuses: sharedRunNodeStatuses(events, state),
+    role_responses: loop.role_responses,
+    citations: loop.citations
+  };
+}
+
+function sharedWorkspaceActions(events, state) {
+  const incidentOpen = events.some((event) => event.type === "incident.opened" && event.actor === "observer");
+  const remediationReady = events.some((event) => event.type === "local_fault_loop.plan.proposed" || event.type === "local_fault_loop.repair.executed");
+  const verified = events.some((event) => event.type === "local_fault_loop.verification.completed");
+  const repaired = events.some((event) => event.type === "local_fault_loop.repair.executed");
+  const compareReady = state === "recovered" && verified && repaired;
+  return {
+    view_diagnosis: { available: incidentOpen, prerequisites: [{ id: "bounded_incident_opened", satisfied: incidentOpen }] },
+    open_recovery_console: { available: remediationReady, prerequisites: [{ id: "evaluated_remediation_plan_or_repair_started", satisfied: remediationReady }] },
+    compare_recovery: {
+      available: compareReady,
+      prerequisites: [
+        { id: "independent_verification_completed", satisfied: verified },
+        { id: "implemented_repair_recovered", satisfied: compareReady }
+      ]
+    }
+  };
+}
+
+function sharedMetricSample(event) {
+  if (!event?.payload?.metric_sample) return null;
+  const sample = event.payload.metric_sample;
+  return {
+    checkout_error_rate_percent: sample.checkout_error_rate_percent,
+    payment_reachability_percent: sample.payment_reachability_percent,
+    kafka_lag: sample.kafka_lag,
+    phase: sample.phase,
+    source: sample.source,
+    recorded_at: event.recorded_at
+  };
+}
+
+function validSharedMetricSample(value) {
+  return plainRecord(value)
+    && sameKeys(value, ["checkout_error_rate_percent", "payment_reachability_percent", "kafka_lag", "phase", "source", "raw_payload_excluded"])
+    && Number.isFinite(value.checkout_error_rate_percent) && value.checkout_error_rate_percent >= 0 && value.checkout_error_rate_percent <= 100
+    && Number.isFinite(value.payment_reachability_percent) && value.payment_reachability_percent >= 0 && value.payment_reachability_percent <= 100
+    && Number.isSafeInteger(value.kafka_lag) && value.kafka_lag >= 0 && value.kafka_lag <= 10_000_000
+    && ["baseline", "fault", "verified"].includes(value.phase)
+    && value.source === "isolated_fixture" && value.raw_payload_excluded === true;
+}
+
+function sharedRunStage(events, state, fallback) {
+  if (state === "recovered") return "recovered";
+  if (state === "needs_human") return "needs-human";
+  if (state === "failed") return "failed";
+  for (const event of [...events].reverse()) {
+    if (typeof event.payload?.stage === "string" && /^[a-z][a-z0-9-]{1,79}$/.test(event.payload.stage)) return event.payload.stage;
+  }
+  return /^[a-z][a-z0-9-]{1,79}$/.test(fallback) ? fallback : "monitor";
+}
+
+function sharedRunNodeStatuses(events, state) {
+  const types = new Set(events.map((event) => event.type));
+  if (state === "recovered") return { checkout: "verified", payment: "verified", kafka: "verified", accounting: "verified", "fraud-detection": "verified" };
+  if (types.has("local_fault_loop.fault.injected")) {
+    const statuses = { checkout: "impact", payment: "impact", kafka: "impact", accounting: "impact", "fraud-detection": "impact" };
+    if (types.has("local_fault_loop.hypothesis.accepted")) statuses.checkout = "root";
+    if (types.has("local_fault_loop.repair.executed")) statuses.checkout = "active";
+    return statuses;
+  }
+  return {};
+}
+
 function validAgentTeamProvider(value) {
   return plainRecord(value) && sameKeys(value, ["provider_kind", "availability", "truth_label", "model_label", "failure_reason"])
     && AGENT_TEAM_PROVIDER_KINDS.has(value.provider_kind) && AGENT_TEAM_PROVIDER_AVAILABILITY.has(value.availability)
@@ -525,6 +633,17 @@ function validAgentTeamMessage(value) {
   if (value.kind === "tool_summary") return sameKeys(value, ["id", "sequence", "recorded_at", "type", "kind", "agent", "state", "citations", "tools"])
     && value.type === "agent_team.tool_summary.recorded" && validAgentTeamRole(value.agent) && value.state === "working"
     && validAgentTeamRefs(value.citations, 12) && validAgentTeamTools(value.tools);
+  if (value.kind === "tool_request") return sameKeys(value, ["id", "sequence", "recorded_at", "type", "kind", "agent", "state", "tool", "component_id", "attempt", "round", "raw_payload_excluded"])
+    && value.type === "agent_team.tool.requested" && validAgentTeamRole(value.agent) && value.state === "working"
+    && safeAgentTeamText(value.tool, 120) && safeAgentTeamId(value.component_id)
+    && Number.isSafeInteger(value.attempt) && value.attempt >= 0 && value.attempt <= 2
+    && Number.isSafeInteger(value.round) && value.round >= 0 && value.round <= 2 && value.raw_payload_excluded === true;
+  if (value.kind === "tool_result") return sameKeys(value, ["id", "sequence", "recorded_at", "type", "kind", "agent", "state", "tool", "component_id", "result_count", "selected_count", "omitted_count", "cached", "citations", "source_truth", "raw_payload_excluded"])
+    && value.type === "agent_team.tool.result.recorded" && validAgentTeamRole(value.agent) && value.state === "working"
+    && safeAgentTeamText(value.tool, 120) && safeAgentTeamId(value.component_id)
+    && validAgentTeamResultCount(value.result_count) && validAgentTeamResultCount(value.selected_count) && validAgentTeamResultCount(value.omitted_count)
+    && typeof value.cached === "boolean" && validAgentTeamRefs(value.citations, 12) && validAgentTeamNodeSourceTruth(value.source_truth)
+    && value.raw_payload_excluded === true;
   if (value.kind === "working") return sameKeys(value, ["id", "sequence", "recorded_at", "type", "kind", "requested_agent", "responding_agent", "state", "citations", "provider"])
     && value.type === "agent_team.response.working" && validAgentTeamRole(value.requested_agent) && validAgentTeamRole(value.responding_agent)
     && value.state === "working" && validAgentTeamRefs(value.citations, 12) && validAgentTeamProvider(value.provider);
@@ -571,8 +690,25 @@ function validAgentTeamSourceTruth(value) {
 }
 
 function validAgentTeamTools(value) {
-  return Array.isArray(value) && value.length <= 4 && value.every((item) => plainRecord(item) && sameKeys(item, ["tool", "result_count", "raw_payload_excluded"])
-    && safeAgentTeamText(item.tool, 120) && Number.isSafeInteger(item.result_count) && item.result_count >= 0 && item.result_count <= 10_000 && item.raw_payload_excluded === true);
+  return Array.isArray(value) && value.length <= 4 && value.every((item) => {
+    const compact = plainRecord(item) && sameKeys(item, ["tool", "result_count", "raw_payload_excluded"])
+      && safeAgentTeamText(item.tool, 120) && validAgentTeamResultCount(item.result_count) && item.raw_payload_excluded === true;
+    const detailed = plainRecord(item) && sameKeys(item, ["tool", "result_count", "selected_count", "omitted_count", "cached", "raw_payload_excluded"])
+      && safeAgentTeamText(item.tool, 120) && validAgentTeamResultCount(item.result_count)
+      && validAgentTeamResultCount(item.selected_count) && validAgentTeamResultCount(item.omitted_count)
+      && typeof item.cached === "boolean" && item.raw_payload_excluded === true;
+    return compact || detailed;
+  });
+}
+
+function validAgentTeamResultCount(value) { return Number.isSafeInteger(value) && value >= 0 && value <= 10_000; }
+
+function validAgentTeamNodeSourceTruth(value) {
+  return plainRecord(value) && sameKeys(value, ["mode", "status", "freshness_ms", "observed_at", "truth_label"])
+    && safeAgentTeamText(value.mode, 80) && ["captured", "frozen", "live", "stale", "disconnected", "unavailable"].includes(value.status)
+    && (value.freshness_ms === null || Number.isSafeInteger(value.freshness_ms) && value.freshness_ms >= 0 && value.freshness_ms <= 31_536_000_000)
+    && (value.observed_at === null || validTopologyTimestamp(value.observed_at))
+    && safeAgentTeamText(value.truth_label, 80);
 }
 
 function validAgentTeamHumanGate(value) {
@@ -601,10 +737,11 @@ function validAgentLoopEventsUrl(value, runId) {
 }
 
 function validAgentTeamLoopRoleResponse(value) {
-  return plainRecord(value) && sameKeys(value, ["role", "requested_agent", "responding_agent", "state", "provider", "safe_answer", "answer_sha256", "answer_bytes", "handoff", "recommended_handoff", "citations", "tools"])
+  return plainRecord(value) && sameKeys(value, ["role", "requested_agent", "responding_agent", "state", "provider", "safe_answer", "answer_sha256", "answer_bytes", "duration_ms", "handoff", "recommended_handoff", "citations", "tools"])
     && validAgentTeamRole(value.role) && value.requested_agent === value.role && value.responding_agent === value.role && value.state === "completed"
     && validAgentTeamLoopProvider(value.provider) && safeAgentTeamAnswer(value.safe_answer) && validHash(value.answer_sha256)
     && Number.isSafeInteger(value.answer_bytes) && value.answer_bytes >= 1 && value.answer_bytes <= 1_200
+    && Number.isSafeInteger(value.duration_ms) && value.duration_ms >= 0 && value.duration_ms <= 120_000
     && (value.handoff === null || validAgentTeamLoopHandoff(value.handoff, value.role)) && (value.recommended_handoff === null || validAgentTeamLoopHandoff(value.recommended_handoff, value.role))
     && validAgentTeamRefs(value.citations, 12) && validAgentTeamLoopTools(value.tools);
 }
@@ -668,7 +805,7 @@ export function componentDetailProjection(value, { nodeId = null, topologyRevisi
     || !validComponentRelationships(value.relationships) || !validComponentObservability(value.observability)
     || !plainRecord(value.configuration) || !sameKeys(value.configuration, ["changes"])
     || JSON.stringify(value.configuration.changes) !== JSON.stringify(value.observability.changes)
-    || !Array.isArray(value.data_resources) || value.data_resources.length !== 0 || value.raw_payload_excluded !== true) return null;
+    || !validComponentDataResources(value.data_resources) || value.raw_payload_excluded !== true) return null;
   return value;
 }
 
@@ -794,7 +931,14 @@ function validTraceDetail(value) {
 }
 
 function validLogDetail(value) {
-  return validEvidenceBase(value, ["evidence_id", "title", "source", "observed_at", "record_sha256"]);
+  const base = ["evidence_id", "title", "source", "observed_at", "record_sha256"];
+  const enriched = [...base, "severity", "summary", "trace_ref", "span_ref"];
+  if (sameKeys(value, base)) return validEvidenceBase(value, base);
+  return validEvidenceBase(value, enriched)
+    && nullableComponentText(value.severity, 32)
+    && validSafeLogSummary(value.summary)
+    && nullableDetailRef(value.trace_ref)
+    && nullableDetailRef(value.span_ref);
 }
 
 function validChangeDetail(value) {
@@ -802,6 +946,17 @@ function validChangeDetail(value) {
   return validEvidenceBase(value, keys) && (value.target === null || safeTopologyId(value.target))
     && nullableComponentText(value.flag, 120) && nullableComponentText(value.before, 120)
     && nullableComponentText(value.after, 120) && (value.applied_at === null || validTopologyTimestamp(value.applied_at));
+}
+
+function validComponentDataResources(value) {
+  return Array.isArray(value) && value.length <= 8
+    && value.every((resource) => plainRecord(resource) && sameKeys(resource, ["kind", "id", "name", "consumer_group"])
+      && ["topic", "consumer_group", "database", "table", "job", "dag"].includes(resource.kind)
+      && (resource.id === null || safeTopologyId(resource.id))
+      && nullableComponentText(resource.name, 160)
+      && nullableComponentText(resource.consumer_group, 160)
+      && (resource.id !== null || resource.name !== null))
+    && new Set(value.map((resource) => `${resource.kind}:${resource.id || ""}:${resource.name || ""}:${resource.consumer_group || ""}`)).size === value.length;
 }
 
 function validProvenanceList(value, limit) {
@@ -813,6 +968,11 @@ function nullableComponentText(value, maximum) { return value === null || validC
 function nullableDetailNumber(value) { return value === null || typeof value === "number" && Number.isFinite(value) && Math.abs(value) <= 1_000_000_000; }
 function nullableDetailRef(value) { return value === null || typeof value === "string" && /^[a-f0-9]{8,64}$/i.test(value); }
 function validComponentText(value, maximum) { return typeof value === "string" && value.length > 0 && value.length <= maximum && /^[A-Za-z0-9][A-Za-z0-9 .()/_:+,=-]*$/.test(value); }
+function validSafeLogSummary(value) {
+  return validComponentText(value, 280)
+    && !/(?:\b(?:api[_ -]?key|authorization|password|secret|token)\b\s*[:=]|\b(?:sk|rk)_[A-Za-z0-9_-]{12,}|\bAKIA[0-9A-Z]{16}\b|\beyJ[A-Za-z0-9_-]{10,}\.)/i.test(value)
+    && !/\b(?:system|developer|user)\s+prompt\b/i.test(value);
+}
 
 function topologyViewsV2(value) {
   const rootKeys = ["schema_version", "projection_revision", "run_id", "incident_id", "truth", "readiness", "architecture", "live", "diagnose", "demo"];

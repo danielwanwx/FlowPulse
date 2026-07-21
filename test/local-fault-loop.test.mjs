@@ -41,6 +41,21 @@ test("three isolated reversible fault cases complete three evidence-grounded rou
       const verification = run.events.find((event) => event.type === "local_fault_loop.verification.completed");
       assert.equal(verification.payload.passed, true);
       assert.equal(verification.payload.checks.every((check) => check.passed), true);
+      if (definition.id === "checkout-payment-config") {
+        const baseline = run.events.find((event) => event.type === "local_fault_loop.baseline.captured");
+        const injected = run.events.find((event) => event.type === "local_fault_loop.fault.injected");
+        assert.deepEqual(baseline.payload.metric_sample, {
+          checkout_error_rate_percent: 0.8,
+          payment_reachability_percent: 99.98,
+          kafka_lag: 620,
+          phase: "baseline",
+          source: "isolated_fixture",
+          raw_payload_excluded: true
+        });
+        assert.equal(injected.payload.metric_sample.checkout_error_rate_percent > baseline.payload.metric_sample.checkout_error_rate_percent, true);
+        assert.equal(injected.payload.metric_sample.kafka_lag > baseline.payload.metric_sample.kafka_lag, true);
+        assert.equal(verification.payload.metric_sample.phase, "verified");
+      }
       const incidentOpened = run.events.find((event) => event.type === "incident.opened");
       const plan = run.events.find((event) => event.type === "local_fault_loop.plan.proposed");
       assert.equal(incidentOpened.contextual_workspaces.actions.view_diagnosis.available, true);

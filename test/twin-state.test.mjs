@@ -235,6 +235,23 @@ test("Agent Team browser projections accept only bounded roles, safe answers, tr
   ledgerOrdered.messages[2].citations = ["ev-trace-payment-refused", "ev-deploy-checkout"];
   assert.deepEqual(agentTeamConversationProjection(ledgerOrdered, { conversationId: conversation.conversation_id })?.messages[2].citations, ledgerOrdered.messages[2].citations);
   assert.equal(agentTeamConversationProjection({ ...conversation, messages: [{ ...conversation.messages[2], raw_prompt: "forged" }] }, { conversationId: conversation.conversation_id }), null);
+  const toolConversation = structuredClone(conversation);
+  toolConversation.messages = [
+    toolConversation.messages[0],
+    {
+      id: "evt-agent-tool-request", sequence: 2, recorded_at: "2026-07-21T12:00:01.000Z", type: "agent_team.tool.requested", kind: "tool_request",
+      agent: "investigator", state: "working", tool: "get_component_snapshot", component_id: "checkout", attempt: 0, round: 0, raw_payload_excluded: true
+    },
+    {
+      id: "evt-agent-tool-result", sequence: 3, recorded_at: "2026-07-21T12:00:02.000Z", type: "agent_team.tool.result.recorded", kind: "tool_result",
+      agent: "investigator", state: "working", tool: "get_component_snapshot", component_id: "checkout", result_count: 2, selected_count: 2, omitted_count: 0, cached: false,
+      citations: ["ev-trace-payment-refused"], source_truth: { mode: "deterministic_replay", status: "captured", freshness_ms: null, observed_at: null, truth_label: "captured_replay" }, raw_payload_excluded: true
+    },
+    { ...toolConversation.messages[2], id: "evt-agent-tool-answer", sequence: 4, recorded_at: "2026-07-21T12:00:03.000Z" }
+  ];
+  toolConversation.record_count = 4;
+  toolConversation.latest = { sequence: 4, recorded_at: "2026-07-21T12:00:03.000Z" };
+  assert.equal(agentTeamConversationProjection(toolConversation, { conversationId: conversation.conversation_id })?.messages[2].kind, "tool_result");
 
   const loop = agentLoopStartPayload();
   const parsedLoop = agentLoopStartProjection(loop);
@@ -280,6 +297,19 @@ test("component detail accepts only the exact bounded, revision-bound browser re
   const forged = structuredClone(value);
   forged.observability.logs[0].fact = "must never cross the browser boundary";
   assert.equal(componentDetailProjection(forged, { nodeId: "checkout", topologyRevision: "a".repeat(64) }), null);
+  const enriched = structuredClone(value);
+  enriched.observability.logs[0] = {
+    ...enriched.observability.logs[0],
+    severity: "ERROR",
+    summary: "checkout selected fallback payment:9090 after configuration missing",
+    trace_ref: "4f91d2b7",
+    span_ref: null
+  };
+  enriched.data_resources = [{ kind: "topic", id: "checkout-events", name: "checkout events", consumer_group: null }];
+  assert.equal(componentDetailProjection(enriched, { nodeId: "checkout", topologyRevision: "a".repeat(64) })?.observability.logs[0].summary, "checkout selected fallback payment:9090 after configuration missing");
+  const credentialLeak = structuredClone(enriched);
+  credentialLeak.observability.logs[0].summary = "authorization=Bearer should never cross";
+  assert.equal(componentDetailProjection(credentialLeak, { nodeId: "checkout", topologyRevision: "a".repeat(64) }), null);
   assert.match(appJs, /componentDetailProjection/);
   assert.match(appJs, /\/api\/components\//);
 });
@@ -750,13 +780,13 @@ test("Agent Team rail is session-driven, retains Live selection, and never uses 
   assert.match(railSource, /open_recovery_console: "agents"/);
   assert.match(railSource, /compare_recovery: "compare"/);
   assert.match(sessionSource, /\/api\/agent-control\/provider/);
-  assert.match(sessionSource, /\/api\/agent-control\/conversation\?conversation_id=/);
+  assert.match(sessionSource, /\/api\/agent-control\/conversation\?run_id=/);
   assert.match(sessionSource, /\/api\/agent-control\/events\?run_id=/);
   assert.match(sessionSource, /\/api\/agent-control\/chat/);
   assert.match(sessionSource, /\/api\/demo\/agent-loop\/run/);
   assert.match(sessionSource, /agentTeamConversationProjection/);
   assert.match(sessionSource, /agentLoopStartProjection/);
-  assert.match(sessionSource, /agentLoopEventProjection/);
+  assert.match(sessionSource, /connectSharedRunStream/);
   assert.doesNotMatch(sessionSource, /\/api\/agent-control\/message/);
   const roleSelectionSource = appJs.slice(appJs.indexOf("async function openAgentTeamSession"), appJs.indexOf("function closeAgentTeamSession"));
   assert.match(roleSelectionSource, /hydrateAgentTeamSession\(\)/);
@@ -1345,7 +1375,7 @@ test("every canvas mode exposes the shared status-dot contract with compact tool
   assert.match(indexHtml, /Live \/ active/);
   assert.match(indexHtml, /Failure \/ rejected/);
   assert.match(stylesCss, /\.metric small:empty \{ display: none; \}/);
-  assert.match(appJs, /node\.connectivity === "unlinked" \? "unlinked" : node\.status \|\| "dormant"/);
+  assert.match(appJs, /node\.connectivity === "unlinked" \? "unlinked" : sharedStatus \|\| node\.status \|\| "dormant"/);
   assert.match(appJs, /sourceStatusLabel\(status, source\.status\)/);
   assert.match(stylesCss, /\.component-context\.is-warning, \.component-context\.is-unlinked/);
   assert.doesNotMatch(appJs, /observed components arranged by system role/);

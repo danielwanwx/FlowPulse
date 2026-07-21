@@ -744,7 +744,10 @@ async function waitForHealth(child, port) {
   let startupOutput = "";
   child.stderr.on("data", (chunk) => { startupOutput = `${startupOutput}${chunk}`.slice(-2_000); });
   child.stdout.on("data", (chunk) => { startupOutput = `${startupOutput}${chunk}`.slice(-2_000); });
-  const deadline = Date.now() + 10_000;
+  // The suite intentionally runs two isolated Node workers.  On a cold shared
+  // runner the first server process can take longer than the old ten-second
+  // probe window to load its bounded fixtures, even though it is healthy.
+  const deadline = Date.now() + 20_000;
   while (Date.now() < deadline) {
     try {
       const response = await fetch(`http://127.0.0.1:${port}/api/health`);

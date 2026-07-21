@@ -15,6 +15,7 @@ import {
   agentLoopEventProjection,
   agentLoopProjection,
   agentLoopStartProjection,
+  sharedRunReadModel,
   agentTeamConversationProjection,
   agentTeamProviderProjection,
   componentDetailProjection,
@@ -125,6 +126,11 @@ let agentLoopEventSource;
 let agentTeamRestoreAttempted = false;
 let agentTeam = restoreAgentTeamState();
 let liveInspector = emptyLiveInspector();
+// This is a connection/cache controller, not a second incident store. Every
+// displayed run fact is a parsed record from /api/demo/agent-loop or its SSE.
+let sharedRun = restoreSharedRun();
+let sharedRunReconnectTimer = null;
+let sharedRunFollowing = true;
 
 for (const button of document.querySelectorAll("[data-mode]")) button.addEventListener("click", () => setMode(button.dataset.mode));
 for (const button of document.querySelectorAll("[data-nav-tab]")) button.addEventListener("click", () => handleNavigation(button.dataset.navTab));
@@ -171,7 +177,10 @@ els["twin-canvas"].addEventListener("pointerdown", startCompareDrag);
 els["twin-canvas"].addEventListener("pointermove", moveCompareDrag);
 els["twin-canvas"].addEventListener("pointerup", endCompareDrag);
 els["twin-canvas"].addEventListener("pointercancel", endCompareDrag);
-els["timeline-current"].addEventListener("click", () => openDrawer({ type: "stage", id: TWIN_STAGES[cursor].id }, tabForStage(cursor)));
+els["timeline-current"].addEventListener("click", () => {
+  const shared = sharedRunModelAtCursor();
+  openDrawer({ type: "stage", id: shared?.events.at(-1)?.id || TWIN_STAGES[cursor]?.id || "stage" }, tabForStage(cursor));
+});
 els["canvas-layers"].addEventListener("click", handleCanvasSelection);
 els["canvas-layers"].addEventListener("keydown", handleCanvasKeydown);
 els["annotation-layer"].addEventListener("click", handleAnnotationSelection);
@@ -195,6 +204,7 @@ async function refresh() {
     hideError();
     render();
     ensureSelectedLiveComponentDetail();
+    void hydrateSharedRun();
     void restoreAgentTeamSession();
     // Local-development diagnostics can spend seconds probing Docker and the
     // optional flag API. They must never delay the canonical browser state.
@@ -204,6 +214,136 @@ async function refresh() {
   } finally {
     setLoading(false);
   }
+}
+
+function restoreSharedRun() {
+  try {
+    const value = JSON.parse(sessionStorage.getItem("flowpulse-shared-run") || "null");
+    if (!value || typeof value !== "object" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(value.run_id || "") || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(value.incident_id || "")) return null;
+    return { run_id: value.run_id, incident_id: value.incident_id, loop: null, last_sequence: Number.isSafeInteger(value.last_sequence) && value.last_sequence >= 0 ? value.last_sequence : 0, error: null };
+  } catch {
+    return null;
+  }
+}
+
+function persistSharedRun() {
+  try {
+    if (!sharedRun?.run_id) sessionStorage.removeItem("flowpulse-shared-run");
+    else sessionStorage.setItem("flowpulse-shared-run", JSON.stringify({ run_id: sharedRun.run_id, incident_id: sharedRun.incident_id, last_sequence: sharedRun.last_sequence || 0 }));
+  } catch { /* session restore is optional */ }
+}
+
+function sharedRunModel() {
+  return sharedRun?.loop ? sharedRunReadModel(sharedRun.loop) : null;
+}
+
+function sharedRunModelAtCursor() {
+  const model = sharedRunModel();
+  if (!model?.events.length) return model;
+  const event = model.events[Math.max(0, Math.min(cursor, model.events.length - 1))];
+  return sharedRunReadModel(sharedRun.loop, { throughSequence: event.sequence });
+}
+
+function canonicalRunId() {
+  return sharedRunModel()?.run_id || state?.run_id || null;
+}
+
+function canonicalIncidentId() {
+  return sharedRunModel()?.incident_id || state?.incident?.id || null;
+}
+
+function canonicalSelectedComponent() {
+  return selected?.type === "node" ? selected.id : sharedRunModel()?.selected_component || null;
+}
+
+function canonicalEvents() {
+  return sharedRunModel()?.events || state?.events || [];
+}
+
+function sharedRunTerminal() {
+  return ["recovered", "needs_human", "failed"].includes(sharedRunModel()?.state);
+}
+
+async function hydrateSharedRun() {
+  if (!sharedRun?.run_id) return;
+  try {
+    const payload = await request(`/api/demo/agent-loop?run_id=${encodeURIComponent(sharedRun.run_id)}`);
+    const loop = agentLoopProjection(payload, { runId: sharedRun.run_id });
+    if (!loop || loop.incident_id !== sharedRun.incident_id) throw new Error("Shared run projection is incompatible.");
+    sharedRun = { ...sharedRun, loop, last_sequence: Math.max(sharedRun.last_sequence || 0, loop.events.at(-1)?.sequence || 0), error: null };
+    agentTeam = {
+      ...agentTeam,
+      loop,
+      loop_after: Math.max(agentTeam.loop_after || 0, loop.events.at(-1)?.sequence || 0),
+      loop_items: loop.events.reduce((items, event) => appendLoopTimelineItem(items, event), [])
+    };
+    if (!selected && loop.contextual_workspaces.context.selected_component) selected = { type: "node", id: loop.contextual_workspaces.context.selected_component };
+    if (sharedRunFollowing) cursor = Math.max(0, loop.events.length - 1);
+    persistSharedRun();
+    connectSharedRunStream();
+    render();
+    ensureSelectedLiveComponentDetail();
+  } catch (error) {
+    sharedRun = { ...sharedRun, error: error.message || "Shared run is unavailable." };
+    render();
+  }
+}
+
+function connectSharedRunStream() {
+  const model = sharedRunModel();
+  if (!sharedRun?.run_id || !model || sharedRunTerminal() || typeof EventSource !== "function") return;
+  agentLoopEventSource?.close();
+  const after = sharedRun.last_sequence || 0;
+  agentLoopEventSource = new EventSource(`/api/demo/agent-loop/events?run_id=${encodeURIComponent(sharedRun.run_id)}&after=${after}`);
+  agentLoopEventSource.addEventListener("local-fault-loop", (event) => {
+    try {
+      const projection = agentLoopEventProjection(JSON.parse(event.data), { runId: sharedRun.run_id });
+      if (!projection || projection.incident_id !== sharedRun.incident_id) throw new Error("Shared run event is incompatible.");
+      const incoming = projection.event;
+      const events = [...(sharedRun.loop?.events || []), incoming]
+        .filter((entry, index, all) => all.findIndex((candidate) => candidate.id === entry.id || candidate.sequence === entry.sequence) === index)
+        .sort((left, right) => left.sequence - right.sequence)
+        .slice(-160);
+      sharedRun = {
+        ...sharedRun,
+        loop: { ...sharedRun.loop, events, contextual_workspaces: projection.contextual_workspaces, stage: projection.contextual_workspaces.context.timeline.stage },
+        last_sequence: Math.max(sharedRun.last_sequence || 0, incoming.sequence),
+        error: null
+      };
+      if (sharedRunFollowing) cursor = Math.max(0, events.length - 1);
+      agentTeam = {
+        ...agentTeam,
+        loop: { ...sharedRun.loop, contextual_workspaces: projection.contextual_workspaces },
+        loop_after: sharedRun.last_sequence,
+        loop_items: appendLoopTimelineItem(agentTeam.loop_items, incoming)
+      };
+      persistSharedRun();
+      if (incoming.type.startsWith("agent_team.") && agentTeam.panel === "session") void hydrateAgentTeamSession({ stream: false });
+      render();
+      ensureSelectedLiveComponentDetail();
+    } catch {
+      agentLoopEventSource?.close();
+      sharedRun = { ...sharedRun, error: "Shared run stream is incompatible." };
+      render();
+    }
+  });
+  agentLoopEventSource.addEventListener("local-fault-loop-state", () => {
+    agentLoopEventSource?.close();
+    void hydrateSharedRun();
+  });
+  agentLoopEventSource.onerror = () => {
+    if (sharedRunTerminal() || sharedRunReconnectTimer) return;
+    agentLoopEventSource?.close();
+    sharedRunReconnectTimer = setTimeout(() => {
+      sharedRunReconnectTimer = null;
+      connectSharedRunStream();
+    }, 750);
+  };
+}
+
+function appendLoopTimelineItem(items, event) {
+  const item = safeAgentLoopTimelineItem(event);
+  return item && !(items || []).some((entry) => entry.id === item.id) ? [...(items || []), item].slice(-64) : items || [];
 }
 
 async function refreshDevelopmentStatus() {
@@ -237,6 +377,8 @@ function render() {
 }
 
 function canvasProjectionKey() {
+  const shared = sharedRunModel();
+  if (shared && mode !== "architecture") return `${mode}:${shared.run_id}:${shared.timeline.position}:${cursor}`;
   if (mode === "architecture") {
     const detail = architectureDetail?.scope === "architecture"
       ? `${architectureDetail.nodeId}:${architectureDetail.loading ? "loading" : architectureDetail.failed ? "unavailable" : architectureDetail.detail?.detail_revision || "compact"}`
@@ -249,21 +391,22 @@ function canvasProjectionKey() {
 
 function renderHeader() {
   const frame = currentFrame();
+  const shared = sharedRunModel();
   const source = mode === "live" ? liveSource(liveTopologyView()) : sourceState();
   const titles = { architecture: "Architecture", live: "Runtime activity", replay: "Incident diagnosis", agents: "Recovery Console", compare: "Recovery comparison" };
   const canvasTitles = { architecture: "Architecture", live: "Observed runtime", replay: "Incident reconstruction", agents: "Developer recovery workspace", compare: "Incident vs verified" };
-  els["incident-title"].textContent = state.incident.title;
-  els["incident-summary"].textContent = state.incident.summary;
-  els.severity.textContent = state.incident.severity;
-  els.environment.textContent = state.incident.environment;
-  els["incident-stage"].textContent = state.stage;
+  els["incident-title"].textContent = shared ? (shared.state === "needs_human" ? "Evidence gap incident" : "Checkout / payment incident") : state.incident.title;
+  els["incident-summary"].textContent = shared ? `Canonical run ${shared.run_id} · ${shared.events.length} ordered immutable events` : state.incident.summary;
+  els.severity.textContent = shared ? (shared.state === "needs_human" ? "Unknown" : "SEV-2") : state.incident.severity;
+  els.environment.textContent = shared ? "Isolated local fixture" : state.incident.environment;
+  els["incident-stage"].textContent = shared?.stage || state.stage;
   els["workspace-title"].textContent = titles[mode];
   els["canvas-title"].textContent = canvasTitles[mode];
   const architecture = mode === "architecture" ? architectureView() : null;
   const architectureSystems = architecture ? architectureBoundaries(architecture.graph) : null;
-  els.stage.textContent = mode === "architecture" ? architectureSystems ? `${architectureSystems.observed.nodes.length + architectureSystems.flowpulse.nodes.length} components` : "Architecture unavailable" : mode === "live" ? source.label : mode === "agents" ? agentControl().report.stage : mode === "compare" ? "Incident vs verified" : timelineStages()[cursor].label;
+  els.stage.textContent = mode === "architecture" ? architectureSystems ? `${architectureSystems.observed.nodes.length + architectureSystems.flowpulse.nodes.length} components` : "Architecture unavailable" : shared ? `${shared.stage} · ${shared.run_id}` : mode === "live" ? source.label : mode === "agents" ? agentControl().report.stage : mode === "compare" ? "Incident vs verified" : timelineStages()[cursor].label;
   els["status-text"].textContent = modeStatus();
-  els["ledger-state"].textContent = `${state.events.length} immutable events`;
+  els["ledger-state"].textContent = `${canonicalEvents().length} immutable events`;
   els["capture-label"].textContent = captureLabel();
   els["capture-label"].className = `capture-label source-${mode === "compare" ? compareProvenance(state.events).tone : source.status}`;
   els["zoom-controls"].hidden = mode !== "live";
@@ -304,6 +447,11 @@ function renderThemeToggle() {
 }
 
 function renderMetrics() {
+  const shared = sharedRunModel();
+  if (shared && mode !== "architecture") {
+    renderSharedRunMetrics(shared);
+    return;
+  }
   if (mode === "agents") {
     const control = agentControl();
     const team = projectAgentCollaborators(control);
@@ -355,6 +503,32 @@ function renderMetrics() {
   for (const [name, metric] of Object.entries(metrics)) setMetric(name, metric.value, metric.note);
 }
 
+function renderSharedRunMetrics(shared) {
+  const baseline = shared.metric_samples.baseline;
+  const incident = shared.metric_samples.incident;
+  const verified = shared.metric_samples.verified;
+  const current = shared.metric_samples.current;
+  els["metric-checkout-label"].textContent = "Checkout errors";
+  els["metric-payment-label"].textContent = "Payment reachable";
+  els["metric-kafka-label"].textContent = "Kafka lag";
+  if (mode === "compare" && baseline && incident && verified) {
+    const target = sharedRunModelAtCursor()?.metric_samples.current || verified;
+    setMetric("checkout", `${incident.checkout_error_rate_percent}% → ${target.checkout_error_rate_percent}%`, `baseline ${baseline.checkout_error_rate_percent}% · ${target.phase} evidence`);
+    setMetric("payment", `${incident.payment_reachability_percent}% → ${target.payment_reachability_percent}%`, `baseline ${baseline.payment_reachability_percent}% · ${target.phase} evidence`);
+    setMetric("kafka", `${incident.kafka_lag.toLocaleString()} → ${target.kafka_lag.toLocaleString()}`, `baseline ${baseline.kafka_lag.toLocaleString()} · ${target.phase} evidence`);
+    return;
+  }
+  if (!current) {
+    setMetric("checkout", "Awaiting", "No canonical metric sample yet");
+    setMetric("payment", "Awaiting", "No canonical metric sample yet");
+    setMetric("kafka", "Awaiting", "No canonical metric sample yet");
+    return;
+  }
+  setMetric("checkout", `${current.checkout_error_rate_percent}%`, `${current.phase} · ${formatTime(current.recorded_at)}`);
+  setMetric("payment", `${current.payment_reachability_percent}%`, `${current.phase} · ${formatTime(current.recorded_at)}`);
+  setMetric("kafka", current.kafka_lag.toLocaleString(), `${current.phase} · isolated fixture evidence`);
+}
+
 function setMetric(name, value, note) {
   els[`metric-${name}`].textContent = value;
   els[`metric-${name}-note`].textContent = note;
@@ -381,8 +555,9 @@ function renderCanvas() {
     return;
   }
   if (mode === "compare") {
-    const { incident, recovered } = compareFrames();
-    const provenance = compareProvenance(state.events);
+    const shared = sharedRunModel();
+    const { incident, recovered } = shared ? sharedCompareFrames(shared) : compareFrames();
+    const provenance = shared ? { aria: "independent verification", label: "LOCAL CODEX", tone: shared.state === "recovered" ? "verified" : "warning" } : compareProvenance(state.events);
     els["canvas-layers"].innerHTML = `${renderTwinLayer(recovered, "after", true, { runtimeOnly: true })}${renderTwinLayer(incident, "before", false, { runtimeOnly: true })}`;
     els["compare-handle"].hidden = false;
     els["compare-canvas-range"].hidden = false;
@@ -401,6 +576,19 @@ function renderCanvas() {
   const annotations = state.mode === "development" ? developmentAnnotations(cursor) : frame.annotations;
   setAnnotations(annotations.length ? [annotations.at(-1)] : []);
   els["twin-canvas"].setAttribute("aria-label", `Incident diagnosis at ${frame.stage.label}`);
+}
+
+function sharedCompareFrames(shared) {
+  const byPhase = (phase) => shared.events.find((event) => event.payload?.metric_sample?.phase === phase);
+  const baseline = byPhase("baseline");
+  const incident = byPhase("fault");
+  const verified = byPhase("verified");
+  const incidentSequence = incident?.sequence || baseline?.sequence || 0;
+  const cursorSequence = sharedRunModelAtCursor()?.events.at(-1)?.sequence || verified?.sequence || incidentSequence;
+  return {
+    incident: sharedRunFrame(sharedRunReadModel(sharedRun.loop, { throughSequence: incidentSequence }), incidentSequence),
+    recovered: sharedRunFrame(sharedRunReadModel(sharedRun.loop, { throughSequence: cursorSequence }), cursorSequence)
+  };
 }
 
 function renderSourceCanvas(layout) {
@@ -428,7 +616,10 @@ function renderSourceCanvas(layout) {
     return;
   }
   const positioned = layout === "architecture" ? null : livePositions(topology.nodes);
-  const nodeStates = Object.fromEntries(topology.nodes.map((node) => [node.id, node.status]));
+  const nodeStates = {
+    ...Object.fromEntries(topology.nodes.map((node) => [node.id, node.status])),
+    ...(layout === "live" ? sharedRunModel()?.node_statuses || {} : {})
+  };
   if (layout === "architecture") {
     const boundaries = architectureBoundaries(topology);
     const selectedArchitectureDetail = architectureDetail?.scope === "architecture" ? architectureDetailContext(architectureDetail.nodeId) || controlDetailContext(architectureDetail.nodeId) : null;
@@ -496,12 +687,17 @@ function renderSourceCanvas(layout) {
     return fixedLiveEdgeMarkup(edge, path, positions.get(edge.from)?.label || edge.from, positions.get(edge.to)?.label || edge.to);
   }).join("");
   els["canvas-layers"].innerHTML = `${guides}<div class="twin-layer layer-current"><svg class="edge-map fixed-live-edge-map" viewBox="0 0 ${LIVE_WORLD.width} ${LIVE_WORLD.height}" preserveAspectRatio="none">${liveEdges}</svg>${nodes}</div>`;
-  applyLiveRouteDelays();
-  const linkDuration = Math.min(1500, 340 + plannedEdges.length * 32);
-  const renderGeneration = liveSignalGeneration;
-  setTimeout(() => {
-    if (renderGeneration === liveSignalGeneration && mode === "live") startLiveSignalLoop();
-  }, linkDuration);
+  // A shared incident is driven entirely by the server's event stream. Preserve
+  // the legacy visual pulse only for the standalone captured topology, never as
+  // a surrogate for an active run's metrics or edge state.
+  if (!sharedRunModel()) {
+    applyLiveRouteDelays();
+    const linkDuration = Math.min(1500, 340 + plannedEdges.length * 32);
+    const renderGeneration = liveSignalGeneration;
+    setTimeout(() => {
+      if (renderGeneration === liveSignalGeneration && mode === "live") startLiveSignalLoop();
+    }, linkDuration);
+  }
   els["twin-canvas"].dataset.invalidEdges = String(topology.invalid_edges.length);
   els["twin-canvas"].dataset.unlinkedNodes = String(topology.unlinked_node_ids.length);
   els["twin-canvas"].dataset.observedEdges = String(topology.edges.length);
@@ -554,7 +750,7 @@ function sourceNodeMarkup(node, { layout, source, nodeStates }) {
 
 function liveSignalTone(edge, nodeStates) {
   if (nodeStates[edge.from] === "impact" || nodeStates[edge.to] === "impact") return "impact";
-  const verified = state.events.some((event) => event.type === "verification.completed" && event.payload?.passed === true);
+  const verified = canonicalEvents().some((event) => (event.type === "verification.completed" && event.payload?.passed === true) || (event.type === "local_fault_loop.verification.completed" && event.payload?.passed === true));
   if (verified && ["checkout", "payment", "kafka", "accounting", "fraud-detection", "fraud"].some((id) => id === edge.from || id === edge.to)) return "verified";
   return "observed";
 }
@@ -702,6 +898,11 @@ function clearLiveSignalClasses() {
 }
 
 function renderAgentCanvas() {
+  const shared = sharedRunModelAtCursor();
+  if (shared) {
+    renderSharedRecoveryCanvas(shared);
+    return;
+  }
   const control = agentControl();
   const team = projectAgentCollaborators(control);
   const report = control.report;
@@ -724,6 +925,40 @@ function renderAgentCanvas() {
   els["compare-handle"].hidden = true;
   els["compare-canvas-range"].hidden = true;
   els["twin-canvas"].setAttribute("aria-label", `Recovery Console. ${control.report.title}.`);
+}
+
+function renderSharedRecoveryCanvas(shared) {
+  const events = shared.events;
+  const roleEvent = (role) => [...events].reverse().find((event) => event.type === "local_fault_loop.role.response" && event.payload?.role === role)
+    || [...events].reverse().find((event) => event.type === "local_fault_loop.role.working" && event.payload?.role === role);
+  const stageEvent = (type) => [...events].reverse().find((event) => event.type === type);
+  const roles = [
+    ["observer", "Observer", "Collecting bounded anomaly evidence", roleEvent("observer")],
+    ["orchestrator", "Orchestrator", "Selecting the safe workflow", roleEvent("orchestrator")],
+    ["investigator", "Investigator", "Testing causal hypotheses", roleEvent("investigator")],
+    ["evaluator", "Evaluator", "Challenging causal claims", roleEvent("evaluator")],
+    ["recovery", "Recovery Engineer", "Applying only an authorized reversible fixture repair", stageEvent("local_fault_loop.repair.executed") || stageEvent("local_fault_loop.plan.proposed")],
+    ["verifier", "Verifier", "Checking root condition, symptom, and lag convergence", stageEvent("local_fault_loop.verification.completed")]
+  ].map(([id, label, task, event]) => ({ id, label, task, event }));
+  const handoffs = events.filter((event) => event.type === "local_fault_loop.handoff.recorded").slice(-5);
+  const plan = stageEvent("local_fault_loop.plan.proposed");
+  const fault = stageEvent("local_fault_loop.fault.injected");
+  const repair = stageEvent("local_fault_loop.repair.executed");
+  const verification = stageEvent("local_fault_loop.verification.completed");
+  const gate = stageEvent("local_fault_loop.authority.decided");
+  const roleCard = ({ id, label, task, event }) => {
+    const status = !event ? "queued" : event.type === "local_fault_loop.role.response" || event.type === "local_fault_loop.repair.executed" || event.type === "local_fault_loop.verification.completed" ? "done" : "working";
+    const citations = event?.evidence_refs || [];
+    const output = event?.payload?.safe_answer || event?.payload?.repair || event?.payload?.result || "Awaiting a canonical event";
+    return `<article class="recovery-workflow-node is-${escapeHtml(status === "done" ? "verified" : status === "working" ? "active" : "quiet")}" data-shared-role="${escapeHtml(id)}"><i class="ph ph-${escapeHtml(id === "recovery" ? "wrench" : id === "verifier" ? "shield-check" : id === "orchestrator" ? "git-branch" : id === "evaluator" ? "scales" : id === "observer" ? "binoculars" : "brain")}" aria-hidden="true"></i><div><strong>${escapeHtml(label)}</strong><small>${escapeHtml(status)} · ${escapeHtml(task)}</small><small>${event ? `${escapeHtml(event.type.replace("local_fault_loop.", ""))} · ${escapeHtml(formatTime(event.recorded_at))}${Number.isSafeInteger(event.payload?.duration_ms) ? ` · ${event.payload.duration_ms}ms` : ""}` : "No event yet"}</small><small>${escapeHtml(String(output).slice(0, 180))}</small>${citations.length ? `<code>${escapeHtml(citations.slice(0, 3).join(" · "))}</code>` : ""}</div></article>`;
+  };
+  const planCard = plan ? `<section class="recovery-diagnosis"><div class="diagnosis-state"><span>Proposed reversible remediation</span><strong>${escapeHtml(plan.payload.repair)}</strong><small>${escapeHtml(plan.payload.target)} · risk ${escapeHtml(plan.payload.risk)}</small></div><p>Before: ${escapeHtml(fault?.payload?.fault || "bounded fault condition")}. After: ${escapeHtml(repair?.payload?.result || "pending execution")}. Rollback: ${repair?.payload?.rollback_available ? "available" : "not executed"}. Authority: ${escapeHtml(gate?.payload?.outcome || "not decided")}.</p>${plan.evidence_refs.length ? `<div class="citation-list">${plan.evidence_refs.map((id) => `<button type="button" class="citation" data-shared-evidence-id="${escapeHtml(id)}">${escapeHtml(id)}</button>`).join("")}</div>` : ""}</section>` : "";
+  const verificationCard = verification ? `<section class="recovery-graph-panel recovery-workflow-facts"><header><div><span>Independent quality gates</span><strong>${verification.payload.passed ? "Passed" : "Not passed"}</strong></div><small>${escapeHtml(verification.payload.recovery_slo?.observed || "verification recorded")}</small></header><div class="recovery-workflow-nodes">${(verification.payload.checks || []).map((check) => `<article class="recovery-workflow-node is-${check.passed ? "verified" : "rejected"}"><div><strong>${escapeHtml(check.id)}</strong><small>${check.passed ? "passed" : "failed"}</small></div></article>`).join("")}</div>${verification.evidence_refs.length ? `<div class="citation-list">${verification.evidence_refs.map((id) => `<button type="button" class="citation" data-shared-evidence-id="${escapeHtml(id)}">${escapeHtml(id)}</button>`).join("")}</div>` : ""}</section>` : "";
+  els["canvas-layers"].innerHTML = `<div class="recovery-console-layout" data-shared-run="${escapeHtml(shared.run_id)}">${planCard}<section class="recovery-graph-panel recovery-workflow-facts" aria-label="Event-driven collaboration"><header><div><span>Collaboration</span><strong>${escapeHtml(shared.stage)}</strong></div><small>${escapeHtml(shared.run_id)}</small></header><div class="recovery-workflow-nodes">${roles.map(roleCard).join("")}</div>${handoffs.length ? `<div class="citation-list">${handoffs.map((event) => `<span class="citation">${escapeHtml(`${event.payload.from} → ${event.payload.to}`)}</span>`).join("")}</div>` : ""}</section>${verificationCard}</div>`;
+  setAnnotations(sharedRunAnnotations(shared));
+  els["compare-handle"].hidden = true;
+  els["compare-canvas-range"].hidden = true;
+  els["twin-canvas"].setAttribute("aria-label", `Recovery Console for canonical run ${shared.run_id}.`);
 }
 
 function renderTwinLayer(frame, layerName, interactive, { runtimeOnly = false } = {}) {
@@ -874,6 +1109,25 @@ function updateCompareFromPointer(clientX) {
 }
 
 function renderTimeline() {
+  const shared = sharedRunModel();
+  if (shared) {
+    const events = shared.events;
+    const currentIndex = Math.max(0, Math.min(cursor, Math.max(0, events.length - 1)));
+    const markers = sharedTimelineMarkers(events);
+    els["stage-track"].style.setProperty("--stage-count", String(Math.max(1, markers.length)));
+    els["stage-track"].innerHTML = markers.map((marker) => `<button class="stage-marker stage-${escapeHtml(marker.stage)} stage-group-incident ${marker.index <= currentIndex ? "is-available" : ""} ${marker.index === currentIndex ? "is-current" : ""}" type="button" data-shared-event-index="${marker.index}"><span>${escapeHtml(formatTime(marker.event.recorded_at))}</span><strong>${escapeHtml(marker.label)}</strong></button>`).join("");
+    for (const button of els["stage-track"].querySelectorAll("[data-shared-event-index]")) button.addEventListener("click", () => seekSharedEvent(Number(button.dataset.sharedEventIndex)));
+    els["timeline-range"].max = String(Math.max(0, events.length - 1));
+    els["timeline-range"].value = String(currentIndex);
+    els["timeline-range"].disabled = events.length < 2;
+    const event = events[currentIndex];
+    els["timeline-time"].textContent = event ? formatTime(event.recorded_at) : "Awaiting event";
+    els["timeline-title"].textContent = event ? sharedEventLabel(event) : "Awaiting canonical event";
+    els["timeline-copy"].textContent = event ? `Sequence ${event.sequence} · ${event.actor} · ${event.evidence_refs.length} cited record${event.evidence_refs.length === 1 ? "" : "s"}` : "The server has reserved the run; no event has arrived yet.";
+    els["compare-control"].hidden = mode !== "compare";
+    els["timeline-current"].hidden = mode === "compare";
+    return;
+  }
   const available = availableStage(state.events);
   const stages = timelineStages();
   const visible = stages.slice(0, available + 1);
@@ -895,6 +1149,39 @@ function renderTimeline() {
   els["timeline-current"].hidden = mode === "compare";
 }
 
+function sharedTimelineMarkers(events) {
+  const meaningful = new Set([
+    "local_fault_loop.baseline.captured", "local_fault_loop.fault.injected", "local_fault_loop.observer.detected",
+    "local_fault_loop.handoff.recorded", "local_fault_loop.role.working", "local_fault_loop.tool.requested", "local_fault_loop.tool.completed", "local_fault_loop.role.response", "local_fault_loop.hypothesis.proposed",
+    "local_fault_loop.hypothesis.accepted", "local_fault_loop.evaluation.rejected", "local_fault_loop.evaluation.accepted",
+    "local_fault_loop.plan.proposed", "local_fault_loop.authority.decided", "local_fault_loop.repair.executed",
+    "local_fault_loop.verification.completed", "local_fault_loop.recovered", "local_fault_loop.stopped", "local_fault_loop.failed",
+    "agent_team.message.received", "agent_team.handoff.recorded", "agent_team.tool.requested", "agent_team.tool.result.recorded", "agent_team.response.working", "agent_team.response.created"
+  ]);
+  return events.map((event, index) => ({ event, index, stage: event.payload?.stage || "event", label: sharedEventLabel(event) })).filter(({ event }) => meaningful.has(event.type)).slice(-32);
+}
+
+function sharedEventLabel(event) {
+  const payload = event.payload || {};
+  if (event.type.endsWith("handoff.recorded")) return `${payload.from || event.actor} → ${payload.to || "next role"}`;
+  if (event.type === "local_fault_loop.role.response") return `${payload.role || event.actor} response`;
+  if (event.type === "local_fault_loop.role.working") return `${payload.role || event.actor} started`;
+  if (event.type === "local_fault_loop.tool.requested") return `${payload.role || event.actor} requested ${Array.isArray(payload.tools) ? payload.tools.join(", ") : "bounded tools"}`;
+  if (event.type === "local_fault_loop.tool.completed") return `${payload.role || event.actor} received bounded evidence`;
+  if (event.type === "agent_team.tool.requested") return `${event.actor} requested ${payload.tool || "tool"}`;
+  if (event.type === "agent_team.tool.result.recorded") return `${event.actor} received ${payload.result_count || 0} result${payload.result_count === 1 ? "" : "s"}`;
+  if (event.type === "agent_team.response.created") return `${payload.responding_agent || event.actor} answered`;
+  return event.type.replace("local_fault_loop.", "").replaceAll(".", " ");
+}
+
+function seekSharedEvent(index) {
+  const events = sharedRunModel()?.events || [];
+  cursor = Math.max(0, Math.min(events.length - 1, Number(index) || 0));
+  sharedRunFollowing = cursor >= events.length - 1;
+  stopPlayback();
+  render();
+}
+
 function nextTimelineRequirement(index) {
   return ({
     0: "awaiting deployed-change evidence",
@@ -908,6 +1195,15 @@ function nextTimelineRequirement(index) {
 }
 
 function renderApproval() {
+  const shared = sharedRunModelAtCursor();
+  if (shared) {
+    const visible = shared.state === "needs_human";
+    els["approval-banner"].hidden = !visible;
+    els["incident-strip"].hidden = true;
+    els["approval-copy"].textContent = visible ? "Evidence is insufficient. No repair or comparison was executed." : "Repair authority remains bounded to the isolated fixture event stream.";
+    els["recovery-status-button"].textContent = shared.workspace_actions.open_recovery_console.available ? "View recovery status" : "Recovery awaiting evidence";
+    return;
+  }
   const visible = state.waiting_for_approval && (mode === "live" || (mode === "replay" && cursor >= 5));
   const activeIncident = state.mode === "development" && activeIncidentState(state.events);
   els["approval-banner"].hidden = !visible;
@@ -1027,6 +1323,14 @@ function handleOperationsTeamRail(event) {
     openDrawer({ type: "node", id: inspectorFocus.dataset.focusEntity }, "overview");
     return;
   }
+  const sharedEvidence = event.target.closest("[data-shared-evidence-id]");
+  if (sharedEvidence) {
+    const componentId = canonicalSelectedComponent() || "checkout";
+    if (agentTeam.panel === "session") closeAgentTeamSession({ restoreInspector: false });
+    selected = null;
+    openDrawer({ type: "node", id: componentId }, "evidence");
+    return;
+  }
   const askObserver = event.target.closest("[data-ask-observer]");
   if (askObserver) {
     void openAgentTeamSession("observer", { restoreInspector: true, inspectorSnapshot: captureLiveInspectorSnapshot() });
@@ -1105,7 +1409,9 @@ function liveNodeInspectorRailMarkup() {
   if (!inspector) return liveNodeInspectorUnavailableMarkup(context);
   const status = sourceStatusLabel(context.status, inspector.runtime.status);
   const freshness = inspector.runtime.freshness_ms == null ? null : formatAge(inspector.runtime.freshness_ms);
-  const sourceLine = [inspector.runtime.label, freshness ? `captured ${freshness} ago` : null].filter(Boolean).join(" · ");
+  const sourceLine = sharedRunModel()
+    ? "isolated fixture evidence"
+    : [inspector.runtime.label, freshness ? `captured ${freshness} ago` : null].filter(Boolean).join(" · ");
   return `<section class="architecture-system architecture-flowpulse-system live-node-inspector" aria-label="${escapeHtml(inspector.component.label)} live inspector">
     <header class="live-node-inspector-header">
       <span class="node-icon" aria-hidden="true"><i class="ph ph-${iconForLive(inspector.component)}"></i></span>
@@ -1118,7 +1424,7 @@ function liveNodeInspectorRailMarkup() {
     </div>
     <div class="live-node-inspector-body" data-live-inspector-scroll>
       ${liveInspectorPurposeMarkup(inspector)}
-      ${liveInspectorPulseMarkup(inspector.live_pulse)}
+      ${liveInspectorPulseMarkup(sharedInspectorPulse(inspector))}
       ${liveInspectorEventStreamMarkup(inspector.event_stream)}
       ${liveInspectorDependenciesMarkup(inspector.dependencies)}
       ${liveInspectorEvidenceMarkup(inspector.evidence)}
@@ -1143,6 +1449,17 @@ function liveNodeInspectorUnavailableMarkup(context) {
 
 function liveInspectorPurposeMarkup(inspector) {
   return `<section class="live-inspector-section live-inspector-purpose"><span>Operational role</span><strong>${escapeHtml(inspector.purpose.business_role)}</strong><p>${escapeHtml(inspector.purpose.description)}</p></section>`;
+}
+
+function sharedInspectorPulse(inspector) {
+  const shared = sharedRunModelAtCursor();
+  const current = shared?.selected_component === inspector.component.id ? shared.metric_samples.current : null;
+  if (!current) return inspector.live_pulse;
+  return [
+    { kind: "Checkout error rate", title: "Checkout error rate", value: current.checkout_error_rate_percent, unit: "%", observed_at: current.recorded_at },
+    { kind: "Payment reachability", title: "Payment reachability", value: current.payment_reachability_percent, unit: "%", observed_at: current.recorded_at },
+    { kind: "Kafka lag", title: "Kafka lag", value: current.kafka_lag, unit: "", observed_at: current.recorded_at }
+  ];
 }
 
 function liveInspectorPulseMarkup(items) {
@@ -1198,6 +1515,36 @@ function workspaceSummaryRailMarkup() {
 
 function workspaceSummaryModel(report) {
   const compact = (facts) => facts.filter(([, value]) => typeof value === "string" && value.trim()).slice(0, 5);
+  const shared = sharedRunModelAtCursor();
+  if (shared) {
+    const events = shared.events;
+    const accepted = [...events].reverse().find((event) => event.type === "local_fault_loop.hypothesis.accepted");
+    const plan = [...events].reverse().find((event) => event.type === "local_fault_loop.plan.proposed");
+    const verification = [...events].reverse().find((event) => event.type === "local_fault_loop.verification.completed");
+    if (mode === "replay") return {
+      title: "Live investigation",
+      status: accepted ? "Causal evidence is under evaluator review" : "Roles are collecting bounded evidence",
+      tone: accepted ? "observed" : "active",
+      facts: compact([["Run", shared.run_id], ["Selected node", shared.selected_component], ["Current stage", shared.stage], ["Causal hypothesis", accepted?.payload?.claim || "Not yet established"], ["Evidence", `${shared.citations.length} cited records`]]),
+      actions: [{ label: "Ask Investigator", role: "investigator" }, { label: "Ask Observer", role: "observer" }, { label: "View cited evidence", kind: "evidence" }]
+    };
+    if (mode === "agents") return {
+      title: "Event-driven recovery",
+      status: plan ? "Remediation is projected from this run" : "Recovery is locked until a plan is recorded",
+      tone: verification?.payload?.passed ? "verified" : plan ? "active" : "idle",
+      facts: compact([["Proposed repair", plan?.payload?.repair || "Not recorded"], ["Risk", plan?.payload?.risk || "Not recorded"], ["Authority", events.find((event) => event.type === "local_fault_loop.authority.decided")?.payload?.outcome || "Not decided"], ["Verification", verification?.payload?.passed ? "Passed" : "Pending"], ["Evidence", `${shared.citations.length} cited records`]]),
+      actions: [{ label: "Ask Orchestrator", role: "orchestrator" }, { label: "Ask Evaluator", role: "evaluator" }]
+    };
+    return {
+      title: "Verification comparison",
+      status: shared.state === "recovered" ? "Baseline, incident, and verified samples are server-recorded" : "Compare remains locked until independent verification",
+      tone: shared.state === "recovered" ? "verified" : "standby",
+      available: shared.state === "recovered",
+      empty: "Compare is unavailable until the backend records an implemented repair and independent verification.",
+      facts: compact([["Recovery verdict", shared.state === "recovered" ? "Verified" : "Not verified"], ["Verification", verification?.payload?.passed ? "All checks passed" : "Not recorded"], ["Rollback", events.some((event) => event.type === "local_fault_loop.repair.rolled_back") ? "Executed" : "Not needed"], ["Evidence", `${shared.citations.length} cited records`]]),
+      actions: [{ label: "Ask Evaluator", role: "evaluator" }]
+    };
+  }
   const verdict = report.verification ? "Verified" : report.human_gate ? "Human gate required" : report.stage || "Awaiting server projection";
   if (mode === "replay") return {
     title: "Diagnosis Summary",
@@ -1300,7 +1647,7 @@ function agentTeamSessionMarkup(controls) {
     ${agentTeam.error ? `<p class="agent-team-error" role="alert">${escapeHtml(agentTeam.error)}</p>` : ""}
     <section class="agent-team-timeline" aria-live="polite">${agentTeamTimelineMarkup()}</section>
     ${agentTeamWorkspaceActionsMarkup()}
-    ${canCompose ? `<form class="agent-team-composer" data-agent-team-composer><input name="message" maxlength="1500" required autocomplete="off" placeholder="Ask ${escapeHtml(node.label)}" ${agentTeam.sending ? "disabled" : ""}/><button type="submit" data-agent-team-send ${agentTeam.sending ? "disabled" : ""}>${agentTeam.sending ? "Sending…" : "Send"}</button></form>` : `<p class="agent-team-readonly">Evidence Ledger is read-only. It records cited evidence, hashes, and provenance.</p>`}
+    ${canCompose ? `<form class="agent-team-composer" data-agent-team-composer><input name="message" maxlength="1500" required autocomplete="off" placeholder="Ask ${escapeHtml(node.label)} about ${escapeHtml(component || "the selected node")}" ${agentTeam.sending ? "disabled" : ""}/><button type="submit" data-agent-team-send ${agentTeam.sending ? "disabled" : ""}>${agentTeam.sending ? "Sending…" : "Send"}</button></form><div class="agent-team-suggestions"><button type="button" data-agent-team-suggestion="Why is this red?">Why is this red?</button><button type="button" data-agent-team-suggestion="What evidence would change this conclusion?">What evidence would change this conclusion?</button></div>` : `<p class="agent-team-readonly">Evidence Ledger is read-only. It records cited evidence, hashes, and provenance.</p>`}
   </section>`;
 }
 
@@ -1315,8 +1662,12 @@ function boundedListMarkup(label, items) {
 }
 
 function agentTeamTimelineMarkup() {
-  const messages = agentTeam.conversation?.messages || [];
-  const loopItems = agentTeam.loop_items || [];
+  const shared = sharedRunModelAtCursor();
+  const throughSequence = shared?.events.at(-1)?.sequence || Number.POSITIVE_INFINITY;
+  const messages = (agentTeam.conversation?.messages || []).filter((message) => message.sequence <= throughSequence);
+  const loopItems = shared
+    ? shared.events.reduce((items, event) => appendLoopTimelineItem(items, event), [])
+    : agentTeam.loop_items || [];
   const entries = [...messages.map((message) => ({ source: "conversation", sequence: message.sequence, message })), ...loopItems.map((item) => ({ source: "loop", sequence: item.sequence, item }))]
     .sort((left, right) => left.sequence - right.sequence)
     .slice(-32);
@@ -1326,8 +1677,10 @@ function agentTeamTimelineMarkup() {
 
 function agentTeamMessageMarkup(message) {
   if (message.kind === "handoff") return `<article class="agent-team-entry is-handoff"><strong>${escapeHtml(message.from)} → ${escapeHtml(message.to)}</strong><p>${escapeHtml(message.reason)}</p></article>`;
-  if (message.kind === "assistant") return `<article class="agent-team-entry is-answer"><strong>${escapeHtml(message.responding_agent)}</strong><p>${escapeHtml(message.text)}</p>${message.citations?.length ? `<details class="agent-team-citations"><summary>${message.citations.length} cited record${message.citations.length === 1 ? "" : "s"}</summary><div>${message.citations.map((ref) => `<code>${escapeHtml(ref)}</code>`).join("")}</div></details>` : ""}</article>`;
+  if (message.kind === "assistant") return `<article class="agent-team-entry is-answer"><strong>${escapeHtml(message.responding_agent)}</strong><p>${escapeHtml(message.text)}</p>${agentTeamCitationMarkup(message.citations)}</article>`;
   if (message.kind === "user") return `<article class="agent-team-entry is-user"><strong>You → ${escapeHtml(message.requested_agent)}</strong><p>${escapeHtml(message.text)}</p></article>`;
+  if (message.kind === "tool_request") return `<article class="agent-team-entry is-tool"><strong>${escapeHtml(message.agent)}</strong><p>Requested ${escapeHtml(message.tool)} for ${escapeHtml(message.component_id)}.</p></article>`;
+  if (message.kind === "tool_result") return `<article class="agent-team-entry is-tool"><strong>${escapeHtml(message.agent)}</strong><p>${escapeHtml(message.tool)} returned ${message.result_count} bounded record${message.result_count === 1 ? "" : "s"}.</p>${agentTeamCitationMarkup(message.citations)}</article>`;
   if (message.kind === "tool_summary") return `<article class="agent-team-entry is-tool"><strong>${escapeHtml(message.agent)}</strong><p>${message.tools.map((tool) => `${escapeHtml(tool.tool)} · ${tool.result_count}`).join(" · ")}</p></article>`;
   if (message.kind === "working") return `<article class="agent-team-entry is-state"><strong>${escapeHtml(message.responding_agent)}</strong><p>Working from cited, bounded evidence.</p></article>`;
   if (message.kind === "context") return `<article class="agent-team-entry is-state"><strong>${escapeHtml(message.agent)}</strong><p>Context prepared from the current server projection.</p></article>`;
@@ -1338,12 +1691,17 @@ function agentTeamMessageMarkup(message) {
 
 function agentLoopItemMarkup(item) {
   if (item.kind === "handoff") return `<article class="agent-team-entry is-handoff"><strong>${escapeHtml(item.from)} → ${escapeHtml(item.to)}</strong><p>${escapeHtml(item.reason)}</p></article>`;
-  if (item.kind === "answer") return `<article class="agent-team-entry is-answer"><strong>${escapeHtml(item.role)}</strong><p>${escapeHtml(item.answer)}</p>${item.citations.length ? `<details class="agent-team-citations"><summary>${item.citations.length} cited record${item.citations.length === 1 ? "" : "s"}</summary><div>${item.citations.map((ref) => `<code>${escapeHtml(ref)}</code>`).join("")}</div></details>` : ""}</article>`;
+  if (item.kind === "answer") return `<article class="agent-team-entry is-answer"><strong>${escapeHtml(item.role)}</strong><p>${escapeHtml(item.answer)}</p>${agentTeamCitationMarkup(item.citations)}</article>`;
   return `<article class="agent-team-entry is-state"><strong>${escapeHtml(item.label)}</strong></article>`;
 }
 
+function agentTeamCitationMarkup(citations) {
+  if (!Array.isArray(citations) || !citations.length) return "";
+  return `<details class="agent-team-citations"><summary>${citations.length} cited record${citations.length === 1 ? "" : "s"}</summary><div>${citations.map((ref) => `<button type="button" class="citation" data-shared-evidence-id="${escapeHtml(ref)}">${escapeHtml(ref)}</button>`).join("")}</div></details>`;
+}
+
 function agentTeamWorkspaceActionsMarkup() {
-  const actions = agentTeam.loop?.contextual_workspaces?.actions;
+  const actions = sharedRunModelAtCursor()?.workspace_actions || agentTeam.loop?.contextual_workspaces?.actions;
   if (!actions) return "";
   const labels = {
     view_diagnosis: "View Diagnosis",
@@ -1385,7 +1743,7 @@ function persistAgentTeamState() {
 async function restoreAgentTeamSession() {
   if (agentTeamRestoreAttempted || agentTeam.panel !== "session" || !state) return;
   agentTeamRestoreAttempted = true;
-  if (agentTeam.run_id !== state.run_id || agentTeam.incident_id !== agentTeamIncidentId()) {
+  if (agentTeam.run_id !== canonicalRunId() || agentTeam.incident_id !== agentTeamIncidentId()) {
     agentTeam = { ...restoreAgentTeamState(), panel: "home", role: null, conversation_id: null, run_id: null, incident_id: null };
     persistAgentTeamState();
     renderOperationsTeamRail();
@@ -1399,20 +1757,21 @@ function workspaceLabel() {
 }
 
 function sourceTruthLabel() {
+  if (sharedRunModel()) return "ISOLATED FIXTURE EVIDENCE";
   const view = mode === "live" ? liveTopologyView() : architectureView();
   return view?.truth?.label || state?.topology_views?.truth?.label || null;
 }
 
 function agentTeamConversationId() {
   if (agentTeam.conversation_id) return agentTeam.conversation_id;
-  const runId = state?.run_id;
+  const runId = canonicalRunId();
   if (!runId) return null;
   const suffix = runId.replace(/[^A-Za-z0-9._:-]/g, "-").slice(-110);
   return `conversation-${suffix}`;
 }
 
 function agentTeamIncidentId() {
-  return state?.incident?.id || state?.topology_views?.incident_id || null;
+  return canonicalIncidentId() || state?.topology_views?.incident_id || null;
 }
 
 async function openAgentTeamSession(role, { restoreInspector = false, inspectorSnapshot = null } = {}) {
@@ -1423,14 +1782,14 @@ async function openAgentTeamSession(role, { restoreInspector = false, inspectorS
   }
   const controls = controlSystemNodes();
   const incidentId = agentTeamIncidentId();
-  if (!controls.some((node) => node.id === role) || !state?.run_id || !incidentId) return;
+  if (!controls.some((node) => node.id === role) || !canonicalRunId() || !incidentId) return;
   agentTeamEventSource?.close();
   agentTeam = {
     ...agentTeam,
     panel: "session",
     role,
     conversation_id: agentTeamConversationId(),
-    run_id: state.run_id,
+    run_id: canonicalRunId(),
     incident_id: incidentId,
     error: null,
     sending: false,
@@ -1465,18 +1824,18 @@ function closeAgentTeamSession({ restoreInspector = false } = {}) {
   if (restore) ensureSelectedLiveComponentDetail();
 }
 
-async function hydrateAgentTeamSession() {
+async function hydrateAgentTeamSession({ stream = true } = {}) {
   if (agentTeam.panel !== "session" || !agentTeam.conversation_id) return;
   try {
     const [providerPayload, conversationPayload] = await Promise.all([
       request("/api/agent-control/provider"),
-      request(`/api/agent-control/conversation?conversation_id=${encodeURIComponent(agentTeam.conversation_id)}`)
+      request(`/api/agent-control/conversation?run_id=${encodeURIComponent(agentTeam.run_id)}&conversation_id=${encodeURIComponent(agentTeam.conversation_id)}`)
     ]);
     const provider = agentTeamProviderProjection(providerPayload);
     const conversation = agentTeamConversationProjection(conversationPayload, { conversationId: agentTeam.conversation_id });
     if (!provider || !conversation) throw new Error("Agent Team response is incompatible with the safe browser contract.");
     agentTeam = { ...agentTeam, provider, conversation, error: null };
-    connectAgentTeamConversationStream();
+    if (stream && !sharedRunModel()) connectAgentTeamConversationStream();
   } catch (error) {
     agentTeam = { ...agentTeam, error: error.message || "Agent Team is unavailable." };
   }
@@ -1508,7 +1867,7 @@ function connectAgentTeamConversationStream() {
 async function sendAgentTeamMessage(value) {
   const message = String(value || "").trim();
   if (!message || agentTeam.panel !== "session" || agentTeam.role === "ledger" || agentTeam.sending || !agentTeam.conversation_id || !agentTeam.run_id || !agentTeam.incident_id) return;
-  const selectedComponent = selected?.type === "node" ? selected.id : null;
+  const selectedComponent = canonicalSelectedComponent();
   agentTeam = { ...agentTeam, sending: true, error: null };
   renderOperationsTeamRail();
   try {
@@ -1536,7 +1895,7 @@ async function sendAgentTeamMessage(value) {
 }
 
 async function runAgentTeamDemo() {
-  if (agentTeam.starting) return;
+  if (agentTeam.starting || (sharedRunModel() && !sharedRunTerminal())) return;
   agentTeam = { ...agentTeam, starting: true, error: null };
   renderOperationsTeamRail();
   try {
@@ -1547,8 +1906,10 @@ async function runAgentTeamDemo() {
     });
     const loop = agentLoopStartProjection(payload);
     if (!loop) throw new Error("Demo loop response is incompatible with the safe browser contract.");
+    sharedRun = { run_id: loop.run_id, incident_id: loop.incident_id, loop: null, last_sequence: 0, error: null };
     agentTeam = { ...agentTeam, loop, loop_items: [], loop_after: 0, starting: false };
-    connectAgentLoopStream();
+    persistSharedRun();
+    await hydrateSharedRun();
   } catch (error) {
     agentTeam = { ...agentTeam, starting: false, error: error.message || "Demo loop is unavailable." };
   }
@@ -1556,40 +1917,7 @@ async function runAgentTeamDemo() {
 }
 
 function connectAgentLoopStream() {
-  if (!agentTeam.loop?.run_id || typeof EventSource !== "function") return;
-  agentLoopEventSource?.close();
-  agentLoopEventSource = new EventSource(`/api/demo/agent-loop/events?run_id=${encodeURIComponent(agentTeam.loop.run_id)}&after=${agentTeam.loop_after || 0}`);
-  agentLoopEventSource.addEventListener("local-fault-loop", (event) => {
-    try {
-      const projection = agentLoopEventProjection(JSON.parse(event.data), { runId: agentTeam.loop.run_id });
-      if (!projection) throw new Error("Demo loop stream schema mismatch.");
-      const item = safeAgentLoopTimelineItem(projection.event);
-      const after = Number(event.lastEventId || 0);
-      agentTeam = {
-        ...agentTeam,
-        loop: { ...agentTeam.loop, contextual_workspaces: projection.contextual_workspaces },
-        loop_after: Number.isSafeInteger(after) && after > agentTeam.loop_after ? after : agentTeam.loop_after,
-        loop_items: item && !agentTeam.loop_items.some((entry) => entry.id === item.id) ? [...agentTeam.loop_items, item].slice(-64) : agentTeam.loop_items
-      };
-      renderOperationsTeamRail();
-    } catch {
-      agentLoopEventSource?.close();
-      agentTeam = { ...agentTeam, error: "Demo loop stream is unavailable because its response was incompatible." };
-      renderOperationsTeamRail();
-    }
-  });
-  agentLoopEventSource.addEventListener("local-fault-loop-state", async () => {
-    try {
-      const payload = await request(`/api/demo/agent-loop?run_id=${encodeURIComponent(agentTeam.loop.run_id)}`);
-      const loop = agentLoopProjection(payload, { runId: agentTeam.loop.run_id });
-      if (!loop) throw new Error("Demo loop state is incompatible with the safe browser contract.");
-      agentTeam = { ...agentTeam, loop };
-    } catch {
-      agentTeam = { ...agentTeam, error: "Final demo loop state is unavailable." };
-    }
-    renderOperationsTeamRail();
-  });
-  agentLoopEventSource.onerror = () => {};
+  connectSharedRunStream();
 }
 
 function safeAgentLoopTimelineItem(event) {
@@ -1778,6 +2106,7 @@ function renderLiveComponentDetail(context, tab) {
     <dl class="live-component-facts">${statusFacts.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("")}</dl>
     ${dependencySections}
     ${signalSections}
+    ${liveComponentDataResourcesMarkup(detail.data_resources)}
     ${evidenceSections}
     <button type="button" class="live-agent-ask" data-ask-observer="${escapeHtml(detail.component.id)}">Ask Observer</button>
   </section>${liveAgentAssessment(context)}`;
@@ -1801,9 +2130,14 @@ function liveComponentObservabilitySections(observability) {
   return [
     group("Metrics", observability.metrics, metricValue),
     group("Traces", observability.traces, traceValue),
-    group("Recorded log events", observability.logs, () => "Sanitized event metadata"),
+    group("Recorded log events", observability.logs, (item) => item.summary || "Sanitized event metadata"),
     group("Configuration changes", observability.changes, changeValue)
   ].join("");
+}
+
+function liveComponentDataResourcesMarkup(resources) {
+  if (!Array.isArray(resources) || !resources.length) return "";
+  return `<section class="live-component-section"><span>Bounded data resources</span><div class="live-component-observability">${resources.map((resource) => `<article><strong>${escapeHtml(resource.kind)}</strong><p>${escapeHtml(resource.name || resource.id || "Canonical resource")}</p>${resource.consumer_group ? `<small>consumer group · ${escapeHtml(resource.consumer_group)}</small>` : ""}</article>`).join("")}</div></section>`;
 }
 
 function liveComponentEvidenceSections(detail) {
@@ -1920,6 +2254,8 @@ function renderEvolveDetail(events) {
 }
 
 function projectedEvents() {
+  const shared = sharedRunModelAtCursor();
+  if (shared) return shared.events;
   if (mode !== "replay") return state.events;
   return eventsAtStage(state.events, cursor);
 }
@@ -1955,6 +2291,12 @@ function selectionEntities() {
 }
 
 function handleCanvasSelection(event) {
+  const sharedEvidence = event.target.closest("[data-shared-evidence-id]");
+  if (sharedEvidence) {
+    selected = null;
+    openDrawer({ type: "node", id: canonicalSelectedComponent() || "checkout" }, "evidence");
+    return;
+  }
   const architectureDetailSurface = event.target.closest("[data-architecture-detail-id], [data-control-detail-id]");
   if (architectureDetailSurface) {
     closeArchitectureDetail({ restoreFocus: false });
@@ -2021,6 +2363,20 @@ function handleDrawerEntityFocus(event) {
     void openAgentTeamSession("observer", { restoreInspector: true, inspectorSnapshot: captureLiveInspectorSnapshot() });
     return;
   }
+  const suggestion = event.target.closest("[data-agent-team-suggestion]");
+  if (suggestion) {
+    const input = els["operations-team-rail"].querySelector("[data-agent-team-composer] input[name=message]");
+    if (input) {
+      input.value = suggestion.dataset.agentTeamSuggestion || "";
+      input.focus();
+    }
+    return;
+  }
+  const sharedEvidence = event.target.closest("[data-shared-evidence-id]");
+  if (sharedEvidence) {
+    openDrawer({ type: "node", id: canonicalSelectedComponent() || "checkout" }, "evidence");
+    return;
+  }
   const target = event.target.closest("[data-focus-entity]");
   if (target) openDrawer({ type: "node", id: target.dataset.focusEntity }, "overview");
 }
@@ -2055,14 +2411,24 @@ function closeDrawer() {
 function setMode(nextMode) {
   stopPlayback();
   if (!state) return;
+  const shared = sharedRunModel();
+  const actionByMode = { replay: "view_diagnosis", agents: "open_recovery_console", compare: "compare_recovery" };
+  const requiredAction = actionByMode[nextMode];
+  if (shared && requiredAction && shared.workspace_actions?.[requiredAction]?.available !== true) {
+    showToast(`This workspace is unavailable until ${shared.workspace_actions?.[requiredAction]?.prerequisites?.filter((item) => !item.satisfied).map((item) => item.id.replaceAll("_", " ")).join(" and ") || "its server prerequisites are recorded"}.`);
+    return;
+  }
   if (!isSelectionValidForMode(selected, nextMode)) {
     selected = null;
     liveInspector = emptyLiveInspector();
   }
   mode = nextMode;
   if (architectureDetail?.scope !== mode) architectureDetail = null;
-  if (mode === "live" || mode === "agents") cursor = availableStage(state.events);
+  if (shared && sharedRunFollowing) cursor = Math.max(0, shared.events.length - 1);
+  else if (mode === "live" || mode === "agents") cursor = availableStage(state.events);
   render();
+  ensureSelectedLiveComponentDetail();
+  if (shared && agentTeam.panel === "home" && (mode === "replay" || mode === "agents")) void openAgentTeamSession(mode === "replay" ? "investigator" : "orchestrator");
 }
 
 function configureCanvasWorld(active) {
@@ -2153,7 +2519,30 @@ async function togglePlayback() {
     return;
   }
   if (mode !== "replay") mode = "replay";
+  if (sharedRunModel()) {
+    await playSharedRunReplay();
+    return;
+  }
   await playReplay();
+}
+
+async function playSharedRunReplay() {
+  if (playing) return;
+  const events = sharedRunModel()?.events || [];
+  playing = true;
+  sharedRunFollowing = false;
+  render();
+  try {
+    while (playing && cursor < events.length - 1) {
+      cursor += 1;
+      render();
+      await wait(Math.max(180, Number(els["speed-select"].value) || 420));
+    }
+    sharedRunFollowing = cursor >= events.length - 1;
+  } finally {
+    playing = false;
+    render();
+  }
 }
 
 async function playReplay() {
@@ -2190,6 +2579,10 @@ async function playReplay() {
 
 async function stepForward() {
   stopPlayback();
+  if (sharedRunModel()) {
+    seekSharedEvent(cursor + 1);
+    return;
+  }
   if (mode !== "replay") mode = "replay";
   const available = availableStage(state.events);
   if (cursor < available) {
@@ -2217,6 +2610,10 @@ async function stepForward() {
 }
 
 function seek(index) {
+  if (sharedRunModel()) {
+    seekSharedEvent(index);
+    return;
+  }
   if (mode !== "replay") mode = "replay";
   const available = availableStage(state.events);
   cursor = Math.max(0, Math.min(available, Number(index) || 0));
@@ -2226,6 +2623,10 @@ function seek(index) {
 
 async function restartReplay() {
   stopPlayback();
+  if (sharedRunModel()) {
+    seekSharedEvent(0);
+    return;
+  }
   setBusy(true);
   try {
     state = await request("/api/reset", { method: "POST", body: "{}" });
@@ -2349,10 +2750,63 @@ async function mutate(path) {
 }
 
 function currentFrame() {
+  const shared = sharedRunModelAtCursor();
+  if (shared && mode !== "architecture") return sharedRunFrame(shared, cursor);
   return frameFor(mode === "live" ? availableStage(state?.events || []) : cursor);
 }
 
+function sharedRunFrame(shared, index) {
+  const base = frameFor(0);
+  const current = shared.metric_samples.current;
+  const nodes = { ...base.nodeStates, ...shared.node_statuses };
+  const edges = { ...base.edgeStates };
+  for (const edge of TWIN_EDGES) {
+    if (["checkout", "payment", "kafka", "accounting", "fraud"].includes(edge.from) || ["checkout", "payment", "kafka", "accounting", "fraud"].includes(edge.to)) {
+      edges[edge.id] = shared.state === "recovered" ? "verified" : shared.node_statuses.checkout === "impact" || shared.node_statuses.payment === "impact" ? "impact" : "quiet";
+    }
+  }
+  const metrics = current ? {
+    checkout: { value: `${current.checkout_error_rate_percent}%`, note: `${current.phase} evidence` },
+    payment: { value: `${current.payment_reachability_percent}%`, note: `${current.phase} evidence` },
+    kafka: { value: current.kafka_lag.toLocaleString(), note: `${current.phase} evidence` }
+  } : base.metrics;
+  const latest = shared.events.at(-1);
+  return {
+    ...base,
+    index,
+    stage: { id: shared.stage, label: shared.stage.replaceAll("-", " "), time: latest ? formatTime(latest.recorded_at) : "Awaiting event" },
+    nodeStates: nodes,
+    edgeStates: edges,
+    metrics,
+    annotations: sharedRunAnnotations(shared)
+  };
+}
+
+function sharedRunAnnotations(shared) {
+  const notes = [];
+  const has = (type) => shared.events.some((event) => event.type === type);
+  if (has("local_fault_loop.fault.injected")) notes.push({ id: "deploy", tone: "change", title: "Controlled fault injected", copy: "Bounded fixture fault recorded." });
+  if (has("local_fault_loop.observer.detected")) notes.push({ id: "propagation", tone: "impact", title: "Observer detected impact", copy: "Cited anomaly evidence opened the incident." });
+  if (has("local_fault_loop.hypothesis.accepted")) notes.push({ id: "root", tone: "root", title: "Causal hypothesis accepted", copy: "Change, mechanism, and timing support the initiating condition." });
+  if (has("local_fault_loop.verification.completed")) notes.push({ id: "recovery", role: "outcome", tone: shared.state === "recovered" ? "verified" : "warning", title: "Independent verification", copy: "Verification event controls recovery availability." });
+  return notes.slice(-2);
+}
+
 function updateControls() {
+  const shared = sharedRunModel();
+  if (shared) {
+    const max = Math.max(0, shared.events.length - 1);
+    const replayable = max > 0;
+    els["restart-button"].disabled = busy || !replayable;
+    els["back-button"].disabled = busy || playing || !replayable || cursor <= 0;
+    els["forward-button"].disabled = busy || playing || !replayable || cursor >= max;
+    els["play-button"].disabled = busy || !replayable || cursor >= max && !playing;
+    els["play-button"].textContent = playing ? "Pause replay" : cursor >= max ? "At current event" : "Play immutable history";
+    els["live-button"].disabled = busy || playing || (shared.state === "running" && agentTeam.starting);
+    els["details-button"].disabled = busy;
+    els["development-button"].disabled = true;
+    return;
+  }
   const replay = mode === "replay";
   els["restart-button"].disabled = busy || playing || !replay;
   els["back-button"].disabled = busy || playing || !replay || cursor === 0;
@@ -2442,6 +2896,8 @@ function timelineCopy(index) {
 }
 
 function modeStatus() {
+  const shared = sharedRunModelAtCursor();
+  if (shared) return ({ running: "Canonical run in progress", recovered: "Verified recovery recorded", needs_human: "Human evidence decision required", failed: "Canonical run failed" })[shared.state] || "Canonical run state";
   if (mode === "architecture") return architectureView() ? "Backend-owned architecture projection" : "Architecture projection unavailable";
   if (mode === "live") return sourceState().status === "live" ? "Fresh authoritative telemetry" : "Source truth preserved";
   if (mode === "agents") return `${agentControl().current_agent_id.replaceAll("_", " ")} · ledger synchronized`;
@@ -2452,6 +2908,8 @@ function modeStatus() {
 }
 
 function modeCaption(frame) {
+  const shared = sharedRunModelAtCursor();
+  if (shared) return `${shared.run_id} · ${shared.stage} · ${shared.events.length} ordered events · isolated fixture evidence`;
   if (mode === "architecture") {
     const view = architectureView();
     if (!view) return "Backend architecture projection unavailable";
@@ -2502,6 +2960,8 @@ function annotationTitle(id) {
 }
 
 function timelineStages() {
+  const shared = sharedRunModel();
+  if (shared) return sharedTimelineMarkers(shared.events).map(({ event, label }) => ({ id: event.id, label, time: formatTime(event.recorded_at) }));
   if (state?.mode !== "development") return TWIN_STAGES;
   return TWIN_STAGES.map((stage, index) => index === 3 ? { ...stage, label: "Wrong service blame rejected" } : stage);
 }
@@ -2525,6 +2985,7 @@ function nodeOrigin(node) {
   if (node.kind === "change") return "CHANGE RECORD";
   if (node.kind === "database") return "AUTHORITATIVE LEDGER";
   if (node.plane === "control") return "FLOWPULSE CONTROL";
+  if (sharedRunModel()) return "RUNTIME · ISOLATED EVIDENCE";
   return "RUNTIME · CAPTURED OTLP";
 }
 
@@ -2556,9 +3017,9 @@ function handleNavigation(tab) {
   closeWorkspaceMenu();
   for (const button of document.querySelectorAll("[data-nav-tab]")) button.classList.toggle("is-active", button.dataset.navTab === tab);
   if (tab === "map") closeDrawerWithoutFocus();
-  if (tab === "incidents") openDrawer({ type: "run", id: state?.run_id }, "agent");
-  if (tab === "changes") openDrawer({ type: "run", id: state?.run_id }, "changes");
-  if (tab === "evaluations") openDrawer({ type: "run", id: state?.run_id }, "eval");
+  if (tab === "incidents") openDrawer({ type: "run", id: canonicalRunId() }, "agent");
+  if (tab === "changes") openDrawer({ type: "run", id: canonicalRunId() }, "changes");
+  if (tab === "evaluations") openDrawer({ type: "run", id: canonicalRunId() }, "eval");
 }
 
 function sourceState() {
@@ -2581,13 +3042,14 @@ function sourceComponentContext(id) {
   const detailKey = liveComponentDetailKey(node.id, view?.projection_revision);
   const incoming = topology.edges.filter((edge) => edge.to === id).map((edge) => topology.nodes.find((item) => item.id === edge.from)).filter(Boolean);
   const outgoing = topology.edges.filter((edge) => edge.from === id).map((edge) => topology.nodes.find((item) => item.id === edge.to)).filter(Boolean);
+  const sharedStatus = sharedRunModelAtCursor()?.node_statuses?.[id] || null;
   return {
     node,
     profile: sourceComponentProfile(node, { sourceFacts: false }),
     incoming,
     outgoing,
     evidence: [],
-    status: node.connectivity === "unlinked" ? "unlinked" : node.status || "dormant",
+    status: node.connectivity === "unlinked" ? "unlinked" : sharedStatus || node.status || "dormant",
     source,
     detail: detailKey ? liveComponentDetails.get(detailKey) || null : null,
     detailLoading: detailKey ? pendingLiveComponentDetails.has(detailKey) : false,
@@ -2612,9 +3074,15 @@ async function requestLiveComponentDetail(id) {
     renderOperationsTeamRail();
   }
   try {
-    const value = await request(`/api/components/${encodeURIComponent(id)}`);
-    const detail = componentDetailProjection(value, { nodeId: id, topologyRevision: view.projection_revision });
-    if (!detail || liveTopologyView()?.projection_revision !== view.projection_revision) throw new Error("component_detail_unavailable");
+    const runId = canonicalRunId();
+    const value = await request(`/api/components/${encodeURIComponent(id)}?run_id=${encodeURIComponent(runId)}&window=15m&signal=all&limit=8`);
+    const { node_investigation: _nodeInvestigation, ...v1Detail } = value || {};
+    const detail = componentDetailProjection(v1Detail, { nodeId: id, topologyRevision: view.projection_revision });
+    // The response is already revision-bound to `view` above. Its cache key
+    // carries that revision, so a concurrent canonical-state refresh simply
+    // causes the next render to request the new key rather than rejecting a
+    // verified read that arrived during the refresh.
+    if (!detail) throw new Error("component_detail_unavailable");
     if (liveComponentDetails.size >= 22) liveComponentDetails.clear();
     liveComponentDetails.set(key, detail);
   } catch {
@@ -2956,6 +3424,8 @@ function liveSource(view) {
 }
 
 function captureLabel() {
+  const shared = sharedRunModel();
+  if (shared) return shared.state === "recovered" ? "LOCAL CODEX · VERIFIED" : "LOCAL CODEX · CANONICAL RUN";
   if (mode === "architecture") return architectureView()?.truth.label || "Architecture unavailable";
   if (mode === "live") return liveTopologyView()?.truth.label || "Live projection unavailable";
   if (mode === "agents") return agentControl().langfuse === "observing" ? "Agent traces live" : "Ledger agent view";
@@ -2964,6 +3434,7 @@ function captureLabel() {
 }
 
 function sourceOrigin(layout) {
+  if (sharedRunModel()) return "ISOLATED FIXTURE EVIDENCE";
   if (layout === "architecture") return architectureView()?.truth.label || "UNAVAILABLE";
   if (layout === "live") return liveTopologyView()?.truth.label || "UNAVAILABLE";
   const source = sourceState();

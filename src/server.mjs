@@ -78,23 +78,28 @@ const langfuseEnabled = await initializeObservability().catch(() => {
   return false;
 });
 const agentControl = new AgentControlService({ runtime, langfuseEnabled });
+let localFaultLoop;
 const agentTeamChat = new AgentTeamChatService({
   runtime,
+  stateForRun: (runId) => agentTeamStateForRun(runId),
+  incidentIdForRun: (runId) => localFaultLoopProjection(runId)?.incident_id || runtime.bundle.incident.id,
   contextForRun: async (_runtime, runId, request = {}) => {
-    const state = await stateWithSource(runId);
+    const loop = localFaultLoopProjection(runId);
+    const state = await stateWithSource(loop ? browserRunId() : runId);
     // The Agent Team receives the same canonical source-truth axes as the
     // browser topology view. A compatibility IncidentProjection can carry
     // legacy source metadata, but it must not make captured evidence sound
     // like a live source in a safe answer.
     const canonicalTruth = state.topology_views?.truth;
+    const baseIncidentProjection = loop ? localLoopIncidentProjection(loop, state.incident_projection) : state.incident_projection;
     const incidentProjection = canonicalTruth
       ? {
-          ...state.incident_projection,
+          ...baseIncidentProjection,
           source_health: canonicalTruth.source_health,
           evidence_mode: canonicalTruth.evidence_mode,
           execution_mode: canonicalTruth.execution_mode
         }
-      : state.incident_projection;
+      : baseIncidentProjection;
     const selectedComponent = typeof request.selected_component === "string" ? request.selected_component : null;
     const plane = await nodeInvestigationPlaneForRun(runId, state);
     const source = plane.source;
@@ -110,7 +115,7 @@ const agentTeamChat = new AgentTeamChatService({
       }
     }
     const sourceMetadata = source.metadata();
-    const sourceState = await sourceProjection(runId, source);
+    const sourceState = await sourceProjection(loop ? browserRunId() : runId, source);
     return {
       topology_views: state.topology_views,
       incident_projection: incidentProjection,
@@ -125,7 +130,7 @@ const agentTeamChat = new AgentTeamChatService({
     };
   }
 });
-const localFaultLoop = new LocalFaultLoop({
+localFaultLoop = new LocalFaultLoop({
   ledger,
   modelAdapter: agentTeamChat.modelAdapter,
   topologyProvider: async () => (await stateWithSource(browserRunId())).topology_views,
@@ -159,7 +164,7 @@ const server = createServer(async (request, response) => {
       if (!safeBrowserId(nodeId)) return json(response, 404, { error: "component_detail_unavailable" });
       const runId = url.searchParams.get("run_id") || browserRunId();
       if (!knownNodeRun(runId)) return json(response, 409, { error: "node_evidence_run_unavailable" });
-      const state = await stateWithSource(runId);
+      const state = await nodeStateForRun(runId);
       if (!state.topology_views) return json(response, 409, { error: "component_detail_unavailable" });
       try {
         const plane = await nodeInvestigationPlaneForRun(runId, state);
@@ -192,8 +197,10 @@ const server = createServer(async (request, response) => {
     }
     if (url.pathname === "/api/agent-control/conversation" && request.method === "GET") {
       const conversationId = url.searchParams.get("conversation_id");
+      const runId = url.searchParams.get("run_id") || browserRunId();
+      if (!knownAgentRun(runId)) return json(response, 409, { error: "conversation_run_unavailable" });
       try {
-        return json(response, 200, agentTeamChat.project({ runId: browserRunId(), conversationId }));
+        return json(response, 200, agentTeamChat.project({ runId, conversationId }));
       } catch (error) {
         if (error instanceof AgentTeamChatError) return json(response, error.status, { error: error.code });
         throw error;
@@ -1302,6 +1309,7 @@ function safeBrowserHash(value) { return validHash(value) ? value : null; }
 function safeBrowserEnum(value, allowed, fallback) { return allowed.includes(value) ? value : fallback; }
 
 async function selectedEvidenceSource(runId = runtime.ensureRun(), knownMode = null) {
+  if (localFaultLoopProjection(runId)) return capturedEvidence;
   if (snapshots.has(runId)) return snapshots.get(runId);
   const mode = knownMode || runMode(runId);
   if (mode === "replay") return capturedEvidence;
@@ -1331,19 +1339,72 @@ async function sourceProjection(runId = runtime.ensureRun(), source = null) {
 }
 
 async function nodeInvestigationPlaneForRun(runId, state = null) {
-  const current = state || await stateWithSource(runId);
+  const loop = localFaultLoopProjection(runId);
+  const current = state || await nodeStateForRun(runId);
   if (!current?.topology_views) throw new NodeInvestigationError("component_detail_unavailable", 409);
-  const source = await selectedEvidenceSource(runId, current.mode);
+  const source = loop ? capturedEvidence : await selectedEvidenceSource(runId, current.mode);
   return new NodeInvestigationPlane({
     topologyViews: current.topology_views,
     source,
-    sourceState: await sourceProjection(runId, source),
-    incidentProjection: current.incident_projection
+    sourceState: await sourceProjection(loop ? browserRunId() : runId, source),
+    incidentProjection: loop ? localLoopIncidentProjection(loop, current.incident_projection) : current.incident_projection
   });
 }
 
 function knownNodeRun(runId) {
-  return safeBrowserId(runId) !== null && ledger.list(runId).some((event) => event.type === "run.started" && event.incident_id === runtime.bundle.incident.id);
+  return safeBrowserId(runId) !== null && (Boolean(localFaultLoopProjection(runId)) || ledger.list(runId).some((event) => event.type === "run.started" && event.incident_id === runtime.bundle.incident.id));
+}
+
+function knownAgentRun(runId) {
+  return knownNodeRun(runId);
+}
+
+async function nodeStateForRun(runId) {
+  return stateWithSource(localFaultLoopProjection(runId) ? browserRunId() : runId);
+}
+
+function localFaultLoopProjection(runId) {
+  if (!localFaultLoop || !safeBrowserId(runId)) return null;
+  try {
+    return localFaultLoop.project(runId);
+  } catch (error) {
+    if (error instanceof LocalFaultLoopError) return null;
+    throw error;
+  }
+}
+
+function agentTeamStateForRun(runId) {
+  const loop = localFaultLoopProjection(runId);
+  if (!loop) return runtime.state(runId);
+  const browser = runtime.state(browserRunId());
+  return {
+    run_id: loop.run_id,
+    incident: { id: loop.incident_id },
+    stage: loop.stage,
+    status: loop.state,
+    waiting_for_approval: loop.state === "needs_human",
+    complete: ["recovered", "needs_human", "failed"].includes(loop.state),
+    events: loop.events,
+    topology: browser.topology
+  };
+}
+
+function localLoopIncidentProjection(loop, fallback = {}) {
+  const definition = loop.case_id === "insufficient-evidence" ? "Evidence gap" : "Checkout / payment incident";
+  return {
+    ...fallback,
+    run_id: loop.run_id,
+    incident: {
+      ...(fallback?.incident || {}),
+      id: loop.incident_id,
+      title: definition,
+      severity: loop.case_id === "insufficient-evidence" ? "unknown" : "SEV-2",
+      environment: "isolated local fixture"
+    },
+    stage: { ...(fallback?.stage || {}), label: loop.stage },
+    stage_status: loop.state,
+    human_gate: { ...(fallback?.human_gate || {}), status: loop.state === "needs_human" ? "requested" : "not_required" }
+  };
 }
 
 function componentDetailResponse(snapshot) {
@@ -1520,7 +1581,7 @@ async function streamNodeEvidenceEvents(request, response, url) {
   if (!Number.isSafeInteger(after) || after < 0) return json(response, 400, { error: "node_evidence_after_invalid" });
   let snapshot;
   try {
-    snapshot = (await nodeInvestigationPlaneForRun(runId)).snapshot(nodeId, query);
+    snapshot = (await nodeInvestigationPlaneForRun(runId, await nodeStateForRun(runId))).snapshot(nodeId, query);
   } catch (error) {
     if (error instanceof NodeInvestigationError) return json(response, error.status, { error: error.code });
     throw error;

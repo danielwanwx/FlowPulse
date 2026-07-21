@@ -57,6 +57,24 @@ test("Agent Team HTTP and SSE projections preserve a chat's transparent routing 
   const loopStream = await readSseEvent(port, `/api/demo/agent-loop/events?run_id=${seededLoop.run_id}&after=0`);
   assert.equal(loopStream.event, "local-fault-loop");
   assert.equal(loopStream.payload.event.type, "local_fault_loop.reserved");
+  const loopChat = await postJson(port, "/api/agent-control/chat", {
+    run_id: seededLoop.run_id,
+    incident_id: seededLoop.incident_id,
+    conversation_id: "conv-loop-sidebar-001",
+    idempotency_key: "loop-sidebar-message-001",
+    requested_agent: "investigator",
+    page_mode: "live",
+    selected_component: "checkout",
+    message: "Why is checkout red? Cite the bounded component evidence."
+  });
+  assert.equal(loopChat.status, 200, JSON.stringify(loopChat.body));
+  assert.equal(loopChat.body.state, "completed");
+  assert.equal(loopChat.body.responding_agent, "investigator");
+  assert.equal(loopChat.body.citations.length > 0, true);
+  assert.equal(loopChat.body.tool_summaries.some((item) => item.result_count > 0), true);
+  const loopConversation = await getJson(port, `/api/agent-control/conversation?run_id=${seededLoop.run_id}&conversation_id=conv-loop-sidebar-001`);
+  assert.equal(loopConversation.status, 200);
+  assert.equal(loopConversation.body.messages.at(-1).responding_agent, "investigator");
 
   const chat = await postJson(port, "/api/agent-control/chat", {
     run_id: initial.body.run_id,

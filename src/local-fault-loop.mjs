@@ -461,11 +461,25 @@ export class LocalFaultLoop {
       throw new LocalFaultLoopError("local_codex_provider_unavailable");
     }
     const context = providerContext({ session, role, definition, evidence, message, negative: session.negative });
+    const working = this.#append(session, "local_fault_loop.role.working", role, {
+      role,
+      requested_agent: role,
+      responding_agent: role,
+      state: "working",
+      selected_component: definition.root_component
+    }, evidence.map((item) => item.id), parentId);
+    const requested = this.#append(session, "local_fault_loop.tool.requested", role, {
+      role,
+      tools: ROLE_TOOLS[role],
+      selected_component: definition.root_component,
+      round: 1
+    }, evidence.map((item) => item.id), working.id);
     const toolEvent = this.#append(session, "local_fault_loop.tool.completed", role, {
       role,
       tools: ROLE_TOOLS[role].map((tool) => ({ tool, result_count: toolResultCount(tool, evidence), raw_payload_excluded: true }))
-    }, evidence.map((item) => item.id), parentId);
+    }, evidence.map((item) => item.id), requested.id);
     let response;
+    const modelStartedAt = Date.now();
     try {
       response = await this.modelAdapter.respond({ role, context });
     } catch (error) {
@@ -491,6 +505,7 @@ export class LocalFaultLoop {
       safe_answer: safeAnswer,
       answer_sha256: hash(String(response?.answer || "")),
       answer_bytes: Buffer.byteLength(String(response?.answer || ""), "utf8"),
+      duration_ms: Math.max(0, Math.min(120_000, Date.now() - modelStartedAt)),
       handoff: safeHandoff,
       recommended_handoff: safeHandoff,
       citations: evidence.map((item) => item.id),
@@ -513,7 +528,13 @@ class FixtureSimulator {
   captureBaseline() {
     const record = evidenceRecord({ runId: this.runId }, "trace", this.definition.root_component, "healthy local fixture baseline", "baseline", 0);
     return {
-      payload: { stage: "monitor", healthy: true, ground_truth: "baseline", source: "local fixture simulator" },
+      payload: {
+        stage: "monitor",
+        healthy: true,
+        ground_truth: "baseline",
+        source: "local fixture simulator",
+        ...(fixtureMetricSample(this.definition, "baseline") ? { metric_sample: fixtureMetricSample(this.definition, "baseline") } : {})
+      },
       refs: [record.id],
       evidence: [record]
     };
@@ -528,7 +549,15 @@ class FixtureSimulator {
     const log = evidenceRecord({ runId: this.runId }, "log", this.definition.root_component, `bounded local log confirms ${this.definition.fault}`, "mechanism", 5);
     const evidence = [origin, direct, downstream, counter, log];
     return {
-      payload: { stage: "fault", fault: this.definition.fault, root_component: this.definition.root_component, affected_components: this.definition.affected_components, reversible: true, execution_scope: "local_memory_only" },
+      payload: {
+        stage: "fault",
+        fault: this.definition.fault,
+        root_component: this.definition.root_component,
+        affected_components: this.definition.affected_components,
+        reversible: true,
+        execution_scope: "local_memory_only",
+        ...(fixtureMetricSample(this.definition, "fault") ? { metric_sample: fixtureMetricSample(this.definition, "fault") } : {})
+      },
       refs: evidence.map((item) => item.id),
       evidence,
       symptom_ids: [direct.id, downstream.id],
@@ -554,6 +583,7 @@ class FixtureSimulator {
     return {
       stage: "verify",
       passed,
+      ...(fixtureMetricSample(this.definition, passed ? "verified" : "fault") ? { metric_sample: fixtureMetricSample(this.definition, passed ? "verified" : "fault") } : {}),
       checks: [
         { id: "root_condition_removed", passed },
         { id: "direct_symptom_cleared", passed },
@@ -570,6 +600,24 @@ class FixtureSimulator {
     const record = evidenceRecord({ runId: this.runId }, "change", this.definition.root_component, "local repair rolled back after failed independent verification", "rollback", 9 + (this.repairAttempt - 1) * 4);
     return { result: "rolled_back", refs: [record.id], evidence: [record] };
   }
+}
+
+// These are the bounded measurements of the isolated checkout fixture, not
+// browser-generated animation values. Other loop cases intentionally omit a
+// sample until they have their own evidenced metric contract.
+function fixtureMetricSample(definition, phase) {
+  if (definition?.id !== "checkout-payment-config") return null;
+  const values = phase === "baseline"
+    ? { checkout_error_rate_percent: 0.8, payment_reachability_percent: 99.98, kafka_lag: 620 }
+    : phase === "fault"
+      ? { checkout_error_rate_percent: 38.4, payment_reachability_percent: 61.6, kafka_lag: 11842 }
+      : { checkout_error_rate_percent: 0.8, payment_reachability_percent: 99.98, kafka_lag: 620 };
+  return {
+    ...values,
+    phase,
+    source: "isolated_fixture",
+    raw_payload_excluded: true
+  };
 }
 
 function providerContext({ session, role, definition, evidence, message, negative }) {

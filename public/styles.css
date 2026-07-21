@@ -3298,6 +3298,17 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
   padding: 0 10px;
 }
 .agent-team-composer input:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
+.agent-team-suggestions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.agent-team-suggestions button {
+  border: 1px solid color-mix(in srgb, var(--blue) 22%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--paper) 82%, transparent);
+  color: var(--ink-muted);
+  font: inherit;
+  font-size: 11px;
+  padding: 4px 7px;
+}
+.agent-team-suggestions button:hover { color: var(--blue); border-color: color-mix(in srgb, var(--blue) 48%, transparent); }
 .live-agent-ask {
   min-height: 36px;
   border: 0;
