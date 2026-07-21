@@ -5,9 +5,12 @@ import { createServer as createNetServer } from "node:net";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Ledger } from "../src/ledger.mjs";
+import { LocalFaultLoop } from "../src/local-fault-loop.mjs";
 
 test("Agent Team HTTP and SSE projections preserve a chat's transparent routing without read-side invocation", async (context) => {
   const root = mkdtempSync(join(tmpdir(), "flowpulse-agent-team-server-"));
+  const seededLoop = await new LocalFaultLoop({ ledger: new Ledger(join(root, "ledger.db")), modelAdapter: fakeLocalCodexAdapter() }).run({ caseId: "checkout-payment-config", round: 1 });
   const port = await freshPort();
   const child = spawn(process.execPath, ["src/server.mjs"], {
     cwd: new URL("..", import.meta.url),
@@ -30,6 +33,15 @@ test("Agent Team HTTP and SSE projections preserve a chat's transparent routing 
   assert.equal(initial.body.topology_views.architecture.runtime_data.graph.total_nodes, 22);
   const provider = await getJson(port, "/api/agent-control/provider");
   assert.deepEqual(provider.body, initial.body.agent_control.agent_team_provider);
+  const loopUnavailable = await postJson(port, "/api/demo/agent-loop/run", { case_id: "checkout-payment-config", round: 1 });
+  assert.deepEqual(loopUnavailable, { status: 409, body: { error: "local_codex_provider_unavailable" } });
+  const loopProjection = await getJson(port, `/api/demo/agent-loop?run_id=${seededLoop.run_id}`);
+  assert.equal(loopProjection.status, 200);
+  assert.equal(loopProjection.body.state, "recovered");
+  assert.equal(loopProjection.body.events.some((event) => event.type === "local_fault_loop.role.response" && Object.hasOwn(event.payload, "answer_sha256") && !Object.hasOwn(event.payload, "answer")), true);
+  const loopStream = await readSseEvent(port, `/api/demo/agent-loop/events?run_id=${seededLoop.run_id}&after=0`);
+  assert.equal(loopStream.event, "local-fault-loop");
+  assert.equal(loopStream.payload.event.type, "local_fault_loop.run.started");
 
   const chat = await postJson(port, "/api/agent-control/chat", {
     run_id: initial.body.run_id,
@@ -124,6 +136,25 @@ async function readSse(port, pathname) {
   const match = text.match(/\ndata: (.+)\n\n/);
   assert.ok(match, text);
   return JSON.parse(match[1]);
+}
+
+async function readSseEvent(port, pathname) {
+  const controller = new AbortController();
+  const response = await fetch(`http://127.0.0.1:${port}${pathname}`, { signal: controller.signal });
+  const reader = response.body.getReader();
+  const { value } = await reader.read();
+  controller.abort();
+  const text = new TextDecoder().decode(value);
+  const match = text.match(/event: ([^\n]+)\ndata: (.+)\n\n/);
+  assert.ok(match, text);
+  return { event: match[1], payload: JSON.parse(match[2]) };
+}
+
+function fakeLocalCodexAdapter() {
+  return {
+    async preflight() { return { provider_kind: "codex-local", availability: "available", truth_label: "LOCAL CODEX", model_label: "Codex CLI", failure_reason: null }; },
+    async respond({ role }) { return { answer: `${role} test response.`, recommended_handoff: null }; }
+  };
 }
 
 function stop(child) {

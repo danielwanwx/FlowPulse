@@ -16,6 +16,7 @@ import { DevelopmentRuntime } from "./development-runtime.mjs";
 import * as developmentAdapter from "./development-adapter.mjs";
 import { AgentControlService } from "./agent-control-service.mjs";
 import { AgentTeamChatError, AgentTeamChatService } from "./agent-team-chat.mjs";
+import { LocalFaultLoop, LocalFaultLoopError } from "./local-fault-loop.mjs";
 import { harnessBinding, loadHarnessManifest } from "./harness-manifest.mjs";
 import { AUTONOMY_POLICY_ARTIFACT, validateAutonomyPolicyArtifact } from "./autonomy-policy-artifacts.mjs";
 import { failureLockKey, sha256Canonical } from "./autonomy-policy.mjs";
@@ -109,6 +110,11 @@ const agentTeamChat = new AgentTeamChatService({
     };
   }
 });
+const localFaultLoop = new LocalFaultLoop({
+  ledger,
+  modelAdapter: agentTeamChat.modelAdapter,
+  topologyProvider: async () => (await stateWithSource(browserRunId())).topology_views
+});
 
 const server = createServer(async (request, response) => {
   setHeaders(response);
@@ -179,6 +185,29 @@ const server = createServer(async (request, response) => {
     }
     if (url.pathname === "/api/agent-control/provider" && request.method === "GET") {
       return json(response, 200, await agentTeamChat.preflightProvider());
+    }
+    if (url.pathname === "/api/demo/agent-loop/events" && request.method === "GET") {
+      return streamLocalFaultLoopEvents(request, response, url);
+    }
+    if (url.pathname === "/api/demo/agent-loop" && request.method === "GET") {
+      const runId = url.searchParams.get("run_id");
+      try {
+        return json(response, 200, localFaultLoop.project(runId));
+      } catch (error) {
+        if (error instanceof LocalFaultLoopError) return json(response, 404, { error: error.code });
+        throw error;
+      }
+    }
+    if (url.pathname === "/api/demo/agent-loop/run" && request.method === "POST") {
+      requireJson(request);
+      const body = await readJson(request);
+      if (!plainLocalFaultLoopRequest(body)) return json(response, 400, { error: "local_fault_loop_request_invalid" });
+      try {
+        return json(response, 201, await localFaultLoop.run({ caseId: body.case_id, round: body.round }));
+      } catch (error) {
+        if (error instanceof LocalFaultLoopError) return json(response, error.code === "local_codex_provider_unavailable" ? 409 : 422, { error: error.code });
+        throw error;
+      }
     }
     if (url.pathname === "/api/agent-control/chat" && request.method === "POST") {
       requireJson(request);
@@ -945,7 +974,14 @@ function injectDemoIncident({ runId, body, current }) {
 }
 function activeDemoWriteBlocked(method, pathname) {
   if (!activeDemoRunId || !["POST", "PUT", "PATCH", "DELETE"].includes(method)) return false;
-  return !(method === "POST" && (pathname === "/api/demo/inject" || pathname === "/api/demo/reset" || pathname === "/api/agent-control/chat"));
+  return !(method === "POST" && (pathname === "/api/demo/inject" || pathname === "/api/demo/reset" || pathname === "/api/demo/agent-loop/run" || pathname === "/api/agent-control/chat"));
+}
+function plainLocalFaultLoopRequest(value) {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value)
+    && Object.getPrototypeOf(value) === Object.prototype
+    && Object.keys(value).sort().join(",") === "case_id,round"
+    && typeof value.case_id === "string" && /^[a-z][a-z0-9-]{2,79}$/.test(value.case_id)
+    && Number.isInteger(value.round) && value.round >= 1 && value.round <= 3);
 }
 function autonomyFailure(code, field_path) { const error = new InsufficientEvidenceError("Autonomy authority boundary rejected the run"); error.code = code; error.metadata = { stage: "authority_decision", validator_id: "server_authority_closure", reason_code: code, field_path, next_precondition: "produce_a_matching_frozen_diagnosis_gate" }; return error; }
 
@@ -1400,4 +1436,40 @@ function streamAgentEvents(request, response, url) {
     response.write(": heartbeat\n\n");
   }, 1_000);
   request.on("close", () => clearInterval(interval));
+}
+
+function streamLocalFaultLoopEvents(request, response, url) {
+  const runId = url.searchParams.get("run_id");
+  if (!safeBrowserId(runId)) return json(response, 400, { error: "local_fault_loop_run_id_invalid" });
+  let projection;
+  try { projection = localFaultLoop.project(runId); } catch (error) {
+    if (error instanceof LocalFaultLoopError) return json(response, 404, { error: error.code });
+    throw error;
+  }
+  let lastSequence = Number(request.headers["last-event-id"] || url.searchParams.get("after") || 0);
+  if (!Number.isSafeInteger(lastSequence) || lastSequence < 0) lastSequence = 0;
+  response.writeHead(200, {
+    "content-type": "text/event-stream; charset=utf-8",
+    "cache-control": "no-cache, no-transform",
+    connection: "keep-alive"
+  });
+  const send = () => {
+    projection = localFaultLoop.project(runId);
+    for (const event of projection.events.filter((item) => item.sequence > lastSequence)) {
+      lastSequence = event.sequence;
+      response.write(`id: ${event.sequence}\nevent: local-fault-loop\ndata: ${JSON.stringify({ schema_version: projection.schema_version, run_id: projection.run_id, incident_id: projection.incident_id, case_id: projection.case_id, round: projection.round, event })}\n\n`);
+    }
+    if (["recovered", "needs_human", "failed"].includes(projection.state)) {
+      response.write(`event: local-fault-loop-state\ndata: ${JSON.stringify({ run_id: projection.run_id, incident_id: projection.incident_id, state: projection.state, stage: projection.stage, provider: projection.provider, final: projection.final })}\n\n`);
+      response.end();
+    }
+  };
+  send();
+  const interval = setInterval(() => {
+    if (response.destroyed) return;
+    send();
+    if (!response.writableEnded) response.write(": heartbeat\n\n");
+  }, 1_000);
+  request.on("close", () => clearInterval(interval));
+  response.on("close", () => clearInterval(interval));
 }
