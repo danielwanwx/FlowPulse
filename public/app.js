@@ -564,7 +564,9 @@ function applyLiveRouteDelays() {
 function fixedLiveEdgeMarkup(edge, path, fromLabel, toLabel) {
   const label = `${edge.label} from ${fromLabel} to ${toLabel}`;
   const pulse = edge.pulse ? `data-live-edge-id="${escapeHtml(edge.id)}" data-live-projectile="single" data-signal-from="${escapeHtml(edge.from)}" data-signal-to="${escapeHtml(edge.to)}" data-signal-order="${edge.order}"` : "";
-  return `<g class="edge-group path-runtime relation-${escapeHtml(edge.kind)} signal-${escapeHtml(edge.tone)}" ${pulse} data-live-route="canonical-authored" data-route-order="${edge.routeOrder}"><path class="edge-line is-${escapeHtml(edge.tone)}" pathLength="1000" d="${path}"/><path class="signal-projectile signal-projectile-halo" pathLength="1000" d="${path}" aria-hidden="true"/><path class="signal-projectile signal-projectile-core" pathLength="1000" d="${path}" aria-hidden="true"/><path class="edge-hit" d="${path}" role="button" tabindex="0" aria-label="${escapeHtml(label)}" data-edge-id="${escapeHtml(edge.id)}" data-edge-from="${escapeHtml(edge.from)}" data-edge-to="${escapeHtml(edge.to)}"/></g>`;
+  // Projectiles start fully masked. The active class only changes display, so
+  // this prevents one full-path paint before its first animation frame arrives.
+  return `<g class="edge-group path-runtime relation-${escapeHtml(edge.kind)} signal-${escapeHtml(edge.tone)}" ${pulse} data-live-route="canonical-authored" data-route-order="${edge.routeOrder}"><path class="edge-line is-${escapeHtml(edge.tone)}" pathLength="1000" d="${path}"/><path class="signal-projectile signal-projectile-halo" pathLength="1000" stroke-dasharray="0 1000" stroke-dashoffset="1000" d="${path}" aria-hidden="true"/><path class="signal-projectile signal-projectile-core" pathLength="1000" stroke-dasharray="0 1000" stroke-dashoffset="1000" d="${path}" aria-hidden="true"/><path class="edge-hit" d="${path}" role="button" tabindex="0" aria-label="${escapeHtml(label)}" data-edge-id="${escapeHtml(edge.id)}" data-edge-from="${escapeHtml(edge.from)}" data-edge-to="${escapeHtml(edge.to)}"/></g>`;
 }
 
 function positionLiveProjectile(path, projectile, progress, pathLength) {
@@ -641,6 +643,8 @@ function startLiveSignalLoop() {
     group.dataset.signalPathLength = pathLength.toFixed(1);
     group.dataset.signalDuration = Math.round(duration);
     group.dataset.signalSpeed = timing.speed.toFixed(1);
+    positionLiveProjectile(path, halo, 0, pathLength);
+    positionLiveProjectile(path, core, 0, pathLength);
     group.classList.add("is-signal-active");
     let startedAt = null;
     const travel = (timestamp) => {

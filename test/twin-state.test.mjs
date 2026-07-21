@@ -529,10 +529,13 @@ test("Live keeps shared node identities while rendering every canonical runtime 
   const fixedRouteRendererSource = appJs.slice(appJs.indexOf("function fixedLiveEdgeMarkup"), appJs.indexOf("function positionLiveProjectile"));
   assert.doesNotMatch(fixedRouteRendererSource, /getBoundingClientRect\(\)/);
   assert.match(appJs, /data-live-route="canonical-authored"/);
-  assert.match(appJs, /class="signal-projectile signal-projectile-core" pathLength="1000" d="\$\{path\}"/);
+  assert.match(appJs, /class="signal-projectile signal-projectile-core" pathLength="1000" stroke-dasharray="0 1000" stroke-dashoffset="1000" d="\$\{path\}"/);
   assert.match(appJs, /function positionLiveProjectile\(path, projectile, progress, pathLength\)/);
   assert.match(appJs, /const packetLength = Math\.min\(68, Math\.max\(32, pathLength \* \.065\)\);/);
   assert.match(appJs, /projectile\.setAttribute\("stroke-dasharray",/);
+  assert.match(appJs, /signal-projectile-halo" pathLength="1000" stroke-dasharray="0 1000" stroke-dashoffset="1000"/);
+  assert.match(appJs, /signal-projectile-core" pathLength="1000" stroke-dasharray="0 1000" stroke-dashoffset="1000"/);
+  assert.match(appJs, /positionLiveProjectile\(path, halo, 0, pathLength\);[\s\S]*?positionLiveProjectile\(path, core, 0, pathLength\);[\s\S]*?group\.classList\.add\("is-signal-active"\);/);
   assert.doesNotMatch(appJs, /function pathTrail\(/);
   assert.doesNotMatch(appJs, /<circle class="signal-projectile/);
   assert.match(stylesCss, /\.is-live-source \.edge-group \.edge-line \{[\s\S]*?stroke-width: 1\.45;[\s\S]*?stroke-dasharray: 1000;/);
