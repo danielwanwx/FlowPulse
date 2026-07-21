@@ -1,0 +1,258 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "FlowPulse Evidence-Grounded Signal Flow",
+    "subtitle": "Bounded telemetry, canonical evidence, advisory agents, explicit authority, and independently verified recovery",
+    "output": "flowpulse-signal-flow.html",
+    "visual_preset": "signal-flow",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "evidence-path",
+        "label": "Evidence to investigation",
+        "focus": ["observed-system", "otlp-sources", "topology-projection", "evidence-ledger", "agent-team"],
+        "note": "Telemetry becomes bounded, cited facts before any agent can make an advisory claim."
+      },
+      {
+        "id": "authority-path",
+        "label": "Authority to recovery",
+        "focus": ["agent-team", "owner-gate", "allowlisted-recovery", "verification"],
+        "note": "Agent advice cannot execute a repair; code enforces the explicit authority boundary."
+      },
+      {
+        "id": "replay-path",
+        "label": "Verified replay",
+        "focus": ["topology-projection", "verification", "replay-compare", "operator-workspaces"],
+        "note": "Every workspace reconstructs one canonical run and its verified evidence."
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "observed-system",
+      "type": "external",
+      "label": "Observed System",
+      "sublabel": "Astronomy Shop / local fixture",
+      "pos": [44, 374],
+      "size": [142, 64]
+    },
+    {
+      "id": "otlp-sources",
+      "type": "cloud",
+      "label": "OTLP Sources",
+      "sublabel": "metrics · logs · traces · changes",
+      "pos": [238, 374],
+      "size": [156, 64]
+    },
+    {
+      "id": "topology-projection",
+      "type": "backend",
+      "label": "Canonical Topology",
+      "sublabel": "run projection · node evidence",
+      "pos": [456, 374],
+      "size": [158, 64]
+    },
+    {
+      "id": "evidence-ledger",
+      "type": "database",
+      "label": "Evidence Ledger",
+      "sublabel": "append-only provenance truth",
+      "pos": [670, 206],
+      "size": [164, 64],
+      "tag": "immutable"
+    },
+    {
+      "id": "agent-team",
+      "type": "backend",
+      "label": "Agent Team",
+      "sublabel": "Observer · Orchestrator · Investigator · Evaluator",
+      "pos": [658, 458],
+      "size": [188, 66],
+      "tag": "advisory / cited"
+    },
+    {
+      "id": "owner-gate",
+      "type": "security",
+      "label": "Owner Gate",
+      "sublabel": "explicit authority decision",
+      "pos": [918, 206],
+      "size": [158, 64],
+      "tag": "no agent bypass"
+    },
+    {
+      "id": "allowlisted-recovery",
+      "type": "backend",
+      "label": "Allowlisted Recovery",
+      "sublabel": "isolated reversible action",
+      "pos": [908, 458],
+      "size": [178, 66]
+    },
+    {
+      "id": "verification",
+      "type": "backend",
+      "label": "Verification",
+      "sublabel": "independent quality gates",
+      "pos": [1152, 458],
+      "size": [158, 66]
+    },
+    {
+      "id": "replay-compare",
+      "type": "frontend",
+      "label": "Replay / Compare",
+      "sublabel": "baseline · incident · verified",
+      "pos": [1364, 458],
+      "size": [160, 66]
+    },
+    {
+      "id": "operator-workspaces",
+      "type": "frontend",
+      "label": "Operator Workspaces",
+      "sublabel": "Live · Diagnose · Recovery · Compare",
+      "pos": [1260, 120],
+      "size": [214, 64]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "DATA PLANE · observed, bounded telemetry",
+      "wraps": ["observed-system", "otlp-sources"]
+    },
+    {
+      "kind": "region",
+      "label": "FLOWPULSE CONTROL PLANE · canonical projection, bounded orchestration, verified replay",
+      "wraps": ["topology-projection", "evidence-ledger", "agent-team", "allowlisted-recovery", "verification", "replay-compare", "operator-workspaces"]
+    },
+    {
+      "kind": "security-group",
+      "label": "EVIDENCE TRUTH · immutable bounded facts",
+      "wraps": ["evidence-ledger"]
+    },
+    {
+      "kind": "security-group",
+      "label": "AUTHORITY GATE · owner-only decision",
+      "wraps": ["owner-gate"]
+    }
+  ],
+  "connections": [
+    {
+      "id": "observe-otlp",
+      "from": "observed-system",
+      "to": "otlp-sources",
+      "label": "bounded signals",
+      "variant": "emphasis",
+      "labelDy": -26
+    },
+    {
+      "id": "otlp-topology",
+      "from": "otlp-sources",
+      "to": "topology-projection",
+      "label": "normalized evidence",
+      "variant": "emphasis",
+      "labelDy": -26
+    },
+    {
+      "id": "topology-ledger",
+      "from": "topology-projection",
+      "to": "evidence-ledger",
+      "label": "facts + hashes",
+      "variant": "security",
+      "fromSide": "top",
+      "toSide": "left",
+      "route": "orthogonal-v",
+      "labelDx": 12,
+      "labelDy": -26
+    },
+    {
+      "id": "ledger-agents",
+      "from": "evidence-ledger",
+      "to": "agent-team",
+      "label": "cited context",
+      "variant": "security",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "route": "orthogonal-v",
+      "labelAt": [758, 284]
+    },
+    {
+      "id": "agents-owner",
+      "from": "agent-team",
+      "to": "owner-gate",
+      "label": "plan / request",
+      "variant": "security",
+      "fromSide": "right",
+      "toSide": "bottom",
+      "route": "orthogonal-v",
+      "via": [[878, 491], [878, 318], [997, 318]],
+      "labelAt": [878, 338]
+    },
+    {
+      "id": "owner-recovery",
+      "from": "owner-gate",
+      "to": "allowlisted-recovery",
+      "label": "explicit allow",
+      "variant": "security",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "route": "orthogonal-v",
+      "labelAt": [1004, 284]
+    },
+    {
+      "id": "recovery-verify",
+      "from": "allowlisted-recovery",
+      "to": "verification",
+      "label": "independent checks",
+      "variant": "emphasis",
+      "labelDy": 57
+    },
+    {
+      "id": "verify-replay",
+      "from": "verification",
+      "to": "replay-compare",
+      "label": "verified snapshot",
+      "variant": "emphasis",
+      "labelDy": 57
+    },
+    {
+      "id": "topology-workspaces",
+      "from": "topology-projection",
+      "to": "operator-workspaces",
+      "label": "same run / revision",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "right",
+      "via": [[535, 580], [1560, 580], [1560, 238]],
+      "labelAt": [1048, 602]
+    },
+    {
+      "id": "replay-workspaces",
+      "from": "replay-compare",
+      "to": "operator-workspaces",
+      "label": "replay state",
+      "variant": "dashed",
+      "fromSide": "top",
+      "toSide": "bottom",
+      "route": "orthogonal-v",
+      "labelDx": 46,
+      "labelDy": -16
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Truth boundary",
+      "items": ["Topology and ledger facts are runtime-owned", "Agent output is bounded, cited, and advisory"]
+    },
+    {
+      "dot": "rose",
+      "title": "Authority boundary",
+      "items": ["Only an explicit owner decision can cross the gate", "Recovery remains allowlisted and isolated"]
+    },
+    {
+      "dot": "emerald",
+      "title": "Verification boundary",
+      "items": ["Compare unlocks only after independent verification", "Replay reconstructs immutable event history"]
+    }
+  ]
+}
