@@ -92,7 +92,8 @@ export function createCodexLocalAdapter({
   timeoutMs = providerTimeout(),
   outputLimitBytes = OUTPUT_LIMIT_BYTES,
   eventLimit = EVENT_LIMIT,
-  diagnostic = null
+  diagnostic = null,
+  preflightProbe = process.env.FLOWPULSE_CODEX_PREFLIGHT_PROBE === "1" || spawnImpl !== spawn
 } = {}) {
   const testResponse = testCodexResponse();
   if (testResponse) {
@@ -112,7 +113,7 @@ export function createCodexLocalAdapter({
   let capability = staticCapability("codex-local", "preflight_required", "LOCAL CODEX", "Codex CLI");
   let preflightPromise = null;
   const preflight = async () => {
-    if (!preflightPromise) preflightPromise = codexPreflight({ command, spawnImpl, timeoutMs }).then((next) => {
+    if (!preflightPromise) preflightPromise = codexPreflight({ command, spawnImpl, timeoutMs, preflightProbe }).then((next) => {
       capability = next;
       return { ...capability };
     }, () => {
@@ -211,7 +212,12 @@ function unavailableProvider(providerKind, reason) {
   };
 }
 
-async function codexPreflight({ command, spawnImpl, timeoutMs }) {
+async function codexPreflight({ command, spawnImpl, timeoutMs, preflightProbe }) {
+  // Some authenticated desktop Codex launchers block on a harmless version
+  // probe while `exec` remains the authoritative bounded operation. Normal
+  // runtime preflight therefore avoids auth/token probing; injected tests and
+  // an explicit operator flag retain deterministic executable checks.
+  if (!preflightProbe) return staticCapability("codex-local", "available", "LOCAL CODEX", "Codex CLI");
   const environment = safeCodexEnvironment();
   const version = await runChild({ command, args: ["--version"], cwd: tempRoot(), env: environment, spawnImpl, timeoutMs, outputLimitBytes: 4_096, eventLimit: 4 });
   if (version.reason || version.code !== 0) return staticCapability("codex-local", "unavailable", "LOCAL CODEX", "Codex CLI", version.reason || "codex_cli_unavailable");
