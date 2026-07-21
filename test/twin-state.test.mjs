@@ -482,7 +482,7 @@ test("architecture is a static four-layer overview with backend-owned status dot
   assert.match(appJs, /async function openArchitectureDetail\(id\)/);
   assert.match(appJs, /function closeArchitectureDetail\(\{ restoreFocus = false \} = \{\}\)/);
   assert.match(appJs, /event\.target\.matches\("\[data-architecture-thumbnail-id\]"\)/);
-  assert.match(appJs, /mode === "architecture" \|\| \(mode === "live" && selected\?\.type === "node"\)/);
+  assert.match(appJs, /mode === "architecture" \|\| mode === "live" \|\| isUnifiedRailWorkspace\(\)/);
   assert.match(appJs, /item\?\.id === id && \["runtime", "data"\]\.includes\(item\.plane\)/);
   assert.match(appJs, /nodeById\.has\(edge\.from\) && nodeById\.has\(edge\.to\)/);
   assert.match(appJs, /edge\.from === id \|\| edge\.to === id/);
@@ -716,8 +716,8 @@ test("Live reuses the canonical navigation and exposes only safe projected Team 
   assert.match(indexHtml, /id="operations-team-rail"[^>]+aria-label="FlowPulse Team"/);
   assert.match(appJs, /function renderOperationsTeamRail\(\)/);
   assert.match(appJs, /const controls = controlSystemNodes\(\)/);
-  assert.match(appJs, /const liveInspectorOpen = mode === "live" && selected\?\.type === "node" && agentTeam\.panel === "home"/);
-  assert.match(appJs, /rail\.hidden = !controls\.length \|\| \(Boolean\(selected\) && agentTeam\.panel === "home" && !liveInspectorOpen\)/);
+  assert.match(appJs, /const inspectorOpen = \(mode === "live" \|\| isUnifiedRailWorkspace\(\)\) && selected\?\.type === "node" && isRailRuntimeNode\(selected\.id\) && agentTeam\.panel === "home"/);
+  assert.match(appJs, /rail\.hidden = !controls\.length;/);
   assert.match(appJs, /controlSystemTileMarkup\(node, \{ rail: true \}\)/);
   assert.match(stylesCss, /\.operations-team-rail > \.architecture-flowpulse-system \{ height: 100%; \}/);
   assert.match(stylesCss, /\.twin-workspace \{[\s\S]*?--flowpulse-control-rail-width: 272px;[\s\S]*?--flowpulse-control-rail-inset-y: 16px;[\s\S]*?--flowpulse-control-rail-inset-x: 20px;/);
@@ -773,7 +773,7 @@ test("Live Inspector owns the rail, preserves canvas continuity, and keeps its p
   const railSource = appJs.slice(appJs.indexOf("function renderOperationsTeamRail"), appJs.indexOf("function handleOperationsTeamRail"));
   const inspectorSource = appJs.slice(appJs.indexOf("function liveNodeInspectorRailMarkup"), appJs.indexOf("function agentTeamHomeMarkup"));
   const sessionSource = appJs.slice(appJs.indexOf("function agentTeamSessionMarkup"), appJs.indexOf("function boundedListMarkup"));
-  assert.match(railSource, /mode === "live" && selected\?\.type === "node" && agentTeam\.panel === "home"/);
+  assert.match(railSource, /\(mode === "live" \|\| isUnifiedRailWorkspace\(\)\) && selected\?\.type === "node" && isRailRuntimeNode\(selected\.id\) && agentTeam\.panel === "home"/);
   assert.match(railSource, /liveNodeInspectorRailMarkup\(/);
   assert.match(inspectorSource, /data-live-inspector-close/);
   assert.match(inspectorSource, /data-live-inspector-disclosure/);
@@ -790,20 +790,39 @@ test("Live Inspector owns the rail, preserves canvas continuity, and keeps its p
   assert.doesNotMatch(railSource, /\/api\/agent-control\/message/);
 });
 
-test("B1 recovery console keeps six collaborators visible while owner approval stays separate", () => {
-  assert.match(indexHtml, /data-mode="agents">Recovery Console</);
-  assert.match(indexHtml, /id="manager-panel"[^>]+aria-labelledby="manager-title"/);
-  assert.match(indexHtml, /id="approve-button"[^>]+hidden>Approve bounded recovery/);
-  assert.match(indexHtml, /Chat can explain or delegate safe work\. It cannot approve remediation\./);
-  assert.match(appJs, /mode = "agents"/);
+test("Unified Context Rail keeps one surface through workspace summaries, inspector, and Agent back navigation", () => {
+  const railSource = appJs.slice(appJs.indexOf("function renderOperationsTeamRail"), appJs.indexOf("function handleOperationsTeamRail"));
+  const railHandler = appJs.slice(appJs.indexOf("function handleOperationsTeamRail"), appJs.indexOf("function handleAgentTeamSubmit"));
+  const modeSource = appJs.slice(appJs.indexOf("function setMode"), appJs.indexOf("function configureCanvasWorld"));
+  assert.match(railSource, /isUnifiedRailWorkspace\(\)\) && selected\?\.type === "node" && isRailRuntimeNode\(selected\.id\)/);
+  assert.match(railSource, /workspaceEvidenceRailMarkup\(\)/);
+  assert.match(railSource, /workspaceSummaryRailMarkup\(\)/);
+  assert.match(railHandler, /closeAgentTeamSession\(\{ restoreInspector: true \}\)/);
+  assert.match(railHandler, /openAgentTeamSession\(roleTile\.dataset\.agentTeamRole/);
+  assert.match(modeSource, /isSelectionValidForMode\(selected, nextMode\)/);
+  assert.match(appJs, /data-workspace-evidence-close/);
+  assert.match(appJs, /data-workspace-view-evidence/);
+  assert.match(appJs, /data-agent-team-workspace/);
+  assert.match(stylesCss, /\.unified-context-summary/);
+  assert.match(stylesCss, /\.unified-context-evidence/);
+});
+
+test("Unified Context Rail replaces legacy commander and duplicated control surfaces", () => {
+  assert.match(indexHtml, /id="operations-team-rail"/);
+  assert.doesNotMatch(indexHtml, /id="manager-panel"/);
+  assert.doesNotMatch(indexHtml, /id="compare-review-rail"/);
+  assert.match(appJs, /function workspaceSummaryRailMarkup\(\)/);
+  assert.match(appJs, /function workspaceEvidenceRailMarkup\(\)/);
+  assert.match(appJs, /function isRailRuntimeNode\(id\)/);
+  assert.match(appJs, /function isUnifiedRailWorkspace\(candidate = mode\)/);
+  assert.match(appJs, /Diagnosis Summary/);
+  assert.match(appJs, /Recovery Status/);
+  assert.match(appJs, /Verification Summary/);
+  assert.doesNotMatch(appJs, /\/api\/agent-control\/message/);
+  assert.doesNotMatch(appJs, /data-recovery-action/);
+  assert.doesNotMatch(appJs, /data-collaborator-id/);
+  assert.match(stylesCss, /\.app-shell\[data-mode="replay"\] \.plane-guides,[\s\S]+?\.app-shell\[data-mode="compare"\] \.plane-guides \{ display: none; \}/);
   assert.equal(AGENT_COLLABORATORS.length, 6);
-  assert.deepEqual(AGENT_COLLABORATORS.map(({ id }) => id), ["commander", "observer", "investigator", "critic", "recovery-engineer", "verifier"]);
-  assert.match(appJs, /data-collaborator-id/);
-  assert.match(stylesCss, /\.collaborator-node\.is-selected \.collaborator-icon/);
-  assert.match(appJs, /class="recovery-console-layout"/);
-  assert.match(appJs, /data-recovery-action/);
-  assert.match(appJs, /Ask \$\{escapeHtml\(selectedAgent\.label\)\} about this incident/);
-  assert.match(appJs, /Owner approval remains separate/);
 });
 
 test("collaborator projection deterministically aggregates isolated backend roles", () => {
@@ -907,18 +926,16 @@ test("compare uses incident and verified frames without changing layout", () => 
   assert.doesNotMatch(stylesCss, /\.compare-value-\d+/);
 });
 
-test("compare exposes causal, recovery, and learning decisions beside the deterministic split", () => {
-  assert.match(indexHtml, /id="compare-review-rail"/);
-  assert.match(indexHtml, /data-compare-focus="impact"/);
-  assert.match(indexHtml, /data-compare-focus="learning"/);
+test("Compare keeps its split canvas while Unified Context Rail owns the verification summary", () => {
+  assert.doesNotMatch(indexHtml, /id="compare-review-rail"/);
+  assert.doesNotMatch(appJs, /function renderCompareReviewRail/);
+  assert.doesNotMatch(appJs, /function handleCompareReview/);
   assert.match(appJs, /function compareDecisionModel\(\)/);
   assert.match(appJs, /evaluation\.rejected/);
   assert.match(appJs, /repair\.proposed/);
   assert.match(appJs, /verification\.completed/);
   assert.match(appJs, /regression\.created/);
-  assert.match(appJs, /function handleCompareReview/);
-  assert.match(stylesCss, /\.compare-review-rail/);
-  assert.match(stylesCss, /data-compare-focus="cause"/);
+  assert.match(appJs, /workspaceSummaryRailMarkup\(\)/);
 });
 
 test("compare is always available and labels captured previews separately from current verification", () => {
@@ -1092,8 +1109,9 @@ test("Live pulse ordering remains deterministic across the complete backend runt
   assert.match(appJs, /const delay = Number\(group\.dataset\.routeOrder\) \* 32;/);
   assert.match(appJs, /line\.style\.animationDelay = `\$\{delay\}ms`/);
   assert.match(appJs, /data-route-order="\$\{edge\.routeOrder\}"/);
-  assert.match(appJs, /data-recovery-command-send/);
-  assert.match(appJs, /sendRecoveryCommand\(commandButton\.closest\("form"\)\)/);
+  assert.doesNotMatch(appJs, /data-recovery-command-send/);
+  assert.doesNotMatch(appJs, /sendRecoveryCommand\(/);
+  assert.match(appJs, /Recovery Status/);
 });
 
 test("future primary dependency selection remains deterministic while Live renders the complete canonical canvas", () => {
@@ -1198,7 +1216,7 @@ test("Live Inspector owns the existing rail and preserves the running canvas whi
   const railRender = appJs.slice(appJs.indexOf("function renderOperationsTeamRail"), appJs.indexOf("function resolveOperationsTeamControls"));
   const drawerOpen = appJs.slice(appJs.indexOf("function openDrawer"), appJs.indexOf("function closeDrawer"));
   const detailLoader = appJs.slice(appJs.indexOf("function requestLiveComponentDetail"), appJs.indexOf("function architectureDetailContext"));
-  assert.match(railRender, /mode === "live" && selected\?\.type === "node"/);
+  assert.match(railRender, /\(mode === "live" \|\| isUnifiedRailWorkspace\(\)\) && selected\?\.type === "node"/);
   assert.match(railRender, /liveNodeInspectorRailMarkup/);
   assert.match(appJs, /captureLiveInspectorSnapshot/);
   assert.match(appJs, /restoreLiveInspectorSnapshot/);
@@ -1223,11 +1241,12 @@ test("timeline renders only recorded milestones and labels the next evidence req
   assert.match(stylesCss, /--stage-count/);
 });
 
-test("recovery console keeps chat primary while secondary summary chrome stays hidden", () => {
+test("recovery console keeps workflow facts in the canvas while the Unified Context Rail owns interaction", () => {
   assert.match(stylesCss, /\[data-mode="agents"\] \.metric-cluster, \.app-shell\[data-mode="agents"\] \.legend-menu \{ display: none;/);
-  assert.match(appJs, /Latest grounded signal/);
-  assert.match(appJs, /Current ledger owner/);
-  assert.match(appJs, /Evidence, activity &amp; controls/);
+  assert.match(appJs, /Projected recovery workflow/);
+  assert.match(appJs, /See Unified Context Rail/);
+  assert.match(appJs, /workspaceSummaryRailMarkup\(\)/);
+  assert.doesNotMatch(appJs, /recovery-command-form/);
 });
 
 test("pure-black mode keeps structural component and connector edges high contrast", () => {
@@ -1281,7 +1300,7 @@ test("live incident state requires referenced explicit development failure evide
 
 test("every canvas mode exposes the shared status-dot contract with compact toolbar copy", () => {
   assert.match(appJs, /data-status="\$\{escapeHtml\(nodeState\)\}"/);
-  assert.match(appJs, /data-status="\$\{escapeHtml\(agentNodeTone\(node\.status\)\)\}"/);
+  assert.match(appJs, /control-system-tile[\s\S]+?data-status="\$\{escapeHtml\(agentNodeTone\(node\.status\)\)\}"/);
   assert.match(appJs, /data-status="\$\{escapeHtml\(status\)\}" data-transition-key/);
   assert.match(appJs, /node\.connectivity === "unlinked" \? "unlinked"/);
   assert.match(stylesCss, /\.twin-node\.is-observed[^}]+var\(--blue\)/);
@@ -1302,16 +1321,14 @@ test("every canvas mode exposes the shared status-dot contract with compact tool
 
 test("component vectors stay transparent, semantically colored, and status-independent", () => {
   assert.match(stylesCss, /\.node-icon \{[^}]+border: 0;[^}]+color: var\(--icon\);[^}]+background: transparent;/);
-  assert.match(stylesCss, /\.collaborator-icon \{[^}]+border: 0;[^}]+color: var\(--icon\);[^}]+background: transparent;[^}]+box-shadow: none;/);
-  assert.match(stylesCss, /\.collaboration-avatar \{[^}]+border: 0;[^}]+color: var\(--icon\);[^}]+background: transparent;/);
+  assert.match(stylesCss, /\.node-icon \{[^}]+border: 0;[^}]+color: var\(--icon\);[^}]+background: transparent;/);
   assert.match(stylesCss, /\.source-node\.kind-stream \{ --icon: #d97706;/);
   assert.match(stylesCss, /\.source-node\.kind-database \{ --icon: #059669;/);
-  assert.match(stylesCss, /\.collaborator-node-recovery-engineer, \.icon-role-recovery-engineer \{ --icon: #ea580c;/);
-  assert.match(appJs, /collaborator-icon icon-role-\$\{escapeHtml\(node\.id\)\}/);
-  assert.match(appJs, /collaboration-avatar icon-role-\$\{escapeHtml\(selectedAgent\.id\)\}/);
+  assert.match(appJs, /controlSystemTileMarkup\(node, \{ rail: true \}\)/);
+  assert.match(appJs, /<span class="node-icon" aria-hidden="true"><i class="ph ph-\$\{iconForLive\(node\)\}"><\/i><\/span>/);
   assert.match(stylesCss, /:root\[data-theme="dark"\] \.node-icon \{ color: var\(--icon\); background: transparent; \}/);
   assert.match(stylesCss, /\.twin-node\.is-impact[^}]+--signal: var\(--red\)/);
-  assert.match(stylesCss, /\.collaborator-node\.is-verified \.node-status-dot[^}]+background: var\(--green\)/);
+  assert.match(stylesCss, /\.operations-team-rail \.control-system-tile \.node-status-dot\.is-accepted \{ --control-status: var\(--green\); \}/);
 });
 
 test("the contextual drawer and workspace menu use restrained semantic color", () => {

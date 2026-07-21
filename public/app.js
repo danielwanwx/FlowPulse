@@ -90,14 +90,6 @@ const COMPONENT_EXPLANATIONS = Object.freeze({
   "otelcol-contrib": "Collects and forwards observed telemetry signals.",
   "astronomy-db": "Stores operational application data for the captured system."
 });
-const COLLABORATOR_ACTIONS = Object.freeze({
-  commander: ["advance", "delegate_task", "draft_jira", "approve_jira_draft"],
-  observer: ["advance", "delegate_task"],
-  investigator: ["delegate_task"],
-  critic: ["advance"],
-  "recovery-engineer": ["review_recovery", "review_pr", "approve_pr_review"],
-  verifier: ["verify_recovery", "review_learning"]
-});
 
 let state;
 let developmentStatus;
@@ -116,8 +108,6 @@ let toastTimer;
 let eventSource;
 let streamedRunId;
 let streamRefreshTimer;
-let managerOpen = false;
-let managerReply = "";
 let liveView = { scale: 1, x: 0, y: 0, initialized: false };
 let livePan = null;
 let compareDrag = null;
@@ -130,8 +120,6 @@ let componentCatalogCache = new Map();
 const liveComponentDetails = new Map();
 const pendingLiveComponentDetails = new Set();
 const unavailableLiveComponentDetails = new Set();
-let selectedCollaboratorId = "commander";
-const recoveryDrafts = new Map();
 let agentTeamEventSource;
 let agentLoopEventSource;
 let agentTeamRestoreAttempted = false;
@@ -145,20 +133,13 @@ els["retry-button"].addEventListener("click", refresh);
 els["live-button"].addEventListener("click", () => { closeWorkspaceMenu(); runLive(); });
 els["details-button"].addEventListener("click", () => { closeWorkspaceMenu(); openDrawer({ type: "run", id: state?.run_id }, "evidence"); });
 els["open-incident-button"].addEventListener("click", () => openDrawer({ type: "run", id: state?.run_id }, "agent"));
-els["manager-button"].addEventListener("click", () => { closeWorkspaceMenu(); openManager(); });
-els["manager-open-button"].addEventListener("click", openManager);
-els["manager-close"].addEventListener("click", closeManager);
-els["manager-agents-button"].addEventListener("click", () => { closeManager(); setMode("agents"); });
-els["manager-primary-action"].addEventListener("click", runManagerPrimaryAction);
-els["manager-form"].addEventListener("submit", sendManagerMessage);
-els["manager-activity"].addEventListener("click", handleManagerActivity);
+els["recovery-status-button"].addEventListener("click", () => setMode("agents"));
 els["development-button"].addEventListener("click", handleDevelopmentAction);
 els["drawer-close"].addEventListener("click", closeDrawer);
 els["restart-button"].addEventListener("click", restartReplay);
 els["back-button"].addEventListener("click", () => seek(cursor - 1));
 els["forward-button"].addEventListener("click", stepForward);
 els["play-button"].addEventListener("click", togglePlayback);
-els["approve-button"].addEventListener("click", approveRepair);
 els["speed-select"].addEventListener("change", updateControls);
 els["timeline-range"].addEventListener("input", () => seek(Number(els["timeline-range"].value)));
 els["compare-range"].addEventListener("input", () => {
@@ -173,7 +154,6 @@ els["compare-incident"].addEventListener("click", () => setComparePercent(70));
 els["compare-even"].addEventListener("click", () => setComparePercent(50));
 els["compare-verified"].addEventListener("click", () => setComparePercent(30));
 els["compare-control"].addEventListener("click", handleCompareFocus);
-els["compare-review-rail"].addEventListener("click", handleCompareReview);
 els["operations-team-rail"].addEventListener("click", handleOperationsTeamRail);
 els["operations-team-rail"].addEventListener("submit", handleAgentTeamSubmit);
 els["operations-team-rail"].addEventListener("scroll", (event) => {
@@ -194,7 +174,6 @@ els["twin-canvas"].addEventListener("pointercancel", endCompareDrag);
 els["timeline-current"].addEventListener("click", () => openDrawer({ type: "stage", id: TWIN_STAGES[cursor].id }, tabForStage(cursor)));
 els["canvas-layers"].addEventListener("click", handleCanvasSelection);
 els["canvas-layers"].addEventListener("keydown", handleCanvasKeydown);
-els["canvas-layers"].addEventListener("click", handleRecoveryConsoleAction);
 els["annotation-layer"].addEventListener("click", handleAnnotationSelection);
 els["drawer-tabs"].addEventListener("click", handleDrawerTab);
 els["drawer-content"].addEventListener("click", handleDrawerEntityFocus);
@@ -251,7 +230,6 @@ function render() {
   renderDevelopmentControl();
   renderDrawer();
   renderOperationsTeamRail();
-  renderManager();
   updateControls();
   if (shouldRenderCanvas) animateCanvasTransition(previousPositions);
   renderedMode = mode;
@@ -405,8 +383,7 @@ function renderCanvas() {
   if (mode === "compare") {
     const { incident, recovered } = compareFrames();
     const provenance = compareProvenance(state.events);
-    els["canvas-layers"].innerHTML = `${renderTwinLayer(recovered, "after", true)}${renderTwinLayer(incident, "before", false)}`;
-    renderCompareReviewRail();
+    els["canvas-layers"].innerHTML = `${renderTwinLayer(recovered, "after", true, { runtimeOnly: true })}${renderTwinLayer(incident, "before", false, { runtimeOnly: true })}`;
     els["compare-handle"].hidden = false;
     els["compare-canvas-range"].hidden = false;
     setAnnotations([]);
@@ -416,8 +393,7 @@ function renderCanvas() {
     return;
   }
   const frame = currentFrame();
-  els["compare-review-rail"].hidden = true;
-  els["canvas-layers"].innerHTML = renderTwinLayer(frame, "current", true);
+  els["canvas-layers"].innerHTML = renderTwinLayer(frame, "current", true, { runtimeOnly: true });
   els["compare-handle"].hidden = true;
   els["compare-canvas-range"].hidden = true;
   // Keep one causal cue on the canvas. The full evidence trail remains in the
@@ -441,7 +417,6 @@ function renderSourceCanvas(layout) {
       : null;
   els["compare-handle"].hidden = true;
   els["compare-canvas-range"].hidden = true;
-  els["compare-review-rail"].hidden = true;
   setAnnotations([]);
   if (!topology?.nodes?.length) {
     els["canvas-layers"].innerHTML = `<div class="source-empty">
@@ -552,7 +527,7 @@ function controlSystemTileMarkup(node, { rail = false } = {}) {
   const interaction = rail
     ? `data-agent-team-role="${escapeHtml(node.id)}"`
     : `data-control-node-id="${escapeHtml(node.id)}" data-architecture-control-id="${escapeHtml(node.id)}"`;
-  return `<button class="source-node is-architecture-compact control-system-tile plane-${escapeHtml(node.plane || "control")} kind-${escapeHtml(node.kind)} is-${escapeHtml(node.status || "idle")}" type="button" ${interaction} aria-label="Show ${escapeHtml(node.label)} details. ${escapeHtml(statusLabel(node.status || "idle"))}">
+  return `<button class="source-node is-architecture-compact control-system-tile plane-${escapeHtml(node.plane || "control")} kind-${escapeHtml(node.kind)} is-${escapeHtml(node.status || "idle")}" type="button" ${interaction} data-status="${escapeHtml(agentNodeTone(node.status))}" aria-label="Show ${escapeHtml(node.label)} details. ${escapeHtml(statusLabel(node.status || "idle"))}">
     <span class="node-icon" aria-hidden="true"><i class="ph ph-${iconForLive(node)}"></i></span>
     <span class="node-copy"><strong>${escapeHtml(node.label)}</strong></span>
     <span class="node-status-dot is-${escapeHtml(node.status || "idle")}" aria-hidden="true"></span>
@@ -727,46 +702,9 @@ function clearLiveSignalClasses() {
 }
 
 function renderAgentCanvas() {
-  els["compare-review-rail"].hidden = true;
   const control = agentControl();
   const team = projectAgentCollaborators(control);
-  if (!team.nodes.some((node) => node.id === selectedCollaboratorId)) selectedCollaboratorId = "commander";
-  const positions = new Map(team.nodes.map((node) => [node.id, node]));
-  const selectedAgent = positions.get(selectedCollaboratorId) || team.nodes[0];
-  const edges = team.edges.map((edge, index) => {
-    const from = positions.get(edge.from);
-    const to = positions.get(edge.to);
-    const path = collaboratorEdgePath(from, to);
-    const pulse = ["active", "waiting", "rejected", "observing"].includes(edge.status)
-      ? `<path class="pulse-flow is-${agentEdgeTone(edge.status)}" d="${path}" pathLength="1" aria-hidden="true"/>`
-      : "";
-    return `<g class="edge-group path-control collaborator-edge collaborator-edge-${index}"><path class="edge-line is-${agentEdgeTone(edge.status)}" d="${path}"/>${pulse}<path class="edge-hit" d="${path}" role="button" tabindex="0" aria-label="${escapeHtml(edge.label)} from ${escapeHtml(from.label)} to ${escapeHtml(to.label)}" data-agent-edge-id="${escapeHtml(edge.id)}"/></g>`;
-  }).join("");
-  const nodes = team.nodes.map((node) => {
-    const selectedState = node.id === selectedAgent.id;
-    return `<button class="collaborator-node collaborator-node-${escapeHtml(node.id)} is-${agentNodeTone(node.status)} ${selectedState ? "is-selected" : ""}" type="button" data-collaborator-id="${escapeHtml(node.id)}" data-status="${escapeHtml(agentNodeTone(node.status))}" aria-label="${escapeHtml(node.label)}, ${escapeHtml(agentStatusLabel(node.status))}" aria-pressed="${selectedState}">
-      <span class="collaborator-icon icon-role-${escapeHtml(node.id)}" aria-hidden="true"><i class="ph ph-${escapeHtml(node.icon)}"></i><span class="node-status-dot"></span></span>
-      <strong>${escapeHtml(node.label)}</strong><small>${escapeHtml(agentStatusLabel(node.status))}</small>
-    </button>`;
-  }).join("");
   const report = control.report;
-  const allowedActionIds = new Set(COLLABORATOR_ACTIONS[selectedAgent.id] || []);
-  const actionButtons = control.actions.filter((action) => allowedActionIds.has(action.id)).map((action) => {
-    const needsOwner = action.requires_owner === true;
-    const externalDraft = ["pull_request", "work_item"].includes(action.kind);
-    const note = needsOwner ? "Opens the separate human gate" : externalDraft ? "Ledger draft · connector not configured" : action.kind === "task" ? "Internal agent assignment" : "Ledger-governed control";
-    return `<button class="recovery-action ${needsOwner ? "is-owner" : ""}" type="button" data-recovery-action="${escapeHtml(action.id)}" ${busy ? "disabled" : ""}><span><i class="ph ph-${recoveryActionIcon(action.id)}" aria-hidden="true"></i><strong>${escapeHtml(action.label)}</strong></span><small>${escapeHtml(note)}</small></button>`;
-  }).join("") || `<p class="recovery-empty">No direct control is available for this collaborator at the current stage.</p>`;
-  const activity = (control.activity || []).filter((item) => selectedAgent.activityIds.includes(item.agent_id)).slice(-3).reverse();
-  const activityMarkup = activity.map((item) => `<button class="recovery-work-item" type="button" data-collaborator-inspect="${escapeHtml(item.agent_id)}"><span class="work-item-state is-${escapeHtml(agentNodeTone(positions.get(selectedAgent.id)?.status))}" aria-hidden="true"></span><span><strong>${escapeHtml(item.summary)}</strong><small>${escapeHtml(item.type.replaceAll(".", " "))}</small></span><code>${escapeHtml(String(item.sequence))}</code></button>`).join("") || `<p class="recovery-empty">No attributed activity has been recorded for this collaborator yet.</p>`;
-  const finding = collaboratorFinding(selectedAgent, control);
-  const citations = collaboratorCitations(selectedAgent, control);
-  const conversation = (control.activity || []).filter((item) => item.collaborator_id === selectedAgent.id && ["manager.message.received", "manager.response.created"].includes(item.type)).slice(-4);
-  const conversationMarkup = conversation.length
-    ? conversation.map((item) => `<p class="collaboration-message ${item.type === "manager.message.received" ? "is-human" : "is-agent"}"><span>${item.type === "manager.message.received" ? "You" : selectedAgent.label}</span>${escapeHtml(item.summary)}</p>`).join("")
-    : `<p class="collaboration-message is-agent"><span>${escapeHtml(selectedAgent.label)}</span>${escapeHtml(managerReply || finding)}</p>`;
-  const quickPrompts = selectedAgent.prompts.slice(0, 2).map((prompt) => `<button type="submit" form="recovery-command-form" data-recovery-prompt="${escapeHtml(prompt)}">${escapeHtml(prompt)}</button>`).join("");
-  const internalRoles = selectedAgent.roleIds.map((id) => `<span>${escapeHtml(agentLabel(id))}</span>`).join("");
   const currentStage = report.stage || state.stage;
   const summaryLabel = report.human_gate ? "Owner gate" : report.verification ? "Verified" : "Current investigation";
   const summaryDetail = report.human_gate ? "Human approval required before remediation" : currentStage ? `Ledger stage · ${currentStage}` : "Awaiting the next ledger event";
@@ -777,49 +715,22 @@ function renderAgentCanvas() {
       ${report.rejected_diagnosis ? `<div class="diagnosis-rejection"><span>Rejected hypothesis</span><strong>${escapeHtml(report.rejected_diagnosis.hypothesis_id)}</strong></div>` : ""}
       ${report.confidence != null ? `<div class="diagnosis-score"><span>Evaluator confidence</span><strong>${Math.round(report.confidence * 100)}%</strong></div>` : ""}
     </section>
-    <section class="recovery-graph-panel" aria-label="Agent execution graph">
-      <header><div><span>Incident team</span><strong>${escapeHtml(team.nodes.find((node) => node.id === team.currentId)?.label || "Commander")}</strong></div><small>Current ledger owner</small></header>
-      <div class="recovery-graph"><svg class="edge-map" viewBox="0 0 1000 520" preserveAspectRatio="none">${edges}</svg>${nodes}<div class="agent-infrastructure-rail"><button type="button" data-collaborator-inspect="ledger"><i class="ph ph-database" aria-hidden="true"></i><span><strong>Evidence ledger</strong><small>Authority · ${escapeHtml(String(control.last_sequence))} events</small></span></button><button type="button" data-collaborator-inspect="langfuse"><i class="ph ph-waveform" aria-hidden="true"></i><span><strong>Langfuse</strong><small>Observability · ${control.langfuse === "observing" ? "connected" : "not configured"}</small></span></button></div></div>
+    <section class="recovery-graph-panel recovery-workflow-facts" aria-label="Projected recovery workflow">
+      <header><div><span>Recovery workflow</span><strong>${escapeHtml(team.nodes.find((node) => node.id === team.currentId)?.label || "Awaiting orchestration")}</strong></div><small>See Unified Context Rail</small></header>
+      <div class="recovery-workflow-nodes">${team.nodes.map((node) => `<article class="recovery-workflow-node is-${escapeHtml(agentNodeTone(node.status))}"><i class="ph ph-${escapeHtml(node.icon)}" aria-hidden="true"></i><div><strong>${escapeHtml(node.label)}</strong><small>${escapeHtml(agentStatusLabel(node.status))}</small></div></article>`).join("")}</div>
     </section>
-    <aside class="recovery-command" aria-label="${escapeHtml(selectedAgent.label)} collaboration panel" aria-live="polite">
-      <header class="collaboration-header"><span class="collaboration-avatar icon-role-${escapeHtml(selectedAgent.id)} is-${escapeHtml(agentNodeTone(selectedAgent.status))}" aria-hidden="true"><i class="ph ph-${escapeHtml(selectedAgent.icon)}"></i><span class="node-status-dot"></span></span><div><span>${escapeHtml(agentStatusLabel(selectedAgent.status))}</span><strong id="collaboration-panel-title" tabindex="-1">${escapeHtml(selectedAgent.label)}</strong><small>${escapeHtml(selectedAgent.responsibility)}</small></div><button type="button" class="collaboration-inspect" data-collaborator-inspect="${escapeHtml(selectedAgent.currentRole)}">Inspect</button></header>
-      <section class="collaboration-finding"><div class="recovery-section-title"><strong>Latest grounded signal</strong><span>${escapeHtml(selectedAgent.currentRole.replaceAll("_", " "))}</span></div><p>${escapeHtml(finding)}</p><div class="collaboration-citations">${citations.slice(0, 3).map((ref) => `<code>${escapeHtml(ref)}</code>`).join("") || "<span>Evidence not yet cited</span>"}</div></section>
-      <section class="collaboration-prompts"><div>${quickPrompts}</div></section>
-      <section class="collaboration-thread"><div class="recovery-section-title"><strong>Conversation</strong></div>${conversationMarkup}</section>
-      <details class="recovery-context"><summary><span>Evidence, activity &amp; controls</span><small>${activity.length} updates · ${control.actions.filter((action) => allowedActionIds.has(action.id)).length} actions</small></summary><div class="recovery-context-body"><div class="collaboration-roles" aria-label="Isolated backend roles">${internalRoles}</div><section class="recovery-work-queue"><div class="recovery-section-title"><strong>Recent activity</strong></div>${activityMarkup}</section><section class="recovery-actions"><div class="recovery-section-title"><strong>Available controls</strong><span>Ledger governed</span></div>${actionButtons}</section></div></details>
-      <form class="recovery-command-form" id="recovery-command-form">
-        <label for="recovery-command-input">Ask ${escapeHtml(selectedAgent.label)} about this incident</label>
-        <div><input id="recovery-command-input" name="message" type="text" maxlength="2000" autocomplete="off" value="${escapeHtml(recoveryDrafts.get(selectedAgent.id) || "")}" placeholder="Ask ${escapeHtml(selectedAgent.label)} about this incident…"><button class="button approve" type="submit" data-recovery-command-send ${busy ? "disabled" : ""}>Send</button></div>
-        <small>Chat may assign safe work. Owner approval remains separate.</small>
-      </form>
-    </aside>
   </div>`;
-  const commandForm = els["canvas-layers"].querySelector(".recovery-command-form");
-  const fillPrompt = (button) => {
-    recoveryDrafts.set(selectedAgent.id, button.dataset.recoveryPrompt);
-    commandForm.elements.message.value = button.dataset.recoveryPrompt;
-    commandForm.elements.message.focus();
-  };
-  commandForm.elements.message.addEventListener("input", () => {
-    recoveryDrafts.set(selectedAgent.id, commandForm.elements.message.value);
-  });
-  commandForm.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    if (event.submitter?.matches("[data-recovery-prompt]")) {
-      fillPrompt(event.submitter);
-      return;
-    }
-    await sendRecoveryCommand(commandForm);
-  });
   setAnnotations([]);
   els["compare-handle"].hidden = true;
   els["compare-canvas-range"].hidden = true;
-  els["twin-canvas"].setAttribute("aria-label", `Recovery Console. ${control.report.title}. Selected collaborator ${selectedAgent.label}.`);
+  els["twin-canvas"].setAttribute("aria-label", `Recovery Console. ${control.report.title}.`);
 }
 
-function renderTwinLayer(frame, layerName, interactive) {
+function renderTwinLayer(frame, layerName, interactive, { runtimeOnly = false } = {}) {
   const suffix = `${layerName}-${frame.index}`;
-  const edges = TWIN_EDGES.map((edge) => {
+  const visibleNodes = runtimeOnly ? TWIN_NODES.filter((node) => node.plane === "runtime") : TWIN_NODES;
+  const visibleIds = new Set(visibleNodes.map((node) => node.id));
+  const edges = TWIN_EDGES.filter((edge) => visibleIds.has(edge.from) && visibleIds.has(edge.to)).map((edge) => {
     const status = frame.edgeStates[edge.id] || "quiet";
     const pulseSlot = PULSE_SLOTS[edge.id] ?? 0;
     const accessible = interactive ? `role="button" tabindex="0" aria-label="${escapeHtml(edge.label)} from ${escapeHtml(labelFor(edge.from))} to ${escapeHtml(labelFor(edge.to))}" data-edge-id="${edge.id}"` : "aria-hidden=\"true\"";
@@ -830,7 +741,7 @@ function renderTwinLayer(frame, layerName, interactive) {
       <path class="edge-hit" d="${edge.path}" ${accessible} />
     </g>`;
   }).join("");
-  const nodes = TWIN_NODES.map((node) => {
+  const nodes = visibleNodes.map((node) => {
     const status = frame.nodeStates[node.id] || "quiet";
     const sequence = IMPACT_SEQUENCE[node.id] ?? 0;
     const entering = frame.index === 2 && status === "impact" ? " is-entering" : "";
@@ -916,70 +827,6 @@ function compareEvidenceChips(event, limit = 3) {
   return refs.slice(0, limit).map((id) => `<code>${escapeHtml(id)}</code>`).join("") || "<span>Ledger record pending</span>";
 }
 
-function renderCompareReviewRail() {
-  if (mode !== "compare") return;
-  const decision = compareDecisionModel();
-  const provenance = compareProvenance(state.events);
-  const approvalLabel = decision.approval?.type === "approval.granted" ? "Owner approved" : decision.approval?.type === "approval.requested" ? "Owner gate required" : "Owner gate not reached";
-  const executionLabel = decision.executed ? "Rollback recorded" : "Execution not recorded";
-  const verificationLabel = decision.verified ? "Recovery verified" : "Verification not yet passed";
-  const learningLabel = decision.regression ? "Regression recorded" : "Regression pending";
-  const focusItems = [
-    ["impact", "Impact", "Before → verified operating state"],
-    ["cause", "Cause", "Rejected symptom and confirmed mechanism"],
-    ["recovery", "Recovery", "Bounded change, owner gate, verification"],
-    ["learning", "Learning", "Reusable evidence path and policy record"]
-  ];
-  const focusButtons = focusItems.map(([id, label, copy]) => `<button type="button" data-compare-focus="${id}" aria-pressed="${String(compareFocus === id)}"><strong>${label}</strong><small>${copy}</small></button>`).join("");
-  els["compare-review-rail"].hidden = false;
-  els["compare-review-rail"].innerHTML = `<header class="compare-review-header">
-    <span>DECISION REVIEW</span>
-    <h2 id="compare-review-title">What changed, and why</h2>
-    <p>${escapeHtml(provenance.caption)}</p>
-  </header>
-  <nav class="compare-review-focus" aria-label="Decision review focus">${focusButtons}</nav>
-  <div class="compare-review-list">
-    <section class="compare-review-section is-${compareFocus === "impact" ? "active" : "quiet"}">
-      <button type="button" class="compare-review-item" data-compare-focus="impact" data-compare-tab="verify">
-        <span class="compare-review-kicker">Impact → verified outcome</span>
-        <strong>Checkout 38.4% → 0.8% errors</strong>
-        <small>Payment 61.6% → 99.98% reachable · Kafka 11,842 → 620 lag</small>
-      </button>
-    </section>
-    <section class="compare-review-section is-${compareFocus === "cause" ? "active" : "quiet"}">
-      <button type="button" class="compare-review-item" data-compare-focus="cause" data-compare-tab="eval">
-        <span class="compare-review-kicker">Causal decision</span>
-        <strong>${escapeHtml(decision.rejected ? "Kafka initiation rejected" : "Evaluator record pending")}</strong>
-        <small>${escapeHtml(decision.rejected?.payload?.reason || "No adversarial verdict is recorded for this run.")}</small>
-        <span class="compare-evidence">${compareEvidenceChips(decision.rejected)}</span>
-      </button>
-      <button type="button" class="compare-review-item" data-compare-focus="cause" data-compare-tab="changes">
-        <span class="compare-review-kicker">Confirmed mechanism</span>
-        <strong>${escapeHtml(decision.rootCause)}</strong>
-        <small>${escapeHtml(decision.rootCopy)}</small>
-        <span class="compare-evidence">${compareEvidenceChips(decision.cause || decision.accepted)}</span>
-      </button>
-    </section>
-    <section class="compare-review-section is-${compareFocus === "recovery" ? "active" : "quiet"}">
-      <button type="button" class="compare-review-item" data-compare-focus="recovery" data-compare-tab="repair">
-        <span class="compare-review-kicker">Bounded recovery</span>
-        <strong>${escapeHtml(decision.recovery)}</strong>
-        <small>${escapeHtml(decision.recoveryCopy)}</small>
-        <span class="compare-review-state">${escapeHtml(approvalLabel)} · ${escapeHtml(executionLabel)} · ${escapeHtml(verificationLabel)}</span>
-      </button>
-    </section>
-    <section class="compare-review-section is-${compareFocus === "learning" ? "active" : "quiet"}">
-      <button type="button" class="compare-review-item" data-compare-focus="learning" data-compare-tab="evolve">
-        <span class="compare-review-kicker">Next time</span>
-        <strong>Start with deploy + first failing trace</strong>
-        <small>${escapeHtml(decision.nextTime)}</small>
-        <span class="compare-review-state">${escapeHtml(learningLabel)}${decision.policy ? ` · ${escapeHtml(String(decision.policy.payload?.promotion || "policy evaluated").replaceAll("_", " "))}` : ""}</span>
-      </button>
-    </section>
-  </div>`;
-  applyCompareFocus();
-}
-
 function applyCompareFocus() {
   els["twin-canvas"].dataset.compareFocus = compareFocus;
   for (const button of document.querySelectorAll("[data-compare-focus]")) {
@@ -991,23 +838,7 @@ function handleCompareFocus(event) {
   const button = event.target.closest("[data-compare-focus]");
   if (!button || mode !== "compare") return;
   compareFocus = button.dataset.compareFocus;
-  renderCompareReviewRail();
-}
-
-function handleCompareReview(event) {
-  const item = event.target.closest("[data-compare-tab]");
-  if (item && mode === "compare") {
-    event.stopPropagation();
-    compareFocus = item.dataset.compareFocus;
-    applyCompareFocus();
-    openDrawer({ type: "run", id: state.run_id }, item.dataset.compareTab);
-    els["context-drawer"].hidden = false;
-    return;
-  }
-  const focus = event.target.closest("[data-compare-focus]");
-  if (!focus || mode !== "compare") return;
-  compareFocus = focus.dataset.compareFocus;
-  renderCompareReviewRail();
+  applyCompareFocus();
 }
 
 function setComparePercent(value) {
@@ -1082,189 +913,14 @@ function renderApproval() {
   els["approval-banner"].hidden = !visible;
   els["incident-strip"].hidden = visible || mode !== "live" || !activeIncident;
   els["approval-copy"].textContent = state.mode === "development" ? "Restore the known-good flag and recreate only the local checkout container." : "Rollback is bounded to checkout:2.18.0.";
-  els["manager-open-button"].textContent = "Recover";
-}
-
-function renderManager() {
-  els["manager-panel"].hidden = !managerOpen;
-  if (!managerOpen || !state) return;
-  const control = agentControl();
-  const report = control.report;
-  const action = control.actions[0];
-  els["manager-title"].textContent = report.title;
-  els["manager-subtitle"].textContent = `${report.data_mode === "real_local_runtime" ? "Real local runtime" : "Captured deterministic replay"} · ${control.authority}`;
-  els["manager-status"].textContent = managerReply || report.summary;
-  els["manager-report"].innerHTML = `<section class="manager-finding">
-    <div><span>Current stage</span><strong>${escapeHtml(report.stage)}</strong></div>
-    <div><span>Decision</span><strong>${report.human_gate ? "Owner required" : report.verification ? "Verified" : "Agent team active"}</strong></div>
-    ${report.confidence == null ? "" : `<div><span>Evaluator score</span><strong>${Math.round(report.confidence * 100)}%</strong></div>`}
-  </section>
-  ${report.rejected_diagnosis ? `<section class="manager-callout is-rejected"><span>Rejected diagnosis</span><strong>${escapeHtml(report.rejected_diagnosis.hypothesis_id)}</strong><p>${escapeHtml(report.rejected_diagnosis.reason)}</p></section>` : ""}
-  ${report.root_cause ? `<section class="manager-callout"><span>Confirmed root cause</span><p>${escapeHtml(report.root_cause)}</p></section>` : ""}
-  ${report.repair ? `<section class="manager-callout is-recovery"><span>Bounded recovery</span><strong>${escapeHtml(report.repair.action)}</strong><p>${escapeHtml(report.repair.target)} only · ${escapeHtml(report.repair.from)} to ${escapeHtml(report.repair.to)}</p><p>${escapeHtml(report.repair.expected_effect)}</p></section>` : ""}
-  <section class="manager-citations"><span>Immutable evidence</span><div>${report.citations.length ? report.citations.map((id) => `<code>${escapeHtml(id)}</code>`).join("") : "<small>No causal evidence cited yet.</small>"}</div></section>`;
-  els["manager-activity-count"].textContent = `${control.activity.length} event${control.activity.length === 1 ? "" : "s"}`;
-  els["manager-activity"].innerHTML = control.activity.slice(-8).reverse().map((item) => `<button type="button" data-manager-activity-id="${escapeHtml(item.id)}"><span class="agent-activity-icon is-${agentNodeTone(control.graph.nodes.find((node) => node.id === item.agent_id)?.status || "standby")}"><i class="ph ph-${agentIcon(item.agent_id)}" aria-hidden="true"></i></span><span><strong>${escapeHtml(control.graph.nodes.find((node) => node.id === item.agent_id)?.label || item.actor)}</strong><small>${escapeHtml(item.summary)}</small></span><time>${escapeHtml(String(item.sequence))}</time></button>`).join("") || `<div class="manager-empty">No specialist activity recorded yet.</div>`;
-  els["manager-primary-action"].textContent = action?.label || "Review status";
-  els["manager-primary-action"].dataset.action = action?.id || "review_learning";
-  els["manager-primary-action"].disabled = busy || action?.id === "review_recovery";
-  els["approve-button"].hidden = !report.human_gate;
-  els["approve-button"].textContent = state.mode === "development" ? "Approve local checkout recovery" : "Approve bounded checkout recovery";
-  els["approve-button"].disabled = busy;
-}
-
-function openManager() {
-  managerOpen = true;
-  selected = null;
-  renderDrawer();
-  renderManager();
-  requestAnimationFrame(() => els["manager-close"].focus());
-}
-
-function closeManager() {
-  managerOpen = false;
-  renderManager();
-  els["manager-button"].focus();
-}
-
-function handleManagerActivity(event) {
-  const button = event.target.closest("[data-manager-activity-id]");
-  if (!button) return;
-  const activity = agentControl().activity.find((item) => item.id === button.dataset.managerActivityId);
-  if (activity) openDrawer({ type: "node", id: activity.agent_id }, "agent");
-}
-
-async function runManagerPrimaryAction() {
-  const action = els["manager-primary-action"].dataset.action;
-  if (action === "review_learning") {
-    closeManager();
-    setMode("agents");
-    return;
-  }
-  if (action === "review_recovery") return;
-  setBusy(true);
-  try {
-    await request("/api/agent-control/action", { method: "POST", body: JSON.stringify({ action }) });
-    state = await request("/api/state");
-    cursor = availableStage(state.events);
-    managerReply = action === "advance" ? "The Manager delegated the next safe step. The ledger projection has been updated." : "Verification monitoring is active.";
-    render();
-  } catch (error) {
-    showToast(error.message, true);
-  } finally {
-    setBusy(false);
-    if (mode === "agents") render();
-  }
-}
-
-async function sendManagerMessage(event) {
-  event.preventDefault();
-  const message = els["manager-input"].value.trim();
-  if (!message) return;
-  setBusy(true);
-  try {
-    const result = await request("/api/agent-control/message", { method: "POST", body: JSON.stringify({ message }) });
-    managerReply = result.message;
-    els["manager-input"].value = "";
-    state = await request("/api/state");
-    render();
-  } catch (error) {
-    showToast(error.message, true);
-  } finally {
-    setBusy(false);
-    if (mode === "agents") render();
-  }
-}
-
-async function handleRecoveryConsoleAction(event) {
-  const collaborator = event.target.closest("[data-collaborator-id]");
-  if (collaborator && mode === "agents") {
-    selectedCollaboratorId = collaborator.dataset.collaboratorId;
-    renderAgentCanvas();
-    requestAnimationFrame(() => els["canvas-layers"].querySelector(`[data-collaborator-id="${CSS.escape(selectedCollaboratorId)}"]`)?.focus());
-    return;
-  }
-  const prompt = event.target.closest("[data-recovery-prompt]");
-  if (prompt && mode === "agents") {
-    const input = els["canvas-layers"].querySelector("#recovery-command-input");
-    recoveryDrafts.set(selectedCollaboratorId, prompt.dataset.recoveryPrompt);
-    input.value = prompt.dataset.recoveryPrompt;
-    input.focus();
-    return;
-  }
-  const inspect = event.target.closest("[data-collaborator-inspect]");
-  if (inspect && mode === "agents") {
-    openDrawer({ type: "node", id: inspect.dataset.collaboratorInspect }, "agent");
-    return;
-  }
-  const commandButton = event.target.closest("[data-recovery-command-send]");
-  if (commandButton) {
-    event.preventDefault();
-    event.stopPropagation();
-    await sendRecoveryCommand(commandButton.closest("form"));
-    return;
-  }
-  const workItem = event.target.closest("[data-recovery-work-item]");
-  if (workItem) {
-    openDrawer({ type: "run", id: state.run_id }, "agent");
-    return;
-  }
-  const button = event.target.closest("[data-recovery-action]");
-  if (!button || mode !== "agents") return;
-  event.stopPropagation();
-  const action = button.dataset.recoveryAction;
-  if (action === "review_recovery") {
-    managerReply = "Review the bounded checkout scope and immutable citations before using the separate owner approval control.";
-    openManager();
-    return;
-  }
-  if (action === "review_learning") {
-    openDrawer({ type: "run", id: state.run_id }, "evolve");
-    return;
-  }
-  setBusy(true);
-  try {
-    await request("/api/agent-control/action", { method: "POST", body: JSON.stringify({ action }) });
-    state = await request("/api/state");
-    cursor = availableStage(state.events);
-    managerReply = recoveryActionReply(action);
-    showToast(managerReply);
-    render();
-  } catch (error) {
-    showToast(error.message, true);
-  } finally {
-    setBusy(false);
-    if (mode === "agents") render();
-  }
-}
-
-async function sendRecoveryCommand(form) {
-  const input = form.elements.message;
-  const message = input.value.trim();
-  if (!message) return;
-  const collaboratorId = selectedCollaboratorId;
-  setBusy(true);
-  try {
-    const result = await request("/api/agent-control/message", { method: "POST", body: JSON.stringify({ message, collaborator_id: collaboratorId }) });
-    managerReply = result.message;
-    recoveryDrafts.delete(result.collaborator_id || collaboratorId);
-    selectedCollaboratorId = result.collaborator_id || collaboratorId;
-    state = await request("/api/state");
-    cursor = availableStage(state.events);
-    render();
-  } catch (error) {
-    showToast(error.message, true);
-  } finally {
-    setBusy(false);
-    if (mode === "agents") render();
-  }
+  els["recovery-status-button"].textContent = "View recovery status";
 }
 
 function renderDrawer() {
   // Live component detail is intentionally rendered in the persistent Team rail.
   // Keeping the canvas drawer out of this path preserves the graph and avoids
   // presenting two competing detail surfaces for the same selected node.
-  if (mode === "architecture" || (mode === "live" && selected?.type === "node") || !selected || !state || agentTeam.panel === "session") {
+  if (mode === "architecture" || mode === "live" || isUnifiedRailWorkspace() || !selected || !state || agentTeam.panel === "session") {
     els["context-drawer"].hidden = true;
     return;
   }
@@ -1287,27 +943,62 @@ function controlSystemNodes() {
   return nodes.length === 5 ? nodes : [];
 }
 
+function isUnifiedRailWorkspace(candidate = mode) {
+  return ["replay", "agents", "compare"].includes(candidate);
+}
+
+function railRuntimeNodes() {
+  const view = liveTopologyView() || architectureView();
+  const nodes = view?.runtime_data?.graph?.nodes || view?.graph?.nodes || [];
+  return nodes.filter((node) => node && ["runtime", "data"].includes(node.plane));
+}
+
+function isRailRuntimeNode(id) {
+  return typeof id === "string" && railRuntimeNodes().some((node) => node.id === id);
+}
+
+function isSelectionValidForMode(selection, destination) {
+  if (!selection) return true;
+  if (selection.type !== "node") return false;
+  if (destination === "architecture") return false;
+  if (["live", "replay", "agents", "compare"].includes(destination)) return isRailRuntimeNode(selection.id);
+  return false;
+}
+
 function renderOperationsTeamRail() {
   const rail = els["operations-team-rail"];
   const controls = controlSystemNodes();
-  // The Team rail is one persistent spatial slot. A component inspector takes
-  // that slot only while the Team is at home; an open Agent session deliberately
-  // replaces the inspector without rebuilding the Live canvas.
-  const liveInspectorOpen = mode === "live" && selected?.type === "node" && agentTeam.panel === "home";
-  rail.hidden = !controls.length || (Boolean(selected) && agentTeam.panel === "home" && !liveInspectorOpen);
+  const inspectorOpen = (mode === "live" || isUnifiedRailWorkspace()) && selected?.type === "node" && isRailRuntimeNode(selected.id) && agentTeam.panel === "home";
+  const workspaceEvidenceOpen = isUnifiedRailWorkspace() && Boolean(selected) && agentTeam.panel === "home" && !inspectorOpen;
+  rail.hidden = !controls.length;
   if (rail.hidden) {
     rail.innerHTML = "";
     return;
   }
-  rail.innerHTML = liveInspectorOpen
+  rail.innerHTML = inspectorOpen
     ? liveNodeInspectorRailMarkup()
-    : agentTeam.panel === "home"
-      ? agentTeamHomeMarkup(controls)
-      : agentTeamSessionMarkup(controls);
+    : workspaceEvidenceOpen
+      ? workspaceEvidenceRailMarkup()
+      : agentTeam.panel === "session"
+        ? agentTeamSessionMarkup(controls)
+        : isUnifiedRailWorkspace()
+          ? workspaceSummaryRailMarkup()
+          : agentTeamHomeMarkup(controls);
   restoreLiveInspectorSnapshot();
 }
 
 function handleOperationsTeamRail(event) {
+  if (event.target.closest("[data-workspace-evidence-close]")) {
+    closeDrawer();
+    return;
+  }
+  if (event.target.closest("[data-workspace-view-evidence]")) {
+    selected = { type: "run", id: state?.run_id || "current" };
+    activeTab = "evidence";
+    renderDrawer();
+    renderOperationsTeamRail();
+    return;
+  }
   const inspectorClose = event.target.closest("[data-live-inspector-close]");
   if (inspectorClose) {
     closeDrawer();
@@ -1350,7 +1041,8 @@ function handleOperationsTeamRail(event) {
   }
   const roleTile = event.target.closest("[data-agent-team-role]");
   if (roleTile) {
-    void openAgentTeamSession(roleTile.dataset.agentTeamRole, { restoreInspector: Boolean(selected), inspectorSnapshot: captureLiveInspectorSnapshot() });
+    const restoreInspector = Boolean(selected?.type === "node" && isRailRuntimeNode(selected.id));
+    void openAgentTeamSession(roleTile.dataset.agentTeamRole, { restoreInspector, inspectorSnapshot: restoreInspector ? captureLiveInspectorSnapshot() : null });
     return;
   }
   if (event.target.closest("[data-agent-team-back]")) {
@@ -1488,6 +1180,81 @@ function liveInspectorEvidenceMarkup(evidence) {
 function liveInspectorDataResourcesMarkup(resources) {
   if (!resources.length) return "";
   return `<section class="live-inspector-section"><span>Data resources</span><div class="live-inspector-data-resources">${resources.map((resource) => `<code>${escapeHtml(resource)}</code>`).join("")}</div></section>`;
+}
+
+function workspaceSummaryRailMarkup() {
+  const report = agentControl().report || {};
+  const controls = controlSystemNodes();
+  const summary = workspaceSummaryModel(report);
+  const available = summary.available !== false;
+  return `<section class="architecture-system architecture-flowpulse-system unified-context-summary" aria-label="${escapeHtml(summary.title)}">
+    <header class="unified-context-header"><div><span>FlowPulse</span><strong>${escapeHtml(summary.title)}</strong></div><span class="node-status-dot is-${escapeHtml(summary.tone)}" aria-label="${escapeHtml(summary.status)}"></span></header>
+    <p class="unified-context-status">${escapeHtml(summary.status)}</p>
+    ${available ? `<dl class="unified-context-facts">${summary.facts.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("")}</dl>` : `<p class="unified-context-empty">${escapeHtml(summary.empty)}</p>`}
+    <div class="unified-context-actions">${summary.actions.map((action) => action.kind === "evidence" ? `<button type="button" data-workspace-view-evidence>${escapeHtml(action.label)}</button>` : `<button type="button" data-agent-team-role="${escapeHtml(action.role)}">${escapeHtml(action.label)}</button>`).join("")}</div>
+    ${compactAgentSwitcherMarkup(controls)}
+  </section>`;
+}
+
+function workspaceSummaryModel(report) {
+  const compact = (facts) => facts.filter(([, value]) => typeof value === "string" && value.trim()).slice(0, 5);
+  const verdict = report.verification ? "Verified" : report.human_gate ? "Human gate required" : report.stage || "Awaiting server projection";
+  if (mode === "replay") return {
+    title: "Diagnosis Summary",
+    status: report.root_cause ? "Evidence-grounded diagnosis" : "Awaiting evidence-grounded diagnosis",
+    tone: report.rejected_diagnosis ? "warning" : "observed",
+    facts: compact([
+      ["Current hypothesis", report.root_cause || report.title],
+      ["Evaluator", report.rejected_diagnosis?.reason || verdict],
+      ["Evidence coverage", Array.isArray(report.citations) && report.citations.length ? `${report.citations.length} cited records` : "No cited records projected"],
+      ["Active agent", agentControl().current_agent_id?.replaceAll("_", " ") || "Unavailable"]
+    ]),
+    actions: [{ label: "Ask Investigator", role: "investigator" }, { label: "Ask Evaluator", role: "evaluator" }, { label: "View cited evidence", kind: "evidence" }]
+  };
+  if (mode === "agents") return {
+    title: "Recovery Status",
+    status: report.repair ? "Bounded repair is server-projected" : "Recovery proposal unavailable",
+    tone: report.verification ? "verified" : report.human_gate ? "warning" : "idle",
+    facts: compact([
+      ["Proposed repair", report.repair?.action || "Not projected"],
+      ["Risk", report.repair?.risk || "Not projected"],
+      ["Evaluator", report.rejected_diagnosis?.reason || verdict],
+      ["Human gate", report.human_gate ? "Required" : "Not required by current projection"],
+      ["Verification", report.verification || "Not projected"]
+    ]),
+    actions: [{ label: "Ask Orchestrator", role: "orchestrator" }, { label: "Ask Evaluator", role: "evaluator" }]
+  };
+  const compareAvailable = state?.topology_views?.readiness?.compare_available === true || report.verification === true;
+  return {
+    title: "Verification Summary",
+    status: compareAvailable ? "Server-projected verification summary" : "Verification summary unavailable",
+    tone: compareAvailable ? "verified" : "standby",
+    available: compareAvailable,
+    empty: "Compare is unavailable until the backend records verified recovery evidence.",
+    facts: compact([
+      ["Recovery verdict", report.verification ? "Verified" : "Not verified"],
+      ["Passed checks", report.verification ? "Recorded by backend" : "Not projected"],
+      ["Remaining risks", report.rejected_diagnosis?.reason || "Not projected"],
+      ["Evidence", Array.isArray(report.citations) && report.citations.length ? `${report.citations.length} cited records` : "Not projected"],
+      ["Evaluator", verdict]
+    ]),
+    actions: [{ label: "Ask Evaluator", role: "evaluator" }]
+  };
+}
+
+function compactAgentSwitcherMarkup(controls) {
+  return `<nav class="unified-agent-switcher" aria-label="Open a FlowPulse role">${controls.map((node) => `<button type="button" data-agent-team-role="${escapeHtml(node.id)}" aria-label="Open ${escapeHtml(node.label)}"><i class="ph ph-${escapeHtml(iconForLive(node))}" aria-hidden="true"></i><span>${escapeHtml(node.label)}</span></button>`).join("")}</nav>`;
+}
+
+function workspaceEvidenceRailMarkup() {
+  const meta = selectionMeta(selected);
+  const source = sourceTruthLabel() || "Source truth unavailable";
+  return `<section class="architecture-system architecture-flowpulse-system unified-context-evidence" aria-label="Workspace evidence detail">
+    <header class="unified-context-header"><div><span>Workspace evidence</span><strong>${escapeHtml(meta.title)}</strong></div><button type="button" class="live-inspector-close" data-workspace-evidence-close aria-label="Close workspace evidence"><i class="ph ph-x" aria-hidden="true"></i></button></header>
+    <p>${escapeHtml(meta.subtitle)}</p>
+    <dl class="unified-context-facts"><div><dt>Source truth</dt><dd>${escapeHtml(source)}</dd></div><div><dt>Selection type</dt><dd>${escapeHtml(meta.kind)}</dd></div></dl>
+    <p class="unified-context-note">This is a bounded workspace evidence view. It does not create component telemetry or authority.</p>
+  </section>`;
 }
 
 function agentTeamHomeMarkup(controls) {
@@ -2227,13 +1994,6 @@ function handleCanvasKeydown(event) {
     openControlDetail(event.target.dataset.controlNodeId, { focus: true });
     return;
   }
-  if (event.target.matches("[data-collaborator-id]") && ["ArrowRight", "ArrowDown", "ArrowLeft", "ArrowUp"].includes(event.key)) {
-    const nodes = [...els["canvas-layers"].querySelectorAll("[data-collaborator-id]")];
-    const direction = ["ArrowRight", "ArrowDown"].includes(event.key) ? 1 : -1;
-    nodes[(nodes.indexOf(event.target) + direction + nodes.length) % nodes.length]?.focus();
-    event.preventDefault();
-    return;
-  }
   if (!event.target.matches("[data-node-id], [data-edge-id], [data-agent-edge-id]")) return;
   if (event.key === "Enter" || event.key === " ") {
     event.preventDefault();
@@ -2266,7 +2026,6 @@ function handleDrawerEntityFocus(event) {
 }
 
 function openDrawer(focus, tab = "evidence") {
-  managerOpen = false;
   if (selected?.type === focus?.type && selected?.id === focus?.id) {
     selected = null;
     renderDrawer();
@@ -2274,15 +2033,15 @@ function openDrawer(focus, tab = "evidence") {
     return;
   }
   selected = focus;
-  if (mode === "live" && focus?.type === "node" && liveInspector.node_id !== focus.id) liveInspector = emptyLiveInspector(focus.id);
+  if ((mode === "live" || isUnifiedRailWorkspace()) && focus?.type === "node" && isRailRuntimeNode(focus.id) && liveInspector.node_id !== focus.id) liveInspector = emptyLiveInspector(focus.id);
   activeTab = tab;
-  if (mode === "live" && focus?.type === "node") void requestLiveComponentDetail(focus.id);
+  if ((mode === "live" || isUnifiedRailWorkspace()) && focus?.type === "node" && isRailRuntimeNode(focus.id)) void requestLiveComponentDetail(focus.id);
   renderDrawer();
   renderOperationsTeamRail();
 }
 
 function ensureSelectedLiveComponentDetail() {
-  if (mode === "live" && selected?.type === "node") void requestLiveComponentDetail(selected.id);
+  if ((mode === "live" || isUnifiedRailWorkspace()) && selected?.type === "node" && isRailRuntimeNode(selected.id)) void requestLiveComponentDetail(selected.id);
 }
 
 function closeDrawer() {
@@ -2296,10 +2055,13 @@ function closeDrawer() {
 function setMode(nextMode) {
   stopPlayback();
   if (!state) return;
+  if (!isSelectionValidForMode(selected, nextMode)) {
+    selected = null;
+    liveInspector = emptyLiveInspector();
+  }
   mode = nextMode;
   if (architectureDetail?.scope !== mode) architectureDetail = null;
   if (mode === "live" || mode === "agents") cursor = availableStage(state.events);
-  if (mode === "compare") closeDrawerWithoutFocus();
   render();
 }
 
@@ -2486,7 +2248,6 @@ async function approveRepair() {
     state = await request(path, { method: "POST", body: JSON.stringify({ owner: state.mode === "development" ? "Local development owner" : "Commerce incident owner" }) });
     cursor = availableStage(state.events);
     mode = "agents";
-    managerReply = "Owner approval matched the bounded proposal. The repair executor is now the only component allowed to mutate the checkout target.";
     showToast(state.mode === "development" ? "Local checkout rollback executed after owner approval." : "Checkout-only rollback approved and recorded.");
     render();
   } catch (error) {
@@ -2500,13 +2261,11 @@ async function approveRepair() {
 }
 
 async function monitorDevelopmentVerification() {
-  managerReply = "The verification agent is waiting for fresh post-repair OTLP evidence.";
   for (let attempt = 0; attempt < 12; attempt++) {
     await wait(1_500);
     try {
       state = await request("/api/development/verify", { method: "POST", body: "{}" });
       cursor = availableStage(state.events);
-      managerReply = "Fresh post-repair OTLP passed verification. Evolve and Test recorded the regression gates.";
       showToast("Fresh telemetry verified recovery without another human action.");
       render();
       return;
@@ -2517,7 +2276,6 @@ async function monitorDevelopmentVerification() {
       }
     }
   }
-  managerReply = "Fresh verification telemetry did not arrive inside the local observation window. No further mutation was attempted.";
   render();
 }
 
@@ -2603,9 +2361,6 @@ function updateControls() {
   els["play-button"].textContent = playing ? "Pause replay" : state?.waiting_for_approval ? "Paused at owner gate" : state?.complete && cursor >= availableStage(state.events) ? "Replay complete" : "Run guided replay";
   els["live-button"].disabled = busy || playing;
   els["details-button"].disabled = busy;
-  els["approve-button"].disabled = busy;
-  els["manager-primary-action"].disabled = busy || els["manager-primary-action"].dataset.action === "review_recovery";
-  els["manager-send"].disabled = busy;
   els["development-button"].disabled = busy || playing;
 }
 
@@ -2811,8 +2566,8 @@ function sourceState() {
 }
 
 function sourceComponentContext(id) {
-  if (mode !== "live") return null;
-  const view = liveTopologyView();
+  if (!(mode === "live" || isUnifiedRailWorkspace())) return null;
+  const view = liveTopologyView() || architectureView();
   const source = liveSource(view);
   const topology = view?.runtime_data.graph
     ? topologyIntegrity({
@@ -2847,8 +2602,8 @@ function liveComponentDetailKey(id, projectionRevision = liveTopologyView()?.pro
 }
 
 async function requestLiveComponentDetail(id) {
-  if (mode !== "live") return;
-  const view = liveTopologyView();
+  if (!(mode === "live" || isUnifiedRailWorkspace()) || !isRailRuntimeNode(id)) return;
+  const view = liveTopologyView() || architectureView();
   const key = liveComponentDetailKey(id, view?.projection_revision);
   if (!key || liveComponentDetails.has(key) || pendingLiveComponentDetails.has(key) || unavailableLiveComponentDetails.has(key)) return;
   pendingLiveComponentDetails.add(key);
@@ -2866,7 +2621,7 @@ async function requestLiveComponentDetail(id) {
     unavailableLiveComponentDetails.add(key);
   } finally {
     pendingLiveComponentDetails.delete(key);
-    if (selected?.type === "node" && selected.id === id && mode === "live") {
+    if (selected?.type === "node" && selected.id === id && (mode === "live" || isUnifiedRailWorkspace())) {
       renderDrawer();
       renderOperationsTeamRail();
     }
@@ -3298,7 +3053,7 @@ function collaboratorFinding(collaborator, control) {
   if (collaborator.id === "verifier") return report.verification
     ? `Recovery checks ${report.verification.passed ? "passed" : "did not pass"}.${report.regression ? " Regression and learning records are available." : ""}`
     : "Verification waits for an approved execution receipt and fresh post-action evidence.";
-  return managerReply || report.summary;
+  return report.summary;
 }
 function collaboratorCitations(collaborator, control) {
   const activityRefs = collaborator.latestActivity?.evidence_refs || [];

@@ -3707,3 +3707,117 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 @media (max-width: 720px) {
   .live-inspector-pulse { grid-template-columns: 1fr; }
 }
+
+/* F3A: one context rail owns operating-workspace detail. It deliberately shares
+   the F2A rail surface instead of introducing a second command column. */
+.operations-team-rail .unified-context-summary,
+.operations-team-rail .unified-context-evidence {
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.unified-context-header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 10px;
+}
+.unified-context-header > div { display: grid; gap: 2px; min-width: 0; }
+.unified-context-header span { color: var(--blue); font-size: 10px; font-weight: 600; }
+.unified-context-header strong { color: #111827; font-size: 16px; font-weight: 600; line-height: 1.15; }
+.unified-context-header .node-status-dot { position: static; flex: 0 0 auto; }
+.unified-context-status,
+.unified-context-evidence > p {
+  margin: 0;
+  color: var(--architecture-copy);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.unified-context-empty,
+.unified-context-note { margin: 0; color: var(--architecture-muted); font-size: 11px; line-height: 1.45; }
+.unified-context-facts {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+}
+.unified-context-facts > div {
+  display: grid;
+  gap: 2px;
+  padding: 8px 9px;
+  border: 0;
+  border-radius: var(--architecture-control-radius);
+  background: rgba(255, 255, 255, .46);
+}
+.unified-context-facts dt { color: var(--architecture-muted); font-size: 10px; font-weight: 500; }
+.unified-context-facts dd { margin: 0; color: #111827; font-size: 11px; font-weight: 600; line-height: 1.35; overflow-wrap: anywhere; }
+.unified-context-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.unified-context-actions button,
+.unified-agent-switcher button {
+  min-width: 0;
+  min-height: 30px;
+  padding: 6px 7px;
+  border: 0;
+  border-radius: var(--architecture-control-radius);
+  color: var(--architecture-copy);
+  background: rgba(255, 255, 255, .62);
+  box-shadow: none;
+  cursor: pointer;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 600;
+  text-align: left;
+}
+.unified-context-actions button:hover,
+.unified-context-actions button:focus-visible,
+.unified-agent-switcher button:hover,
+.unified-agent-switcher button:focus-visible { outline: none; color: #ffffff; background: var(--blue); }
+.unified-agent-switcher {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  margin-top: auto;
+}
+.unified-agent-switcher button { display: flex; align-items: center; gap: 6px; }
+.unified-agent-switcher i { flex: 0 0 auto; font-size: 13px; }
+.app-shell[data-mode="replay"] .canvas-shell,
+.app-shell[data-mode="agents"] .canvas-shell,
+.app-shell[data-mode="compare"] .canvas-shell { padding-right: calc(var(--flowpulse-control-rail-width) + var(--flowpulse-control-rail-inset-x) * 2); }
+.app-shell[data-mode="replay"] .plane-guides,
+.app-shell[data-mode="agents"] .plane-guides,
+.app-shell[data-mode="compare"] .plane-guides { display: none; }
+.app-shell[data-mode="agents"] .recovery-console-layout { grid-template-columns: 1fr; }
+.app-shell[data-mode="agents"] .recovery-graph-panel { border-right: 0; }
+.app-shell[data-mode="agents"] .recovery-workflow-facts > header small { display: none; }
+.recovery-workflow-nodes {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  padding: 18px;
+}
+.recovery-workflow-node {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px;
+  border: 0;
+  border-radius: var(--architecture-node-radius);
+  background: rgba(255, 255, 255, .5);
+}
+.recovery-workflow-node i { color: var(--architecture-vector); font-size: 16px; }
+.recovery-workflow-node div { min-width: 0; display: grid; gap: 2px; }
+.recovery-workflow-node strong { overflow: hidden; color: #111827; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.recovery-workflow-node small { overflow: hidden; color: var(--architecture-muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 900px) {
+  .app-shell[data-mode="replay"] .canvas-shell,
+  .app-shell[data-mode="agents"] .canvas-shell,
+  .app-shell[data-mode="compare"] .canvas-shell { padding-right: 0; }
+  .operations-team-rail { position: fixed; top: auto; left: 0; right: 0; bottom: 0; width: auto; height: min(64dvh, 620px); }
+  .recovery-workflow-nodes { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (prefers-reduced-transparency: reduce) {
+  .unified-context-facts > div,
+  .unified-context-actions button,
+  .unified-agent-switcher button,
+  .recovery-workflow-node { background: #f7f9fa; }
+}

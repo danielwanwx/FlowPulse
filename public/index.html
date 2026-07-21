@@ -33,7 +33,6 @@
                 <button class="nav-button" type="button" data-nav-tab="evaluations">Evaluations</button>
               </nav>
               <div class="workspace-menu-actions">
-                <button id="manager-button" class="button secondary" type="button">Ask Manager</button>
                 <button id="live-button" class="button secondary" type="button">Run GPT-5.6</button>
                 <button id="details-button" class="button secondary" type="button">Inspect run</button>
               </div>
@@ -130,13 +129,11 @@
                 <div id="annotation-layer" class="annotation-layer" aria-live="polite"></div>
                 <div id="approval-banner" class="approval-banner" hidden>
                   <div><strong>Owner approval required</strong><span id="approval-copy">Rollback is bounded to checkout:2.18.0.</span></div>
-                  <button id="manager-open-button" class="button approve" type="button">Recover</button>
+                  <button id="recovery-status-button" class="button approve" type="button">View recovery status</button>
                 </div>
               </div>
             </div>
           </div>
-
-          <aside id="compare-review-rail" class="compare-review-rail" aria-labelledby="compare-review-title" hidden></aside>
 
           <aside id="operations-team-rail" class="operations-team-rail is-architecture-source" aria-label="FlowPulse Team" hidden></aside>
 
@@ -156,35 +153,6 @@
             <div id="drawer-content" class="drawer-content" role="tabpanel"></div>
           </aside>
 
-          <aside id="manager-panel" class="manager-panel" aria-labelledby="manager-title" hidden>
-            <div class="manager-header">
-              <div>
-                <span>FlowPulse Manager</span>
-                <h2 id="manager-title">Incident command</h2>
-                <p id="manager-subtitle">Ledger-grounded coordination</p>
-              </div>
-              <button id="manager-close" class="icon-button" type="button" aria-label="Close Manager panel">Close</button>
-            </div>
-            <div id="manager-status" class="manager-status" role="status"></div>
-            <div id="manager-report" class="manager-report"></div>
-            <div class="manager-actions">
-              <button id="manager-primary-action" class="button secondary" type="button">Continue</button>
-              <button id="approve-button" class="button approve" type="button" hidden>Approve bounded recovery</button>
-              <button id="manager-agents-button" class="button secondary" type="button">Open Recovery Console</button>
-            </div>
-            <div class="manager-activity-section">
-              <div class="manager-section-title"><strong>Team activity</strong><span id="manager-activity-count">0 events</span></div>
-              <div id="manager-activity" class="manager-activity"></div>
-            </div>
-            <form id="manager-form" class="manager-form">
-              <label for="manager-input">Ask about evidence, agents, or recovery</label>
-              <div>
-                <input id="manager-input" name="message" type="text" maxlength="2000" autocomplete="off" placeholder="What is confirmed and what needs my approval?">
-                <button id="manager-send" class="button approve" type="submit">Ask</button>
-              </div>
-              <small>Chat can explain or delegate safe work. It cannot approve remediation.</small>
-            </form>
-          </aside>
         </section>
 
         <section id="timeline-dock" class="timeline-dock" aria-label="Incident timeline" hidden>
