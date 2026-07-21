@@ -5,10 +5,15 @@ export const COMPONENT_DETAIL_SCHEMA_VERSION = "flowpulse.component-detail.v1";
 const MAX_SERIALIZED_BYTES = 24 * 1024;
 const MAX_EVIDENCE = 8;
 const MAX_RELATIONS = 8;
+const MAX_GRAPH_NODES = 256;
+const MAX_GRAPH_EDGES = 512;
+const MAX_DATA_RESOURCES = 8;
 const HASH = /^[a-f0-9]{64}$/;
 const ID = /^[a-z0-9][a-z0-9-]{0,79}$/;
 const SIGNAL_TYPES = ["trace", "metric", "log"];
 const SOURCE_STATUSES = new Set(["captured", "frozen", "live", "stale", "disconnected", "unavailable"]);
+const NODE_KINDS = new Set(["service", "job", "topic", "database", "table", "dataset", "query", "dag", "worker"]);
+const RESOURCE_KINDS = new Set(["topic", "consumer_group", "database", "table", "job", "dag"]);
 const COMPONENT_CATALOG = Object.freeze({
   accounting: ["Financial posting", "Posts financial records for completed order flows."],
   ad: ["Promotion selection", "Selects promotional content for storefront requests."],
@@ -51,8 +56,7 @@ export function composeComponentDetail({ topologyViews, nodeId, source, evidence
   const sourceTruth = sourceSummary(source);
   const relationships = relationshipsFor(node, runtime);
   const observability = observabilityFor(evidence, node.id);
-  const catalog = COMPONENT_CATALOG[node.id];
-  if (!catalog) fail("component_detail_catalog_unavailable");
+  const catalog = COMPONENT_CATALOG[node.id] || catalogFallback(node);
   const detail = {
     schema_version: COMPONENT_DETAIL_SCHEMA_VERSION,
     topology_projection_revision: topologyViews.projection_revision,
@@ -63,7 +67,7 @@ export function composeComponentDetail({ topologyViews, nodeId, source, evidence
     relationships,
     observability,
     configuration: { changes: observability.changes },
-    data_resources: [],
+    data_resources: dataResourcesFor(evidence, node.id),
     raw_payload_excluded: true
   };
   detail.detail_revision = canonicalSha256({ ...detail, detail_revision: null });
@@ -75,19 +79,21 @@ function canonicalRuntime(views) {
   const graph = views?.schema_version === "flowpulse.topology-views.v2" && HASH.test(views?.projection_revision || "")
     ? views.architecture?.runtime_data?.graph
     : null;
-  if (!graph || graph.total_nodes !== 22 || graph.total_edges !== 22 || !Array.isArray(graph.nodes) || !Array.isArray(graph.edges)
-    || graph.nodes.length !== 22 || graph.edges.length !== 22 || !graph.nodes.every(validRuntimeNode)) fail("component_detail_topology_invalid");
+  if (!graph || !Number.isSafeInteger(graph.total_nodes) || !Number.isSafeInteger(graph.total_edges)
+    || !Array.isArray(graph.nodes) || !Array.isArray(graph.edges)
+    || graph.total_nodes < 1 || graph.total_nodes > MAX_GRAPH_NODES || graph.total_edges < 0 || graph.total_edges > MAX_GRAPH_EDGES
+    || graph.nodes.length !== graph.total_nodes || graph.edges.length !== graph.total_edges || !graph.nodes.every(validRuntimeNode)) fail("component_detail_topology_invalid");
   const ids = new Set(graph.nodes.map((node) => node.id));
-  if (ids.size !== 22 || !graph.edges.every((edge) => validRuntimeEdge(edge, ids))) fail("component_detail_topology_invalid");
+  if (ids.size !== graph.nodes.length || !graph.edges.every((edge) => validRuntimeEdge(edge, ids))) fail("component_detail_topology_invalid");
   return { nodes: graph.nodes, edges: graph.edges };
 }
 
 function validRuntimeNode(node) {
   return plain(node)
     && sameKeys(node, ["id", "kind", "display_class", "plane", "layer", "label", "status", "source_health", "signal_types", "provenance_refs"])
-    && ID.test(node.id) && ["service", "job", "topic"].includes(node.kind)
-    && ["client", "service", "api", "stream", "worker"].includes(node.display_class)
-    && ["runtime", "data"].includes(node.plane) && ["experience", "commerce", "processing", "platform"].includes(node.layer)
+    && ID.test(node.id) && NODE_KINDS.has(node.kind)
+    && safeToken(node.display_class, 40)
+    && ["runtime", "data"].includes(node.plane) && safeToken(node.layer, 80)
     && ["observed", "captured", "healthy", "incident"].includes(node.status)
     && SOURCE_STATUSES.has(node.source_health) && safeText(node.label, 160)
     && orderedSignals(node.signal_types) && provenance(node.provenance_refs);
@@ -97,7 +103,7 @@ function validRuntimeEdge(edge, ids) {
   return plain(edge)
     && sameKeys(edge, ["id", "from", "to", "kind", "plane", "label", "status", "provenance_refs"])
     && edge.id === `${edge.from}->${edge.to}` && ids.has(edge.from) && ids.has(edge.to) && edge.from !== edge.to
-    && edge.kind === "calls" && edge.plane === "runtime" && edge.label === "Observed dependency"
+    && safeToken(edge.kind, 80) && ["runtime", "data"].includes(edge.plane) && safeText(edge.label, 160)
     && ["observed", "captured", "healthy", "incident"].includes(edge.status) && provenance(edge.provenance_refs);
 }
 
@@ -139,7 +145,10 @@ function observabilityFor(records, entity) {
       const trace = safeTrace(record.value?.trace);
       if (trace) traces.push({ ...base, ...trace });
     }
-    if (record.kind === "log") logs.push(base);
+    if (record.kind === "log") {
+      const summary = safeLogSummary(record.value?.log || { message: record.fact });
+      if (summary) logs.push({ ...base, ...summary });
+    }
     if (["deploy", "change"].includes(record.kind)) {
       const change = safeChange(record.value?.change);
       if (change) changes.push({ ...base, ...change });
@@ -147,6 +156,24 @@ function observabilityFor(records, entity) {
   }
   const ordered = (items) => items.sort((left, right) => left.observed_at.localeCompare(right.observed_at) || left.evidence_id.localeCompare(right.evidence_id)).slice(0, 4);
   return { metrics: ordered(metrics), traces: ordered(traces), logs: ordered(logs), changes: ordered(changes) };
+}
+
+function dataResourcesFor(records, entity) {
+  const seen = new Set();
+  const resources = [];
+  for (const record of records) {
+    if (!plain(record) || record.entity !== entity || !ID.test(record.id || "")) continue;
+    const base = evidenceBase(record);
+    const value = plain(record.value?.resource) ? record.value.resource : plain(record.value?.data_resource) ? record.value.data_resource : null;
+    const resource = safeDataResource(value);
+    if (!base || !resource) continue;
+    const key = `${resource.kind}:${resource.id || resource.name}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    resources.push({ ...base, ...resource });
+    if (resources.length >= MAX_DATA_RESOURCES) break;
+  }
+  return resources.sort((left, right) => left.evidence_id.localeCompare(right.evidence_id));
 }
 
 function evidenceBase(record) {
@@ -210,6 +237,30 @@ function safeChange(value) {
   return Object.values(change).some((item) => item !== null) ? change : null;
 }
 
+function safeLogSummary(value) {
+  if (!plain(value)) return null;
+  const summary = redactSummary(value.summary ?? value.message ?? value.body, 280);
+  const severity = safeToken(String(value.severity || "").toLowerCase(), 32) ? String(value.severity).toUpperCase() : null;
+  const trace_ref = safeRef(value.trace_ref);
+  const span_ref = safeRef(value.span_ref);
+  return summary ? { severity, summary, trace_ref, span_ref } : null;
+}
+
+function safeDataResource(value) {
+  if (!plain(value) || !RESOURCE_KINDS.has(value.kind)) return null;
+  const id = ID.test(value.id || "") ? value.id : null;
+  const name = safeText(value.name, 160) ? value.name : null;
+  const consumer_group = safeText(value.consumer_group, 160) ? value.consumer_group : null;
+  if (!id && !name) return null;
+  return { kind: value.kind, id, name, consumer_group };
+}
+
+function catalogFallback(node) {
+  const kind = safeToken(node.kind, 40) ? node.kind : "component";
+  const label = safeText(node.label, 160) ? node.label : node.id;
+  return [`Observed ${kind}`, `${label} is a canonical observed ${kind}.`];
+}
+
 function cloneRuntimeNode(node) {
   return {
     id: node.id,
@@ -236,6 +287,23 @@ function provenance(value) {
 
 function safeText(value, maximum) {
   return typeof value === "string" && value.length > 0 && Buffer.byteLength(value, "utf8") <= maximum && /^[A-Za-z0-9][A-Za-z0-9 .()/_:+,=-]*$/.test(value);
+}
+
+function safeToken(value, maximum) {
+  return typeof value === "string" && value.length > 0 && Buffer.byteLength(value, "utf8") <= maximum && /^[a-z][a-z0-9_-]*$/.test(value);
+}
+
+function redactSummary(value, maximum) {
+  if (typeof value !== "string" || !value.trim()) return null;
+  const redacted = value
+    .replace(/[\u0000-\u001f\u007f<>&]/g, " ")
+    .replace(/\b(?:sk|rk)_[A-Za-z0-9_-]{12,}\b|\bAKIA[0-9A-Z]{16}\b|\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9._-]{10,}\.[A-Za-z0-9._-]{10,}\b/g, "redacted")
+    .replace(/\b(?:api[_-]?key|token|secret|password|authorization)\s*[:=]\s*[^\s,;]+/gi, "credential redacted")
+    .replace(/\b[A-Z][A-Z0-9_]{2,}\b/g, "configuration")
+    .replace(/\b(?:system|developer|user)\s+prompt\b/gi, "prompt redacted")
+    .replace(/[^A-Za-z0-9 .()/_:+,=-]/g, " ")
+    .replace(/\s+/g, " ").trim().slice(0, maximum);
+  return safeText(redacted, maximum) ? redacted : null;
 }
 
 function safeTimestamp(value) {

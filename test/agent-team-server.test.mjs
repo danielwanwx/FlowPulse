@@ -31,6 +31,20 @@ test("Agent Team HTTP and SSE projections preserve a chat's transparent routing 
   assert.equal(initial.body.agent_control.agent_team_provider.truth_label, "RECORDED/DEMO");
   assert.equal(initial.body.source.status, "captured");
   assert.equal(initial.body.topology_views.architecture.runtime_data.graph.total_nodes, 22);
+  const component = await getJson(port, `/api/components/checkout?run_id=${initial.body.run_id}&window=15m&signal=all&limit=4`);
+  assert.equal(component.status, 200);
+  assert.equal(component.body.schema_version, "flowpulse.component-detail.v1");
+  assert.equal(component.body.node_investigation.schema_version, "flowpulse.node-investigation.v1");
+  assert.equal(component.body.node_investigation.source_truth.truth_label, "captured_replay");
+  assert.equal(component.body.node_investigation.raw_payload_excluded, true);
+  assert.equal(component.body.node_investigation.evidence.items.length > 0, true);
+  const componentStream = await readSseEvent(port, `/api/components/checkout/events?run_id=${initial.body.run_id}&window=15m&limit=4&after=0`);
+  assert.equal(componentStream.event, "node-evidence-snapshot");
+  assert.equal(componentStream.payload.snapshot.detail_revision, component.body.detail_revision);
+  const componentResume = await readSseEvent(port, `/api/components/checkout/events?run_id=${initial.body.run_id}&window=15m&limit=4&after=1`);
+  assert.notEqual(componentResume.event, "node-evidence-snapshot");
+  const invalidComponentQuery = await getJson(port, `/api/components/checkout?run_id=${initial.body.run_id}&limit=13`);
+  assert.deepEqual(invalidComponentQuery, { status: 400, body: { error: "node_evidence_limit_invalid" } });
   const provider = await getJson(port, "/api/agent-control/provider");
   assert.deepEqual(provider.body, initial.body.agent_control.agent_team_provider);
   const loopUnavailable = await postJson(port, "/api/demo/agent-loop/run", { case_id: "checkout-payment-config", round: 1 });
@@ -65,7 +79,8 @@ test("Agent Team HTTP and SSE projections preserve a chat's transparent routing 
   assert.equal(chat.body.provider.truth_label, "RECORDED/DEMO");
   assert.equal(chat.body.citations.length > 0, true);
   assert.equal(chat.body.tool_summaries.some((item) => item.result_count > 0), true);
-  assert.deepEqual(chat.body.conversation.messages.map((message) => message.kind), ["user", "handoff", "context", "tool_summary", "working", "assistant"]);
+  assert.deepEqual(chat.body.conversation.messages.map((message) => message.kind), ["user", "handoff", "context", "tool_request", "tool_result", "tool_summary", "working", "assistant"]);
+  assert.equal(chat.body.conversation.messages.find((message) => message.kind === "tool_result").result_count > 0, true);
   assert.equal(chat.body.conversation.messages[0].selected_component, "checkout");
 
   const conversation = await getJson(port, "/api/agent-control/conversation?conversation_id=conv-sidebar-001");

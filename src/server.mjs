@@ -27,6 +27,7 @@ import { validateProjectionCanonicalChain } from "./projection-canonical-validat
 import { loadTopologyManifest, validateAstronomyIncidentSubgraph } from "./topology-manifest.mjs";
 import { composeTopologyViews } from "./topology-projection.mjs";
 import { composeComponentDetail, ComponentDetailProjectionError } from "./component-detail-projection.mjs";
+import { NodeInvestigationError, NodeInvestigationPlane, validateNodeEvidenceQuery } from "./node-investigation-plane.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const publicDir = join(root, "public");
@@ -79,20 +80,18 @@ const agentTeamChat = new AgentTeamChatService({
   runtime,
   contextForRun: async (_runtime, runId, request = {}) => {
     const state = await stateWithSource(runId);
-    const source = await selectedEvidenceSource(runId, state.mode);
     const selectedComponent = typeof request.selected_component === "string" ? request.selected_component : null;
-    const sourceEvidence = source.list({ entity: selectedComponent || undefined, limit: 12 }).items;
+    const plane = await nodeInvestigationPlaneForRun(runId, state);
+    const source = plane.source;
+    const sourceEvidence = selectedComponent
+      ? plane.snapshot(selectedComponent, {}).evidence.items
+      : source.list({ limit: 12 }).items;
     let selectedComponentDetail = null;
     if (selectedComponent) {
       try {
-        selectedComponentDetail = composeComponentDetail({
-          topologyViews: state.topology_views,
-          nodeId: selectedComponent,
-          source: source.metadata(),
-          evidence: source.list({ entity: selectedComponent, limit: 8 }).items
-        });
+        selectedComponentDetail = componentDetailResponse(plane.snapshot(selectedComponent, {}));
       } catch (error) {
-        if (!(error instanceof ComponentDetailProjectionError)) throw error;
+        if (!(error instanceof ComponentDetailProjectionError) && !(error instanceof NodeInvestigationError)) throw error;
       }
     }
     const sourceMetadata = source.metadata();
@@ -106,7 +105,8 @@ const agentTeamChat = new AgentTeamChatService({
         evidence_count: sourceMetadata.evidence_count
       },
       source_evidence: sourceEvidence,
-      selected_component_detail: selectedComponentDetail
+      selected_component_detail: selectedComponentDetail,
+      node_plane: plane
     };
   }
 });
@@ -131,6 +131,9 @@ const server = createServer(async (request, response) => {
     if (url.pathname === "/api/source" && request.method === "GET") {
       return json(response, 200, (await stateWithSource(browserRunId())).source);
     }
+    if (url.pathname.startsWith("/api/components/") && url.pathname.endsWith("/events") && request.method === "GET") {
+      return await streamNodeEvidenceEvents(request, response, url);
+    }
     if (url.pathname.startsWith("/api/components/") && request.method === "GET") {
       let nodeId;
       try {
@@ -139,18 +142,15 @@ const server = createServer(async (request, response) => {
         return json(response, 404, { error: "component_detail_unavailable" });
       }
       if (!safeBrowserId(nodeId)) return json(response, 404, { error: "component_detail_unavailable" });
-      const runId = browserRunId();
+      const runId = url.searchParams.get("run_id") || browserRunId();
+      if (!knownNodeRun(runId)) return json(response, 409, { error: "node_evidence_run_unavailable" });
       const state = await stateWithSource(runId);
       if (!state.topology_views) return json(response, 409, { error: "component_detail_unavailable" });
-      const source = await selectedEvidenceSource(runId, state.mode);
       try {
-        return json(response, 200, composeComponentDetail({
-          topologyViews: state.topology_views,
-          nodeId,
-          source: source.metadata(),
-          evidence: source.list({ entity: nodeId, limit: 8 }).items
-        }));
+        const plane = await nodeInvestigationPlaneForRun(runId, state);
+        return json(response, 200, componentDetailResponse(plane.snapshot(nodeId, nodeQueryFromUrl(url))));
       } catch (error) {
+        if (error instanceof NodeInvestigationError) return json(response, error.status, { error: error.code });
         if (error instanceof ComponentDetailProjectionError) return json(response, 409, { error: "component_detail_unavailable" });
         throw error;
       }
@@ -1290,6 +1290,52 @@ async function sourceProjection(runId = runtime.ensureRun(), source = null) {
   };
 }
 
+async function nodeInvestigationPlaneForRun(runId, state = null) {
+  const current = state || await stateWithSource(runId);
+  if (!current?.topology_views) throw new NodeInvestigationError("component_detail_unavailable", 409);
+  const source = await selectedEvidenceSource(runId, current.mode);
+  return new NodeInvestigationPlane({
+    topologyViews: current.topology_views,
+    source,
+    sourceState: await sourceProjection(runId, source),
+    incidentProjection: current.incident_projection
+  });
+}
+
+function knownNodeRun(runId) {
+  return safeBrowserId(runId) !== null && ledger.list(runId).some((event) => event.type === "run.started" && event.incident_id === runtime.bundle.incident.id);
+}
+
+function componentDetailResponse(snapshot) {
+  return {
+    schema_version: "flowpulse.component-detail.v1",
+    topology_projection_revision: snapshot.topology_projection_revision,
+    detail_revision: snapshot.detail_revision,
+    component: snapshot.component,
+    purpose: snapshot.purpose,
+    runtime: snapshot.runtime,
+    relationships: snapshot.relationships,
+    observability: snapshot.observability,
+    configuration: snapshot.configuration,
+    data_resources: snapshot.data_resources,
+    raw_payload_excluded: true,
+    node_investigation: snapshot
+  };
+}
+
+function nodeQueryFromUrl(url, { includeAfter = false } = {}) {
+  const allowed = new Set(["run_id", "window", "signal", "cursor", "limit", ...(includeAfter ? ["after"] : [])]);
+  for (const [key] of url.searchParams) {
+    if (!allowed.has(key) || url.searchParams.getAll(key).length !== 1) throw new NodeInvestigationError("node_evidence_query_invalid");
+  }
+  return validateNodeEvidenceQuery({
+    ...(url.searchParams.has("window") ? { window: url.searchParams.get("window") } : {}),
+    ...(url.searchParams.has("signal") ? { signal: url.searchParams.get("signal") } : {}),
+    ...(url.searchParams.has("cursor") ? { cursor: url.searchParams.get("cursor") } : {}),
+    ...(url.searchParams.has("limit") ? { limit: url.searchParams.get("limit") } : {})
+  });
+}
+
 function topologyControlInputs(projected, sourceState) {
   const deploymentEvidence = Array.isArray(sourceState?.evidence) && sourceState.evidence.some((record) => record?.id === "ev-deploy-checkout"
     && record.kind === "deploy" && record.source === "deployment.change" && record.entity === "checkout");
@@ -1414,6 +1460,107 @@ function harnessProjection(events = []) {
       missing_evidence_classes: failure.missing_evidence_classes || [],
       next_precondition: failure.next_precondition || null
     }
+  };
+}
+
+async function streamNodeEvidenceEvents(request, response, url) {
+  const prefix = "/api/components/";
+  const encodedId = url.pathname.slice(prefix.length, -"/events".length);
+  let nodeId;
+  try { nodeId = decodeURIComponent(encodedId); } catch { return json(response, 404, { error: "component_detail_unavailable" }); }
+  if (!safeBrowserId(nodeId)) return json(response, 404, { error: "component_detail_unavailable" });
+  let query;
+  try { query = nodeQueryFromUrl(url, { includeAfter: true }); } catch (error) {
+    if (error instanceof NodeInvestigationError) return json(response, error.status, { error: error.code });
+    throw error;
+  }
+  const runId = url.searchParams.get("run_id") || browserRunId();
+  if (!knownNodeRun(runId)) return json(response, 409, { error: "node_evidence_run_unavailable" });
+  let after = Number(request.headers["last-event-id"] || url.searchParams.get("after") || 0);
+  if (!Number.isSafeInteger(after) || after < 0) return json(response, 400, { error: "node_evidence_after_invalid" });
+  let snapshot;
+  try {
+    snapshot = (await nodeInvestigationPlaneForRun(runId)).snapshot(nodeId, query);
+  } catch (error) {
+    if (error instanceof NodeInvestigationError) return json(response, error.status, { error: error.code });
+    throw error;
+  }
+  response.writeHead(200, {
+    "content-type": "text/event-stream; charset=utf-8",
+    "cache-control": "no-cache, no-transform",
+    connection: "keep-alive"
+  });
+  const staticEvents = nodeEvidenceEvents({ runId, nodeId, snapshot });
+  const writeEvent = (event) => {
+    if (event.sequence <= after || response.destroyed || response.writableEnded) return;
+    after = event.sequence;
+    response.write(`id: ${event.sequence}\nevent: ${event.type}\ndata: ${JSON.stringify(event.payload)}\n\n`);
+  };
+  for (const event of staticEvents) writeEvent(event);
+  response.write(": heartbeat\n\n");
+  const terminal = ["captured", "frozen", "stale", "disconnected", "unavailable"].includes(snapshot.source_truth.status);
+  if (terminal) {
+    const final = { sequence: staticEvents.length + 1, type: "node-evidence-state", payload: { run_id: runId, component_id: nodeId, state: snapshot.source_truth.status === "captured" ? "captured_replay" : snapshot.source_truth.status, source_truth: snapshot.source_truth, terminal: true, raw_payload_excluded: true } };
+    writeEvent(final);
+    response.end();
+    return;
+  }
+  const known = new Set(snapshot.evidence.items.map((item) => item.id));
+  let nextSequence = staticEvents.length + 1;
+  const interval = setInterval(() => {
+    if (response.destroyed || response.writableEnded) return;
+    void (async () => {
+      try {
+        const next = (await nodeInvestigationPlaneForRun(runId)).snapshot(nodeId, query);
+        for (const record of next.evidence.items) {
+          if (known.has(record.id)) continue;
+          known.add(record.id);
+          writeEvent({ sequence: nextSequence++, type: nodeEvidenceType(record), payload: nodeEvidencePayload(runId, nodeId, record, next) });
+        }
+      } catch {
+        writeEvent({ sequence: nextSequence++, type: "node-evidence-state", payload: { run_id: runId, component_id: nodeId, state: "disconnected", terminal: true, raw_payload_excluded: true } });
+        clearInterval(interval);
+        response.end();
+      }
+      if (!response.writableEnded) response.write(": heartbeat\n\n");
+    })();
+  }, 1_000);
+  request.on("close", () => clearInterval(interval));
+  response.on("close", () => clearInterval(interval));
+}
+
+function nodeEvidenceEvents({ runId, nodeId, snapshot }) {
+  const reference = {
+    schema_version: snapshot.schema_version,
+    run_id: runId,
+    component_id: nodeId,
+    detail_revision: snapshot.detail_revision,
+    source_truth: snapshot.source_truth,
+    snapshot: { ...snapshot, evidence: { ...snapshot.evidence, items: [] } },
+    raw_payload_excluded: true
+  };
+  const events = [{ sequence: 1, type: "node-evidence-snapshot", payload: reference }];
+  for (const record of snapshot.evidence.items) {
+    events.push({ sequence: events.length + 1, type: nodeEvidenceType(record), payload: nodeEvidencePayload(runId, nodeId, record, snapshot) });
+  }
+  return events;
+}
+
+function nodeEvidenceType(record) {
+  if (["metric", "log", "trace"].includes(record.kind)) return `node-evidence-${record.kind}`;
+  if (["deploy", "change", "commit", "code"].includes(record.kind)) return "node-evidence-change";
+  if (record.resource) return "node-evidence-resource";
+  return "node-evidence-record";
+}
+
+function nodeEvidencePayload(runId, nodeId, record, snapshot) {
+  return {
+    schema_version: snapshot.schema_version,
+    run_id: runId,
+    component_id: nodeId,
+    source_truth: snapshot.source_truth,
+    evidence: record,
+    raw_payload_excluded: true
   };
 }
 

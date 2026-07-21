@@ -231,6 +231,7 @@ function safeValue(value = {}) {
     log: safeObject(value.log, ["severity", "message", "trace_ref", "span_ref", "observed_at"]),
     metric: safeMetric(value.metric, value),
     change: safeChange(value.change, value),
+    resource: safeResource(value.resource || value.data_resource),
     code: safeObject(value.code, ["id", "repository", "commit", "path", "line_start", "line_end", "content_sha256", "target", "flag", "bad_address", "charge_operation", "semantic_fact", "verified_from_git_object"])
   };
 }
@@ -256,6 +257,15 @@ function safeChange(change, legacy) {
   delete result.from;
   delete result.to;
   return Object.keys(result).length ? result : null;
+}
+
+function safeResource(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const kind = ["topic", "consumer_group", "database", "table", "job", "dag"].includes(value.kind) ? value.kind : null;
+  const id = typeof value.id === "string" ? sanitizeTelemetryText(value.id, { limit: 120 }) : null;
+  const name = typeof value.name === "string" ? sanitizeTelemetryText(value.name, { limit: 160 }) : null;
+  const consumer_group = typeof value.consumer_group === "string" ? sanitizeTelemetryText(value.consumer_group, { limit: 160 }) : null;
+  return kind && (id || name) ? { kind, id, name, consumer_group } : null;
 }
 
 function safeTrace(trace) {
