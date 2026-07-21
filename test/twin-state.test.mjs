@@ -769,7 +769,29 @@ test("Agent Team rail is session-driven, retains Live selection, and never uses 
   assert.match(appJs, /AGENT_TEAM_ROLES,/);
   assert.match(railSource, /data-agent-team-role/);
   assert.match(railSource, /data-agent-team-send/);
-  assert.match(railSource, /sendAgentTeamMessage\(input\.value\)/);
+  assert.match(railSource, /const sendControl = event\.target\.closest\("\[data-agent-team-send\]"\)/);
+  assert.match(railSource, /textarea name="message" data-agent-team-input/);
+  assert.match(railSource, /data-testid="agent-chatbox"/);
+  assert.match(railSource, /data-testid="agent-chat-input"/);
+  assert.match(railSource, /data-testid="agent-chat-send"/);
+  assert.match(railSource, /data-testid="simulate-incident"/);
+  assert.match(railSource, /data-projection-revision/);
+  assert.match(appJs, /function handleAgentTeamComposerKeydown/);
+  assert.match(appJs, /event\.key !== "Enter" \|\| event\.shiftKey/);
+  assert.match(appJs, /function handleAgentTeamDraft/);
+  assert.match(appJs, /function setAgentTeamDraft/);
+  assert.match(appJs, /function submitAgentTeamComposer/);
+  assert.match(railSource, /escapeHtml\(agentTeam\.draft \|\| ""\)/);
+  assert.match(appJs, /draft: message/);
+  assert.match(appJs, /Agent chat records have their own append-only ledger sequence/);
+  assert.doesNotMatch(appJs.slice(appJs.indexOf("function agentTeamTimelineMarkup"), appJs.indexOf("function agentTeamMessageMarkup")), /message\.sequence <= throughSequence/);
+  assert.match(appJs, /projection_revision: projectionRevision/);
+  assert.match(appJs, /data-testid="recovery-topology"/);
+  assert.match(appJs, /data-testid", "recovery-canvas"/);
+  assert.match(appJs, /function canonicalRecoveryTopologyMarkup/);
+  assert.match(appJs, /data-node-ids=/);
+  assert.match(appJs, /data-edge-ids=/);
+  assert.match(appJs, /data-testid="\$\{verification\.payload\.passed \? "verification-passed"/);
   assert.match(readFileSync(new URL("../public/vendor/phosphor/flowpulse-icons.css", import.meta.url), "utf8"), /\.ph-arrow-left::before/);
   assert.match(railSource, /role !== "ledger"/);
   assert.match(railSource, /data-agent-team-composer/);
@@ -797,6 +819,7 @@ test("Agent Team rail is session-driven, retains Live selection, and never uses 
   assert.match(appJs, /renderDrawer\(\);\n  renderOperationsTeamRail\(\);/);
   assert.match(stylesCss, /\.agent-team-timeline \{[\s\S]+?overflow: auto;/);
   assert.match(stylesCss, /\.agent-team-composer \{[\s\S]+?grid-template-columns: minmax\(0, 1fr\) auto;/);
+  assert.match(stylesCss, /\.agent-team-composer textarea \{/);
 });
 
 test("Live Inspector owns the rail, preserves canvas continuity, and keeps its progressive disclosures closed by default", () => {
@@ -1158,7 +1181,7 @@ test("Live pulse ordering remains deterministic across the complete backend runt
   assert.match(renderSourceCanvasSource, /fixed-live-edge-map/);
   assert.match(renderSourceCanvasSource, /liveEdgePath\(positions\.get\(edge\.from\), positions\.get\(edge\.to\)/);
   assert.doesNotMatch(renderSourceCanvasSource, /class="pulse-flow/);
-  assert.match(appJs, /classList\.toggle\("is-live-source", mode === "live"\)/);
+  assert.match(appJs, /classList\.toggle\("is-live-source", mode === "live" \|\| Boolean\(shared/);
   assert.match(appJs, /function startLiveSignalLoop\(/);
   assert.match(appJs, /const concurrentPulseCount = Math\.min\(3, groups\.length\);/);
   assert.match(appJs, /groups\.slice\(0, concurrentPulseCount\)\.forEach\(/);
@@ -1380,6 +1403,14 @@ test("every canvas mode exposes the shared status-dot contract with compact tool
   assert.match(stylesCss, /\.component-context\.is-warning, \.component-context\.is-unlinked/);
   assert.doesNotMatch(appJs, /observed components arranged by system role/);
   assert.doesNotMatch(appJs, /This canvas does not synthesize services or telemetry/);
+});
+
+test("a reserved shared run stays on the backend binding path until canonical topology arrives", () => {
+  assert.match(appJs, /if \(shared \|\| sharedRun\?\.loop\) \{/);
+  assert.match(appJs, /if \(sharedRun\?\.loop && mode !== "architecture"\) \{/);
+  assert.match(appJs, /renderCanonicalTopologyPending\(/);
+  assert.doesNotMatch(appJs, /sharedRunFrame\(/);
+  assert.doesNotMatch(appJs, /sharedCompareFrames\(/);
 });
 
 test("final competition shell gives every workspace one bounded canvas and one shared frosted rail", () => {

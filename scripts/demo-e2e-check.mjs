@@ -44,6 +44,7 @@ try {
   const investigator = await postJson("/api/agent-control/chat", {
     run_id: runId,
     incident_id: incidentId,
+    projection_revision: state.body.topology_views.projection_revision,
     conversation_id: `integration-checkout-${Date.now()}`,
     idempotency_key: `integration-checkout-${Date.now()}-1`,
     requested_agent: "investigator",
@@ -70,12 +71,23 @@ try {
   assert(positiveEvents.some((event) => event.type === "local_fault_loop.repair.executed"), "checkout loop repair event is missing");
   assert(positiveEvents.some((event) => event.type === "local_fault_loop.verification.completed" && event.payload?.passed === true), "checkout loop verification event is missing");
   assert(JSON.stringify(positiveEvents.filter((event) => event.type === "local_fault_loop.handoff.recorded" && event.payload?.ownership === "runtime_deterministic").slice(0, 3).map((event) => [event.payload.from, event.payload.to])) === JSON.stringify([["observer", "orchestrator"], ["orchestrator", "investigator"], ["investigator", "evaluator"]]), "loop deterministic handoffs are missing");
+  const positiveProjection = await getJson(`/api/demo/agent-loop?${query({ run_id: positive.start.run_id })}`);
+  assert(positiveProjection.response.ok, "canonical loop projection is unavailable");
+  const topology = positiveProjection.body.topology;
+  assertCanonicalTopology(topology, positive.start, "verified");
+  assert(positiveEvents.every((event) => event.topology === null || sameTopologyIdentity(event.topology, topology)), "loop SSE topology identity drifted");
+  const loopComponent = await getJson(`/api/components/checkout?${query({ run_id: positive.start.run_id, window: "15m", signal: "all", limit: "8" })}`);
+  assert(loopComponent.response.ok && loopComponent.body.topology_projection_revision === topology.projection_revision, "node detail is not bound to the loop topology revision");
 
   const negative = await startLoop("insufficient-evidence", 1, `integration-negative-loop-${Date.now()}`);
   const negativeEvents = negative.stream.events.filter((item) => item.event === "local-fault-loop").map((item) => item.payload?.event).filter(Boolean);
   const negativeTerminal = negative.stream.events.find((item) => item.event === "local-fault-loop-state")?.payload;
   assert(negativeTerminal?.state === "needs_human", "insufficient-evidence loop did not stop at the human gate");
   assert(!negativeEvents.some((event) => event.type === "local_fault_loop.repair.executed"), "insufficient-evidence loop executed a repair");
+  const negativeProjection = await getJson(`/api/demo/agent-loop?${query({ run_id: negative.start.run_id })}`);
+  assert(negativeProjection.response.ok, "negative canonical loop projection is unavailable");
+  assertCanonicalTopology(negativeProjection.body.topology, negative.start, "verification_pending");
+  assert(negativeProjection.body.topology.verification.passed === false, "Compare must remain pending without passed verification");
 
   console.log(JSON.stringify({
     status: "pass",
@@ -91,6 +103,14 @@ try {
       safe_answer: investigator.body.answer
     },
     checkout_loop: summarizeLoop(positive.start, positiveTerminal, roleEvents, positiveEvents),
+    canonical_topology: {
+      projection_revision: topology.projection_revision,
+      node_count: topology.graph.total_nodes,
+      edge_count: topology.graph.total_edges,
+      affected_node_ids: topology.affected_node_ids,
+      affected_edge_ids: topology.affected_edge_ids,
+      compare_state: topology.compare.state
+    },
     insufficient_evidence_loop: summarizeLoop(negative.start, negativeTerminal, [], negativeEvents)
   }, null, 2));
 } catch (error) {
@@ -157,6 +177,24 @@ function summarizeLoop(start, terminal, roleEvents, events) {
     repair: events.some((event) => event.type === "local_fault_loop.repair.executed"),
     verified: events.some((event) => event.type === "local_fault_loop.verification.completed" && event.payload?.passed === true)
   };
+}
+
+function assertCanonicalTopology(topology, start, compareState) {
+  assert(topology?.schema_version === "flowpulse.canonical-run-topology.v1", "canonical topology schema is unavailable");
+  assert(topology.run_id === start.run_id && topology.incident_id === start.incident_id, "canonical topology identity drifted");
+  assert(typeof topology.projection_revision === "string" && /^[a-f0-9]{64}$/.test(topology.projection_revision), "canonical topology revision is invalid");
+  assert(topology.graph?.total_nodes === topology.node_ids?.length && topology.graph?.total_edges === topology.edge_ids?.length, "canonical topology counts are inconsistent");
+  assert(topology.node_ids.includes("fraud-detection") && !topology.node_ids.includes("fraud"), "fraud-detection canonical ID was not enforced");
+  for (const workspace of [topology.live, topology.diagnose, topology.recovery, topology.compare]) {
+    assert(workspace.run_id === start.run_id && workspace.incident_id === start.incident_id && workspace.projection_revision === topology.projection_revision, "workspace topology identity drifted");
+    assert(JSON.stringify(workspace.node_ids) === JSON.stringify(topology.node_ids) && JSON.stringify(workspace.edge_ids) === JSON.stringify(topology.edge_ids), "workspace topology membership drifted");
+  }
+  assert(topology.compare.state === compareState, `Compare state must be ${compareState}`);
+}
+
+function sameTopologyIdentity(left, right) {
+  return left?.run_id === right?.run_id && left?.incident_id === right?.incident_id && left?.projection_revision === right?.projection_revision
+    && JSON.stringify(left?.node_ids) === JSON.stringify(right?.node_ids) && JSON.stringify(left?.edge_ids) === JSON.stringify(right?.edge_ids);
 }
 
 function query(value) { return new URLSearchParams(value).toString(); }

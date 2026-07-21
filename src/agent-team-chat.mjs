@@ -21,7 +21,7 @@ export const AGENT_TEAM_CHAT_LIMITS = Object.freeze({
 
 const ROLES = new Set(["observer", "orchestrator", "investigator", "evaluator"]);
 const PAGE_MODES = new Set(["architecture", "live", "diagnose", "recovery", "compare", "manager"]);
-const ENVELOPE_KEYS = ["run_id", "incident_id", "conversation_id", "idempotency_key", "requested_agent", "page_mode", "selected_component", "message"];
+const ENVELOPE_KEYS = ["run_id", "incident_id", "projection_revision", "conversation_id", "idempotency_key", "requested_agent", "page_mode", "selected_component", "message"];
 const FORBIDDEN_FIELD = /(?:approval|approve|authority|truth|repair|remediat|evidence|verification|execute|owner|prompt|trace|log|secret|provider)/i;
 const MAX_RECORDS_PER_SUBMIT = 18;
 const ROLE_TOOLS = Object.freeze({
@@ -64,6 +64,8 @@ export class AgentTeamChatService {
     const inputHash = requestHash(request);
     const messageId = `msg-${sha256({ run_id: request.run_id, conversation_id: request.conversation_id, idempotency_key: request.idempotency_key }).slice(0, 32)}`;
     const records = conversationEvents(state.events, request.conversation_id);
+    const external = await this.readContext(request.run_id, request);
+    validateProjectionRevision(request.projection_revision, external);
     const duplicate = records.find((event) => event.type === "agent_team.message.received" && event.payload?.idempotency_key === request.idempotency_key);
     if (duplicate) {
       if (duplicate.payload?.input_sha256 !== inputHash) throw new AgentTeamChatError("idempotency_key_conflict", 409);
@@ -73,13 +75,13 @@ export class AgentTeamChatService {
       throw new AgentTeamChatError("conversation_record_budget_exhausted", 429);
     }
 
-    const external = await this.readContext(request.run_id, request);
     validateSelectedComponent(request.selected_component, state, external);
     const received = this.append(request.run_id, "agent_team.message.received", "human", {
       conversation_id: request.conversation_id,
       message_id: messageId,
       idempotency_key: request.idempotency_key,
       input_sha256: inputHash,
+      projection_revision: request.projection_revision,
       requested_agent: request.requested_agent,
       page_mode: request.page_mode,
       selected_component: request.selected_component,
@@ -303,6 +305,7 @@ export class AgentTeamChatService {
       conversation_id: conversationId,
       message_id: messageId,
       idempotent,
+      projection_revision: safeHash(payload.projection_revision),
       requested_agent: payload.requested_agent,
       responding_agent: payload.responding_agent,
       state: payload.state,
@@ -414,11 +417,17 @@ export function validateAgentTeamChatRequest(value) {
   }
   if (Object.keys(value).length !== ENVELOPE_KEYS.length || !ENVELOPE_KEYS.every((key) => Object.hasOwn(value, key))) throw new AgentTeamChatError("request_envelope_invalid");
   for (const key of ["run_id", "incident_id", "conversation_id", "idempotency_key"]) if (!safeId(value[key])) throw new AgentTeamChatError(`invalid_${key}`);
+  if (!safeHash(value.projection_revision)) throw new AgentTeamChatError("projection_revision_invalid");
   if (!ROLES.has(value.requested_agent)) throw new AgentTeamChatError("requested_agent_invalid");
   if (!PAGE_MODES.has(value.page_mode)) throw new AgentTeamChatError("page_mode_invalid");
   if (value.selected_component !== null && !safeId(value.selected_component)) throw new AgentTeamChatError("selected_component_invalid");
   if (typeof value.message !== "string" || !value.message.trim() || Buffer.byteLength(value.message, "utf8") > AGENT_TEAM_CHAT_LIMITS.max_message_bytes) throw new AgentTeamChatError("message_invalid");
   return { ...value, message: value.message.trim() };
+}
+
+function validateProjectionRevision(revision, external) {
+  const expected = safeHash(external?.topology_views?.projection_revision);
+  if (!expected || revision !== expected) throw new AgentTeamChatError("projection_revision_mismatch", 409);
 }
 
 function validateSelectedComponent(selected, state, external) {
@@ -680,6 +689,7 @@ function responsePayload({ request, messageId, route, state, answer, citations, 
   return {
     conversation_id: request.conversation_id,
     message_id: messageId,
+    projection_revision: request.projection_revision,
     requested_agent: request.requested_agent,
     responding_agent: route.to,
     state,

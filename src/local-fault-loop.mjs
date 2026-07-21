@@ -1,6 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
+import { loadTopologyManifest } from "./topology-manifest.mjs";
 
 export const LOCAL_FAULT_LOOP_SCHEMA_VERSION = "flowpulse.local-fault-loop.v2";
+export const LOCAL_FAULT_LOOP_TOPOLOGY_SCHEMA_VERSION = "flowpulse.canonical-run-topology.v1";
 export const LOCAL_FAULT_LOOP_CASES = Object.freeze([
   Object.freeze({
     id: "checkout-payment-config",
@@ -117,6 +119,9 @@ export class LocalFaultLoop {
       projection_revision: session.topology.projection_revision,
       selected_component: definition.root_component,
       affected_components: definition.affected_components,
+      affected_node_ids: definition.affected_components,
+      affected_edge_ids: affectedEdgeIds(session.topology.graph, definition.affected_components),
+      graph: session.topology.graph,
       source_truth: session.topology.source_truth,
       runtime_node_count: session.topology.runtime_node_count
     }, fault.refs, injection.id);
@@ -259,6 +264,9 @@ export class LocalFaultLoop {
       projection_revision: session.topology.projection_revision,
       selected_component: definition.root_component,
       affected_components: definition.affected_components,
+      affected_node_ids: definition.affected_components,
+      affected_edge_ids: affectedEdgeIds(session.topology.graph, definition.affected_components),
+      graph: session.topology.graph,
       source_truth: session.topology.source_truth,
       runtime_node_count: session.topology.runtime_node_count
     }, [anomaly.id], anomalyEvent.id);
@@ -298,6 +306,7 @@ export class LocalFaultLoop {
     const citations = [...new Set(events.flatMap((event) => event.evidence_refs))].slice(0, 64);
     const state = final?.payload?.state || "running";
     const contextualWorkspaces = workspaceProjection(events, started, final, state);
+    const topology = canonicalRunTopology(events, started, final, state);
     return {
       schema_version: LOCAL_FAULT_LOOP_SCHEMA_VERSION,
       run_id: runId,
@@ -309,9 +318,11 @@ export class LocalFaultLoop {
       provider: roleResponses.at(-1)?.provider || null,
       citations,
       role_responses: roleResponses,
+      topology,
       contextual_workspaces: contextualWorkspaces,
       events: events.map((event, index) => ({
         ...projectEvent(event),
+        topology: canonicalRunTopology(events.slice(0, index + 1), started),
         contextual_workspaces: workspaceProjection(events.slice(0, index + 1), started)
       })),
       final: final ? { sequence: final.sequence, recorded_at: final.recorded_at, type: final.type, payload: final.payload } : null
@@ -676,6 +687,131 @@ function projectEvent(event) {
   };
 }
 
+function canonicalRunTopology(events, started, final = null, state = null) {
+  const bound = [...events].reverse().find((event) => event.type === "local_fault_loop.topology.bound") || null;
+  const graph = canonicalGraph(bound?.payload?.graph);
+  if (!bound || !graph || !started) return null;
+  const terminal = final || [...events].reverse().find((event) => ["local_fault_loop.recovered", "local_fault_loop.stopped", "local_fault_loop.failed"].includes(event.type)) || null;
+  const currentState = state || terminal?.payload?.state || "running";
+  const affectedNodeIds = canonicalIdList(bound.payload.affected_node_ids || bound.payload.affected_components, graph.nodes);
+  const affectedEdgeIds = canonicalEdgeIdList(bound.payload.affected_edge_ids, graph.edges, affectedNodeIds);
+  const baselineEvent = events.find((event) => event.payload?.metric_sample?.phase === "baseline") || null;
+  const incidentEvent = events.find((event) => event.payload?.metric_sample?.phase === "fault") || null;
+  const verifiedEvent = [...events].reverse().find((event) => event.payload?.metric_sample?.phase === "verified") || null;
+  const verificationEvent = [...events].reverse().find((event) => event.type === "local_fault_loop.verification.completed") || null;
+  const verificationPassed = terminal?.payload?.state === "recovered" && verificationEvent?.payload?.passed === true;
+  const current = events.at(-1) || started;
+  const snapshotFor = (event, name) => topologySnapshot({ graph, events: event ? events.filter((item) => item.sequence <= event.sequence) : [], affectedNodeIds, affectedEdgeIds, state: event ? null : currentState, name, sequence: event?.sequence || 0 });
+  const baseline = snapshotFor(baselineEvent, "baseline");
+  const incident = snapshotFor(incidentEvent || baselineEvent, "incident");
+  const verified = verificationPassed ? snapshotFor(verifiedEvent || verificationEvent, "verified") : null;
+  const currentSnapshot = topologySnapshot({ graph, events, affectedNodeIds, affectedEdgeIds, state: currentState, name: "current", sequence: current.sequence || 0 });
+  const verification = {
+    state: verificationPassed ? "passed" : terminal?.payload?.state === "failed" ? "failed" : "pending",
+    passed: verificationPassed,
+    event_sequence: verificationEvent?.sequence || null,
+    snapshot: verified
+  };
+  const workspace = (stateName) => ({
+    run_id: started.run_id,
+    incident_id: started.incident_id,
+    projection_revision: bound.payload.projection_revision,
+    node_ids: graph.nodes.map((node) => node.id),
+    edge_ids: graph.edges.map((edge) => edge.id),
+    affected_node_ids: affectedNodeIds,
+    affected_edge_ids: affectedEdgeIds,
+    state: stateName
+  });
+  return {
+    schema_version: LOCAL_FAULT_LOOP_TOPOLOGY_SCHEMA_VERSION,
+    run_id: started.run_id,
+    incident_id: started.incident_id,
+    projection_revision: bound.payload.projection_revision,
+    graph,
+    node_ids: graph.nodes.map((node) => node.id),
+    edge_ids: graph.edges.map((edge) => edge.id),
+    affected_node_ids: affectedNodeIds,
+    affected_edge_ids: affectedEdgeIds,
+    source_truth: bound.payload.source_truth,
+    current: currentSnapshot,
+    metric_samples: { baseline: baseline.metric_sample, incident: incident.metric_sample, verified: verified?.metric_sample || null },
+    snapshots: { baseline, incident, verified },
+    verification,
+    live: workspace("current"),
+    diagnose: workspace("current"),
+    recovery: workspace("current"),
+    compare: workspace(verificationPassed ? "verified" : "verification_pending"),
+    raw_payload_excluded: true
+  };
+}
+
+function topologySnapshot({ graph, events, affectedNodeIds, affectedEdgeIds, state, name, sequence }) {
+  const types = new Set(events.map((event) => event.type));
+  const terminalState = state || [...events].reverse().find((event) => ["local_fault_loop.recovered", "local_fault_loop.stopped", "local_fault_loop.failed"].includes(event.type))?.payload?.state || "running";
+  const recovered = terminalState === "recovered" && types.has("local_fault_loop.verification.completed");
+  const faulted = types.has("local_fault_loop.fault.injected");
+  const accepted = types.has("local_fault_loop.hypothesis.accepted");
+  const repaired = types.has("local_fault_loop.repair.executed");
+  const node_statuses = Object.fromEntries(graph.nodes.map((node) => [node.id, "observed"]));
+  const edge_statuses = Object.fromEntries(graph.edges.map((edge) => [edge.id, "observed"]));
+  if (faulted) {
+    for (const id of affectedNodeIds) node_statuses[id] = "impact";
+    for (const id of affectedEdgeIds) edge_statuses[id] = "impact";
+    const root = [...events].reverse().find((event) => event.type === "local_fault_loop.hypothesis.accepted")?.payload?.root_component;
+    if (accepted && typeof root === "string" && node_statuses[root]) node_statuses[root] = repaired ? "active" : "root";
+  }
+  if (recovered) {
+    for (const id of affectedNodeIds) node_statuses[id] = "verified";
+    for (const id of affectedEdgeIds) edge_statuses[id] = "verified";
+  }
+  const metricEvent = [...events].reverse().find((event) => safeMetricSample(event.payload?.metric_sample)) || null;
+  return {
+    name,
+    sequence,
+    stage: loopStage(events, null, terminalState),
+    state: terminalState,
+    node_statuses,
+    edge_statuses,
+    metric_sample: metricEvent ? metricProjection(metricEvent.payload.metric_sample, metricEvent.recorded_at) : null
+  };
+}
+
+function metricProjection(value, recordedAt) {
+  return {
+    checkout_error_rate_percent: value.checkout_error_rate_percent,
+    payment_reachability_percent: value.payment_reachability_percent,
+    kafka_lag: value.kafka_lag,
+    phase: value.phase,
+    source: value.source,
+    recorded_at: recordedAt
+  };
+}
+
+function safeMetricSample(value) {
+  return value && typeof value === "object" && value.raw_payload_excluded === true
+    && Number.isFinite(value.checkout_error_rate_percent) && value.checkout_error_rate_percent >= 0 && value.checkout_error_rate_percent <= 100
+    && Number.isFinite(value.payment_reachability_percent) && value.payment_reachability_percent >= 0 && value.payment_reachability_percent <= 100
+    && Number.isSafeInteger(value.kafka_lag) && value.kafka_lag >= 0 && value.kafka_lag <= 10_000_000
+    && ["baseline", "fault", "verified"].includes(value.phase) && value.source === "isolated_fixture";
+}
+
+function affectedEdgeIds(graph, affectedNodeIds) {
+  const affected = new Set(affectedNodeIds.map(canonicalId));
+  return graph.edges.filter((edge) => affected.has(edge.from) && affected.has(edge.to)).map((edge) => edge.id);
+}
+
+function canonicalIdList(value, nodes) {
+  const allowed = new Set(nodes.map((node) => node.id));
+  const ids = Array.isArray(value) ? value.map(canonicalId).filter((id) => allowed.has(id)) : [];
+  return [...new Set(ids)].sort();
+}
+
+function canonicalEdgeIdList(value, edges, affectedNodeIds) {
+  const allowed = new Set(edges.map((edge) => edge.id));
+  const ids = Array.isArray(value) ? value.filter((id) => allowed.has(id)) : affectedEdgeIds({ edges }, affectedNodeIds);
+  return [...new Set(ids)].sort();
+}
+
 function loopStage(events, final, state) {
   if (state === "recovered") return "recovered";
   if (state === "needs_human") return "needs-human";
@@ -788,18 +924,52 @@ function topologyContext(value) {
   const evidence_mode = ["captured_fixture", "live", "unavailable"].includes(truth.evidence_mode) ? truth.evidence_mode : "unavailable";
   const execution_mode = ["deterministic_replay", "live", "unavailable"].includes(truth.execution_mode) ? truth.execution_mode : "unavailable";
   const label = ["CAPTURED", "LIVE", "UNAVAILABLE"].includes(truth.label) ? truth.label : "UNAVAILABLE";
-  const runtime_node_count = Number.isInteger(value.architecture?.runtime_data?.graph?.total_nodes) ? value.architecture.runtime_data.graph.total_nodes : null;
-  return { schema_version: value.schema_version, projection_revision: value.projection_revision, runtime_node_count, source_truth: { source_health, evidence_mode, execution_mode, label } };
+  const graph = canonicalGraph(value.live?.runtime_data?.graph);
+  if (!graph) return null;
+  const runtime_node_count = graph.total_nodes;
+  return { schema_version: value.schema_version, projection_revision: value.projection_revision, graph, runtime_node_count, source_truth: { source_health, evidence_mode, execution_mode, label } };
 }
 
 function fixtureTopologyContext() {
+  const manifest = loadTopologyManifest();
+  const graph = canonicalGraph({ nodes: manifest.nodes, edges: manifest.edges });
+  if (!graph) throw new LocalFaultLoopError("local_fault_loop_topology_unavailable");
   return {
     schema_version: "flowpulse.topology-views.v2",
-    projection_revision: hash("flowpulse.local-fault-loop.fixture-topology.v1"),
-    runtime_node_count: null,
+    projection_revision: hash({ schema_version: "flowpulse.topology-views.v2", graph }),
+    graph,
+    runtime_node_count: graph.total_nodes,
     source_truth: { source_health: "unavailable", evidence_mode: "captured_fixture", execution_mode: "deterministic_replay", label: "CAPTURED" }
   };
 }
+
+function canonicalGraph(value) {
+  if (!value || typeof value !== "object" || !Array.isArray(value.nodes) || !Array.isArray(value.edges) || value.nodes.length < 1 || value.nodes.length > 128 || value.edges.length > 256) return null;
+  const nodes = value.nodes.map((node) => {
+    const id = canonicalId(node?.id);
+    if (!safeCanonicalId(id) || !["service", "job", "topic"].includes(node?.kind) || !["client", "service", "api", "stream", "worker"].includes(node?.display_class) || !["runtime", "data"].includes(node?.plane) || !["experience", "commerce", "processing", "platform"].includes(node?.layer) || !safeTopologyText(node?.label, 160) || !["observed", "captured", "healthy", "incident"].includes(node?.status) || !["live", "stale", "disconnected", "unavailable"].includes(node?.source_health) || !safeStringList(node?.signal_types, 3, 24) || !safeStringList(node?.provenance_refs, 4, 160)) return null;
+    return { id, kind: node.kind, display_class: node.display_class, plane: node.plane, layer: node.layer, label: node.label, status: node.status, source_health: node.source_health, signal_types: [...node.signal_types], provenance_refs: [...node.provenance_refs] };
+  }).sort((left, right) => left.id.localeCompare(right.id));
+  if (new Set(nodes.map((node) => node.id)).size !== nodes.length || nodes.some((node) => node.id === "fraud")) return null;
+  const ids = new Set(nodes.map((node) => node.id));
+  const edges = value.edges.map((edge) => {
+    const from = canonicalId(edge?.from);
+    const to = canonicalId(edge?.to);
+    if (!ids.has(from) || !ids.has(to) || from === to || canonicalId(edge?.id?.split("->")[0]) !== from || canonicalId(edge?.id?.split("->")[1]) !== to || edge?.id !== `${edge.from}->${edge.to}` || edge?.kind !== "calls" || edge?.plane !== "runtime" || edge?.label !== "Observed dependency" || !["observed", "captured", "healthy", "incident"].includes(edge?.status) || !safeStringList(edge?.provenance_refs, 4, 160)) return null;
+    return { id: `${from}->${to}`, from, to, kind: edge.kind, plane: edge.plane, label: edge.label, status: edge.status, provenance_refs: [...edge.provenance_refs] };
+  }).sort((left, right) => left.id.localeCompare(right.id));
+  if (new Set(edges.map((edge) => edge.id)).size !== edges.length || edges.some((edge) => edge.from === "fraud" || edge.to === "fraud")) return null;
+  return { nodes, edges, total_nodes: nodes.length, total_edges: edges.length, truncated: false };
+}
+
+function canonicalId(value) {
+  const id = String(value || "").trim().toLowerCase().replace(/[\s_.]+/g, "-").replace(/-+/g, "-");
+  return id === "fraud" ? "fraud-detection" : id;
+}
+
+function safeCanonicalId(value) { return /^[a-z0-9][a-z0-9-]{0,79}$/.test(value); }
+function safeTopologyText(value, limit) { return typeof value === "string" && value.length > 0 && value.length <= limit && /^[^\u0000-\u001f\u007f<>&]+$/.test(value); }
+function safeStringList(value, limit, itemLimit) { return Array.isArray(value) && value.length <= limit && new Set(value).size === value.length && value.every((item) => safeTopologyText(item, itemLimit)); }
 
 function boundedFailureCount(value) {
   return Number.isInteger(value) && value > 0 ? Math.min(value, MAX_REMEDIATION_ATTEMPTS) : 0;

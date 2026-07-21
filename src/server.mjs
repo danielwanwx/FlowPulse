@@ -85,7 +85,7 @@ const agentTeamChat = new AgentTeamChatService({
   incidentIdForRun: (runId) => localFaultLoopProjection(runId)?.incident_id || runtime.bundle.incident.id,
   contextForRun: async (_runtime, runId, request = {}) => {
     const loop = localFaultLoopProjection(runId);
-    const state = await stateWithSource(loop ? browserRunId() : runId);
+    const state = await nodeStateForRun(runId);
     // The Agent Team receives the same canonical source-truth axes as the
     // browser topology view. A compatibility IncidentProjection can carry
     // legacy source metadata, but it must not make captured evidence sound
@@ -1360,7 +1360,31 @@ function knownAgentRun(runId) {
 }
 
 async function nodeStateForRun(runId) {
-  return stateWithSource(localFaultLoopProjection(runId) ? browserRunId() : runId);
+  const loop = localFaultLoopProjection(runId);
+  const state = await stateWithSource(loop ? browserRunId() : runId);
+  return loop ? stateWithLocalLoopTopology(state, loop) : state;
+}
+
+function stateWithLocalLoopTopology(state, loop) {
+  const topology = loop?.topology;
+  if (!topology?.graph?.nodes?.length || !topology?.graph?.edges?.length || typeof topology.projection_revision !== "string") return state;
+  const views = structuredClone(state.topology_views);
+  const graph = structuredClone(topology.graph);
+  for (const scope of [views.architecture, views.live, views.diagnose]) {
+    if (!scope?.runtime_data) continue;
+    scope.runtime_data.graph = structuredClone(graph);
+    scope.runtime_data.node_count = graph.total_nodes;
+    scope.runtime_data.edge_count = graph.total_edges;
+  }
+  views.run_id = loop.run_id;
+  views.incident_id = loop.incident_id;
+  views.projection_revision = topology.projection_revision;
+  return {
+    ...state,
+    run_id: loop.run_id,
+    incident: { ...state.incident, id: loop.incident_id },
+    topology_views: views
+  };
 }
 
 function localFaultLoopProjection(runId) {
@@ -1714,7 +1738,7 @@ function streamLocalFaultLoopEvents(request, response, url) {
     projection = localFaultLoop.project(runId);
     for (const event of projection.events.filter((item) => item.sequence > lastSequence)) {
       lastSequence = event.sequence;
-      response.write(`id: ${event.sequence}\nevent: local-fault-loop\ndata: ${JSON.stringify({ schema_version: projection.schema_version, run_id: projection.run_id, incident_id: projection.incident_id, case_id: projection.case_id, round: projection.round, event, contextual_workspaces: event.contextual_workspaces })}\n\n`);
+      response.write(`id: ${event.sequence}\nevent: local-fault-loop\ndata: ${JSON.stringify({ schema_version: projection.schema_version, run_id: projection.run_id, incident_id: projection.incident_id, case_id: projection.case_id, round: projection.round, event, topology: event.topology, contextual_workspaces: event.contextual_workspaces })}\n\n`);
     }
     if (["recovered", "needs_human", "failed"].includes(projection.state)) {
       response.write(`event: local-fault-loop-state\ndata: ${JSON.stringify({ run_id: projection.run_id, incident_id: projection.incident_id, state: projection.state, stage: projection.stage, provider: projection.provider, final: projection.final, contextual_workspaces: projection.contextual_workspaces })}\n\n`);

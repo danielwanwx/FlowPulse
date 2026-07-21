@@ -479,13 +479,14 @@ export function agentLoopStartProjection(value) {
 }
 
 export function agentLoopProjection(value, { runId = null } = {}) {
-  const keys = ["schema_version", "run_id", "incident_id", "case_id", "round", "state", "stage", "provider", "citations", "role_responses", "contextual_workspaces", "events", "final"];
+  const keys = ["schema_version", "run_id", "incident_id", "case_id", "round", "state", "stage", "provider", "citations", "role_responses", "topology", "contextual_workspaces", "events", "final"];
   if (!plainRecord(value) || !sameKeys(value, keys) || value.schema_version !== "flowpulse.local-fault-loop.v2"
     || !safeAgentTeamId(value.run_id) || runId && value.run_id !== runId || !safeAgentTeamId(value.incident_id)
     || !["checkout-payment-config", "insufficient-evidence"].includes(value.case_id) || !Number.isSafeInteger(value.round) || value.round < 1 || value.round > 3
     || !AGENT_TEAM_LOOP_STATES.has(value.state) || !safeAgentTeamText(value.stage, 80)
     || value.provider !== null && !validAgentTeamLoopProvider(value.provider)
     || !validAgentTeamRefs(value.citations, 64) || !Array.isArray(value.role_responses) || value.role_responses.length > 12 || !value.role_responses.every(validAgentTeamLoopRoleResponse)
+    || !(value.topology === null && value.state === "running" || validCanonicalRunTopology(value.topology, { runId: value.run_id, incidentId: value.incident_id }))
     || !validAgentTeamWorkspaces(value.contextual_workspaces, { runId: value.run_id, incidentId: value.incident_id })
     || !Array.isArray(value.events) || value.events.length > 160 || !value.events.every(validAgentTeamLoopEvent)
     || !strictAscending(value.events, "sequence") || !validAgentTeamLoopFinal(value.final, value.state)) return null;
@@ -493,11 +494,11 @@ export function agentLoopProjection(value, { runId = null } = {}) {
 }
 
 export function agentLoopEventProjection(value, { runId = null } = {}) {
-  const keys = ["schema_version", "run_id", "incident_id", "case_id", "round", "event", "contextual_workspaces"];
+  const keys = ["schema_version", "run_id", "incident_id", "case_id", "round", "event", "topology", "contextual_workspaces"];
   if (!plainRecord(value) || !sameKeys(value, keys) || value.schema_version !== "flowpulse.local-fault-loop.v2"
     || !safeAgentTeamId(value.run_id) || runId && value.run_id !== runId || !safeAgentTeamId(value.incident_id)
     || !["checkout-payment-config", "insufficient-evidence"].includes(value.case_id) || !Number.isSafeInteger(value.round) || value.round < 1 || value.round > 3
-    || !validAgentTeamLoopEvent(value.event) || !validAgentTeamWorkspaces(value.contextual_workspaces, { runId: value.run_id, incidentId: value.incident_id })) return null;
+    || !validAgentTeamLoopEvent(value.event) || !(value.topology === null || validCanonicalRunTopology(value.topology, { runId: value.run_id, incidentId: value.incident_id })) || !validAgentTeamWorkspaces(value.contextual_workspaces, { runId: value.run_id, incidentId: value.incident_id })) return null;
   return value;
 }
 
@@ -509,23 +510,19 @@ export function sharedRunReadModel(loop, { throughSequence = null } = {}) {
   const events = Number.isSafeInteger(throughSequence) && throughSequence >= 0
     ? loop.events.filter((event) => event.sequence <= throughSequence)
     : loop.events;
-  const metricEvents = events.filter((event) => validSharedMetricSample(event.payload?.metric_sample));
-  const baseline = metricEvents.find((event) => event.payload.metric_sample.phase === "baseline") || null;
-  const incident = metricEvents.find((event) => event.payload.metric_sample.phase === "fault") || null;
-  const verified = [...metricEvents].reverse().find((event) => event.payload.metric_sample.phase === "verified") || null;
-  const terminal = [...events].reverse().find((event) => ["local_fault_loop.recovered", "local_fault_loop.stopped", "local_fault_loop.failed"].includes(event.type));
-  const state = terminal?.payload?.state === "recovered" || terminal?.payload?.state === "needs_human" || terminal?.payload?.state === "failed"
-    ? terminal.payload.state
-    : "running";
-  const stage = sharedRunStage(events, state, loop.stage);
+  const topology = [...events].reverse().find((event) => event.topology)?.topology || loop.topology;
+  if (!topology) return null;
+  const state = topology.current.state;
+  const stage = topology.current.stage;
   const current = events.at(-1) || null;
   return {
     run_id: loop.run_id,
     incident_id: loop.incident_id,
+    projection_revision: topology.projection_revision,
     state,
     stage,
     selected_component: loop.contextual_workspaces.context.selected_component,
-    workspace_actions: sharedWorkspaceActions(events, state),
+    workspace_actions: (current?.contextual_workspaces || loop.contextual_workspaces).actions,
     timeline: {
       position: current?.sequence || 0,
       event_id: current?.id || loop.contextual_workspaces.context.timeline.event_id,
@@ -533,80 +530,86 @@ export function sharedRunReadModel(loop, { throughSequence = null } = {}) {
       terminal_state: ["recovered", "needs_human", "failed"].includes(state) ? state : null
     },
     events,
-    metric_samples: {
-      baseline: baseline ? sharedMetricSample(baseline) : null,
-      incident: incident ? sharedMetricSample(incident) : null,
-      verified: verified ? sharedMetricSample(verified) : null,
-      current: sharedMetricSample(verified || incident || baseline)
-    },
-    node_statuses: sharedRunNodeStatuses(events, state),
+    topology,
+    metric_samples: { ...topology.metric_samples, current: topology.current.metric_sample },
+    node_statuses: topology.current.node_statuses,
+    edge_statuses: topology.current.edge_statuses,
     role_responses: loop.role_responses,
     citations: loop.citations
   };
 }
 
-function sharedWorkspaceActions(events, state) {
-  const incidentOpen = events.some((event) => event.type === "incident.opened" && event.actor === "observer");
-  const remediationReady = events.some((event) => event.type === "local_fault_loop.plan.proposed" || event.type === "local_fault_loop.repair.executed");
-  const verified = events.some((event) => event.type === "local_fault_loop.verification.completed");
-  const repaired = events.some((event) => event.type === "local_fault_loop.repair.executed");
-  const compareReady = state === "recovered" && verified && repaired;
-  return {
-    view_diagnosis: { available: incidentOpen, prerequisites: [{ id: "bounded_incident_opened", satisfied: incidentOpen }] },
-    open_recovery_console: { available: remediationReady, prerequisites: [{ id: "evaluated_remediation_plan_or_repair_started", satisfied: remediationReady }] },
-    compare_recovery: {
-      available: compareReady,
-      prerequisites: [
-        { id: "independent_verification_completed", satisfied: verified },
-        { id: "implemented_repair_recovered", satisfied: compareReady }
-      ]
-    }
-  };
+function validCanonicalRunTopology(value, { runId, incidentId }) {
+  const keys = ["schema_version", "run_id", "incident_id", "projection_revision", "graph", "node_ids", "edge_ids", "affected_node_ids", "affected_edge_ids", "source_truth", "current", "metric_samples", "snapshots", "verification", "live", "diagnose", "recovery", "compare", "raw_payload_excluded"];
+  if (!plainRecord(value) || !sameKeys(value, keys) || value.schema_version !== "flowpulse.canonical-run-topology.v1"
+    || value.run_id !== runId || value.incident_id !== incidentId || !validHash(value.projection_revision)
+    || !plainRecord(value.graph) || !sameKeys(value.graph, ["nodes", "edges", "total_nodes", "total_edges", "truncated"])
+    || !Array.isArray(value.graph.nodes) || !Array.isArray(value.graph.edges) || value.graph.nodes.length < 1 || value.graph.nodes.length > 128 || value.graph.edges.length > 256
+    || value.graph.total_nodes !== value.graph.nodes.length || value.graph.total_edges !== value.graph.edges.length || value.graph.truncated !== false
+    || !value.graph.nodes.every(validRuntimeNode) || !value.graph.edges.every(validRuntimeEdge)) return false;
+  const nodeIds = value.graph.nodes.map((node) => node.id);
+  const edgeIds = value.graph.edges.map((edge) => edge.id);
+  if (new Set(nodeIds).size !== nodeIds.length || new Set(edgeIds).size !== edgeIds.length || nodeIds.includes("fraud") || !nodeIds.includes("fraud-detection")
+    || !sameOrdered(value.node_ids, nodeIds) || !sameOrdered(value.edge_ids, edgeIds)
+    || !validTopologyIdSubset(value.affected_node_ids, nodeIds) || !validTopologyIdSubset(value.affected_edge_ids, edgeIds)
+    || !validCanonicalSourceTruth(value.source_truth) || !validCanonicalSnapshot(value.current, nodeIds, edgeIds)
+    || !plainRecord(value.metric_samples) || !sameKeys(value.metric_samples, ["baseline", "incident", "verified"])
+    || !validCanonicalMetric(value.metric_samples.baseline, false) || !validCanonicalMetric(value.metric_samples.incident, false) || !validCanonicalMetric(value.metric_samples.verified, false)
+    || !plainRecord(value.snapshots) || !sameKeys(value.snapshots, ["baseline", "incident", "verified"])
+    || !validCanonicalSnapshot(value.snapshots.baseline, nodeIds, edgeIds) || !validCanonicalSnapshot(value.snapshots.incident, nodeIds, edgeIds) || !(value.snapshots.verified === null || validCanonicalSnapshot(value.snapshots.verified, nodeIds, edgeIds))
+    || !validCanonicalVerification(value.verification, nodeIds, edgeIds)
+    || !["live", "diagnose", "recovery", "compare"].every((name) => validCanonicalWorkspace(value[name], value, name))
+    || value.raw_payload_excluded !== true) return false;
+  return value.current.metric_sample === null || validCanonicalMetric(value.current.metric_sample, true);
 }
 
-function sharedMetricSample(event) {
-  if (!event?.payload?.metric_sample) return null;
-  const sample = event.payload.metric_sample;
-  return {
-    checkout_error_rate_percent: sample.checkout_error_rate_percent,
-    payment_reachability_percent: sample.payment_reachability_percent,
-    kafka_lag: sample.kafka_lag,
-    phase: sample.phase,
-    source: sample.source,
-    recorded_at: event.recorded_at
-  };
+function validCanonicalWorkspace(value, topology, name) {
+  return plainRecord(value) && sameKeys(value, ["run_id", "incident_id", "projection_revision", "node_ids", "edge_ids", "affected_node_ids", "affected_edge_ids", "state"])
+    && value.run_id === topology.run_id && value.incident_id === topology.incident_id && value.projection_revision === topology.projection_revision
+    && sameOrdered(value.node_ids, topology.node_ids) && sameOrdered(value.edge_ids, topology.edge_ids)
+    && sameOrdered(value.affected_node_ids, topology.affected_node_ids) && sameOrdered(value.affected_edge_ids, topology.affected_edge_ids)
+    && (name === "compare" ? ["verified", "verification_pending"].includes(value.state) : value.state === "current");
 }
 
-function validSharedMetricSample(value) {
-  return plainRecord(value)
-    && sameKeys(value, ["checkout_error_rate_percent", "payment_reachability_percent", "kafka_lag", "phase", "source", "raw_payload_excluded"])
+function validTopologyIdSubset(value, ids) {
+  return Array.isArray(value) && value.length <= ids.length && new Set(value).size === value.length && value.every((id) => ids.includes(id)) && sameOrdered(value, [...value].sort());
+}
+
+function validCanonicalSourceTruth(value) {
+  return plainRecord(value) && sameKeys(value, ["source_health", "evidence_mode", "execution_mode", "label"])
+    && ["live", "stale", "disconnected", "unavailable"].includes(value.source_health)
+    && ["captured_fixture", "live", "unavailable"].includes(value.evidence_mode)
+    && ["deterministic_replay", "live", "unavailable"].includes(value.execution_mode)
+    && ["CAPTURED", "LIVE", "UNAVAILABLE"].includes(value.label);
+}
+
+function validCanonicalSnapshot(value, nodeIds, edgeIds) {
+  return plainRecord(value) && sameKeys(value, ["name", "sequence", "stage", "state", "node_statuses", "edge_statuses", "metric_sample"])
+    && ["baseline", "incident", "verified", "current"].includes(value.name) && Number.isSafeInteger(value.sequence) && value.sequence >= 0
+    && safeAgentTeamText(value.stage, 80) && AGENT_TEAM_LOOP_STATES.has(value.state)
+    && validCanonicalStatuses(value.node_statuses, nodeIds) && validCanonicalStatuses(value.edge_statuses, edgeIds)
+    && (value.metric_sample === null || validCanonicalMetric(value.metric_sample, true));
+}
+
+function validCanonicalStatuses(value, ids) {
+  return plainRecord(value) && sameOrdered(Object.keys(value), ids) && Object.values(value).every((status) => ["observed", "impact", "root", "active", "verified"].includes(status));
+}
+
+function validCanonicalMetric(value, required) {
+  if (value === null) return !required;
+  return plainRecord(value) && sameKeys(value, ["checkout_error_rate_percent", "payment_reachability_percent", "kafka_lag", "phase", "source", "recorded_at"])
     && Number.isFinite(value.checkout_error_rate_percent) && value.checkout_error_rate_percent >= 0 && value.checkout_error_rate_percent <= 100
     && Number.isFinite(value.payment_reachability_percent) && value.payment_reachability_percent >= 0 && value.payment_reachability_percent <= 100
     && Number.isSafeInteger(value.kafka_lag) && value.kafka_lag >= 0 && value.kafka_lag <= 10_000_000
-    && ["baseline", "fault", "verified"].includes(value.phase)
-    && value.source === "isolated_fixture" && value.raw_payload_excluded === true;
+    && ["baseline", "fault", "verified"].includes(value.phase) && value.source === "isolated_fixture" && validTopologyTimestamp(value.recorded_at);
 }
 
-function sharedRunStage(events, state, fallback) {
-  if (state === "recovered") return "recovered";
-  if (state === "needs_human") return "needs-human";
-  if (state === "failed") return "failed";
-  for (const event of [...events].reverse()) {
-    if (typeof event.payload?.stage === "string" && /^[a-z][a-z0-9-]{1,79}$/.test(event.payload.stage)) return event.payload.stage;
-  }
-  return /^[a-z][a-z0-9-]{1,79}$/.test(fallback) ? fallback : "monitor";
-}
-
-function sharedRunNodeStatuses(events, state) {
-  const types = new Set(events.map((event) => event.type));
-  if (state === "recovered") return { checkout: "verified", payment: "verified", kafka: "verified", accounting: "verified", "fraud-detection": "verified" };
-  if (types.has("local_fault_loop.fault.injected")) {
-    const statuses = { checkout: "impact", payment: "impact", kafka: "impact", accounting: "impact", "fraud-detection": "impact" };
-    if (types.has("local_fault_loop.hypothesis.accepted")) statuses.checkout = "root";
-    if (types.has("local_fault_loop.repair.executed")) statuses.checkout = "active";
-    return statuses;
-  }
-  return {};
+function validCanonicalVerification(value, nodeIds, edgeIds) {
+  return plainRecord(value) && sameKeys(value, ["state", "passed", "event_sequence", "snapshot"])
+    && ["passed", "pending", "failed"].includes(value.state) && typeof value.passed === "boolean"
+    && (value.event_sequence === null || Number.isSafeInteger(value.event_sequence) && value.event_sequence > 0)
+    && (value.snapshot === null || validCanonicalSnapshot(value.snapshot, nodeIds, edgeIds))
+    && (value.passed ? value.state === "passed" && value.snapshot?.name === "verified" : value.state !== "passed" && value.snapshot === null);
 }
 
 function validAgentTeamProvider(value) {
@@ -747,7 +750,7 @@ function validAgentTeamLoopRoleResponse(value) {
 }
 
 function validAgentTeamLoopEvent(value) {
-  return plainRecord(value) && sameKeys(value, ["id", "sequence", "recorded_at", "type", "actor", "evidence_refs", "payload", "contextual_workspaces"])
+  return plainRecord(value) && sameKeys(value, ["id", "sequence", "recorded_at", "type", "actor", "evidence_refs", "payload", "topology", "contextual_workspaces"])
     && safeAgentTeamId(value.id) && Number.isSafeInteger(value.sequence) && value.sequence >= 1 && validTopologyTimestamp(value.recorded_at)
     && safeAgentTeamText(value.type, 120) && safeAgentTeamText(value.actor, 80) && validAgentTeamRefs(value.evidence_refs, 64)
     && plainRecord(value.payload) && validAgentTeamWorkspacesForEvent(value.contextual_workspaces);

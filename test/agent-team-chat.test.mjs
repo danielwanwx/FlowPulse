@@ -75,6 +75,7 @@ function request(runtime, runId, overrides = {}) {
   return {
     run_id: runId,
     incident_id: runtime.bundle.incident.id,
+    projection_revision: "a".repeat(64),
     conversation_id: "conv-checkout-001",
     idempotency_key: "chat-key-001",
     requested_agent: "orchestrator",

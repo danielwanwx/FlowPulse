@@ -3285,9 +3285,10 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .agent-team-workspaces button { min-height: 32px; color: var(--architecture-copy); background: rgba(255, 255, 255, .72); }
 .agent-team-workspaces button:not(:disabled):hover { color: #ffffff; background: var(--blue); }
 .agent-team-composer { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 7px; }
-.agent-team-composer input {
+.agent-team-composer textarea {
   min-width: 0;
-  height: 36px;
+  min-height: 42px;
+  max-height: 92px;
   border: 0;
   border-radius: 12px;
   outline: none;
@@ -3295,9 +3296,12 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
   background: rgba(255, 255, 255, .78);
   font: inherit;
   font-size: 12px;
-  padding: 0 10px;
+  line-height: 1.35;
+  padding: 8px 10px;
+  resize: vertical;
 }
-.agent-team-composer input:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
+.agent-team-composer textarea:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
+.agent-team-pending { margin: 6px 0 0; color: var(--architecture-muted); font-size: 11px; line-height: 1.4; }
 .agent-team-suggestions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .agent-team-suggestions button {
   border: 1px solid color-mix(in srgb, var(--blue) 22%, transparent);
@@ -3825,9 +3829,30 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .app-shell[data-mode="replay"] .plane-guides,
 .app-shell[data-mode="agents"] .plane-guides,
 .app-shell[data-mode="compare"] .plane-guides { display: none; }
-.app-shell[data-mode="agents"] .recovery-console-layout { grid-template-columns: 1fr; }
-.app-shell[data-mode="agents"] .recovery-graph-panel { border-right: 0; }
+.app-shell[data-mode="agents"] .recovery-console-layout { grid-template-columns: minmax(0, 1.8fr) minmax(300px, .85fr); }
+.app-shell[data-mode="agents"] .recovery-topology-panel { grid-column: 1; grid-row: 2; }
+.app-shell[data-mode="agents"] .recovery-collaboration-panel { grid-column: 2; grid-row: 2; border-right: 0; overflow: auto; }
 .app-shell[data-mode="agents"] .recovery-workflow-facts > header small { display: none; }
+.app-shell[data-mode="agents"] .recovery-collaboration-panel .recovery-workflow-nodes { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; padding: 8px; }
+.app-shell[data-mode="agents"] .recovery-collaboration-panel .recovery-workflow-node { gap: 5px; padding: 6px; }
+.app-shell[data-mode="agents"] .recovery-collaboration-panel .recovery-workflow-node i { flex: 0 0 auto; font-size: 13px; }
+.app-shell[data-mode="agents"] .recovery-collaboration-panel .recovery-workflow-node code { display: block; overflow: hidden; color: var(--faint); font-size: 7px; text-overflow: ellipsis; white-space: nowrap; }
+.recovery-topology-map { position: relative; flex: 1; min-height: 0; overflow: hidden; background: color-mix(in srgb, var(--canvas) 88%, #e9eef1); }
+.recovery-topology-map .fixed-live-edge-map { z-index: 1; pointer-events: none; }
+.recovery-topology-map .source-node { width: 126px; min-height: 44px; height: 44px; grid-template-columns: 24px minmax(0, 1fr); gap: 5px; padding: 5px 7px; border-radius: 10px; }
+.recovery-topology-map .source-node .node-icon { width: 24px; height: 24px; border-radius: 8px; font-size: 13px; }
+.recovery-topology-map .source-node strong { font-size: 9px; }
+.recovery-topology-map .source-node .node-status { margin-top: 1px; font-size: 7px; }
+.recovery-topology-map .edge-line.is-impact, .recovery-topology-map .edge-line.is-root { stroke: var(--red); }
+.recovery-topology-map .edge-line.is-active, .recovery-topology-map .edge-line.is-recording { stroke: var(--blue); }
+.recovery-topology-map .edge-line.is-verified { stroke: var(--green); }
+.recovery-verification { display: grid; gap: 7px; padding: 10px 12px 12px; border-top: 1px solid var(--line); }
+.recovery-verification header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.recovery-verification header span { display: block; color: var(--faint); font-family: var(--mono); font-size: 8px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.recovery-verification header strong { display: block; margin-top: 2px; font-size: 10px; }
+.recovery-verification header small { color: var(--muted); font-size: 8px; text-align: right; }
+.recovery-verification .recovery-workflow-nodes { gap: 5px; padding: 0; }
+.recovery-verification .recovery-workflow-node { padding: 6px; }
 .recovery-workflow-nodes {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

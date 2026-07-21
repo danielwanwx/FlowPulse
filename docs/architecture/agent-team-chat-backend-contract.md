@@ -212,6 +212,58 @@ With `conversation_id`, every `agent-control` SSE frame is:
 
 The event projection is bounded to 48 records and 64 KiB. It exposes only safe text, role IDs, routing state, context revision/truth axes, evidence IDs, count-only tool summaries, generic failure codes, safe provider capability labels, and ledger sequence/time. It never exposes raw prompts, chain of thought, raw logs/traces, provider payloads, credentials, or hidden routing.
 
+## Canonical run topology contract (P0.5)
+
+`GET /api/demo/agent-loop?run_id=…` and every `local-fault-loop` SSE event now carry the same bounded `topology` projection once the run binds its backend topology. It is the only graph membership/identity/status source for a real shared run. Live, Diagnose, Recovery Console, Compare, node detail reads, and Agent Team submit context must use its `run_id`, `incident_id`, and `projection_revision`; they must not fall back to the legacy six-node fixture frames.
+
+```json
+{
+  "schema_version": "flowpulse.canonical-run-topology.v1",
+  "run_id": "local-loop-checkout-payment-config-1-…",
+  "incident_id": "incident-local-checkout-payment-config-1-…",
+  "projection_revision": "<sha256>",
+  "graph": { "nodes": ["<22 safe nodes>"], "edges": ["<26 safe edges>"], "total_nodes": 22, "total_edges": 26, "truncated": false },
+  "node_ids": ["accounting", "…", "fraud-detection"],
+  "edge_ids": ["ad->flagd", "…"],
+  "affected_node_ids": ["accounting", "checkout", "fraud-detection", "kafka", "payment"],
+  "affected_edge_ids": ["checkout->payment"],
+  "current": {
+    "sequence": 31,
+    "stage": "recovered",
+    "state": "recovered",
+    "node_statuses": { "checkout": "verified" },
+    "edge_statuses": { "checkout->payment": "verified" },
+    "metric_sample": { "checkout_error_rate_percent": 0.8, "payment_reachability_percent": 99.98, "kafka_lag": 620, "phase": "verified", "source": "isolated_fixture", "recorded_at": "2026-07-21T…Z" }
+  },
+  "verification": { "state": "passed", "passed": true, "event_sequence": 30, "snapshot": { "name": "verified" } },
+  "live": { "run_id": "…", "incident_id": "…", "projection_revision": "<sha256>", "node_ids": ["same list"], "edge_ids": ["same list"], "state": "current" },
+  "diagnose": { "state": "current" },
+  "recovery": { "state": "current" },
+  "compare": { "state": "verified" },
+  "raw_payload_excluded": true
+}
+```
+
+The graph is canonicalized at the contract boundary: `fraud` is never emitted or accepted as a graph component ID; the only identity is `fraud-detection`. `affected_*` values are subsets of the canonical IDs. The backend, not the browser, derives stage/status maps, metric samples, verification snapshots, and the Compare gate from immutable run events.
+
+While an asynchronous start is only reserved, `topology` can be `null`; the browser must render a topology-binding state and keep the SSE connection open. It must never substitute a static topology. A terminal or topology-bound projection always carries the full object above.
+
+`compare.state` is `verified` only if the same run has `verification.passed: true` and a terminal recovered state. For `needs_human`, failed, or still-running runs it is `verification_pending`, `verification.passed` is false, and Compare must show pending rather than a green recovered comparison.
+
+For a component drawer read during a local fault-loop run, use the same `run_id`:
+
+```text
+GET /api/components/checkout?run_id=local-loop-checkout-payment-config-1-…&window=15m&signal=all&limit=8
+```
+
+The server binds the response's `topology_projection_revision` to this canonical run revision, so the client must reject an otherwise valid detail response with a different revision. Agent Chat submits likewise carry the selected canonical component and same run/incident identity; opening or selecting does not call a provider.
+
+### Usable sidebar submit binding
+
+Every explicit Agent Team submit for a bound run must include the exact current `projection_revision` as well as `run_id`, `incident_id`, `page_mode`, selected canonical component, requested role, message, conversation ID, and idempotency key. A missing, malformed, or stale revision is rejected with `409 { "error": "projection_revision_mismatch" }`; the browser must refresh the canonical run projection rather than sending a request with mixed-run context. The safe response projection repeats the validated revision so a sidebar can discard a late response from an older run.
+
+The one-port UI exposes stable semantic selectors for recording and browser checks: `data-testid="simulate-incident"`, `agent-chatbox`, `agent-chat-input`, `agent-chat-send`, `live-topology`, `diagnose-topology`, `recovery-topology`, `compare-topology`, and the backend-driven `verification-passed`. Recovery's `recovery-topology` contains the same canonical `data-node-ids` and `data-edge-ids` graph as the other real-run workspaces; its node/edge status classes come only from the current backend event projection. A chat form has one visible textarea and one visible Send control per active workspace. Enter submits, Shift+Enter keeps a multiline draft, and an in-flight request shows `aria-busy="true"` plus a visible working status. Draft text survives an SSE re-render; a provider failure returns a bounded visible error, preserves the draft, and re-enables the form. The form remains available during a running loop for read-only diagnostic questions. These are UI bindings only: backend routing, citations, tool counts, authority, and recovery truth stay server-owned.
+
 ## Sidebar integration sequence (future frontend work)
 
 1. Render the four stable Control System roles with static icon/name/capability copy.

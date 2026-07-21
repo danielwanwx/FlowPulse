@@ -31,6 +31,7 @@ import {
   livePulseSlots,
   livePositions,
   liveViewTopology,
+  normalizeServiceId,
   orderedLiveRouteBuildEdges,
   orderedSignalEdges,
   primaryLiveEdges,
@@ -162,6 +163,8 @@ els["compare-verified"].addEventListener("click", () => setComparePercent(30));
 els["compare-control"].addEventListener("click", handleCompareFocus);
 els["operations-team-rail"].addEventListener("click", handleOperationsTeamRail);
 els["operations-team-rail"].addEventListener("submit", handleAgentTeamSubmit);
+els["operations-team-rail"].addEventListener("keydown", handleAgentTeamComposerKeydown);
+els["operations-team-rail"].addEventListener("input", handleAgentTeamDraft);
 els["operations-team-rail"].addEventListener("scroll", (event) => {
   if (event.target.matches("[data-live-inspector-scroll]")) liveInspector = { ...liveInspector, scroll_top: event.target.scrollTop };
 }, true);
@@ -252,8 +255,17 @@ function canonicalIncidentId() {
   return sharedRunModel()?.incident_id || state?.incident?.id || null;
 }
 
+function canonicalProjectionRevision() {
+  return sharedRunModel()?.projection_revision
+    || (mode === "architecture" ? architectureView()?.projection_revision : liveTopologyView()?.projection_revision)
+    || state?.topology_views?.projection_revision
+    || null;
+}
+
 function canonicalSelectedComponent() {
-  return selected?.type === "node" ? selected.id : sharedRunModel()?.selected_component || null;
+  const candidate = normalizeServiceId(selected?.type === "node" ? selected.id : sharedRunModel()?.selected_component || "");
+  const topology = sharedRunModel()?.topology;
+  return topology && !topology.node_ids.includes(candidate) ? topology.current.node_statuses["checkout"] ? "checkout" : null : candidate || null;
 }
 
 function canonicalEvents() {
@@ -290,8 +302,7 @@ async function hydrateSharedRun() {
 }
 
 function connectSharedRunStream() {
-  const model = sharedRunModel();
-  if (!sharedRun?.run_id || !model || sharedRunTerminal() || typeof EventSource !== "function") return;
+  if (!sharedRun?.run_id || !sharedRun?.loop || ["recovered", "needs_human", "failed"].includes(sharedRun.loop.state) || typeof EventSource !== "function") return;
   agentLoopEventSource?.close();
   const after = sharedRun.last_sequence || 0;
   agentLoopEventSource = new EventSource(`/api/demo/agent-loop/events?run_id=${encodeURIComponent(sharedRun.run_id)}&after=${after}`);
@@ -390,8 +401,8 @@ function canvasProjectionKey() {
 }
 
 function renderHeader() {
-  const frame = currentFrame();
   const shared = sharedRunModel();
+  const frame = shared ? null : currentFrame();
   const source = mode === "live" ? liveSource(liveTopologyView()) : sourceState();
   const titles = { architecture: "Architecture", live: "Runtime activity", replay: "Incident diagnosis", agents: "Recovery Console", compare: "Recovery comparison" };
   const canvasTitles = { architecture: "Architecture", live: "Observed runtime", replay: "Incident reconstruction", agents: "Developer recovery workspace", compare: "Incident vs verified" };
@@ -450,6 +461,15 @@ function renderMetrics() {
   const shared = sharedRunModel();
   if (shared && mode !== "architecture") {
     renderSharedRunMetrics(shared);
+    return;
+  }
+  if (sharedRun?.loop && mode !== "architecture") {
+    els["metric-checkout-label"].textContent = "Canonical topology";
+    els["metric-payment-label"].textContent = "Run state";
+    els["metric-kafka-label"].textContent = "Event stream";
+    setMetric("checkout", "Binding", "backend projection pending");
+    setMetric("payment", sharedRun.loop.state, "no client fallback");
+    setMetric("kafka", String(sharedRun.loop.events?.length || 0), "ordered events");
     return;
   }
   if (mode === "agents") {
@@ -536,10 +556,12 @@ function setMetric(name, value, note) {
 
 function renderCanvas() {
   stopLiveSignalLoop();
+  const shared = sharedRunModelAtCursor();
+  const sharedPendingTopology = Boolean(sharedRun?.loop && !shared);
   els["twin-canvas"].classList.toggle("is-compare-mode", mode === "compare");
-  els["twin-canvas"].classList.toggle("is-source-topology", mode === "architecture" || mode === "live");
+  els["twin-canvas"].classList.toggle("is-source-topology", mode === "architecture" || mode === "live" || Boolean(shared && ["replay", "compare"].includes(mode)));
   els["twin-canvas"].classList.toggle("is-architecture-source", mode === "architecture");
-  els["twin-canvas"].classList.toggle("is-live-source", mode === "live");
+  els["twin-canvas"].classList.toggle("is-live-source", mode === "live" || Boolean(shared && ["replay", "compare"].includes(mode)));
   els["twin-canvas"].classList.toggle("is-agent-source", mode === "agents");
   configureCanvasWorld(mode === "live");
   if (mode === "architecture") {
@@ -547,17 +569,31 @@ function renderCanvas() {
     return;
   }
   if (mode === "live") {
-    renderSourceCanvas("live");
+    if (sharedPendingTopology) return renderCanonicalTopologyPending();
+    renderSourceCanvas("live", shared?.topology || null, shared ? `Live canonical topology for run ${shared.run_id}.` : null);
     return;
   }
   if (mode === "agents") {
+    if (sharedPendingTopology) return renderCanonicalTopologyPending("Recovery Console is waiting for the canonical topology binding.");
     renderAgentCanvas();
     return;
   }
   if (mode === "compare") {
-    const shared = sharedRunModel();
-    const { incident, recovered } = shared ? sharedCompareFrames(shared) : compareFrames();
-    const provenance = shared ? { aria: "independent verification", label: "LOCAL CODEX", tone: shared.state === "recovered" ? "verified" : "warning" } : compareProvenance(state.events);
+    if (sharedPendingTopology) return renderCanonicalTopologyPending("Compare is waiting for the canonical topology binding.");
+    if (shared) {
+      const verified = shared.topology.verification.passed === true;
+      const snapshot = verified ? shared.topology.snapshots.verified : shared.topology.current;
+      renderSourceCanvas("live", { ...shared.topology, current: snapshot }, verified
+        ? `Compare verified canonical topology for run ${shared.run_id}.`
+        : `Compare is pending independent verification for canonical run ${shared.run_id}.`);
+      els["twin-canvas"].dataset.compareState = verified ? "verified" : "verification_pending";
+      els["compare-handle"].hidden = true;
+      els["compare-canvas-range"].hidden = true;
+      setAnnotations(verified ? sharedRunAnnotations(shared) : [{ id: "recovery", tone: "warning", title: "Verification pending", copy: "Compare remains locked until the same run records a passed independent verification." }]);
+      return;
+    }
+    const { incident, recovered } = compareFrames();
+    const provenance = compareProvenance(state.events);
     els["canvas-layers"].innerHTML = `${renderTwinLayer(recovered, "after", true, { runtimeOnly: true })}${renderTwinLayer(incident, "before", false, { runtimeOnly: true })}`;
     els["compare-handle"].hidden = false;
     els["compare-canvas-range"].hidden = false;
@@ -565,6 +601,12 @@ function renderCanvas() {
     els["twin-canvas"].setAttribute("aria-label", `Compare incident impact on the left with ${provenance.aria} on the right`);
     els["compare-canvas-range"].setAttribute("aria-label", `Drag to compare incident with ${provenance.aria}`);
     renderComparePosition();
+    return;
+  }
+  if (sharedPendingTopology) return renderCanonicalTopologyPending("Diagnose is waiting for the canonical topology binding.");
+  if (shared) {
+    renderSourceCanvas("live", shared.topology, `Diagnose canonical topology for run ${shared.run_id}.`);
+    setAnnotations(sharedRunAnnotations(shared));
     return;
   }
   const frame = currentFrame();
@@ -578,25 +620,32 @@ function renderCanvas() {
   els["twin-canvas"].setAttribute("aria-label", `Incident diagnosis at ${frame.stage.label}`);
 }
 
-function sharedCompareFrames(shared) {
-  const byPhase = (phase) => shared.events.find((event) => event.payload?.metric_sample?.phase === phase);
-  const baseline = byPhase("baseline");
-  const incident = byPhase("fault");
-  const verified = byPhase("verified");
-  const incidentSequence = incident?.sequence || baseline?.sequence || 0;
-  const cursorSequence = sharedRunModelAtCursor()?.events.at(-1)?.sequence || verified?.sequence || incidentSequence;
-  return {
-    incident: sharedRunFrame(sharedRunReadModel(sharedRun.loop, { throughSequence: incidentSequence }), incidentSequence),
-    recovered: sharedRunFrame(sharedRunReadModel(sharedRun.loop, { throughSequence: cursorSequence }), cursorSequence)
-  };
+function renderCanonicalTopologyPending(message = "Waiting for the backend-owned canonical topology projection.") {
+  els["canvas-layers"].innerHTML = `<div class="source-empty"><i class="ph ph-spinner-gap" aria-hidden="true"></i><strong>Canonical topology binding</strong><span>${escapeHtml(message)}</span></div>`;
+  els["compare-handle"].hidden = true;
+  els["compare-canvas-range"].hidden = true;
+  setAnnotations([]);
+  els["twin-canvas"].setAttribute("aria-label", message);
 }
 
-function renderSourceCanvas(layout) {
+function renderSourceCanvas(layout, runTopology = null, ariaLabel = null) {
+  const topologyTestId = layout === "architecture"
+    ? "architecture-topology"
+    : mode === "replay"
+      ? "diagnose-topology"
+      : mode === "compare"
+        ? "compare-topology"
+        : "live-topology";
+  els["twin-canvas"].setAttribute("data-testid", topologyTestId);
   const architecture = layout === "architecture" ? architectureView() : null;
   const live = layout === "live" ? liveTopologyView() : null;
-  const source = architecture ? architectureSource(architecture) : liveSource(live);
+  const source = runTopology
+    ? { status: runTopology.source_truth.source_health, label: runTopology.source_truth.label, topology: runTopology.graph, evidence: [], counts: {}, freshness_ms: null }
+    : architecture ? architectureSource(architecture) : liveSource(live);
   const topology = architecture
     ? architecture.graph
+    : runTopology?.graph
+      ? topologyIntegrity({ nodes: runTopology.graph.nodes, edges: runTopology.graph.edges })
     : live?.runtime_data.graph
       ? topologyIntegrity({
         nodes: live.runtime_data.graph.nodes,
@@ -618,7 +667,7 @@ function renderSourceCanvas(layout) {
   const positioned = layout === "architecture" ? null : livePositions(topology.nodes);
   const nodeStates = {
     ...Object.fromEntries(topology.nodes.map((node) => [node.id, node.status])),
-    ...(layout === "live" ? sharedRunModel()?.node_statuses || {} : {})
+    ...(runTopology?.current?.node_statuses || {})
   };
   if (layout === "architecture") {
     const boundaries = architectureBoundaries(topology);
@@ -671,7 +720,7 @@ function renderSourceCanvas(layout) {
     order: signalOrder.get(edge.id) ?? pulseEdges.length + index,
     routeOrder: routeBuildOrder.get(edge.id) ?? index,
     pulse: edge.kind === "calls",
-    tone: liveSignalTone(edge, nodeStates)
+    tone: runTopology?.current?.edge_statuses?.[edge.id] || liveSignalTone(edge, nodeStates)
   }));
   // The Live view uses authored topology routes, not a generic obstacle solver.
   // Node coordinates and every port are derived from the same fixed world, so a
@@ -690,7 +739,7 @@ function renderSourceCanvas(layout) {
   // A shared incident is driven entirely by the server's event stream. Preserve
   // the legacy visual pulse only for the standalone captured topology, never as
   // a surrogate for an active run's metrics or edge state.
-  if (!sharedRunModel()) {
+  if (!runTopology && !sharedRunModel()) {
     applyLiveRouteDelays();
     const linkDuration = Math.min(1500, 340 + plannedEdges.length * 32);
     const renderGeneration = liveSignalGeneration;
@@ -702,8 +751,15 @@ function renderSourceCanvas(layout) {
   els["twin-canvas"].dataset.unlinkedNodes = String(topology.unlinked_node_ids.length);
   els["twin-canvas"].dataset.observedEdges = String(topology.edges.length);
   els["twin-canvas"].dataset.displayedEdges = String(runtimeEdges.length);
+  if (runTopology) {
+    els["twin-canvas"].dataset.runId = runTopology.run_id;
+    els["twin-canvas"].dataset.incidentId = runTopology.incident_id;
+    els["twin-canvas"].dataset.projectionRevision = runTopology.projection_revision;
+    els["twin-canvas"].dataset.canonicalNodeCount = String(runTopology.node_ids.length);
+    els["twin-canvas"].dataset.canonicalEdgeCount = String(runTopology.edge_ids.length);
+  }
   setAnnotations(mode === "replay" ? developmentAnnotations(cursor) : []);
-  els["twin-canvas"].setAttribute("aria-label", `Runtime topology with ${positioned.length} observed services. ${runtimeEdges.length} projected dependency paths are rendered from ${topology.edges.length} authoritative dependencies${unlinkedPositionedNodes ? `, with ${unlinkedPositionedNodes} components lacking dependency evidence` : ""}.`);
+  els["twin-canvas"].setAttribute("aria-label", ariaLabel || `Runtime topology with ${positioned.length} observed services. ${runtimeEdges.length} projected dependency paths are rendered from ${topology.edges.length} authoritative dependencies${unlinkedPositionedNodes ? `, with ${unlinkedPositionedNodes} components lacking dependency evidence` : ""}.`);
 }
 
 function architectureLayerStatus(nodes) {
@@ -929,6 +985,7 @@ function renderAgentCanvas() {
 
 function renderSharedRecoveryCanvas(shared) {
   const events = shared.events;
+  const topology = shared.topology;
   const roleEvent = (role) => [...events].reverse().find((event) => event.type === "local_fault_loop.role.response" && event.payload?.role === role)
     || [...events].reverse().find((event) => event.type === "local_fault_loop.role.working" && event.payload?.role === role);
   const stageEvent = (type) => [...events].reverse().find((event) => event.type === type);
@@ -952,13 +1009,58 @@ function renderSharedRecoveryCanvas(shared) {
     const output = event?.payload?.safe_answer || event?.payload?.repair || event?.payload?.result || "Awaiting a canonical event";
     return `<article class="recovery-workflow-node is-${escapeHtml(status === "done" ? "verified" : status === "working" ? "active" : "quiet")}" data-shared-role="${escapeHtml(id)}"><i class="ph ph-${escapeHtml(id === "recovery" ? "wrench" : id === "verifier" ? "shield-check" : id === "orchestrator" ? "git-branch" : id === "evaluator" ? "scales" : id === "observer" ? "binoculars" : "brain")}" aria-hidden="true"></i><div><strong>${escapeHtml(label)}</strong><small>${escapeHtml(status)} · ${escapeHtml(task)}</small><small>${event ? `${escapeHtml(event.type.replace("local_fault_loop.", ""))} · ${escapeHtml(formatTime(event.recorded_at))}${Number.isSafeInteger(event.payload?.duration_ms) ? ` · ${event.payload.duration_ms}ms` : ""}` : "No event yet"}</small><small>${escapeHtml(String(output).slice(0, 180))}</small>${citations.length ? `<code>${escapeHtml(citations.slice(0, 3).join(" · "))}</code>` : ""}</div></article>`;
   };
-  const planCard = plan ? `<section class="recovery-diagnosis"><div class="diagnosis-state"><span>Proposed reversible remediation</span><strong>${escapeHtml(plan.payload.repair)}</strong><small>${escapeHtml(plan.payload.target)} · risk ${escapeHtml(plan.payload.risk)}</small></div><p>Before: ${escapeHtml(fault?.payload?.fault || "bounded fault condition")}. After: ${escapeHtml(repair?.payload?.result || "pending execution")}. Rollback: ${repair?.payload?.rollback_available ? "available" : "not executed"}. Authority: ${escapeHtml(gate?.payload?.outcome || "not decided")}.</p>${plan.evidence_refs.length ? `<div class="citation-list">${plan.evidence_refs.map((id) => `<button type="button" class="citation" data-shared-evidence-id="${escapeHtml(id)}">${escapeHtml(id)}</button>`).join("")}</div>` : ""}</section>` : "";
-  const verificationCard = verification ? `<section class="recovery-graph-panel recovery-workflow-facts"><header><div><span>Independent quality gates</span><strong>${verification.payload.passed ? "Passed" : "Not passed"}</strong></div><small>${escapeHtml(verification.payload.recovery_slo?.observed || "verification recorded")}</small></header><div class="recovery-workflow-nodes">${(verification.payload.checks || []).map((check) => `<article class="recovery-workflow-node is-${check.passed ? "verified" : "rejected"}"><div><strong>${escapeHtml(check.id)}</strong><small>${check.passed ? "passed" : "failed"}</small></div></article>`).join("")}</div>${verification.evidence_refs.length ? `<div class="citation-list">${verification.evidence_refs.map((id) => `<button type="button" class="citation" data-shared-evidence-id="${escapeHtml(id)}">${escapeHtml(id)}</button>`).join("")}</div>` : ""}</section>` : "";
-  els["canvas-layers"].innerHTML = `<div class="recovery-console-layout" data-shared-run="${escapeHtml(shared.run_id)}">${planCard}<section class="recovery-graph-panel recovery-workflow-facts" aria-label="Event-driven collaboration"><header><div><span>Collaboration</span><strong>${escapeHtml(shared.stage)}</strong></div><small>${escapeHtml(shared.run_id)}</small></header><div class="recovery-workflow-nodes">${roles.map(roleCard).join("")}</div>${handoffs.length ? `<div class="citation-list">${handoffs.map((event) => `<span class="citation">${escapeHtml(`${event.payload.from} → ${event.payload.to}`)}</span>`).join("")}</div>` : ""}</section>${verificationCard}</div>`;
+  const planCard = plan ? `<section class="recovery-diagnosis"><div class="diagnosis-state"><span>Proposed reversible remediation</span><strong>${escapeHtml(plan.payload.repair)}</strong><small>${escapeHtml(plan.payload.target)} · risk ${escapeHtml(plan.payload.risk)}</small></div><p>Before: ${escapeHtml(fault?.payload?.fault || "bounded fault condition")}. After: ${escapeHtml(repair?.payload?.result || "pending execution")}. Rollback: ${repair?.payload?.rollback_available ? "available" : "not executed"}. Authority: ${escapeHtml(gate?.payload?.outcome || "not decided")}.</p>${plan.evidence_refs.length ? `<div class="citation-list">${plan.evidence_refs.map((id) => `<button type="button" class="citation" data-shared-evidence-id="${escapeHtml(id)}">${escapeHtml(id)}</button>`).join("")}</div>` : ""}</section>` : `<section class="recovery-diagnosis"><div class="diagnosis-state"><span>Recovery state</span><strong>${escapeHtml(shared.stage)}</strong><small>Awaiting a server-owned remediation event</small></div><p>Topology, agent state, and any authority gate below are immutable projections of this run. No recovery action is client-authored.</p></section>`;
+  const verificationCard = verification ? `<section class="recovery-verification" data-testid="${verification.payload.passed ? "verification-passed" : "verification-failed"}"><header><div><span>Independent quality gates</span><strong>${verification.payload.passed ? "Passed" : "Not passed"}</strong></div><small>${escapeHtml(verification.payload.recovery_slo?.observed || "verification recorded")}</small></header><div class="recovery-workflow-nodes">${(verification.payload.checks || []).map((check) => `<article class="recovery-workflow-node is-${check.passed ? "verified" : "rejected"}"><div><strong>${escapeHtml(check.id)}</strong><small>${check.passed ? "passed" : "failed"}</small></div></article>`).join("")}</div>${verification.evidence_refs.length ? `<div class="citation-list">${verification.evidence_refs.map((id) => `<button type="button" class="citation" data-shared-evidence-id="${escapeHtml(id)}">${escapeHtml(id)}</button>`).join("")}</div>` : ""}</section>` : "";
+  const topologyGraph = canonicalRecoveryTopologyMarkup(topology);
+  els["canvas-layers"].innerHTML = `<div class="recovery-console-layout" data-shared-run="${escapeHtml(shared.run_id)}" data-projection-revision="${escapeHtml(topology.projection_revision)}">${planCard}${topologyGraph}<section class="recovery-graph-panel recovery-workflow-facts recovery-collaboration-panel" aria-label="Event-driven collaboration"><header><div><span>Collaboration</span><strong>${escapeHtml(shared.stage)}</strong></div><small>${escapeHtml(shared.run_id)}</small></header><div class="recovery-workflow-nodes">${roles.map(roleCard).join("")}</div>${handoffs.length ? `<div class="citation-list">${handoffs.map((event) => `<span class="citation">${escapeHtml(`${event.payload.from} → ${event.payload.to}`)}</span>`).join("")}</div>` : ""}${verificationCard}</section></div>`;
   setAnnotations(sharedRunAnnotations(shared));
   els["compare-handle"].hidden = true;
   els["compare-canvas-range"].hidden = true;
+  els["twin-canvas"].dataset.runId = topology.run_id;
+  els["twin-canvas"].dataset.incidentId = topology.incident_id;
+  els["twin-canvas"].dataset.projectionRevision = topology.projection_revision;
+  els["twin-canvas"].dataset.canonicalNodeCount = String(topology.node_ids.length);
+  els["twin-canvas"].dataset.canonicalEdgeCount = String(topology.edge_ids.length);
+  els["twin-canvas"].setAttribute("data-testid", "recovery-canvas");
   els["twin-canvas"].setAttribute("aria-label", `Recovery Console for canonical run ${shared.run_id}.`);
+}
+
+function canonicalRecoveryTopologyMarkup(topology) {
+  const graph = topologyIntegrity({ nodes: topology.graph.nodes, edges: topology.graph.edges });
+  const positioned = livePositions(graph.nodes);
+  const positions = new Map(positioned.map((node) => [node.id, node]));
+  const nodeStates = {
+    ...Object.fromEntries(graph.nodes.map((node) => [node.id, node.status])),
+    ...(topology.current?.node_statuses || {})
+  };
+  const source = {
+    status: topology.source_truth?.source_health || "captured",
+    label: topology.source_truth?.label || "Isolated fixture evidence"
+  };
+  const runtimeEdges = graph.edges.filter((edge) => positions.has(edge.from) && positions.has(edge.to));
+  const pulseEdges = runtimeEdges.filter((edge) => edge.kind === "calls");
+  const pulseSlots = livePulseSlots({ ...graph, edges: pulseEdges });
+  const signalOrder = new Map(orderedSignalEdges(pulseEdges, pulseSlots).map((edge, index) => [edge.id, index]));
+  const routeBuildOrder = new Map(orderedLiveRouteBuildEdges(runtimeEdges, positioned).map((edge, index) => [edge.id, index]));
+  const edges = runtimeEdges.map((edge, index) => {
+    const visualEdge = {
+      ...edge,
+      order: signalOrder.get(edge.id) ?? pulseEdges.length + index,
+      routeOrder: routeBuildOrder.get(edge.id) ?? index,
+      pulse: false,
+      tone: topology.current?.edge_statuses?.[edge.id] || liveSignalTone(edge, nodeStates)
+    };
+    const path = liveEdgePath(positions.get(edge.from), positions.get(edge.to), {
+      canvasWidth: LIVE_WORLD.width,
+      canvasHeight: LIVE_WORLD.height,
+      nodeWidth: 180,
+      nodeHeight: 60,
+      lane: visualEdge.order
+    });
+    return fixedLiveEdgeMarkup(visualEdge, path, positions.get(edge.from)?.label || edge.from, positions.get(edge.to)?.label || edge.to);
+  }).join("");
+  const nodes = positioned.map((node) => sourceNodeMarkup(node, { layout: "live", source, nodeStates })).join("");
+  return `<section class="recovery-graph-panel recovery-topology-panel" data-testid="recovery-topology" aria-label="Canonical recovery topology" data-canonical-node-count="${topology.node_ids.length}" data-canonical-edge-count="${topology.edge_ids.length}" data-projection-revision="${escapeHtml(topology.projection_revision)}"><header><div><span>Canonical topology</span><strong>${topology.node_ids.length} nodes · ${topology.edge_ids.length} edges</strong></div><small>${escapeHtml(topology.projection_revision.slice(0, 12))}</small></header><div class="recovery-topology-map is-live-source" data-node-ids="${escapeHtml(topology.node_ids.join(","))}" data-edge-ids="${escapeHtml(topology.edge_ids.join(","))}" data-affected-node-ids="${escapeHtml(topology.affected_node_ids.join(","))}" data-affected-edge-ids="${escapeHtml(topology.affected_edge_ids.join(","))}"><svg class="edge-map fixed-live-edge-map" viewBox="0 0 ${LIVE_WORLD.width} ${LIVE_WORLD.height}" preserveAspectRatio="none">${edges}</svg>${nodes}</div></section>`;
 }
 
 function renderTwinLayer(frame, layerName, interactive, { runtimeOnly = false } = {}) {
@@ -1110,8 +1212,8 @@ function updateCompareFromPointer(clientX) {
 
 function renderTimeline() {
   const shared = sharedRunModel();
-  if (shared) {
-    const events = shared.events;
+  if (shared || sharedRun?.loop) {
+    const events = shared?.events || sharedRun.loop.events || [];
     const currentIndex = Math.max(0, Math.min(cursor, Math.max(0, events.length - 1)));
     const markers = sharedTimelineMarkers(events);
     els["stage-track"].style.setProperty("--stage-count", String(Math.max(1, markers.length)));
@@ -1284,6 +1386,13 @@ function renderOperationsTeamRail() {
 }
 
 function handleOperationsTeamRail(event) {
+  const sendControl = event.target.closest("[data-agent-team-send]");
+  if (sendControl) {
+    event.preventDefault();
+    const form = sendControl.closest("[data-agent-team-composer]");
+    if (form) void submitAgentTeamComposer(form);
+    return;
+  }
   if (event.target.closest("[data-workspace-evidence-close]")) {
     closeDrawer();
     return;
@@ -1336,17 +1445,15 @@ function handleOperationsTeamRail(event) {
     void openAgentTeamSession("observer", { restoreInspector: true, inspectorSnapshot: captureLiveInspectorSnapshot() });
     return;
   }
-  const send = event.target.closest("[data-agent-team-send]");
-  if (send) {
-    const form = send.closest("[data-agent-team-composer]");
-    const input = form?.elements?.message;
-    if (input) void sendAgentTeamMessage(input.value);
-    return;
-  }
   const roleTile = event.target.closest("[data-agent-team-role]");
   if (roleTile) {
     const restoreInspector = Boolean(selected?.type === "node" && isRailRuntimeNode(selected.id));
     void openAgentTeamSession(roleTile.dataset.agentTeamRole, { restoreInspector, inspectorSnapshot: restoreInspector ? captureLiveInspectorSnapshot() : null });
+    return;
+  }
+  const suggestion = event.target.closest("[data-agent-team-suggestion]");
+  if (suggestion) {
+    setAgentTeamDraft(suggestion.dataset.agentTeamSuggestion || "", { focus: true });
     return;
   }
   if (event.target.closest("[data-agent-team-back]")) {
@@ -1371,7 +1478,32 @@ async function handleAgentTeamSubmit(event) {
   const form = event.target.closest("[data-agent-team-composer]");
   if (!form) return;
   event.preventDefault();
-  await sendAgentTeamMessage(new FormData(form).get("message"));
+  await submitAgentTeamComposer(form);
+}
+
+async function submitAgentTeamComposer(form) {
+  const message = String(new FormData(form).get("message") || "");
+  agentTeam = { ...agentTeam, draft: message.slice(0, 1500) };
+  await sendAgentTeamMessage(message);
+}
+
+function handleAgentTeamComposerKeydown(event) {
+  if (event.key !== "Enter" || event.shiftKey || event.isComposing || !event.target.matches("textarea[data-agent-team-input]")) return;
+  const form = event.target.closest("[data-agent-team-composer]");
+  if (!form || agentTeam.sending) return;
+  event.preventDefault();
+  form.requestSubmit();
+}
+
+function handleAgentTeamDraft(event) {
+  if (!event.target.matches("textarea[data-agent-team-input]")) return;
+  agentTeam = { ...agentTeam, draft: String(event.target.value || "").slice(0, 1500) };
+}
+
+function setAgentTeamDraft(value, { focus = false } = {}) {
+  agentTeam = { ...agentTeam, draft: String(value || "").slice(0, 1500) };
+  renderOperationsTeamRail();
+  if (focus) els["operations-team-rail"].querySelector("textarea[data-agent-team-input]")?.focus();
 }
 
 function emptyLiveInspector(nodeId = null) {
@@ -1607,7 +1739,7 @@ function workspaceEvidenceRailMarkup() {
 function agentTeamHomeMarkup(controls) {
   const loop = agentTeam.loop;
   const liveAction = mode === "live"
-    ? `<button type="button" class="agent-team-primary" data-agent-team-simulate ${agentTeam.starting ? "disabled" : ""}>${agentTeam.starting ? "Starting demo…" : "Simulate incident"}</button>`
+    ? `<button type="button" class="agent-team-primary" data-agent-team-simulate data-testid="simulate-incident" ${agentTeam.starting ? "disabled" : ""}>${agentTeam.starting ? "Starting demo…" : "Simulate incident"}</button>`
     : "";
   const loopState = loop
     ? `<p class="agent-team-loop-state" aria-live="polite">${escapeHtml(loop.state === "running" ? "Demo loop is running" : `Demo loop ${loop.state.replaceAll("_", " ")}`)}</p>`
@@ -1628,12 +1760,13 @@ function agentTeamSessionMarkup(controls) {
   const workspace = workspaceLabel();
   const component = selected?.type === "node" ? sourceComponentContext(selected.id)?.node?.label || selected.id : null;
   const activity = detail.activity?.summary || null;
-  const canCompose = role !== "ledger";
   const title = role === "ledger" ? "Evidence Ledger" : node.label;
   const context = [workspace, component, sourceTruthLabel()].filter(Boolean).join(" · ");
   const providerLabel = provider ? (provider.availability === "available" ? provider.truth_label : "Provider unavailable") : null;
   const runId = agentTeam.loop?.run_id || agentTeam.run_id;
   const incidentId = agentTeam.loop?.incident_id || agentTeam.incident_id;
+  const projectionRevision = canonicalProjectionRevision();
+  const canCompose = role !== "ledger" && Boolean(runId && incidentId && projectionRevision);
   return `<section class="architecture-system architecture-flowpulse-system agent-team-session" aria-label="${escapeHtml(title)} session">
     <header class="agent-team-session-header">
       <button type="button" class="agent-team-back" data-agent-team-back aria-label="Back to FlowPulse Team"><i class="ph ph-arrow-left" aria-hidden="true"></i></button>
@@ -1647,7 +1780,7 @@ function agentTeamSessionMarkup(controls) {
     ${agentTeam.error ? `<p class="agent-team-error" role="alert">${escapeHtml(agentTeam.error)}</p>` : ""}
     <section class="agent-team-timeline" aria-live="polite">${agentTeamTimelineMarkup()}</section>
     ${agentTeamWorkspaceActionsMarkup()}
-    ${canCompose ? `<form class="agent-team-composer" data-agent-team-composer><input name="message" maxlength="1500" required autocomplete="off" placeholder="Ask ${escapeHtml(node.label)} about ${escapeHtml(component || "the selected node")}" ${agentTeam.sending ? "disabled" : ""}/><button type="submit" data-agent-team-send ${agentTeam.sending ? "disabled" : ""}>${agentTeam.sending ? "Sending…" : "Send"}</button></form><div class="agent-team-suggestions"><button type="button" data-agent-team-suggestion="Why is this red?">Why is this red?</button><button type="button" data-agent-team-suggestion="What evidence would change this conclusion?">What evidence would change this conclusion?</button></div>` : `<p class="agent-team-readonly">Evidence Ledger is read-only. It records cited evidence, hashes, and provenance.</p>`}
+    ${canCompose ? `<form class="agent-team-composer" data-agent-team-composer data-testid="agent-chatbox" data-run-id="${escapeHtml(runId)}" data-incident-id="${escapeHtml(incidentId)}" data-projection-revision="${escapeHtml(projectionRevision)}" data-page-mode="${escapeHtml(({ architecture: "architecture", live: "live", replay: "diagnose", agents: "recovery", compare: "compare" })[mode] || "architecture")}" aria-busy="${String(agentTeam.sending)}"><textarea name="message" data-agent-team-input data-testid="agent-chat-input" maxlength="1500" required autocomplete="off" rows="2" placeholder="Ask ${escapeHtml(node.label)} about ${escapeHtml(component || "the selected node")}" ${agentTeam.sending ? "disabled" : ""}>${escapeHtml(agentTeam.draft || "")}</textarea><button type="submit" data-agent-team-send data-testid="agent-chat-send" ${agentTeam.sending ? "disabled" : ""}>${agentTeam.sending ? "Sending…" : "Send"}</button></form>${agentTeam.sending ? `<p class="agent-team-pending" role="status">${escapeHtml(node.label)} is working from the current bounded evidence.</p>` : ""}<div class="agent-team-suggestions"><button type="button" data-agent-team-suggestion="Why is this red?">Why is this red?</button><button type="button" data-agent-team-suggestion="What evidence would change this conclusion?">What evidence would change this conclusion?</button></div>` : `<p class="agent-team-readonly">${role === "ledger" ? "Evidence Ledger is read-only. It records cited evidence, hashes, and provenance." : "The current backend-owned topology revision is unavailable. Refresh before sending a question."}</p>`}
   </section>`;
 }
 
@@ -1663,8 +1796,12 @@ function boundedListMarkup(label, items) {
 
 function agentTeamTimelineMarkup() {
   const shared = sharedRunModelAtCursor();
-  const throughSequence = shared?.events.at(-1)?.sequence || Number.POSITIVE_INFINITY;
-  const messages = (agentTeam.conversation?.messages || []).filter((message) => message.sequence <= throughSequence);
+  // Agent chat records have their own append-only ledger sequence and can be
+  // appended after a loop reaches its terminal event. A replay cursor limits
+  // only loop-derived workspace facts; filtering these same-run messages by
+  // the loop's final sequence would make a completed LOCAL CODEX answer
+  // disappear from the visible sidebar.
+  const messages = agentTeam.conversation?.messages || [];
   const loopItems = shared
     ? shared.events.reduce((items, event) => appendLoopTimelineItem(items, event), [])
     : agentTeam.loop_items || [];
@@ -1722,10 +1859,10 @@ function restoreAgentTeamState() {
   try {
     const saved = JSON.parse(sessionStorage.getItem("flowpulse.agent-team.v1") || "null");
     if (saved && typeof saved === "object" && ["home", "session"].includes(saved.panel) && (saved.role === null || AGENT_TEAM_ROLES.includes(saved.role))) {
-      return { panel: saved.panel, role: saved.role, conversation_id: typeof saved.conversation_id === "string" ? saved.conversation_id : null, run_id: typeof saved.run_id === "string" ? saved.run_id : null, incident_id: typeof saved.incident_id === "string" ? saved.incident_id : null, provider: null, conversation: null, loop: null, loop_items: [], error: null, sending: false, starting: false, restore_inspector: false, inspector_snapshot: null, disclosures: { capability: false, run: false }, stream_after: 0, loop_after: 0 };
+      return { panel: saved.panel, role: saved.role, conversation_id: typeof saved.conversation_id === "string" ? saved.conversation_id : null, run_id: typeof saved.run_id === "string" ? saved.run_id : null, incident_id: typeof saved.incident_id === "string" ? saved.incident_id : null, provider: null, conversation: null, loop: null, loop_items: [], error: null, sending: false, starting: false, restore_inspector: false, inspector_snapshot: null, disclosures: { capability: false, run: false }, stream_after: 0, loop_after: 0, draft: "" };
     }
   } catch { /* session restoration is optional and never becomes authority */ }
-  return { panel: "home", role: null, conversation_id: null, run_id: null, incident_id: null, provider: null, conversation: null, loop: null, loop_items: [], error: null, sending: false, starting: false, restore_inspector: false, inspector_snapshot: null, disclosures: { capability: false, run: false }, stream_after: 0, loop_after: 0 };
+  return { panel: "home", role: null, conversation_id: null, run_id: null, incident_id: null, provider: null, conversation: null, loop: null, loop_items: [], error: null, sending: false, starting: false, restore_inspector: false, inspector_snapshot: null, disclosures: { capability: false, run: false }, stream_after: 0, loop_after: 0, draft: "" };
 }
 
 function persistAgentTeamState() {
@@ -1796,7 +1933,8 @@ async function openAgentTeamSession(role, { restoreInspector = false, inspectorS
     restore_inspector: restoreInspector,
     inspector_snapshot: restoreInspector ? inspectorSnapshot || captureLiveInspectorSnapshot() : null,
     disclosures: { capability: false, run: false },
-    conversation: null
+    conversation: null,
+    draft: ""
   };
   persistAgentTeamState();
   renderDrawer();
@@ -1809,7 +1947,7 @@ function closeAgentTeamSession({ restoreInspector = false } = {}) {
   agentTeamEventSource = null;
   const inspectorSnapshot = agentTeam.inspector_snapshot;
   const restore = restoreInspector && agentTeam.restore_inspector && Boolean(selected) && inspectorSnapshot?.node_id === selected.id;
-  agentTeam = { ...agentTeam, panel: "home", role: null, conversation: null, error: null, sending: false, restore_inspector: false, inspector_snapshot: null, disclosures: { capability: false, run: false } };
+  agentTeam = { ...agentTeam, panel: "home", role: null, conversation: null, error: null, sending: false, restore_inspector: false, inspector_snapshot: null, disclosures: { capability: false, run: false }, draft: "" };
   if (restore) {
     liveInspector = {
       node_id: inspectorSnapshot.node_id,
@@ -1868,7 +2006,13 @@ async function sendAgentTeamMessage(value) {
   const message = String(value || "").trim();
   if (!message || agentTeam.panel !== "session" || agentTeam.role === "ledger" || agentTeam.sending || !agentTeam.conversation_id || !agentTeam.run_id || !agentTeam.incident_id) return;
   const selectedComponent = canonicalSelectedComponent();
-  agentTeam = { ...agentTeam, sending: true, error: null };
+  const projectionRevision = canonicalProjectionRevision();
+  if (!projectionRevision) {
+    agentTeam = { ...agentTeam, error: "The server-owned topology revision is unavailable. Refresh before sending a question." };
+    renderOperationsTeamRail();
+    return;
+  }
+  agentTeam = { ...agentTeam, sending: true, error: null, draft: message };
   renderOperationsTeamRail();
   try {
     const idempotencyKey = `chat-${agentTeam.conversation_id.slice(-64)}-${crypto.randomUUID().replaceAll("-", "")}`;
@@ -1877,6 +2021,7 @@ async function sendAgentTeamMessage(value) {
       body: JSON.stringify({
         run_id: agentTeam.run_id,
         incident_id: agentTeam.incident_id,
+        projection_revision: projectionRevision,
         conversation_id: agentTeam.conversation_id,
         idempotency_key: idempotencyKey,
         requested_agent: agentTeam.role,
@@ -1887,9 +2032,9 @@ async function sendAgentTeamMessage(value) {
     });
     const conversation = agentTeamConversationProjection(result?.conversation, { conversationId: agentTeam.conversation_id });
     if (!conversation) throw new Error("Agent Team response is incompatible with the safe browser contract.");
-    agentTeam = { ...agentTeam, conversation, sending: false };
+    agentTeam = { ...agentTeam, conversation, sending: false, draft: "" };
   } catch (error) {
-    agentTeam = { ...agentTeam, sending: false, error: error.message || "Agent Team message failed." };
+    agentTeam = { ...agentTeam, sending: false, error: error.message || "Agent Team message failed.", draft: message };
   }
   renderOperationsTeamRail();
 }
@@ -2365,11 +2510,7 @@ function handleDrawerEntityFocus(event) {
   }
   const suggestion = event.target.closest("[data-agent-team-suggestion]");
   if (suggestion) {
-    const input = els["operations-team-rail"].querySelector("[data-agent-team-composer] input[name=message]");
-    if (input) {
-      input.value = suggestion.dataset.agentTeamSuggestion || "";
-      input.focus();
-    }
+    setAgentTeamDraft(suggestion.dataset.agentTeamSuggestion || "", { focus: true });
     return;
   }
   const sharedEvidence = event.target.closest("[data-shared-evidence-id]");
@@ -2382,6 +2523,7 @@ function handleDrawerEntityFocus(event) {
 }
 
 function openDrawer(focus, tab = "evidence") {
+  if (focus?.type === "node") focus = { ...focus, id: normalizeServiceId(focus.id) };
   if (selected?.type === focus?.type && selected?.id === focus?.id) {
     selected = null;
     renderDrawer();
@@ -2750,36 +2892,7 @@ async function mutate(path) {
 }
 
 function currentFrame() {
-  const shared = sharedRunModelAtCursor();
-  if (shared && mode !== "architecture") return sharedRunFrame(shared, cursor);
   return frameFor(mode === "live" ? availableStage(state?.events || []) : cursor);
-}
-
-function sharedRunFrame(shared, index) {
-  const base = frameFor(0);
-  const current = shared.metric_samples.current;
-  const nodes = { ...base.nodeStates, ...shared.node_statuses };
-  const edges = { ...base.edgeStates };
-  for (const edge of TWIN_EDGES) {
-    if (["checkout", "payment", "kafka", "accounting", "fraud"].includes(edge.from) || ["checkout", "payment", "kafka", "accounting", "fraud"].includes(edge.to)) {
-      edges[edge.id] = shared.state === "recovered" ? "verified" : shared.node_statuses.checkout === "impact" || shared.node_statuses.payment === "impact" ? "impact" : "quiet";
-    }
-  }
-  const metrics = current ? {
-    checkout: { value: `${current.checkout_error_rate_percent}%`, note: `${current.phase} evidence` },
-    payment: { value: `${current.payment_reachability_percent}%`, note: `${current.phase} evidence` },
-    kafka: { value: current.kafka_lag.toLocaleString(), note: `${current.phase} evidence` }
-  } : base.metrics;
-  const latest = shared.events.at(-1);
-  return {
-    ...base,
-    index,
-    stage: { id: shared.stage, label: shared.stage.replaceAll("-", " "), time: latest ? formatTime(latest.recorded_at) : "Awaiting event" },
-    nodeStates: nodes,
-    edgeStates: edges,
-    metrics,
-    annotations: sharedRunAnnotations(shared)
-  };
 }
 
 function sharedRunAnnotations(shared) {
@@ -3028,9 +3141,14 @@ function sourceState() {
 
 function sourceComponentContext(id) {
   if (!(mode === "live" || isUnifiedRailWorkspace())) return null;
+  const shared = sharedRunModelAtCursor();
   const view = liveTopologyView() || architectureView();
-  const source = liveSource(view);
-  const topology = view?.runtime_data.graph
+  const source = shared
+    ? { status: shared.topology.source_truth.source_health, label: shared.topology.source_truth.label, topology: shared.topology.graph, evidence: [], counts: {}, freshness_ms: null }
+    : liveSource(view);
+  const topology = shared?.topology?.graph
+    ? topologyIntegrity({ nodes: shared.topology.graph.nodes, edges: shared.topology.graph.edges })
+    : view?.runtime_data.graph
     ? topologyIntegrity({
       nodes: view.runtime_data.graph.nodes,
       edges: [...view.runtime_data.graph.edges, ...(view.runtime_data.supporting_relations || [])]
@@ -3039,10 +3157,10 @@ function sourceComponentContext(id) {
   if (!topology) return null;
   const node = topology.nodes.find((item) => item.id === id);
   if (!node) return null;
-  const detailKey = liveComponentDetailKey(node.id, view?.projection_revision);
+  const detailKey = liveComponentDetailKey(node.id, shared?.projection_revision || view?.projection_revision);
   const incoming = topology.edges.filter((edge) => edge.to === id).map((edge) => topology.nodes.find((item) => item.id === edge.from)).filter(Boolean);
   const outgoing = topology.edges.filter((edge) => edge.from === id).map((edge) => topology.nodes.find((item) => item.id === edge.to)).filter(Boolean);
-  const sharedStatus = sharedRunModelAtCursor()?.node_statuses?.[id] || null;
+  const sharedStatus = shared?.node_statuses?.[id] || null;
   return {
     node,
     profile: sourceComponentProfile(node, { sourceFacts: false }),
@@ -3057,7 +3175,7 @@ function sourceComponentContext(id) {
   };
 }
 
-function liveComponentDetailKey(id, projectionRevision = liveTopologyView()?.projection_revision) {
+function liveComponentDetailKey(id, projectionRevision = sharedRunModel()?.projection_revision || liveTopologyView()?.projection_revision) {
   return typeof id === "string" && /^[a-z0-9][a-z0-9-]{0,79}$/.test(id) && typeof projectionRevision === "string" && /^[a-f0-9]{64}$/.test(projectionRevision)
     ? `${projectionRevision}:${id}`
     : null;
@@ -3065,8 +3183,10 @@ function liveComponentDetailKey(id, projectionRevision = liveTopologyView()?.pro
 
 async function requestLiveComponentDetail(id) {
   if (!(mode === "live" || isUnifiedRailWorkspace()) || !isRailRuntimeNode(id)) return;
+  const shared = sharedRunModel();
   const view = liveTopologyView() || architectureView();
-  const key = liveComponentDetailKey(id, view?.projection_revision);
+  const topologyRevision = shared?.projection_revision || view?.projection_revision;
+  const key = liveComponentDetailKey(id, topologyRevision);
   if (!key || liveComponentDetails.has(key) || pendingLiveComponentDetails.has(key) || unavailableLiveComponentDetails.has(key)) return;
   pendingLiveComponentDetails.add(key);
   if (selected?.type === "node" && selected.id === id) {
@@ -3077,7 +3197,7 @@ async function requestLiveComponentDetail(id) {
     const runId = canonicalRunId();
     const value = await request(`/api/components/${encodeURIComponent(id)}?run_id=${encodeURIComponent(runId)}&window=15m&signal=all&limit=8`);
     const { node_investigation: _nodeInvestigation, ...v1Detail } = value || {};
-    const detail = componentDetailProjection(v1Detail, { nodeId: id, topologyRevision: view.projection_revision });
+    const detail = componentDetailProjection(v1Detail, { nodeId: id, topologyRevision });
     // The response is already revision-bound to `view` above. Its cache key
     // carries that revision, so a concurrent canonical-state refresh simply
     // causes the next render to request the new key rather than rejecting a

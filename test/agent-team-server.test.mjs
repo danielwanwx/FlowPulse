@@ -60,6 +60,7 @@ test("Agent Team HTTP and SSE projections preserve a chat's transparent routing 
   const loopChat = await postJson(port, "/api/agent-control/chat", {
     run_id: seededLoop.run_id,
     incident_id: seededLoop.incident_id,
+    projection_revision: seededLoop.topology.projection_revision,
     conversation_id: "conv-loop-sidebar-001",
     idempotency_key: "loop-sidebar-message-001",
     requested_agent: "investigator",
@@ -79,6 +80,7 @@ test("Agent Team HTTP and SSE projections preserve a chat's transparent routing 
   const chat = await postJson(port, "/api/agent-control/chat", {
     run_id: initial.body.run_id,
     incident_id: initial.body.incident.id,
+    projection_revision: initial.body.topology_views.projection_revision,
     conversation_id: "conv-sidebar-001",
     idempotency_key: "sidebar-message-001",
     requested_agent: "observer",
@@ -115,6 +117,7 @@ test("Agent Team HTTP and SSE projections preserve a chat's transparent routing 
   const rejected = await postJson(port, "/api/agent-control/chat", {
     run_id: initial.body.run_id,
     incident_id: initial.body.incident.id,
+    projection_revision: initial.body.topology_views.projection_revision,
     conversation_id: "conv-sidebar-001",
     idempotency_key: "sidebar-message-invalid",
     requested_agent: "observer",
@@ -124,6 +127,19 @@ test("Agent Team HTTP and SSE projections preserve a chat's transparent routing 
     approval: "forged"
   });
   assert.deepEqual(rejected, { status: 400, body: { error: "forbidden_request_field" } });
+
+  const staleProjection = await postJson(port, "/api/agent-control/chat", {
+    run_id: initial.body.run_id,
+    incident_id: initial.body.incident.id,
+    projection_revision: "0".repeat(64),
+    conversation_id: "conv-sidebar-stale-revision-001",
+    idempotency_key: "sidebar-stale-revision-001",
+    requested_agent: "observer",
+    page_mode: "live",
+    selected_component: "checkout",
+    message: "What is the current bounded source freshness?"
+  });
+  assert.deepEqual(staleProjection, { status: 409, body: { error: "projection_revision_mismatch" } });
 });
 
 async function freshPort() {
