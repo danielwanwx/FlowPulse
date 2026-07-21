@@ -5,6 +5,11 @@ const BASE_CLEARANCE = 5;
 const PORT_INSET = 12;
 const TURN_PENALTY = 12;
 
+// The Live canvas has a fixed, backend-derived world. Keeping its route
+// geometry in that world makes every canonical dependency stable across a
+// resize, zoom, and detail-rail toggle; the browser only scales the result.
+export const LIVE_ROUTE_WORLD = Object.freeze({ width: 1480, height: 680, nodeWidth: 180, nodeHeight: 60 });
+
 function number(value) {
   return Number.isFinite(Number(value)) ? Number(value) : 0;
 }
@@ -219,6 +224,39 @@ export function measuredLiveRoute({ from, to, obstacles = [], order = 0 } = {}) 
   }).filter(Boolean).sort((left, right) => left.score - right.score);
   if (!routes.length) throw new Error(`no clear measured route for ${source.id} to ${target.id}`);
   return Object.freeze({ points: Object.freeze(routes[0].points.map((value) => Object.freeze(value))) });
+}
+
+export function fixedLiveRouteBoxes(positioned = []) {
+  return positioned.map((node) => {
+    const centerX = Number(node.x) / 100 * LIVE_ROUTE_WORLD.width;
+    const centerY = Number(node.y) / 100 * LIVE_ROUTE_WORLD.height;
+    return {
+      id: String(node.id),
+      left: centerX - LIVE_ROUTE_WORLD.nodeWidth / 2,
+      right: centerX + LIVE_ROUTE_WORLD.nodeWidth / 2,
+      top: centerY - LIVE_ROUTE_WORLD.nodeHeight / 2,
+      bottom: centerY + LIVE_ROUTE_WORLD.nodeHeight / 2
+    };
+  });
+}
+
+/**
+ * Plans canonical paths once from the fixed Live world. This deliberately
+ * avoids post-layout DOM measurement: a dependency path is a property of the
+ * projected topology and its fixed node placement, not the current viewport.
+ */
+export function plannedLiveRoutes(positioned = [], edges = []) {
+  const boxes = fixedLiveRouteBoxes(positioned);
+  const byId = new Map(boxes.map((box) => [box.id, box]));
+  return [...edges]
+    .sort((left, right) => String(left.id).localeCompare(String(right.id)))
+    .map((edge, index) => {
+      const from = byId.get(edge.from);
+      const to = byId.get(edge.to);
+      if (!from || !to) throw new Error(`fixed Live route endpoint unavailable for ${edge.id}`);
+      const route = measuredLiveRoute({ from, to, obstacles: boxes, order: Number.isFinite(edge.order) ? edge.order : index });
+      return { edge, route, path: roundedMeasuredRoutePath(route.points) };
+    });
 }
 
 function round(value) {

@@ -3021,3 +3021,131 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
   .is-live-source .source-node.is-signal-launch,
   .is-live-source .source-node.is-signal-arrival { animation: none; }
 }
+
+/* Unified application switch and Live operating surface. Architecture owns the
+   canonical shell treatment; every mode reuses it without a mode-specific nav. */
+.app-shell[data-mode] .mission-bar {
+  flex: 0 0 64px;
+  height: 64px;
+  min-height: 64px;
+  padding: 8px 22px;
+  background: #e9eef1;
+  border: 0;
+}
+.app-shell[data-mode] .mode-switch {
+  width: 710px;
+  min-width: 710px;
+  height: 40px;
+  min-height: 40px;
+  margin: 0;
+  border: 0;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, .5);
+  box-shadow: none;
+  transform: none;
+}
+.app-shell[data-mode] .mode-button {
+  min-height: 40px;
+  padding: 6px 8px;
+  border: 0;
+  border-right: 1px solid rgba(100, 116, 139, .16);
+  color: #5f6872;
+  background: transparent;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", sans-serif;
+  font-size: 14px;
+  font-weight: 500;
+}
+.app-shell[data-mode] .mode-button:hover { color: #1f2937; background: rgba(255, 255, 255, .24); }
+.app-shell[data-mode] .mode-button.is-active { color: #ffffff; background: var(--blue); font-weight: 500; }
+
+.app-shell[data-mode="live"] .canvas-toolbar { display: none; }
+.app-shell[data-mode="live"] .live-guides { display: none; }
+.is-live-source .fixed-live-edge-map { z-index: 1; pointer-events: none; }
+.is-live-source .edge-group .edge-line {
+  stroke: rgba(78, 96, 112, .54);
+  stroke-width: 1.45;
+  opacity: .72;
+}
+.is-live-source .signal-trail-halo { stroke-width: 4.5; opacity: .14; }
+.is-live-source .signal-trail-core { stroke-width: 1.8; opacity: .96; }
+
+/* The persistent Team rail is a compact read-only control surface. A selected
+   component drawer deliberately occupies the same right-side spatial slot. */
+.operations-team-rail {
+  position: absolute;
+  z-index: 15;
+  top: 14px;
+  right: 14px;
+  bottom: 14px;
+  width: 222px;
+  padding: 14px;
+  overflow: auto;
+  border: 0;
+  border-radius: var(--architecture-system-radius, 20px);
+  background: rgba(211, 220, 226, .64);
+  box-shadow: none;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", sans-serif;
+}
+.operations-team-rail-heading { display: grid; gap: 2px; margin: 2px 2px 12px; }
+.operations-team-rail-heading span { color: var(--blue); font-size: 11px; font-weight: 600; }
+.operations-team-rail-heading strong { color: #111827; font-size: 17px; font-weight: 600; letter-spacing: -.015em; }
+.operations-team-rail-list { display: grid; gap: 8px; }
+.operations-team-tile {
+  --team-status: var(--faint);
+  position: relative;
+  min-height: 52px;
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+  padding: 9px 24px 9px 10px;
+  border: 0;
+  border-radius: var(--architecture-node-radius, 16px);
+  color: #111827;
+  background: rgba(255, 255, 255, .88);
+  box-shadow: none;
+  cursor: pointer;
+  text-align: left;
+  transition: transform .14s ease, background-color .14s ease;
+}
+.operations-team-tile:hover { transform: translateY(-1px); background: rgba(255, 255, 255, .98); }
+.operations-team-tile .node-icon {
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 12px;
+  color: #111827;
+  background: rgba(211, 220, 226, .56);
+  box-shadow: none;
+}
+.operations-team-tile strong { overflow: hidden; font-size: 13px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.operations-team-tile .node-status-dot { top: 9px; right: 9px; background: var(--team-status); }
+.operations-team-tile.is-observed .node-status-dot,
+.operations-team-tile.is-recording .node-status-dot,
+.operations-team-tile.is-active .node-status-dot,
+.operations-team-tile.is-accepted .node-status-dot { --team-status: var(--green); }
+.operations-team-tile.is-rejected .node-status-dot { --team-status: var(--red); }
+.operations-team-tile.is-pending .node-status-dot { --team-status: var(--amber); }
+.operations-team-tile:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+
+.app-shell[data-mode="live"] .context-drawer { z-index: 30; }
+.team-rail-detail { display: grid; gap: 14px; }
+.team-rail-detail > header { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; align-items: center; gap: 10px; }
+.team-rail-detail > header .node-icon { width: 34px; height: 34px; border-radius: 12px; color: #111827; background: rgba(211, 220, 226, .56); }
+.team-rail-detail > header div { display: grid; gap: 2px; }
+.team-rail-detail > header strong { color: #111827; font-size: 16px; font-weight: 600; }
+.team-rail-detail > header div span { color: #64748b; font-size: 12px; }
+.team-rail-detail > header .node-status-dot { position: static; width: 7px; height: 7px; }
+.team-rail-detail dl { display: grid; gap: 10px; margin: 0; }
+.team-rail-detail dl div { display: grid; gap: 3px; padding: 10px; border: 0; border-radius: var(--architecture-control-radius, 12px); background: rgba(211, 220, 226, .36); }
+.team-rail-detail dt { color: #64748b; font-size: 11px; font-weight: 500; }
+.team-rail-detail dd { margin: 0; color: #111827; font-size: 12px; font-weight: 500; line-height: 1.45; overflow-wrap: anywhere; }
+.team-rail-note { margin: 0; color: #64748b; font-size: 11px; line-height: 1.45; }
+
+@media (max-width: 1320px) {
+  .operations-team-rail { width: 208px; }
+}
+@media (prefers-reduced-transparency: reduce) {
+  .operations-team-rail { background: #d3dce2; }
+  .operations-team-tile { background: #ffffff; }
+}

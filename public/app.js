@@ -27,7 +27,7 @@ import {
   projectAgentCollaborators,
   topologyIntegrity
 } from "./twin-state.mjs";
-import { measuredLiveRoute, roundedMeasuredRoutePath } from "./live-routing.mjs";
+import { LIVE_ROUTE_WORLD, plannedLiveRoutes } from "./live-routing.mjs";
 
 const els = Object.fromEntries([...document.querySelectorAll("[id]")].map((element) => [element.id, element]));
 const IMPACT_SEQUENCE = { checkout: 0, payment: 1, kafka: 2, accounting: 3, fraud: 4 };
@@ -116,11 +116,6 @@ let liveSignalTimers = [];
 let liveSignalIndex = 0;
 let liveSignalFrame = null;
 let liveSignalGeneration = 0;
-let liveRouteFrame = null;
-let liveRouteTimer = null;
-let liveRouteResizeHandler = null;
-let liveRouteContext = null;
-let liveRouteAttempts = 0;
 let componentCatalogSource = null;
 let componentCatalogCache = new Map();
 let selectedCollaboratorId = "commander";
@@ -162,6 +157,7 @@ els["compare-even"].addEventListener("click", () => setComparePercent(50));
 els["compare-verified"].addEventListener("click", () => setComparePercent(30));
 els["compare-control"].addEventListener("click", handleCompareFocus);
 els["compare-review-rail"].addEventListener("click", handleCompareReview);
+els["operations-team-rail"].addEventListener("click", handleOperationsTeamRail);
 els["theme-toggle"].addEventListener("click", toggleTheme);
 els["zoom-out"].addEventListener("click", () => setLiveZoom(liveView.scale - LIVE_WORLD.step));
 els["zoom-in"].addEventListener("click", () => setLiveZoom(liveView.scale + LIVE_WORLD.step));
@@ -212,6 +208,7 @@ function render() {
   renderApproval();
   renderDevelopmentControl();
   renderDrawer();
+  renderOperationsTeamRail();
   renderManager();
   updateControls();
   animateCanvasTransition(previousPositions);
@@ -333,10 +330,6 @@ function setMetric(name, value, note) {
 
 function renderCanvas() {
   stopLiveSignalLoop();
-  cancelMeasuredLiveRouteRender();
-  disconnectMeasuredLiveRouteObserver();
-  liveRouteContext = null;
-  liveRouteAttempts = 0;
   els["twin-canvas"].classList.toggle("is-compare-mode", mode === "compare");
   els["twin-canvas"].classList.toggle("is-source-topology", mode === "architecture" || mode === "live");
   els["twin-canvas"].classList.toggle("is-architecture-source", mode === "architecture");
@@ -452,12 +445,18 @@ function renderSourceCanvas(layout) {
   const unlinkedPositionedNodes = positioned.filter((node) => node.layer === LIVE_UNLINKED_LAYER.id).length;
   const guideLayers = [...LIVE_LAYERS, ...(unlinkedPositionedNodes ? [LIVE_UNLINKED_LAYER] : [])];
   const guides = `<div class="live-guides" aria-hidden="true">${guideLayers.map((layer, index) => `<span class="live-guide-${index}">${escapeHtml(layer.label)}</span>`).join("")}</div>${topology.invalid_edges.length ? `<div class="topology-warning"><i class="ph ph-warning" aria-hidden="true"></i>${topology.invalid_edges.length} invalid dependency endpoint${topology.invalid_edges.length === 1 ? "" : "s"} omitted</div>` : ""}`;
-  liveRouteContext = Object.freeze({
-    edges: Object.freeze(runtimeEdges.map((edge, index) => Object.freeze({ ...edge, order: signalOrder.get(edge.id) ?? index, tone: liveSignalTone(edge, nodeStates) }))),
-    nodeLabels: new Map(positioned.map((node) => [node.id, node.label]))
-  });
-  els["canvas-layers"].innerHTML = `${guides}<div class="twin-layer layer-current"><svg class="edge-map measured-live-edge-map" aria-hidden="true"></svg>${nodes}</div>`;
-  queueMeasuredLiveRouteRender({ delay: renderedMode !== "live" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches !== true ? 540 : 0 });
+  const plannedEdges = runtimeEdges.map((edge, index) => ({ ...edge, order: signalOrder.get(edge.id) ?? index, tone: liveSignalTone(edge, nodeStates) }));
+  let routes;
+  try {
+    routes = plannedLiveRoutes(positioned, plannedEdges);
+  } catch {
+    els["canvas-layers"].innerHTML = `<div class="source-empty"><i class="ph ph-path" aria-hidden="true"></i><strong>Live dependency geometry unavailable</strong><span>The backend projection is present, but its fixed canonical route plan could not be resolved.</span></div>`;
+    els["twin-canvas"].setAttribute("aria-label", "Live dependency geometry unavailable.");
+    return;
+  }
+  const liveEdges = routes.map(({ edge, path }) => fixedLiveEdgeMarkup(edge, path, positions.get(edge.from)?.label || edge.from, positions.get(edge.to)?.label || edge.to)).join("");
+  els["canvas-layers"].innerHTML = `${guides}<div class="twin-layer layer-current"><svg class="edge-map fixed-live-edge-map" viewBox="0 0 ${LIVE_ROUTE_WORLD.width} ${LIVE_ROUTE_WORLD.height}" preserveAspectRatio="none" aria-hidden="true">${liveEdges}</svg>${nodes}</div>`;
+  startLiveSignalLoop();
   els["twin-canvas"].dataset.invalidEdges = String(topology.invalid_edges.length);
   els["twin-canvas"].dataset.unlinkedNodes = String(topology.unlinked_node_ids.length);
   els["twin-canvas"].dataset.observedEdges = String(topology.edges.length);
@@ -509,114 +508,9 @@ function liveSignalTone(edge, nodeStates) {
   return "observed";
 }
 
-function cancelMeasuredLiveRouteRender() {
-  if (liveRouteTimer !== null) clearTimeout(liveRouteTimer);
-  if (liveRouteFrame !== null) cancelAnimationFrame(liveRouteFrame);
-  liveRouteTimer = null;
-  liveRouteFrame = null;
-}
-
-function disconnectMeasuredLiveRouteObserver() {
-  if (liveRouteResizeHandler) window.removeEventListener("resize", liveRouteResizeHandler);
-  liveRouteResizeHandler = null;
-}
-
-function queueMeasuredLiveRouteRender({ delay = 0 } = {}) {
-  cancelMeasuredLiveRouteRender();
-  const frame = () => {
-    liveRouteFrame = requestAnimationFrame(() => {
-      liveRouteFrame = requestAnimationFrame(() => {
-        liveRouteFrame = null;
-        if (mode === "live") renderMeasuredLiveRoutes();
-      });
-    });
-  };
-  if (delay > 0) {
-    liveRouteTimer = setTimeout(() => {
-      liveRouteTimer = null;
-      frame();
-    }, delay);
-    return;
-  }
-  frame();
-}
-
-function liveNodeBox(element, layerRect, scaleX, scaleY) {
-  const rect = element.getBoundingClientRect();
-  return {
-    id: element.dataset.nodeId,
-    left: (rect.left - layerRect.left) / scaleX,
-    right: (rect.right - layerRect.left) / scaleX,
-    top: (rect.top - layerRect.top) / scaleY,
-    bottom: (rect.bottom - layerRect.top) / scaleY
-  };
-}
-
-function measuredLiveEdgeMarkup(edge, path, fromLabel, toLabel) {
+function fixedLiveEdgeMarkup(edge, path, fromLabel, toLabel) {
   const label = `${edge.label} from ${fromLabel} to ${toLabel}`;
-  return `<g class="edge-group path-runtime signal-${escapeHtml(edge.tone)}" data-live-edge-id="${escapeHtml(edge.id)}" data-live-route="measured" data-live-projectile="single" data-signal-from="${escapeHtml(edge.from)}" data-signal-to="${escapeHtml(edge.to)}" data-signal-order="${edge.order}"><path class="edge-line is-${escapeHtml(edge.tone)}" d="${path}"/><path class="signal-trail signal-trail-halo" aria-hidden="true"/><path class="signal-trail signal-trail-core" aria-hidden="true"/><path class="edge-hit" d="${path}" role="button" tabindex="0" aria-label="${escapeHtml(label)}" data-edge-id="${escapeHtml(edge.id)}" data-edge-from="${escapeHtml(edge.from)}" data-edge-to="${escapeHtml(edge.to)}"/></g>`;
-}
-
-function observeMeasuredLiveRouteLayout() {
-  disconnectMeasuredLiveRouteObserver();
-  liveRouteResizeHandler = () => queueMeasuredLiveRouteRender();
-  window.addEventListener("resize", liveRouteResizeHandler, { passive: true });
-}
-
-function renderMeasuredLiveRoutes() {
-  const context = liveRouteContext;
-  const layer = els["canvas-layers"].querySelector(".twin-layer.layer-current");
-  const map = layer?.querySelector(".measured-live-edge-map");
-  if (!context || !layer || !map || !context.edges.length) return;
-  const layerRect = layer.getBoundingClientRect();
-  const width = layer.clientWidth;
-  const height = layer.clientHeight;
-  if (!width || !height || !layerRect.width || !layerRect.height) return;
-  const scaleX = layerRect.width / width;
-  const scaleY = layerRect.height / height;
-  const boxes = [...layer.querySelectorAll(".source-node[data-node-id]")]
-    .map((node) => liveNodeBox(node, layerRect, scaleX, scaleY))
-    .filter((box) => box.id && box.right > box.left && box.bottom > box.top);
-  const byId = new Map(boxes.map((box) => [box.id, box]));
-  if (byId.size === 0) return;
-  const routes = [];
-  for (const edge of context.edges) {
-    const from = byId.get(edge.from);
-    const to = byId.get(edge.to);
-    if (!from || !to) continue;
-    try {
-      const route = measuredLiveRoute({ from, to, obstacles: boxes, order: edge.order });
-      routes.push(measuredLiveEdgeMarkup(edge, roundedMeasuredRoutePath(route.points), context.nodeLabels.get(edge.from) || edge.from, context.nodeLabels.get(edge.to) || edge.to));
-    } catch {
-      if (liveRouteAttempts < 3) {
-        liveRouteAttempts += 1;
-        map.dataset.routeState = "measuring";
-        queueMeasuredLiveRouteRender({ delay: 180 });
-        return;
-      }
-      map.dataset.routeState = "unavailable";
-      return;
-    }
-  }
-  if (routes.length !== context.edges.length) {
-    if (liveRouteAttempts < 3) {
-      liveRouteAttempts += 1;
-      map.dataset.routeState = "measuring";
-      queueMeasuredLiveRouteRender({ delay: 180 });
-      return;
-    }
-    map.dataset.routeState = "unavailable";
-    return;
-  }
-  map.removeAttribute("aria-hidden");
-  map.setAttribute("viewBox", `0 0 ${width} ${height}`);
-  map.setAttribute("preserveAspectRatio", "none");
-  map.dataset.routeEngine = "measured-card-boundaries";
-  map.dataset.routeState = "ready";
-  map.innerHTML = routes.join("");
-  observeMeasuredLiveRouteLayout();
-  stopLiveSignalLoop();
-  startLiveSignalLoop();
+  return `<g class="edge-group path-runtime signal-${escapeHtml(edge.tone)}" data-live-edge-id="${escapeHtml(edge.id)}" data-live-route="fixed-world" data-live-projectile="single" data-signal-from="${escapeHtml(edge.from)}" data-signal-to="${escapeHtml(edge.to)}" data-signal-order="${edge.order}"><path class="edge-line is-${escapeHtml(edge.tone)}" d="${path}"/><path class="signal-trail signal-trail-halo" aria-hidden="true"/><path class="signal-trail signal-trail-core" aria-hidden="true"/><path class="edge-hit" d="${path}" role="button" tabindex="0" aria-label="${escapeHtml(label)}" data-edge-id="${escapeHtml(edge.id)}" data-edge-from="${escapeHtml(edge.from)}" data-edge-to="${escapeHtml(edge.to)}"/></g>`;
 }
 
 function pathTrail(path, progress, fraction = .075) {
@@ -1291,7 +1185,36 @@ function renderDrawer() {
   els["drawer-content"].innerHTML = drawerContent(activeTab);
 }
 
+function controlSystemNodes() {
+  const preferred = mode === "live" ? liveTopologyView()?.control_system : architectureView()?.control_system;
+  const fallback = mode === "live" ? architectureView()?.control_system : liveTopologyView()?.control_system;
+  const nodes = preferred?.nodes || fallback?.nodes || [];
+  return nodes.length === 5 ? nodes : [];
+}
+
+function renderOperationsTeamRail() {
+  const rail = els["operations-team-rail"];
+  const controls = controlSystemNodes();
+  const selectedControl = selected?.type === "control";
+  rail.hidden = mode === "architecture" || !controls.length || selectedControl;
+  if (rail.hidden) {
+    rail.innerHTML = "";
+    return;
+  }
+  rail.innerHTML = `<div class="operations-team-rail-heading"><span>FlowPulse</span><strong>Team</strong></div>
+    <div class="operations-team-rail-list">${controls.map((node) => `<button class="operations-team-tile is-${escapeHtml(node.status || "idle")}" type="button" data-rail-control-id="${escapeHtml(node.id)}" aria-label="Show ${escapeHtml(node.label)} safe projected details. ${escapeHtml(statusLabel(node.status || "idle"))}">
+      <span class="node-icon" aria-hidden="true"><i class="ph ph-${iconForLive(node)}"></i></span><span class="node-copy"><strong>${escapeHtml(node.label)}</strong></span><span class="node-status-dot" aria-hidden="true"></span>
+    </button>`).join("")}</div>`;
+}
+
+function handleOperationsTeamRail(event) {
+  const tile = event.target.closest("[data-rail-control-id]");
+  if (!tile) return;
+  openDrawer({ type: "control", id: tile.dataset.railControlId }, "overview");
+}
+
 function drawerTabsForSelection(focus) {
+  if (focus?.type === "control") return [["overview", "Overview"]];
   if (focus?.type === "node" && mode === "architecture" && architectureTopology()?.nodes.some((node) => node.id === focus.id)) {
     const source = sourceComponentContext(focus.id);
     return source ? sourceDrawerTabs(source) : [["overview", "Overview"]];
@@ -1323,6 +1246,10 @@ function sourceDrawerTabs(context) {
 }
 
 function selectionMeta(focus) {
+  if (focus.type === "control") {
+    const context = controlDetailContext(focus.id);
+    return { kind: "FlowPulse capability", title: context?.node.label || focus.id, subtitle: context?.node.detail?.summary || "Safe control detail unavailable" };
+  }
   if (focus.type === "node") {
     const context = sourceComponentContext(focus.id);
     if (context) return { kind: kindLabel(context.node.kind), title: context.node.label, subtitle: `${context.profile.capability} · ${context.profile.runtimeIdentity}` };
@@ -1343,6 +1270,7 @@ function selectionMeta(focus) {
 }
 
 function drawerTone(focus) {
+  if (focus?.type === "control") return "agent";
   if (focus?.type === "node") {
     const source = sourceComponentContext(focus.id);
     if (source) {
@@ -1364,6 +1292,10 @@ function drawerTone(focus) {
 }
 
 function drawerContent(tab) {
+  if (selected?.type === "control") {
+    const context = controlDetailContext(selected.id);
+    return context ? controlDrawerContent(context) : emptyDetail("Safe control detail is unavailable from the current backend projection.");
+  }
   const component = selected?.type === "node" ? sourceComponentContext(selected.id) : null;
   if (selected?.type === "node" && !component && agentControl().graph.nodes.some((node) => node.id === selected.id)) return renderAgentOperationDetail(selected.id);
   if (selected?.type === "agent-edge") return renderAgentEdgeDetail(selected.id);
@@ -1626,14 +1558,22 @@ function handleDrawerEntityFocus(event) {
 
 function openDrawer(focus, tab = "evidence") {
   managerOpen = false;
+  if (selected?.type === focus?.type && selected?.id === focus?.id) {
+    selected = null;
+    renderDrawer();
+    renderOperationsTeamRail();
+    return;
+  }
   selected = focus;
   activeTab = tab;
   renderDrawer();
+  renderOperationsTeamRail();
 }
 
 function closeDrawer() {
   selected = null;
   renderDrawer();
+  renderOperationsTeamRail();
   els["details-button"].focus();
 }
 
@@ -2200,7 +2140,7 @@ function architectureDetailContext(id) {
 }
 
 function controlDetailContext(id) {
-  const view = architectureView();
+  const view = mode === "live" ? liveTopologyView() || architectureView() : architectureView() || liveTopologyView();
   const node = view?.control_system?.nodes?.find((item) => item?.id === id);
   if (!node?.detail) return null;
   return {
@@ -2210,6 +2150,27 @@ function controlDetailContext(id) {
     incoming: [],
     outgoing: []
   };
+}
+
+function controlDrawerContent(context) {
+  const { node, source } = context;
+  const detail = node.detail;
+  const rows = [
+    ["What it does", detail.summary],
+    ["Inputs", detail.inputs.join(" · ")],
+    ["Outputs", detail.outputs.join(" · ")],
+    ["Authority boundary", detail.authority],
+    ["Integration provenance", detail.provenance_refs.join(" · ")],
+    detail.activity.summary ? ["Current activity", detail.activity.summary] : null,
+    detail.activity.stage ? ["Workflow stage", detail.activity.stage] : null,
+    Number.isInteger(detail.activity.last_sequence) ? ["Last recorded event", `Ledger sequence ${detail.activity.last_sequence}`] : null,
+    detail.activity.last_recorded_at ? ["Recorded at", formatTime(detail.activity.last_recorded_at)] : null,
+    detail.activity.evidence_refs.length ? ["Evidence references", detail.activity.evidence_refs.join(" · ")] : null,
+    detail.activity.gate !== "unavailable" ? ["Gate result", detail.activity.gate] : null,
+    detail.activity.source_health !== "unavailable" ? ["Source status", detail.activity.source_health] : null,
+    source.label ? ["Projection source", source.label] : null
+  ].filter(Boolean);
+  return `<section class="team-rail-detail"><header><span class="node-icon" aria-hidden="true"><i class="ph ph-${iconForLive(node)}"></i></span><div><strong>${escapeHtml(node.label)}</strong><span>${escapeHtml(statusLabel(node.status || "idle"))}</span></div><span class="node-status-dot is-${escapeHtml(node.status || "idle")}" aria-hidden="true"></span></header><dl>${rows.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("")}</dl><p class="team-rail-note">This is a read-only server projection. Agent conversation and consequential actions remain unavailable here.</p></section>`;
 }
 
 function architectureComponentDetailMarkup(context) {

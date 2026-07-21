@@ -2,20 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readFile } from "node:fs/promises";
 
-import { measuredLiveRoute, roundedMeasuredRoutePath } from "../public/live-routing.mjs";
+import { LIVE_ROUTE_WORLD, fixedLiveRouteBoxes, plannedLiveRoutes, roundedMeasuredRoutePath } from "../public/live-routing.mjs";
 import { livePositions } from "../public/twin-state.mjs";
 
 const manifest = JSON.parse(await readFile(new URL("../data/topology/otel-demo-system-v1.json", import.meta.url), "utf8"));
-const WORLD = { width: 1480, height: 680, nodeWidth: 180, nodeHeight: 60 };
+const WORLD = LIVE_ROUTE_WORLD;
 
 function boxesFor(nodes) {
-  return livePositions(nodes).map((node) => ({
-    id: node.id,
-    left: node.x / 100 * WORLD.width - WORLD.nodeWidth / 2,
-    right: node.x / 100 * WORLD.width + WORLD.nodeWidth / 2,
-    top: node.y / 100 * WORLD.height - WORLD.nodeHeight / 2,
-    bottom: node.y / 100 * WORLD.height + WORLD.nodeHeight / 2
-  }));
+  return fixedLiveRouteBoxes(livePositions(nodes));
 }
 
 function onBoundary(point, box) {
@@ -30,10 +24,10 @@ function intersectsOpenRect(a, b, rect) {
   return false;
 }
 
-test("measured Live routes start and end on actual component boundaries without crossing other components", () => {
+test("fixed Live routes start and end on actual component boundaries without crossing other components", () => {
   const boxes = boxesFor(manifest.nodes);
   const byId = new Map(boxes.map((box) => [box.id, box]));
-  const routes = manifest.edges.map((edge, order) => ({ edge, route: measuredLiveRoute({ from: byId.get(edge.from), to: byId.get(edge.to), obstacles: boxes, order }) }));
+  const routes = plannedLiveRoutes(livePositions(manifest.nodes), manifest.edges);
 
   assert.equal(routes.length, 22);
   for (const { edge, route } of routes) {
@@ -48,16 +42,14 @@ test("measured Live routes start and end on actual component boundaries without 
   }
 });
 
-test("measured Live route selection and rounded SVG output remain deterministic", () => {
-  const boxes = boxesFor(manifest.nodes);
-  const byId = new Map(boxes.map((box) => [box.id, box]));
-  const edge = manifest.edges.find((candidate) => candidate.id === "frontend->shipping");
-  const first = measuredLiveRoute({ from: byId.get(edge.from), to: byId.get(edge.to), obstacles: boxes, order: 3 });
-  const second = measuredLiveRoute({ from: byId.get(edge.from), to: byId.get(edge.to), obstacles: [...boxes].reverse(), order: 3 });
-  const path = roundedMeasuredRoutePath(first.points);
+test("fixed Live route selection and rounded SVG output remain deterministic", () => {
+  const positioned = livePositions(manifest.nodes);
+  const first = plannedLiveRoutes(positioned, manifest.edges);
+  const second = plannedLiveRoutes(positioned, [...manifest.edges].reverse());
+  const path = roundedMeasuredRoutePath(first.find(({ edge }) => edge.id === "frontend->shipping").route.points);
 
   assert.deepEqual(second, first);
   assert.match(path, /^M /);
   assert.match(path, /Q /);
-  assert.equal(first.points.length >= 4, true);
+  assert.equal(first.every(({ route }) => route.points.length >= 2), true);
 });

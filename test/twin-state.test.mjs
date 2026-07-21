@@ -506,17 +506,18 @@ test("Live keeps shared node identities while rendering every canonical runtime 
   assert.equal(runtime.edges.length, 22);
   assert.equal(runtime.edges.every((edge) => runtime.nodes.some((node) => node.id === edge.from) && runtime.nodes.some((node) => node.id === edge.to)), true);
   assert.match(renderSourceCanvasSource, /const runtimeEdges = topology\.edges/);
-  assert.match(renderSourceCanvasSource, /measured-live-edge-map/);
-  assert.match(renderSourceCanvasSource, /queueMeasuredLiveRouteRender/);
+  assert.match(renderSourceCanvasSource, /fixed-live-edge-map/);
+  assert.match(renderSourceCanvasSource, /plannedLiveRoutes\(positioned, plannedEdges\)/);
   assert.doesNotMatch(renderSourceCanvasSource, /class="pulse-flow is-\$\{edgeState\}"/);
   assert.doesNotMatch(renderSourceCanvasSource, /liveEdgePath/);
   assert.doesNotMatch(renderSourceCanvasSource, /renderLiveChange\(/);
-  assert.match(appJs, /function renderMeasuredLiveRoutes\(/);
-  assert.match(appJs, /measuredLiveRoute\(\{ from, to, obstacles: boxes, order: edge\.order \}\)/);
-  assert.match(appJs, /data-live-route="measured"/);
+  assert.doesNotMatch(appJs, /function renderMeasuredLiveRoutes\(/);
+  const fixedRouteRendererSource = appJs.slice(appJs.indexOf("function fixedLiveEdgeMarkup"), appJs.indexOf("function pathTrail"));
+  assert.doesNotMatch(fixedRouteRendererSource, /getBoundingClientRect\(\)/);
+  assert.match(appJs, /data-live-route="fixed-world"/);
   assert.match(appJs, /class="signal-trail signal-trail-core"/);
   assert.match(renderSourceCanvasSource, /\$\{runtimeEdges\.length\} projected dependency paths are rendered/);
-  assert.doesNotMatch(appJs, /live-control-system|data-live-control|data-control-scope/);
+  assert.match(indexHtml, /id="operations-team-rail"/);
 });
 
 test("Live keeps the shared header fixed, hides metric noise, and uses a bounded 2D detail surface", () => {
@@ -541,6 +542,18 @@ test("Live keeps the shared header fixed, hides metric noise, and uses a bounded
   assert.match(assessmentSource, /agentControl\(\)\.report/);
   assert.match(assessmentSource, /Run-level agent assessment/);
   assert.doesNotMatch(assessmentSource, /payload|prompt|token|secret|raw_log/i);
+});
+
+test("Live reuses the canonical navigation and exposes only safe projected Team details", () => {
+  assert.match(indexHtml, /id="operations-team-rail"[^>]+aria-label="FlowPulse Team"/);
+  assert.match(appJs, /function renderOperationsTeamRail\(\)/);
+  assert.match(appJs, /const controls = controlSystemNodes\(\)/);
+  assert.match(appJs, /rail\.hidden = mode === "architecture" \|\| !controls\.length \|\| selectedControl/);
+  assert.match(appJs, /function controlDrawerContent\(context\)/);
+  assert.match(appJs, /Agent conversation and consequential actions remain unavailable here\./);
+  assert.doesNotMatch(appJs.slice(appJs.indexOf("function controlDrawerContent"), appJs.indexOf("function architectureComponentDetailMarkup")), /payload|prompt|token|secret|raw_log/i);
+  assert.match(stylesCss, /\.app-shell\[data-mode\] \.mode-switch\s*\{[\s\S]+?border-radius: 12px;/);
+  assert.match(stylesCss, /\.app-shell\[data-mode="live"\] \.canvas-toolbar \{ display: none; \}/);
 });
 
 test("B1 recovery console keeps six collaborators visible while owner approval stays separate", () => {
@@ -826,8 +839,8 @@ test("Live pulse ordering remains deterministic across the complete backend runt
   const renderSourceCanvasSource = appJs.slice(appJs.indexOf("function renderSourceCanvas"), appJs.indexOf("function architectureLayerStatus"));
   assert.match(renderSourceCanvasSource, /const pulseSlots = livePulseSlots\(\{ \.\.\.topology, edges: runtimeEdges \}\);/);
   assert.match(renderSourceCanvasSource, /orderedSignalEdges\(runtimeEdges, pulseSlots\)/);
-  assert.match(renderSourceCanvasSource, /measured-live-edge-map/);
-  assert.match(renderSourceCanvasSource, /queueMeasuredLiveRouteRender/);
+  assert.match(renderSourceCanvasSource, /fixed-live-edge-map/);
+  assert.match(renderSourceCanvasSource, /plannedLiveRoutes\(positioned, plannedEdges\)/);
   assert.doesNotMatch(renderSourceCanvasSource, /class="pulse-flow/);
   assert.match(appJs, /classList\.toggle\("is-live-source", mode === "live"\)/);
   assert.match(appJs, /function startLiveSignalLoop\(/);
