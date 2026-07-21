@@ -272,7 +272,7 @@ test("four role prompts preserve the requested role, avoid read-question gates, 
     ["observer", "Report captured source freshness, current signals, and anomalies for checkout."],
     ["orchestrator", "Explain the architecture workflow and owner gate for checkout; do not claim approval."],
     ["investigator", "Investigate the checkout root cause using bounded evidence."],
-    ["evaluator", "Evaluate the causal evidence and state whether human approval is granted."]
+    ["evaluator", "Adversarially evaluate the hypothesis that Kafka is the initiating cause of the current checkout/payment incident. Use bounded evidence, cite exact IDs, and state whether human approval is granted or not."]
   ];
 
   for (const [requested_agent, message] of prompts) {

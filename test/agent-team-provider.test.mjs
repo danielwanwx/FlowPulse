@@ -125,9 +125,19 @@ test("recorded, Responses, and Codex adapters share the same validated output en
 test("the strict Codex and Responses schema requires a nullable handoff property", () => {
   const schema = agentTeamResponseSchema();
   assert.deepEqual(schema.required, ["answer", "recommended_handoff"]);
+  assert.equal(schema.properties.answer.maxLength, 280);
   assert.deepEqual(schema.properties.recommended_handoff.type, ["object", "null"]);
   assert.deepEqual(validateProviderResponse({ answer: "fine", recommended_handoff: null }), { answer: "fine", recommended_handoff: null });
   assert.throws(() => validateProviderResponse({ answer: "fine" }), /provider_output_schema_invalid/);
+});
+
+test("a bounded evaluator verdict may cite evidence and state that approval is not granted", () => {
+  const answer = "Evaluator verdict: Kafka is not established as the initiating cause; compare [ev-timing-error-before-lag] with [ev-trace-payment-refused]. Human approval is not granted.";
+  assert.deepEqual(validateProviderResponse({ answer, recommended_handoff: null }), { answer, recommended_handoff: null });
+  const unicodeAnswer = "🧪".repeat(280);
+  assert.equal(Buffer.byteLength(unicodeAnswer, "utf8") <= 1_200, true);
+  assert.deepEqual(validateProviderResponse({ answer: unicodeAnswer, recommended_handoff: null }), { answer: unicodeAnswer, recommended_handoff: null });
+  assert.throws(() => validateProviderResponse({ answer: "x".repeat(281), recommended_handoff: null }), /provider_output_schema_invalid/);
 });
 
 test("real local Codex structured response succeeds when explicitly enabled", { skip: process.env.FLOWPULSE_AGENT_REAL_CODEX_TEST === "1" ? false : "set FLOWPULSE_AGENT_REAL_CODEX_TEST=1" }, async () => {
