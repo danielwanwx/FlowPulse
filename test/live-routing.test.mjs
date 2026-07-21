@@ -2,14 +2,18 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readFile } from "node:fs/promises";
 
-import { LIVE_ROUTE_WORLD, fixedLiveRouteBoxes, plannedLiveRoutes, roundedMeasuredRoutePath } from "../public/live-routing.mjs";
-import { livePositions } from "../public/twin-state.mjs";
+import { liveEdgePath, liveEdgeRoute, livePositions } from "../public/twin-state.mjs";
 
 const manifest = JSON.parse(await readFile(new URL("../data/topology/otel-demo-system-v1.json", import.meta.url), "utf8"));
-const WORLD = LIVE_ROUTE_WORLD;
+const WORLD = Object.freeze({ width: 1480, height: 680, nodeWidth: 180, nodeHeight: 60 });
 
-function boxesFor(nodes) {
-  return fixedLiveRouteBoxes(livePositions(nodes));
+function rectFor(node) {
+  return {
+    left: node.x / 100 * WORLD.width - WORLD.nodeWidth / 2,
+    right: node.x / 100 * WORLD.width + WORLD.nodeWidth / 2,
+    top: node.y / 100 * WORLD.height - WORLD.nodeHeight / 2,
+    bottom: node.y / 100 * WORLD.height + WORLD.nodeHeight / 2
+  };
 }
 
 function onBoundary(point, box) {
@@ -19,37 +23,57 @@ function onBoundary(point, box) {
 }
 
 function intersectsOpenRect(a, b, rect) {
-  if (a.x === b.x) return a.x > rect.left && a.x < rect.right && Math.max(Math.min(a.y, b.y), rect.top) < Math.min(Math.max(a.y, b.y), rect.bottom);
-  if (a.y === b.y) return a.y > rect.top && a.y < rect.bottom && Math.max(Math.min(a.x, b.x), rect.left) < Math.min(Math.max(a.x, b.x), rect.right);
+  if (Math.abs(a.x - b.x) < .001) return a.x > rect.left && a.x < rect.right && Math.max(Math.min(a.y, b.y), rect.top) < Math.min(Math.max(a.y, b.y), rect.bottom);
+  if (Math.abs(a.y - b.y) < .001) return a.y > rect.top && a.y < rect.bottom && Math.max(Math.min(a.x, b.x), rect.left) < Math.min(Math.max(a.x, b.x), rect.right);
   return false;
 }
 
-test("fixed Live routes start and end on actual component boundaries without crossing other components", () => {
-  const boxes = boxesFor(manifest.nodes);
-  const byId = new Map(boxes.map((box) => [box.id, box]));
-  const routes = plannedLiveRoutes(livePositions(manifest.nodes), manifest.edges);
+function routeFor(edge, index, positions) {
+  const byId = new Map(positions.map((node) => [node.id, node]));
+  const lane = index % 2 ? Math.ceil(index / 2) : -Math.ceil((index + 1) / 2);
+  return liveEdgeRoute(byId.get(edge.from), byId.get(edge.to), {
+    canvasWidth: WORLD.width,
+    canvasHeight: WORLD.height,
+    nodeWidth: WORLD.nodeWidth,
+    nodeHeight: WORLD.nodeHeight,
+    lane
+  });
+}
 
-  assert.equal(routes.length, 22);
-  for (const { edge, route } of routes) {
-    assert.equal(onBoundary(route.points[0], byId.get(edge.from)), true, `${edge.id} must leave the source boundary`);
-    assert.equal(onBoundary(route.points.at(-1), byId.get(edge.to)), true, `${edge.id} must enter the target boundary`);
-    for (const box of boxes) {
-      if ([edge.from, edge.to].includes(box.id)) continue;
-      for (let index = 1; index < route.points.length; index += 1) {
-        assert.equal(intersectsOpenRect(route.points[index - 1], route.points[index], box), false, `${edge.id} crosses ${box.id}`);
+test("authored Live routes start and end on the rendered component boundaries without crossing another component", () => {
+  const positions = livePositions(manifest.nodes);
+  const byId = new Map(positions.map((node) => [node.id, node]));
+
+  assert.equal(positions.length, 22);
+  assert.equal(manifest.edges.length, 22);
+  for (const [index, edge] of manifest.edges.entries()) {
+    const route = routeFor(edge, index, positions);
+    assert.equal(onBoundary(route[0], rectFor(byId.get(edge.from))), true, `${edge.id} must leave ${edge.from}`);
+    assert.equal(onBoundary(route.at(-1), rectFor(byId.get(edge.to))), true, `${edge.id} must enter ${edge.to}`);
+    for (const node of positions) {
+      if ([edge.from, edge.to].includes(node.id)) continue;
+      const rect = rectFor(node);
+      for (let point = 1; point < route.length; point += 1) {
+        assert.equal(intersectsOpenRect(route[point - 1], route[point], rect), false, `${edge.id} crosses ${node.id}`);
       }
     }
   }
 });
 
-test("fixed Live route selection and rounded SVG output remain deterministic", () => {
-  const positioned = livePositions(manifest.nodes);
-  const first = plannedLiveRoutes(positioned, manifest.edges);
-  const second = plannedLiveRoutes(positioned, [...manifest.edges].reverse());
-  const path = roundedMeasuredRoutePath(first.find(({ edge }) => edge.id === "frontend->shipping").route.points);
+test("authored Live paths are deterministic and use a direct curve only in an adjacent-column gutter", () => {
+  const positions = livePositions(manifest.nodes);
+  const first = manifest.edges.map((edge, index) => ({ id: edge.id, route: routeFor(edge, index, positions) }));
+  const second = manifest.edges.map((edge, index) => ({ id: edge.id, route: routeFor(edge, index, positions) }));
+  const frontendToCart = manifest.edges.find((edge) => edge.id === "frontend->cart");
+  const direct = liveEdgePath(positions.find((node) => node.id === frontendToCart.from), positions.find((node) => node.id === frontendToCart.to), {
+    canvasWidth: WORLD.width,
+    canvasHeight: WORLD.height,
+    nodeWidth: WORLD.nodeWidth,
+    nodeHeight: WORLD.nodeHeight,
+    lane: 1
+  });
 
   assert.deepEqual(second, first);
-  assert.match(path, /^M /);
-  assert.match(path, /Q /);
-  assert.equal(first.every(({ route }) => route.points.length >= 2), true);
+  assert.match(direct, /^M [^]+ C /);
+  assert.equal(first.some(({ route }) => route.length > 2), true);
 });

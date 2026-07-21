@@ -3069,64 +3069,25 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .is-live-source .signal-trail-halo { stroke-width: 4.5; opacity: .14; }
 .is-live-source .signal-trail-core { stroke-width: 1.8; opacity: .96; }
 
-/* The persistent Team rail is a compact read-only control surface. A selected
-   component drawer deliberately occupies the same right-side spatial slot. */
+/* The persistent Team rail mounts the exact Architecture Control System shell.
+   A selected component drawer deliberately occupies the same right-side slot. */
 .operations-team-rail {
   position: absolute;
   z-index: 15;
   top: 14px;
   right: 14px;
   bottom: 14px;
-  width: 222px;
-  padding: 14px;
-  overflow: auto;
+  width: 294px;
+  padding: 0;
+  overflow: hidden;
   border: 0;
-  border-radius: var(--architecture-system-radius, 20px);
-  background: rgba(211, 220, 226, .64);
+  border-radius: var(--architecture-system-radius);
+  background: transparent;
   box-shadow: none;
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", sans-serif;
 }
-.operations-team-rail-heading { display: grid; gap: 2px; margin: 2px 2px 12px; }
-.operations-team-rail-heading span { color: var(--blue); font-size: 11px; font-weight: 600; }
-.operations-team-rail-heading strong { color: #111827; font-size: 17px; font-weight: 600; letter-spacing: -.015em; }
-.operations-team-rail-list { display: grid; gap: 8px; }
-.operations-team-tile {
-  --team-status: var(--faint);
-  position: relative;
-  min-height: 52px;
-  display: grid;
-  grid-template-columns: 30px minmax(0, 1fr);
-  align-items: center;
-  gap: 9px;
-  padding: 9px 24px 9px 10px;
-  border: 0;
-  border-radius: var(--architecture-node-radius, 16px);
-  color: #111827;
-  background: rgba(255, 255, 255, .88);
-  box-shadow: none;
-  cursor: pointer;
-  text-align: left;
-  transition: transform .14s ease, background-color .14s ease;
-}
-.operations-team-tile:hover { transform: translateY(-1px); background: rgba(255, 255, 255, .98); }
-.operations-team-tile .node-icon {
-  width: 30px;
-  height: 30px;
-  border: 0;
-  border-radius: 12px;
-  color: #111827;
-  background: rgba(211, 220, 226, .56);
-  box-shadow: none;
-}
-.operations-team-tile strong { overflow: hidden; font-size: 13px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-.operations-team-tile .node-status-dot { top: 9px; right: 9px; background: var(--team-status); }
-.operations-team-tile.is-observed .node-status-dot,
-.operations-team-tile.is-recording .node-status-dot,
-.operations-team-tile.is-active .node-status-dot,
-.operations-team-tile.is-accepted .node-status-dot { --team-status: var(--green); }
-.operations-team-tile.is-rejected .node-status-dot { --team-status: var(--red); }
-.operations-team-tile.is-pending .node-status-dot { --team-status: var(--amber); }
-.operations-team-tile:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.operations-team-rail > .architecture-flowpulse-system { height: 100%; }
+.operations-team-rail .architecture-flowpulse-nodes { overflow: auto; overscroll-behavior: contain; }
 
 .app-shell[data-mode="live"] .context-drawer { z-index: 30; }
 .team-rail-detail { display: grid; gap: 14px; }
@@ -3143,9 +3104,5 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .team-rail-note { margin: 0; color: #64748b; font-size: 11px; line-height: 1.45; }
 
 @media (max-width: 1320px) {
-  .operations-team-rail { width: 208px; }
-}
-@media (prefers-reduced-transparency: reduce) {
-  .operations-team-rail { background: #d3dce2; }
-  .operations-team-tile { background: #ffffff; }
+  .operations-team-rail { width: 272px; }
 }

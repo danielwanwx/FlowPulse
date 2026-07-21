@@ -422,7 +422,7 @@ test("Stage C Live layout keeps the backend layer ordering with room for later p
   assert.deepEqual(coordinates(first), coordinates(second));
   assert.deepEqual([...new Set(first.map(({ layer }) => layer))], LIVE_LAYERS.map(({ id }) => id));
   assert.deepEqual(LIVE_LAYERS.map(({ ids }) => ids.length), [6, 9, 3, 4]);
-  assert.deepEqual([...new Set(first.map(({ x }) => x))], [13, 38, 63, 88]);
+  assert.deepEqual([...new Set(first.map(({ x }) => x))], [10, 30, 50, 70]);
   assert.ok(first.every(({ y }) => y >= 6.25 && y <= 93.75));
   assert.doesNotMatch(stylesCss, /\.architecture-guides/);
   assert.match(stylesCss, /\.live-guides span[^}]+top: 10px/s);
@@ -433,6 +433,8 @@ test("Stage C Live layout keeps the backend layer ordering with room for later p
   assert.match(appJs, /function containedLiveView/);
   assert.match(appJs, /\(rect\.width - inset \* 2\) \/ LIVE_WORLD\.width/);
   assert.match(appJs, /live-column-\$\{node\.layerIndex\} live-count-\$\{node\.layerSize\} live-index-\$\{node\.layerPosition\}/);
+  assert.doesNotMatch(appJs, /style="left:\$\{Number\(node\.x\)\.toFixed\(3\)/);
+  assert.match(stylesCss, /\.is-live-source \.live-column-0 \{ left: 10%; \}/);
   assert.match(stylesCss, /\.is-live-source \.live-count-9\.live-index-8 \{ top: 93\.75%; \}/);
 });
 
@@ -507,14 +509,15 @@ test("Live keeps shared node identities while rendering every canonical runtime 
   assert.equal(runtime.edges.every((edge) => runtime.nodes.some((node) => node.id === edge.from) && runtime.nodes.some((node) => node.id === edge.to)), true);
   assert.match(renderSourceCanvasSource, /const runtimeEdges = topology\.edges/);
   assert.match(renderSourceCanvasSource, /fixed-live-edge-map/);
-  assert.match(renderSourceCanvasSource, /plannedLiveRoutes\(positioned, plannedEdges\)/);
+  assert.match(renderSourceCanvasSource, /liveEdgePath\(positions\.get\(edge\.from\), positions\.get\(edge\.to\)/);
+  assert.doesNotMatch(renderSourceCanvasSource, /LIVE_ROUTE_WORLD/);
   assert.doesNotMatch(renderSourceCanvasSource, /class="pulse-flow is-\$\{edgeState\}"/);
-  assert.doesNotMatch(renderSourceCanvasSource, /liveEdgePath/);
+  assert.doesNotMatch(renderSourceCanvasSource, /plannedLiveRoutes/);
   assert.doesNotMatch(renderSourceCanvasSource, /renderLiveChange\(/);
   assert.doesNotMatch(appJs, /function renderMeasuredLiveRoutes\(/);
   const fixedRouteRendererSource = appJs.slice(appJs.indexOf("function fixedLiveEdgeMarkup"), appJs.indexOf("function pathTrail"));
   assert.doesNotMatch(fixedRouteRendererSource, /getBoundingClientRect\(\)/);
-  assert.match(appJs, /data-live-route="fixed-world"/);
+  assert.match(appJs, /data-live-route="canonical-authored"/);
   assert.match(appJs, /class="signal-trail signal-trail-core"/);
   assert.match(renderSourceCanvasSource, /\$\{runtimeEdges\.length\} projected dependency paths are rendered/);
   assert.match(indexHtml, /id="operations-team-rail"/);
@@ -548,7 +551,9 @@ test("Live reuses the canonical navigation and exposes only safe projected Team 
   assert.match(indexHtml, /id="operations-team-rail"[^>]+aria-label="FlowPulse Team"/);
   assert.match(appJs, /function renderOperationsTeamRail\(\)/);
   assert.match(appJs, /const controls = controlSystemNodes\(\)/);
-  assert.match(appJs, /rail\.hidden = mode === "architecture" \|\| !controls\.length \|\| selectedControl/);
+  assert.match(appJs, /rail\.hidden = mode === "architecture" \|\| !controls\.length \|\| Boolean\(selected\)/);
+  assert.match(appJs, /controlSystemTileMarkup\(node, \{ rail: true \}\)/);
+  assert.match(stylesCss, /\.operations-team-rail > \.architecture-flowpulse-system \{ height: 100%; \}/);
   assert.match(appJs, /function controlDrawerContent\(context\)/);
   assert.match(appJs, /Agent conversation and consequential actions remain unavailable here\./);
   assert.doesNotMatch(appJs.slice(appJs.indexOf("function controlDrawerContent"), appJs.indexOf("function architectureComponentDetailMarkup")), /payload|prompt|token|secret|raw_log/i);
@@ -717,11 +722,10 @@ test("live connector paths terminate at card boundaries for target viewport widt
     const route = liveEdgeRoute(from, to, { canvasWidth, canvasHeight: 520, nodeWidth: 144, nodeHeight: 58 });
     const { x: startX, y: startY } = route[0];
     const { x: endX, y: endY } = route.at(-1);
-    const halfCard = (144 / canvasWidth) * 500;
-    assert.ok(Math.abs(startX - (from.x * 10 + halfCard)) < 0.01);
-    assert.ok(Math.abs(endX - (to.x * 10 - halfCard)) < 0.01);
-    assert.equal(startY, from.y * 5.2);
-    assert.equal(endY, to.y * 5.2);
+    assert.ok(Math.abs(startX - (from.x / 100 * canvasWidth + 72)) < 0.01);
+    assert.ok(Math.abs(endX - (to.x / 100 * canvasWidth - 72)) < 0.01);
+    assert.equal(startY, from.y / 100 * 520);
+    assert.equal(endY, to.y / 100 * 520);
   }
 
   const crossLayer = liveEdgeRoute({ x: 31, y: 17 }, { x: 68, y: 61 }, {
@@ -731,11 +735,10 @@ test("live connector paths terminate at card boundaries for target viewport widt
     nodeHeight: 58,
     lane: 1
   });
-  const scaledHalfWidth = 144 * (1000 / 1440) / 2;
-  assert.ok(Math.abs(crossLayer[0].x - (310 + scaledHalfWidth)) < 0.01);
-  assert.ok(Math.abs(crossLayer.at(-1).x - (680 - scaledHalfWidth)) < 0.01);
-  assert.ok(crossLayer.some(({ y }) => y < 40 || y > 480));
-  assert.match(liveEdgePath(from, to), /^M .+ L .+ Q /);
+  assert.ok(Math.abs(crossLayer[0].x - (31 / 100 * 1440 + 72)) < 0.01);
+  assert.ok(Math.abs(crossLayer.at(-1).x - (68 / 100 * 1440 - 72)) < 0.01);
+  assert.ok(crossLayer.some(({ y }) => y < 10 || y > 600));
+  assert.match(liveEdgePath(from, to), /^M .+ C /);
 });
 
 test("reserved live routes avoid every non-endpoint card", () => {
@@ -753,13 +756,13 @@ test("reserved live routes avoid every non-endpoint card", () => {
   });
   const positions = livePositions(topology.nodes);
   const byId = new Map(positions.map((node) => [node.id, node]));
-  const halfWidth = 144 * (1000 / 1480) / 2;
-  const halfHeight = 58 * (520 / 680) / 2;
+  const halfWidth = 144 / 2;
+  const halfHeight = 58 / 2;
   for (const [index, edge] of topology.edges.entries()) {
     const lane = index % 2 ? Math.ceil(index / 2) : -Math.ceil((index + 1) / 2);
     const route = liveEdgeRoute(byId.get(edge.from), byId.get(edge.to), { canvasWidth: 1480, canvasHeight: 680, lane });
     for (const node of positions.filter(({ id }) => ![edge.from, edge.to].includes(id))) {
-      const rect = { left: node.x * 10 - halfWidth, right: node.x * 10 + halfWidth, top: node.y * 5.2 - halfHeight, bottom: node.y * 5.2 + halfHeight };
+      const rect = { left: node.x / 100 * 1480 - halfWidth, right: node.x / 100 * 1480 + halfWidth, top: node.y / 100 * 680 - halfHeight, bottom: node.y / 100 * 680 + halfHeight };
       for (let point = 1; point < route.length; point++) assert.equal(segmentHitsRect(route[point - 1], route[point], rect), false, `${edge.id} crosses ${node.id}`);
     }
   }
@@ -769,15 +772,15 @@ test("complete captured Live topology routes meet exactly at node boundaries wit
   const topology = topologyIntegrity({ nodes: topologyManifest.nodes, edges: topologyManifest.edges });
   const positions = livePositions(topology.nodes);
   const byId = new Map(positions.map((node) => [node.id, node]));
-  const halfWidth = 180 * (1000 / 1480) / 2;
-  const halfHeight = 60 * (520 / 680) / 2;
+  const halfWidth = 180 / 2;
+  const halfHeight = 60 / 2;
   const slots = livePulseSlots(topology);
   const ordered = orderedSignalEdges(topology.edges, slots);
   const rectFor = (node) => ({
-    left: node.x * 10 - halfWidth,
-    right: node.x * 10 + halfWidth,
-    top: node.y * 5.2 - halfHeight,
-    bottom: node.y * 5.2 + halfHeight
+    left: node.x / 100 * 1480 - halfWidth,
+    right: node.x / 100 * 1480 + halfWidth,
+    top: node.y / 100 * 680 - halfHeight,
+    bottom: node.y / 100 * 680 + halfHeight
   });
   const isOnBoundary = (point, rect) => (
     point.x >= rect.left && point.x <= rect.right
@@ -840,7 +843,7 @@ test("Live pulse ordering remains deterministic across the complete backend runt
   assert.match(renderSourceCanvasSource, /const pulseSlots = livePulseSlots\(\{ \.\.\.topology, edges: runtimeEdges \}\);/);
   assert.match(renderSourceCanvasSource, /orderedSignalEdges\(runtimeEdges, pulseSlots\)/);
   assert.match(renderSourceCanvasSource, /fixed-live-edge-map/);
-  assert.match(renderSourceCanvasSource, /plannedLiveRoutes\(positioned, plannedEdges\)/);
+  assert.match(renderSourceCanvasSource, /liveEdgePath\(positions\.get\(edge\.from\), positions\.get\(edge\.to\)/);
   assert.doesNotMatch(renderSourceCanvasSource, /class="pulse-flow/);
   assert.match(appJs, /classList\.toggle\("is-live-source", mode === "live"\)/);
   assert.match(appJs, /function startLiveSignalLoop\(/);

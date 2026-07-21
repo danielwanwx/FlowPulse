@@ -17,6 +17,7 @@ import {
   eventsAtStage,
   frameFor,
   liveIncidentNodeStates,
+  liveEdgePath,
   liveSignalDuration,
   liveSignalProgress,
   livePulseSlots,
@@ -27,7 +28,6 @@ import {
   projectAgentCollaborators,
   topologyIntegrity
 } from "./twin-state.mjs";
-import { LIVE_ROUTE_WORLD, plannedLiveRoutes } from "./live-routing.mjs";
 
 const els = Object.fromEntries([...document.querySelectorAll("[id]")].map((element) => [element.id, element]));
 const IMPACT_SEQUENCE = { checkout: 0, payment: 1, kafka: 2, accounting: 3, fraud: 4 };
@@ -446,16 +446,21 @@ function renderSourceCanvas(layout) {
   const guideLayers = [...LIVE_LAYERS, ...(unlinkedPositionedNodes ? [LIVE_UNLINKED_LAYER] : [])];
   const guides = `<div class="live-guides" aria-hidden="true">${guideLayers.map((layer, index) => `<span class="live-guide-${index}">${escapeHtml(layer.label)}</span>`).join("")}</div>${topology.invalid_edges.length ? `<div class="topology-warning"><i class="ph ph-warning" aria-hidden="true"></i>${topology.invalid_edges.length} invalid dependency endpoint${topology.invalid_edges.length === 1 ? "" : "s"} omitted</div>` : ""}`;
   const plannedEdges = runtimeEdges.map((edge, index) => ({ ...edge, order: signalOrder.get(edge.id) ?? index, tone: liveSignalTone(edge, nodeStates) }));
-  let routes;
-  try {
-    routes = plannedLiveRoutes(positioned, plannedEdges);
-  } catch {
-    els["canvas-layers"].innerHTML = `<div class="source-empty"><i class="ph ph-path" aria-hidden="true"></i><strong>Live dependency geometry unavailable</strong><span>The backend projection is present, but its fixed canonical route plan could not be resolved.</span></div>`;
-    els["twin-canvas"].setAttribute("aria-label", "Live dependency geometry unavailable.");
-    return;
-  }
-  const liveEdges = routes.map(({ edge, path }) => fixedLiveEdgeMarkup(edge, path, positions.get(edge.from)?.label || edge.from, positions.get(edge.to)?.label || edge.to)).join("");
-  els["canvas-layers"].innerHTML = `${guides}<div class="twin-layer layer-current"><svg class="edge-map fixed-live-edge-map" viewBox="0 0 ${LIVE_ROUTE_WORLD.width} ${LIVE_ROUTE_WORLD.height}" preserveAspectRatio="none" aria-hidden="true">${liveEdges}</svg>${nodes}</div>`;
+  // The Live view uses authored topology routes, not a generic obstacle solver.
+  // Node coordinates and every port are derived from the same fixed world, so a
+  // route always lands on the visible component that owns the dependency.
+  const liveEdges = plannedEdges.map((edge) => {
+    const lane = edge.order % 2 ? Math.ceil(edge.order / 2) : -Math.ceil((edge.order + 1) / 2);
+    const path = liveEdgePath(positions.get(edge.from), positions.get(edge.to), {
+      canvasWidth: LIVE_WORLD.width,
+      canvasHeight: LIVE_WORLD.height,
+      nodeWidth: 180,
+      nodeHeight: 60,
+      lane
+    });
+    return fixedLiveEdgeMarkup(edge, path, positions.get(edge.from)?.label || edge.from, positions.get(edge.to)?.label || edge.to);
+  }).join("");
+  els["canvas-layers"].innerHTML = `${guides}<div class="twin-layer layer-current"><svg class="edge-map fixed-live-edge-map" viewBox="0 0 ${LIVE_WORLD.width} ${LIVE_WORLD.height}" preserveAspectRatio="none" aria-hidden="true">${liveEdges}</svg>${nodes}</div>`;
   startLiveSignalLoop();
   els["twin-canvas"].dataset.invalidEdges = String(topology.invalid_edges.length);
   els["twin-canvas"].dataset.unlinkedNodes = String(topology.unlinked_node_ids.length);
@@ -478,8 +483,11 @@ function architectureThumbnailMarkup(node, status = "observed") {
   return `<span role="listitem"><button class="architecture-thumbnail-node is-${escapeHtml(status)}" type="button" title="${escapeHtml(node.label)}" data-architecture-thumbnail-id="${escapeHtml(node.id)}" data-transition-key="${escapeHtml(transitionKey(node.id))}" aria-label="Show ${escapeHtml(node.label)} component detail. ${escapeHtml(kindLabel(node.kind))}, ${escapeHtml(statusLabel(status))}"><span class="architecture-thumbnail-icon" aria-hidden="true"><i class="ph ph-${iconForLive(node)}"></i></span><span class="architecture-thumbnail-label">${escapeHtml(node.label)}</span><span class="architecture-status-dot" aria-hidden="true"></span></button></span>`;
 }
 
-function controlSystemTileMarkup(node) {
-  return `<button class="source-node is-architecture-compact control-system-tile plane-${escapeHtml(node.plane || "control")} kind-${escapeHtml(node.kind)} is-${escapeHtml(node.status || "idle")}" type="button" data-control-node-id="${escapeHtml(node.id)}" data-architecture-control-id="${escapeHtml(node.id)}" aria-label="Show ${escapeHtml(node.label)} details. ${escapeHtml(statusLabel(node.status || "idle"))}">
+function controlSystemTileMarkup(node, { rail = false } = {}) {
+  const interaction = rail
+    ? `data-rail-control-id="${escapeHtml(node.id)}"`
+    : `data-control-node-id="${escapeHtml(node.id)}" data-architecture-control-id="${escapeHtml(node.id)}"`;
+  return `<button class="source-node is-architecture-compact control-system-tile plane-${escapeHtml(node.plane || "control")} kind-${escapeHtml(node.kind)} is-${escapeHtml(node.status || "idle")}" type="button" ${interaction} aria-label="Show ${escapeHtml(node.label)} details. ${escapeHtml(statusLabel(node.status || "idle"))}">
     <span class="node-icon" aria-hidden="true"><i class="ph ph-${iconForLive(node)}"></i></span>
     <span class="node-copy"><strong>${escapeHtml(node.label)}</strong></span>
     <span class="node-status-dot is-${escapeHtml(node.status || "idle")}" aria-hidden="true"></span>
@@ -491,6 +499,9 @@ function sourceNodeMarkup(node, { layout, source, nodeStates }) {
   const nodeStatus = sourceStatusLabel(nodeState, source.status);
   const ariaStatus = nodeState === "unlinked" ? "Insufficient dependency evidence" : nodeStatus;
   const profile = sourceComponentProfile(node);
+  // Live positions are a fixed, CSS-authored grid. The route world consumes the
+  // same canonical percentages through livePositions(), so port geometry and
+  // card placement cannot drift apart at a given viewport.
   const livePositionClass = layout === "live" ? ` live-column-${node.layerIndex} live-count-${node.layerSize} live-index-${node.layerPosition}` : "";
   const activeStatus = ["impact", "root", "rejected", "warning", "pending", "active", "recording", "verified"].includes(nodeState) ? `<span class="node-status">${escapeHtml(nodeStatus)}</span>` : "";
   const copy = `<span class="node-copy"><strong>${escapeHtml(node.label)}</strong>${activeStatus}</span>`;
@@ -510,14 +521,19 @@ function liveSignalTone(edge, nodeStates) {
 
 function fixedLiveEdgeMarkup(edge, path, fromLabel, toLabel) {
   const label = `${edge.label} from ${fromLabel} to ${toLabel}`;
-  return `<g class="edge-group path-runtime signal-${escapeHtml(edge.tone)}" data-live-edge-id="${escapeHtml(edge.id)}" data-live-route="fixed-world" data-live-projectile="single" data-signal-from="${escapeHtml(edge.from)}" data-signal-to="${escapeHtml(edge.to)}" data-signal-order="${edge.order}"><path class="edge-line is-${escapeHtml(edge.tone)}" d="${path}"/><path class="signal-trail signal-trail-halo" aria-hidden="true"/><path class="signal-trail signal-trail-core" aria-hidden="true"/><path class="edge-hit" d="${path}" role="button" tabindex="0" aria-label="${escapeHtml(label)}" data-edge-id="${escapeHtml(edge.id)}" data-edge-from="${escapeHtml(edge.from)}" data-edge-to="${escapeHtml(edge.to)}"/></g>`;
+  return `<g class="edge-group path-runtime signal-${escapeHtml(edge.tone)}" data-live-edge-id="${escapeHtml(edge.id)}" data-live-route="canonical-authored" data-live-projectile="single" data-signal-from="${escapeHtml(edge.from)}" data-signal-to="${escapeHtml(edge.to)}" data-signal-order="${edge.order}"><path class="edge-line is-${escapeHtml(edge.tone)}" d="${path}"/><path class="signal-trail signal-trail-halo" aria-hidden="true"/><path class="signal-trail signal-trail-core" aria-hidden="true"/><path class="edge-hit" d="${path}" role="button" tabindex="0" aria-label="${escapeHtml(label)}" data-edge-id="${escapeHtml(edge.id)}" data-edge-from="${escapeHtml(edge.from)}" data-edge-to="${escapeHtml(edge.to)}"/></g>`;
 }
 
 function pathTrail(path, progress, fraction = .075) {
-  const start = Math.max(0, progress - fraction);
-  const length = Math.max(2, Math.ceil((progress - start) * 36));
   const total = path.getTotalLength();
-  const points = Array.from({ length: length + 1 }, (_, index) => path.getPointAtLength(total * (start + (progress - start) * index / length)));
+  // A very short dependency hop still needs a legible single pulse. Keep the
+  // trailing laser bounded so it reads as a moving packet instead of a second
+  // full edge or a dense repeated dash pattern.
+  const tailLength = Math.min(64, Math.max(22, total * fraction));
+  const visibleFraction = Math.min(.6, tailLength / Math.max(1, total));
+  const start = Math.max(0, progress - visibleFraction);
+  const samples = Math.max(2, Math.ceil((progress - start) * 36));
+  const points = Array.from({ length: samples + 1 }, (_, index) => path.getPointAtLength(total * (start + (progress - start) * index / samples)));
   return points.map((point, index) => `${index ? "L" : "M"} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`).join(" ");
 }
 
@@ -1195,16 +1211,15 @@ function controlSystemNodes() {
 function renderOperationsTeamRail() {
   const rail = els["operations-team-rail"];
   const controls = controlSystemNodes();
-  const selectedControl = selected?.type === "control";
-  rail.hidden = mode === "architecture" || !controls.length || selectedControl;
+  rail.hidden = mode === "architecture" || !controls.length || Boolean(selected);
   if (rail.hidden) {
     rail.innerHTML = "";
     return;
   }
-  rail.innerHTML = `<div class="operations-team-rail-heading"><span>FlowPulse</span><strong>Team</strong></div>
-    <div class="operations-team-rail-list">${controls.map((node) => `<button class="operations-team-tile is-${escapeHtml(node.status || "idle")}" type="button" data-rail-control-id="${escapeHtml(node.id)}" aria-label="Show ${escapeHtml(node.label)} safe projected details. ${escapeHtml(statusLabel(node.status || "idle"))}">
-      <span class="node-icon" aria-hidden="true"><i class="ph ph-${iconForLive(node)}"></i></span><span class="node-copy"><strong>${escapeHtml(node.label)}</strong></span><span class="node-status-dot" aria-hidden="true"></span>
-    </button>`).join("")}</div>`;
+  rail.innerHTML = `<section class="architecture-system architecture-flowpulse-system" aria-label="FlowPulse Control System">
+    <header class="architecture-control-heading"><div><span>FlowPulse</span><strong>Control System</strong></div></header>
+    <div class="architecture-flowpulse-nodes">${controls.map((node) => controlSystemTileMarkup(node, { rail: true })).join("")}</div>
+  </section>`;
 }
 
 function handleOperationsTeamRail(event) {
