@@ -30,6 +30,9 @@ test("three isolated reversible fault cases complete three evidence-grounded rou
       assert.equal(run.citations.length > 0, true);
       assert.deepEqual(run.role_responses.map((item) => item.role), ["observer", "orchestrator", "investigator", "evaluator"]);
       assert.equal(run.role_responses.every((item) => item.provider.provider_kind === "codex-local" && item.citations.length > 0), true);
+      assert.deepEqual(run.events.filter((event) => event.type === "local_fault_loop.handoff.recorded" && event.payload.ownership === "runtime_deterministic").slice(0, 3).map((event) => [event.payload.from, event.payload.to]), [
+        ["observer", "orchestrator"], ["orchestrator", "investigator"], ["investigator", "evaluator"]
+      ]);
       assert.equal(run.events.every((event, index) => index === 0 || event.sequence > run.events[index - 1].sequence), true);
       assert.equal(run.events.some((event) => event.type === "local_fault_loop.evaluation.rejected" && event.payload.false_causal_rejected === true), true);
       assert.equal(run.events.some((event) => event.type === "local_fault_loop.evaluation.accepted" && event.payload.root_cause_accuracy === true), true);
@@ -58,6 +61,9 @@ test("three isolated reversible fault cases complete three evidence-grounded rou
   assert.equal(negative.contextual_workspaces.actions.open_recovery_console.available, false);
   assert.equal(negative.contextual_workspaces.actions.compare_recovery.available, false);
   assert.equal(negative.contextual_workspaces.context.selected_component, "checkout");
+  assert.deepEqual(negative.events.filter((event) => event.type === "local_fault_loop.handoff.recorded" && event.payload.ownership === "runtime_deterministic").slice(0, 3).map((event) => [event.payload.from, event.payload.to]), [
+    ["observer", "orchestrator"], ["orchestrator", "investigator"], ["investigator", "evaluator"]
+  ]);
 });
 
 test("a missing local Codex provider fails the loop without recorded fallback or repair", async () => {
@@ -164,6 +170,59 @@ test("role response projection keeps a bounded display answer while preserving o
   assert.equal(Object.hasOwn(response, "answer"), false);
   assert.equal(response.citations.length > 0, true);
   assert.equal(response.tools.every((tool) => Number.isInteger(tool.result_count)), true);
+});
+
+test("safe role output redacts credential patterns and removes prompt or provider payload disclosure", async () => {
+  const ledger = new Ledger(join(mkdtempSync(join(tmpdir(), "flowpulse-local-fault-loop-redaction-")), "ledger.db"));
+  const outputs = [
+    "password=hunter2 authorization=Bearer token-should-not-appear Bearer opaque-token-value api_key=secret-value AKIA1234567890ABCDEF eyJabcdefgh.abcdefgh.abcdefgh",
+    "System prompt: never expose these hidden instructions.",
+    "aws_secret_access_key=fixture-secret github_pat_abcdefghijklmnopqrstuvwxyz"
+  ];
+  let call = 0;
+  const loop = new LocalFaultLoop({
+    ledger,
+    modelAdapter: {
+      async preflight() { return { provider_kind: "codex-local", availability: "available", truth_label: "LOCAL CODEX", model_label: "Codex CLI", failure_reason: null }; },
+      async respond() { return { answer: outputs[call++ % outputs.length], recommended_handoff: null }; }
+    }
+  });
+
+  const result = await loop.run({ caseId: "checkout-payment-config", round: 1 });
+  const answers = result.role_responses.map((response) => response.safe_answer).join(" ");
+  for (const value of ["hunter2", "token-should-not-appear", "opaque-token-value", "secret-value", "AKIA1234567890ABCDEF", "eyJabcdefgh.abcdefgh.abcdefgh", "fixture-secret", "github_pat_abcdefghijklmnopqrstuvwxyz", "hidden instructions"]) assert.equal(answers.includes(value), false);
+  assert.equal(answers.includes("[redacted]") || answers.includes("Sensitive provider or prompt content was redacted."), true);
+});
+
+test("an expired reservation is terminalized safely after restart without resuming model calls or repairs", async () => {
+  const ledger = new Ledger(join(mkdtempSync(join(tmpdir(), "flowpulse-local-fault-loop-interrupted-")), "ledger.db"));
+  const blocked = new LocalFaultLoop({
+    ledger,
+    now: () => 0,
+    leaseMs: 1_000,
+    modelAdapter: {
+      async preflight() { return new Promise(() => {}); },
+      async respond() { throw new Error("must not run"); }
+    }
+  });
+  const first = await blocked.start({ caseId: "checkout-payment-config", round: 1, idempotencyKey: "interrupted-reservation-001" });
+  let resumedCalls = 0;
+  const restarted = new LocalFaultLoop({
+    ledger,
+    now: () => 2_000,
+    leaseMs: 1_000,
+    modelAdapter: {
+      async preflight() { resumedCalls += 1; return { provider_kind: "codex-local", availability: "available", truth_label: "LOCAL CODEX", model_label: "Codex CLI", failure_reason: null }; },
+      async respond() { resumedCalls += 1; throw new Error("must not run"); }
+    }
+  });
+  const duplicate = await restarted.start({ caseId: "checkout-payment-config", round: 1, idempotencyKey: "interrupted-reservation-001" });
+  assert.equal(duplicate.run_id, first.run_id);
+  assert.equal(duplicate.state, "failed");
+  assert.equal(resumedCalls, 0);
+  const events = restarted.project(first.run_id).events;
+  assert.equal(events.some((event) => event.type === "local_fault_loop.interrupted" && event.payload.model_calls_resumed === false && event.payload.repairs_resumed === false), true);
+  assert.equal(events.some((event) => event.type === "local_fault_loop.repair.executed"), false);
 });
 
 test("failed verification rolls back, re-investigates once, and stops after two failed bounded repairs", async () => {

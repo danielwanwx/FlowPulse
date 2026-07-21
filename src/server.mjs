@@ -113,7 +113,8 @@ const agentTeamChat = new AgentTeamChatService({
 const localFaultLoop = new LocalFaultLoop({
   ledger,
   modelAdapter: agentTeamChat.modelAdapter,
-  topologyProvider: async () => (await stateWithSource(browserRunId())).topology_views
+  topologyProvider: async () => (await stateWithSource(browserRunId())).topology_views,
+  leaseMs: localFaultLoopLeaseMs()
 });
 
 const server = createServer(async (request, response) => {
@@ -1013,6 +1014,11 @@ function requireJson(request) {
   if (!String(request.headers["content-type"] || "").toLowerCase().startsWith("application/json")) {
     throw new Error("application/json is required for local development actions");
   }
+}
+
+function localFaultLoopLeaseMs() {
+  const value = Number(process.env.FLOWPULSE_AGENT_LOOP_LEASE_MS || 180_000);
+  return Number.isInteger(value) && value >= 1_000 && value <= 3_600_000 ? value : 180_000;
 }
 
 function setHeaders(response) {

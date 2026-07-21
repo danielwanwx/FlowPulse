@@ -39,6 +39,7 @@ export const LOCAL_FAULT_LOOP_CASES = Object.freeze([
 
 const POSITIVE_ROUNDS = 3;
 const MAX_REMEDIATION_ATTEMPTS = 2;
+const RUN_LEASE_MS = 180_000;
 const NEGATIVE_CASE = Object.freeze({ id: "insufficient-evidence", title: "Insufficient evidence anomaly", root_component: "checkout", affected_components: ["checkout"], fault: "ambiguous_anomaly", root_cause: null, false_hypothesis: "A repair target is known", repair: null, risk: "unknown" });
 const ROLE_TOOLS = Object.freeze({
   observer: ["read_source_freshness", "read_signal_summaries"],
@@ -57,7 +58,7 @@ export class LocalFaultLoopError extends Error {
 }
 
 export class LocalFaultLoop {
-  constructor({ ledger, modelAdapter, now = () => Date.now(), fixtureOptions = {}, topologyProvider = null } = {}) {
+  constructor({ ledger, modelAdapter, now = () => Date.now(), fixtureOptions = {}, topologyProvider = null, leaseMs = RUN_LEASE_MS } = {}) {
     if (!ledger?.append || !ledger?.list) throw new Error("LocalFaultLoop requires an append-only ledger");
     if (!modelAdapter?.respond || !modelAdapter?.preflight) throw new Error("LocalFaultLoop requires a provider adapter");
     this.ledger = ledger;
@@ -65,12 +66,13 @@ export class LocalFaultLoop {
     this.now = now;
     this.fixtureOptions = fixtureOptions;
     this.topologyProvider = typeof topologyProvider === "function" ? topologyProvider : null;
+    this.leaseMs = Number.isInteger(leaseMs) && leaseMs >= 1_000 && leaseMs <= 3_600_000 ? leaseMs : RUN_LEASE_MS;
     this.executions = new Map();
   }
 
   async start(input = {}) {
     const existing = this.#findReservation(input);
-    if (existing) return this.#startProjection(existing);
+    if (existing) return this.#reconcileExisting(existing);
     const reservation = this.#reserve(input);
     if (reservation.inserted) this.#launch(reservation);
     return this.#startProjection(reservation);
@@ -78,7 +80,7 @@ export class LocalFaultLoop {
 
   async run(input = {}) {
     const reservation = this.#reserve(input);
-    if (!reservation.inserted) return this.project(reservation.session.runId);
+    if (!reservation.inserted) return this.#reconcileExisting(reservation);
     return this.#execute(reservation);
   }
 
@@ -133,21 +135,24 @@ export class LocalFaultLoop {
       affected_components: definition.affected_components,
       bounded_incident: true
     }, fault.symptom_ids, incident.id);
-    const orchestrator = await this.#callRole(session, "orchestrator", definition, evidence, "Select the read-only fault-to-recovery workflow and preserve authority boundaries.", detected.id);
+    const observerHandoff = this.#handoff(session, "observer", "orchestrator", "A bounded incident is open; workflow selection belongs to Orchestrator.", detected.id);
+    const orchestrator = await this.#callRole(session, "orchestrator", definition, evidence, "Select the read-only fault-to-recovery workflow and preserve authority boundaries.", observerHandoff.id);
     const routed = this.#append(session, "local_fault_loop.orchestrator.routed", "orchestrator", {
       stage: "diagnose",
       workflow: ["detect", "diagnose", "evaluate", "plan", "authorize", "repair", "verify", "recovered"],
       requested_agent: "orchestrator",
       responding_agent: "orchestrator"
     }, fault.refs, orchestrator.id);
-    const investigator = await this.#callRole(session, "investigator", definition, evidence, "Investigate the first causal condition using only the bounded evidence.", routed.id);
+    const orchestratorHandoff = this.#handoff(session, "orchestrator", "investigator", "Workflow selected; causal investigation belongs to Investigator.", routed.id);
+    const investigator = await this.#callRole(session, "investigator", definition, evidence, "Investigate the first causal condition using only the bounded evidence.", orchestratorHandoff.id);
     const falseHypothesis = this.#append(session, "local_fault_loop.hypothesis.proposed", "investigator", {
       id: `hyp-${session.runId}-false`,
       claim: definition.false_hypothesis,
       confidence: 0.42,
       ground_truth: false
     }, fault.false_causal_refs, investigator.id);
-    const evaluator = await this.#callRole(session, "evaluator", definition, evidence, "Adversarially reject correlation without causal evidence, then assess the supported root cause.", falseHypothesis.id);
+    const investigatorHandoff = this.#handoff(session, "investigator", "evaluator", "A cited causal hypothesis is ready for adversarial evaluation.", falseHypothesis.id);
+    const evaluator = await this.#callRole(session, "evaluator", definition, evidence, "Adversarially reject correlation without causal evidence, then assess the supported root cause.", investigatorHandoff.id);
     const rejected = this.#append(session, "local_fault_loop.evaluation.rejected", "evaluator", {
       stage: "evaluate",
       hypothesis_id: falseHypothesis.payload.id,
@@ -217,8 +222,10 @@ export class LocalFaultLoop {
         this.#append(session, "local_fault_loop.stopped", "runtime", { state: "needs_human", reason: "fixture_recovery_verification_failed", attempts: attempt }, verification.refs, rolledBack.id);
         return this.project(session.runId);
       }
-      const reinvestigator = await this.#callRole(session, "investigator", definition, evidence, "Re-investigate after independent verification failed; preserve the original causal ordering.", rolledBack.id);
-      const reevaluator = await this.#callRole(session, "evaluator", definition, evidence, "Adversarially re-check the evidence before a second bounded repair attempt.", reinvestigator.id);
+      const retryInvestigatorHandoff = this.#handoff(session, "evaluator", "investigator", "Independent verification failed; Investigator must re-check the causal evidence.", rolledBack.id);
+      const reinvestigator = await this.#callRole(session, "investigator", definition, evidence, "Re-investigate after independent verification failed; preserve the original causal ordering.", retryInvestigatorHandoff.id);
+      const retryEvaluatorHandoff = this.#handoff(session, "investigator", "evaluator", "Re-investigation is complete; Evaluator must re-check the evidence before retry.", reinvestigator.id);
+      const reevaluator = await this.#callRole(session, "evaluator", definition, evidence, "Adversarially re-check the evidence before a second bounded repair attempt.", retryEvaluatorHandoff.id);
       repairParent = this.#append(session, "local_fault_loop.plan.replanned", "orchestrator", {
         stage: "plan",
         repair: definition.repair,
@@ -259,10 +266,13 @@ export class LocalFaultLoop {
     const observer = await this.#callRole(session, "observer", definition, evidence, "Detect the anomaly but do not infer a root cause.", topology.id);
     const incident = this.#append(session, "incident.opened", "observer", { title: definition.title, severity: "SEV-3", environment: "isolated local fixture", summary: "A bounded anomaly was detected but has no causal source evidence." }, [anomaly.id], observer.id);
     const detected = this.#append(session, "local_fault_loop.observer.detected", "observer", { stage: "detect", anomaly_ids: [anomaly.id], affected_components: ["checkout"], bounded_incident: true }, [anomaly.id], incident.id);
-    const orchestrator = await this.#callRole(session, "orchestrator", definition, evidence, "Route the anomaly to evidence collection and request a human gate if the evidence remains insufficient.", detected.id);
-    const investigator = await this.#callRole(session, "investigator", definition, evidence, "Assess the evidence gap without proposing a repair.", orchestrator.id);
+    const observerHandoff = this.#handoff(session, "observer", "orchestrator", "A bounded incident is open; workflow selection belongs to Orchestrator.", detected.id);
+    const orchestrator = await this.#callRole(session, "orchestrator", definition, evidence, "Route the anomaly to evidence collection and request a human gate if the evidence remains insufficient.", observerHandoff.id);
+    const orchestratorHandoff = this.#handoff(session, "orchestrator", "investigator", "Workflow selected; evidence-gap assessment belongs to Investigator.", orchestrator.id);
+    const investigator = await this.#callRole(session, "investigator", definition, evidence, "Assess the evidence gap without proposing a repair.", orchestratorHandoff.id);
     const candidate = this.#append(session, "local_fault_loop.hypothesis.proposed", "investigator", { id: `hyp-${session.runId}-unsupported`, claim: "A repair target is known", confidence: 0.12, ground_truth: false }, [anomaly.id], investigator.id);
-    const evaluator = await this.#callRole(session, "evaluator", definition, evidence, "Reject the unsupported causal claim and state that approval is not granted.", candidate.id);
+    const investigatorHandoff = this.#handoff(session, "investigator", "evaluator", "The unsupported causal claim requires adversarial evaluation.", candidate.id);
+    const evaluator = await this.#callRole(session, "evaluator", definition, evidence, "Reject the unsupported causal claim and state that approval is not granted.", investigatorHandoff.id);
     const rejected = this.#append(session, "local_fault_loop.evaluation.rejected", "evaluator", { stage: "evaluate", hypothesis_id: candidate.payload.id, reason: "No change, direct mechanism, timing, or counter-evidence is available.", score: 0, false_causal_rejected: true }, [anomaly.id], evaluator.id);
     const gate = this.#append(session, "local_fault_loop.authority.decided", "runtime", { stage: "approve-or-auto", outcome: "needs_human", reason: "insufficient_evidence", execution_scope: "none" }, [anomaly.id], rejected.id);
     this.#append(session, "local_fault_loop.stopped", "runtime", { stage: "stopped", state: "needs_human", reason: "insufficient_evidence", repair_executed: false }, [anomaly.id], gate.id);
@@ -336,7 +346,8 @@ export class LocalFaultLoop {
         round: request.round,
         idempotency_key: request.idempotencyKey,
         state: "running",
-        stage: "monitor"
+        stage: "monitor",
+        lease_expires_at: new Date(session.startedAt + this.leaseMs).toISOString()
       },
       correlationId: `local-fault-loop:${session.runId}`,
       recordedAt: new Date(session.startedAt).toISOString()
@@ -356,9 +367,34 @@ export class LocalFaultLoop {
   }
 
   #launch(reservation) {
-    const completion = new Promise((resolve) => setTimeout(resolve, 200)).then(() => this.#execute(reservation));
+    const completion = new Promise((resolve) => setImmediate(resolve)).then(() => this.#execute(reservation));
     this.executions.set(reservation.session.runId, completion);
     void completion.catch(() => {}).finally(() => this.executions.delete(reservation.session.runId));
+  }
+
+  #reconcileExisting(reservation) {
+    const runId = reservation.session.runId;
+    const projection = this.project(runId);
+    if (projection.final || this.executions.has(runId)) return this.#startProjection(reservation);
+    const expiresAt = Date.parse(reservation.lease_expires_at || "");
+    const leaseExpired = Number.isFinite(expiresAt) ? this.now() >= expiresAt : this.now() - reservation.session.startedAt >= this.leaseMs;
+    if (!leaseExpired) return this.#startProjection(reservation);
+    const events = this.ledger.list(runId);
+    const session = { ...reservation.session, index: events.length };
+    const parentId = events.at(-1)?.id || null;
+    this.#append(session, "local_fault_loop.interrupted", "runtime", {
+      stage: "failed",
+      reason: "local_fault_loop_lease_expired",
+      execution_scope: "none",
+      model_calls_resumed: false,
+      repairs_resumed: false
+    }, [], parentId);
+    this.#append(session, "local_fault_loop.failed", "runtime", {
+      state: "failed",
+      stage: "failed",
+      reason: "local_fault_loop_interrupted"
+    }, [], `evt-${runId}-${session.index}`);
+    return this.#startProjection({ ...reservation, session });
   }
 
   #startProjection(reservation) {
@@ -409,6 +445,15 @@ export class LocalFaultLoop {
     return context;
   }
 
+  #handoff(session, from, to, reason, parentId) {
+    return this.#append(session, "local_fault_loop.handoff.recorded", "runtime", {
+      from,
+      to,
+      reason,
+      ownership: "runtime_deterministic"
+    }, [], parentId);
+  }
+
   async #callRole(session, role, definition, evidence, message, parentId) {
     const capability = await this.modelAdapter.preflight();
     if (capability?.provider_kind !== "codex-local" || capability?.availability !== "available") {
@@ -451,7 +496,7 @@ export class LocalFaultLoop {
       citations: evidence.map((item) => item.id),
       tools: toolEvent.payload.tools.map(({ tool, result_count }) => ({ tool, result_count }))
     }, evidence.map((item) => item.id), toolEvent.id);
-    if (safeHandoff && safeHandoff.to !== role) this.#append(session, "local_fault_loop.handoff.recorded", role, { from: role, to: safeHandoff.to, reason: safeHandoff.reason }, evidence.map((item) => item.id), responseEvent.id);
+    if (safeHandoff && safeHandoff.to !== role) this.#append(session, "local_fault_loop.handoff.recorded", role, { from: role, to: safeHandoff.to, reason: safeHandoff.reason, ownership: "model_recommended" }, evidence.map((item) => item.id), responseEvent.id);
     return responseEvent;
   }
 }
@@ -602,7 +647,8 @@ function workspaceProjection(events, started, final = null, state = null) {
   const incidentOpen = events.some((event) => event.type === "incident.opened" && event.actor === "observer");
   const remediationReady = events.some((event) => event.type === "local_fault_loop.plan.proposed" || event.type === "local_fault_loop.repair.executed");
   const verified = events.some((event) => event.type === "local_fault_loop.verification.completed");
-  const compareReady = verified && Boolean(terminal);
+  const repaired = events.some((event) => event.type === "local_fault_loop.repair.executed");
+  const compareReady = terminal?.payload?.state === "recovered" && verified && repaired;
   const current = events.at(-1) || started || null;
   const stage = loopStage(events, terminal, currentState);
   return {
@@ -624,7 +670,7 @@ function workspaceProjection(events, started, final = null, state = null) {
         available: compareReady,
         prerequisites: [
           { id: "independent_verification_completed", satisfied: verified },
-          { id: "terminal_state_recorded", satisfied: Boolean(terminal) }
+          { id: "implemented_repair_recovered", satisfied: compareReady }
         ]
       }
     }
@@ -662,9 +708,16 @@ function safeLoopFailureReason(error) {
 
 function safeDisplayAnswer(value) {
   if (typeof value !== "string" || Buffer.byteLength(value, "utf8") < 1 || Buffer.byteLength(value, "utf8") > 1_200 || [...value].length > 280) return null;
-  const answer = value.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim()
-    .replace(/\b(?:sk|rk|pk)-[A-Za-z0-9_-]{12,}\b/g, "[redacted]")
-    .replace(/\b(?:authorization|bearer|api[_ -]?key)\s*[:=]\s*[^\s]+/gi, "[redacted]");
+  const flattened = value.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim();
+  if (/(?:\b(?:system|developer|hidden)\s+(?:prompt|instructions?|message)\b|\b(?:raw\s+)?provider\s+(?:payload|response)\b|\bchain[- ]of[- ]thought\b)/i.test(flattened)
+    || /^\s*\{\s*"(?:id|model|output|choices|messages|role)"\s*:/i.test(flattened)) return "Sensitive provider or prompt content was redacted.";
+  const answer = flattened
+    .replace(/\b(?:sk|rk|pk)-[A-Za-z0-9_-]{12,}\b/gi, "[redacted]")
+    .replace(/\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|AIza[A-Za-z0-9_-]{20,})\b/g, "[redacted]")
+    .replace(/\b(?:AKIA|ASIA|A3T[A-Z0-9])[A-Z0-9]{16}\b/g, "[redacted]")
+    .replace(/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g, "[redacted]")
+    .replace(/\bBearer\s+[A-Za-z0-9._~+\/=:-]{8,}\b/gi, "Bearer [redacted]")
+    .replace(/\b(authorization|bearer|api(?:[_ -]?key|key)|token|password|passphrase|passwd|pwd|aws[_ -]?(?:secret[_ -]?access[_ -]?key|session[_ -]?token|access[_ -]?key))\s*[:=]\s*(?:(?:bearer)\s+)?(?:\"[^\"]{1,256}\"|'[^']{1,256}'|[^\s,;]+)/gi, "$1=[redacted]");
   return answer && Buffer.byteLength(answer, "utf8") <= 1_200 && [...answer].length <= 280 ? answer : null;
 }
 
@@ -724,6 +777,7 @@ function reservationFromEvent(event, definition, negative) {
     inserted: false,
     definition,
     negative,
+    lease_expires_at: typeof payload.lease_expires_at === "string" ? payload.lease_expires_at : null,
     session: {
       definition,
       runId: payload.run_id,

@@ -69,6 +69,9 @@ test("interactive loop starts asynchronously, streams safe events, resumes, and 
   assert.equal(roles.length, 4);
   assert.deepEqual(roles.map((item) => item.role), ["observer", "orchestrator", "investigator", "evaluator"]);
   assert.equal(roles.every((item) => item.requested_agent === item.role && item.responding_agent === item.role && item.state === "completed" && typeof item.safe_answer === "string" && item.safe_answer.length > 0 && item.safe_answer.length <= 280 && item.citations.length > 0 && item.tools.every((tool) => Number.isInteger(tool.result_count)) && !Object.hasOwn(item, "answer")), true);
+  assert.deepEqual(events.filter((item) => item.payload.event.type === "local_fault_loop.handoff.recorded" && item.payload.event.payload.ownership === "runtime_deterministic").slice(0, 3).map((item) => [item.payload.event.payload.from, item.payload.event.payload.to]), [
+    ["observer", "orchestrator"], ["orchestrator", "investigator"], ["investigator", "evaluator"]
+  ]);
 
   const resumeAfter = sequences[5];
   const resumed = await readAllSse(port, `/api/demo/agent-loop/events?run_id=${first.body.run_id}&after=${resumeAfter}`, { "Last-Event-ID": String(resumeAfter) });
@@ -88,6 +91,45 @@ test("interactive loop starts asynchronously, streams safe events, resumes, and 
   assert.equal(negativeStream.events.some((item) => item.payload?.event?.type === "local_fault_loop.repair.executed"), false);
 
   assert.equal(roles.length + negativeStream.events.filter((item) => item.payload?.event?.type === "local_fault_loop.role.response").length, 8, "duplicate start must not create a second four-role execution");
+});
+
+test("a restarted server terminalizes an expired reservation without replaying model or repair side effects", async (context) => {
+  const root = mkdtempSync(join(tmpdir(), "flowpulse-interactive-restart-"));
+  const db = join(root, "ledger.db");
+  const firstPort = await freshPort();
+  const sharedEnv = {
+    ...process.env,
+    FLOWPULSE_DB: db,
+    FLOWPULSE_AGENT_PROVIDER: "codex-local",
+    FLOWPULSE_AGENT_LOOP_LEASE_MS: "1000",
+    NODE_ENV: "test",
+    FLOWPULSE_TEST_CODEX_RESPONSE: "{\"answer\":\"Bounded local role response cites ev-local-safe-1.\",\"recommended_handoff\":null}",
+    OPENAI_API_KEY: ""
+  };
+  const firstChild = spawn(process.execPath, ["src/server.mjs"], { cwd: new URL("..", import.meta.url), env: { ...sharedEnv, PORT: String(firstPort), FLOWPULSE_TEST_CODEX_DELAY_MS: "10000" }, stdio: ["ignore", "pipe", "pipe"] });
+  context.after(() => stop(firstChild));
+  await waitForHealth(firstChild, firstPort);
+  const first = await postJson(firstPort, "/api/demo/agent-loop/run", { case_id: "checkout-payment-config", round: 1, idempotency_key: "interactive-restart-001" });
+  assert.equal(first.status, 202, JSON.stringify(first.body));
+  await stopAndWait(firstChild);
+  await new Promise((resolve) => setTimeout(resolve, 1_100));
+
+  const secondPort = await freshPort();
+  const secondChild = spawn(process.execPath, ["src/server.mjs"], { cwd: new URL("..", import.meta.url), env: { ...sharedEnv, PORT: String(secondPort) }, stdio: ["ignore", "pipe", "pipe"] });
+  context.after(() => stop(secondChild));
+  await waitForHealth(secondChild, secondPort);
+  const duplicate = await postJson(secondPort, "/api/demo/agent-loop/run", { case_id: "checkout-payment-config", round: 1, idempotency_key: "interactive-restart-001" });
+  assert.equal(duplicate.status, 202, JSON.stringify(duplicate.body));
+  assert.equal(duplicate.body.run_id, first.body.run_id);
+  assert.equal(duplicate.body.state, "failed");
+  const stream = await readAllSse(secondPort, duplicate.body.events_url);
+  assert.equal(stream.states.length, 1);
+  assert.equal(stream.states[0].payload.state, "failed");
+  const events = stream.events.filter((item) => item.event === "local-fault-loop").map((item) => item.payload.event);
+  assert.equal(events.some((event) => event.type === "local_fault_loop.interrupted" && event.payload.model_calls_resumed === false && event.payload.repairs_resumed === false), true);
+  assert.equal(events.some((event) => event.type === "local_fault_loop.repair.executed"), false);
+  assert.equal(events.filter((event) => event.type === "local_fault_loop.role.response").length, 0);
+  assert.equal(stream.states[0].payload.contextual_workspaces.actions.compare_recovery.available, false);
 });
 
 async function freshPort() {
@@ -155,4 +197,12 @@ function parseSse(text) {
 
 function stop(child) {
   if (child.exitCode === null) child.kill("SIGTERM");
+}
+
+async function stopAndWait(child) {
+  if (child.exitCode !== null) return;
+  await new Promise((resolve) => {
+    child.once("close", resolve);
+    child.kill("SIGTERM");
+  });
 }

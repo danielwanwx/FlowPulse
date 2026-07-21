@@ -6,7 +6,7 @@ import { requestOpenAIResponse } from "./openai-response.mjs";
 
 const OUTPUT_LIMIT_BYTES = 32 * 1024;
 const EVENT_LIMIT = 32;
-const TIMEOUT_MS = 30_000;
+const TIMEOUT_MS = 120_000;
 const MAX_ANSWER_CODEPOINTS = 280;
 const MAX_ANSWER_BYTES = 1_200;
 const ROLES = new Set(["observer", "orchestrator", "investigator", "evaluator"]);
@@ -203,11 +203,6 @@ async function codexPreflight({ command, spawnImpl, timeoutMs }) {
   const environment = safeCodexEnvironment();
   const version = await runChild({ command, args: ["--version"], cwd: tempRoot(), env: environment, spawnImpl, timeoutMs, outputLimitBytes: 4_096, eventLimit: 4 });
   if (version.reason || version.code !== 0) return staticCapability("codex-local", "unavailable", "LOCAL CODEX", "Codex CLI", version.reason || "codex_cli_unavailable");
-  const login = await runChild({ command, args: ["login", "status"], cwd: tempRoot(), env: environment, spawnImpl, timeoutMs, outputLimitBytes: 4_096, eventLimit: 4 });
-  const summary = `${login.stdout}\n${login.stderr}`.toLowerCase();
-  if (login.reason || login.code !== 0 || /not logged|not authenticated|logged out|unauthenticated/.test(summary)) {
-    return staticCapability("codex-local", "unavailable", "LOCAL CODEX", "Codex CLI", login.reason || "codex_unauthenticated");
-  }
   return staticCapability("codex-local", "available", "LOCAL CODEX", "Codex CLI");
 }
 
@@ -380,7 +375,7 @@ function reportDiagnostic(callback, value) {
     if (typeof callback === "function") callback({ phase: value.phase, outcome: value.outcome });
   } catch {}
 }
-function providerTimeout() { const value = Number(process.env.FLOWPULSE_AGENT_CODEX_TIMEOUT_MS || TIMEOUT_MS); return Number.isInteger(value) && value >= 1_000 && value <= 60_000 ? value : TIMEOUT_MS; }
+function providerTimeout() { const value = Number(process.env.FLOWPULSE_AGENT_CODEX_TIMEOUT_MS || TIMEOUT_MS); return Number.isInteger(value) && value >= 1_000 && value <= 120_000 ? value : TIMEOUT_MS; }
 function boundedUsage(value) { return { input_tokens: safeInt(value?.input_tokens, 100_000), output_tokens: safeInt(value?.output_tokens, 100_000) }; }
 function safeText(value, maximum) { return typeof value === "string" && Buffer.byteLength(value, "utf8") > 0 && Buffer.byteLength(value, "utf8") <= maximum ? value : null; }
 function safeInt(value, maximum) { return Number.isSafeInteger(value) && value >= 0 && value <= maximum ? value : null; }

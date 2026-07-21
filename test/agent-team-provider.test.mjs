@@ -60,12 +60,14 @@ test("Codex local preflight and invocation use an ephemeral read-only temp works
   assert.equal(invocation.args.some((item) => item.includes("flowpulse-agent-backend")), false);
 });
 
-test("Codex local reports unavailable, unauthenticated, timeout, nonzero, invalid, and oversized output safely", async () => {
+test("Codex local reports unavailable, timeout, nonzero, invalid, and oversized output safely", async () => {
   const unavailable = createCodexLocalAdapter({ spawnImpl: scriptedSpawn({ versionCode: 1 }).spawn, timeoutMs: 20 });
   assert.equal((await unavailable.preflight()).failure_reason, "codex_cli_unavailable");
 
-  const unauthenticated = createCodexLocalAdapter({ spawnImpl: scriptedSpawn({ login: "Not logged in" }).spawn, timeoutMs: 20 });
-  assert.equal((await unauthenticated.preflight()).failure_reason, "codex_unauthenticated");
+  const noLoginProbe = scriptedSpawn({ login: "Not logged in" });
+  const executableOnly = createCodexLocalAdapter({ spawnImpl: noLoginProbe.spawn, timeoutMs: 20 });
+  assert.equal((await executableOnly.preflight()).availability, "available");
+  assert.equal(noLoginProbe.calls.some((call) => call.args[0] === "login"), false);
 
   const timedOut = createCodexLocalAdapter({ spawnImpl: scriptedSpawn({ neverClose: true }).spawn, timeoutMs: 5 });
   assert.equal((await timedOut.preflight()).failure_reason, "codex_timeout");

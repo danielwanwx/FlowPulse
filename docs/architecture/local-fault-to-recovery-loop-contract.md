@@ -38,11 +38,11 @@ The request permits only `case_id`, `round` (1–3), and `idempotency_key`. It v
   "state": "running",
   "stage": "monitor",
   "events_url": "/api/demo/agent-loop/events?run_id=...&after=0",
-  "contextual_workspaces": {"context":{"run_id":"...","incident_id":"...","selected_component":"checkout","timeline":{"position":3,"event_id":"...","stage":"monitor","terminal_state":null}},"actions":{"view_diagnosis":{"available":false,"prerequisites":[{"id":"bounded_incident_opened","satisfied":false}]},"open_recovery_console":{"available":false,"prerequisites":[{"id":"evaluated_remediation_plan_or_repair_started","satisfied":false}]},"compare_recovery":{"available":false,"prerequisites":[{"id":"independent_verification_completed","satisfied":false},{"id":"terminal_state_recorded","satisfied":false}]}}}
+  "contextual_workspaces": {"context":{"run_id":"...","incident_id":"...","selected_component":"checkout","timeline":{"position":3,"event_id":"...","stage":"monitor","terminal_state":null}},"actions":{"view_diagnosis":{"available":false,"prerequisites":[{"id":"bounded_incident_opened","satisfied":false}]},"open_recovery_console":{"available":false,"prerequisites":[{"id":"evaluated_remediation_plan_or_repair_started","satisfied":false}]},"compare_recovery":{"available":false,"prerequisites":[{"id":"independent_verification_completed","satisfied":false},{"id":"implemented_repair_recovered","satisfied":false}]}}}
 }
 ```
 
-The same idempotency key returns this original identity and never starts a second fault injection, model sequence, repair, or verification. `insufficient-evidence` is a valid case ID for the no-repair `needs_human` path.
+The same idempotency key returns this original identity and never starts a second fault injection, model sequence, repair, or verification. A reservation has a bounded server-side lease (three minutes by default). After a server interruption, an expired reservation is safely terminalized as `failed` with `local_fault_loop_interrupted`; it is never resumed because replaying a repair or model call could duplicate side effects. `insufficient-evidence` is a valid case ID for the no-repair `needs_human` path.
 
 Read any recorded run without invoking a model:
 
@@ -58,9 +58,9 @@ GET /api/demo/agent-loop/events?run_id=local-loop-kafka-consumer-pause-2-...&aft
 
 Each `local-fault-loop` event has the projected event ID/sequence/time, actor, event type, bounded payload, and evidence IDs. The stream replays events whose sequence is greater than `after` or `Last-Event-ID`, sends one-second heartbeats while the run is active, and emits exactly one terminal `local-fault-loop-state` event before closing. It never invokes another model or repair on reconnect.
 
-Every GET and SSE event also carries `contextual_workspaces`. Its `context` preserves the canonical `run_id`, `incident_id`, selected component, and exact timeline sequence/event/stage. Its actions are advisory launch prerequisites only: `view_diagnosis` becomes available after `incident.opened`; `open_recovery_console` after an evaluated remediation plan or repair begins; and `compare_recovery` only after both independent verification and a terminal record exist. These flags never authorize, start, or alter the loop. An insufficient-evidence stop has no independent verification, so Compare remains unavailable while the human gate is visible.
+Every GET and SSE event also carries `contextual_workspaces`. Its `context` preserves the canonical `run_id`, `incident_id`, selected component, and exact timeline sequence/event/stage. Its actions are advisory launch prerequisites only: `view_diagnosis` becomes available after `incident.opened`; `open_recovery_console` after an evaluated remediation plan or repair begins; and `compare_recovery` only after a repair was implemented, independently verified, and the terminal state is `recovered`. These flags never authorize, start, or alter the loop. Failed and insufficient-evidence runs therefore keep Compare unavailable while exposing their terminal state or human gate.
 
-Provider capability checking is part of the background run so the POST remains fast. An unavailable or malformed `codex-local` provider emits a terminal `failed` state with a bounded failure reason; it never substitutes recorded text.
+Provider capability checking is part of the background run so the POST remains fast. The local preflight only verifies that the configured Codex executable can run; it deliberately does not invoke `codex login status`, because that installed CLI command can block despite normal authenticated `codex exec` use. Authentication is therefore exercised only by the bounded real invocation (hard-capped at 120 seconds by default), whose nonzero/timeout result becomes a sanitized terminal failure. An unavailable or malformed `codex-local` provider never substitutes recorded text.
 
 ## Ordered event projection
 
@@ -71,7 +71,7 @@ The browser renders event order directly; it does not infer hidden transitions o
 | `local_fault_loop.baseline.captured` | monitor | baseline truth and citations |
 | `local_fault_loop.fault.injected` | fault | bounded fault, affected components, reversible scope |
 | `local_fault_loop.observer.detected` | detect | anomaly IDs and impacted components |
-| `local_fault_loop.orchestrator.routed` / `.handoff.recorded` | diagnose | explicit requested/responding role and handoff reason |
+| `local_fault_loop.orchestrator.routed` / `.handoff.recorded` | diagnose | explicit requested/responding role and handoff reason; Observer → Orchestrator → Investigator → Evaluator transitions are runtime-owned (`ownership: "runtime_deterministic"`) rather than contingent on a model recommendation |
 | `local_fault_loop.hypothesis.proposed` / `.evaluation.rejected` / `.evaluation.accepted` | diagnose/evaluate | cited hypothesis, score, false-causal decision |
 | `local_fault_loop.plan.proposed` / `.authority.decided` | plan/approve-or-auto | risk, reversibility, authority outcome |
 | `local_fault_loop.repair.executed` | repair | local-only bounded repair and attempt |

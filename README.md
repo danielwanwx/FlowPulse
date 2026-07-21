@@ -56,7 +56,7 @@ Open [http://127.0.0.1:4310](http://127.0.0.1:4310), then:
 4. Click **Recover** at the human gate. The Manager shows the rejected claim, accepted cause, evidence IDs, and bounded proposal; use the separate Owner approval control to authorize it.
 5. Open **Recovery Console** to review the diagnosis, watch execution/verification/Evolve/Test from the same ledger events, assign safe agent work, and prepare ledger-governed PR/Jira drafts. Then open **Compare** to inspect incident versus verified state.
 
-The interactive path takes about 20 seconds. It is deterministic and needs no cloud credentials. `npm run judge` remains a convenience command that runs the tests and then starts the server.
+The recorded interactive path is deterministic and needs no cloud credentials. A local-Codex run is bounded by the configured provider timeout and depends on the authenticated local CLI. `npm run judge` remains a convenience command that runs the tests and then starts the server.
 
 ## Agent Team chat providers
 
