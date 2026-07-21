@@ -269,6 +269,14 @@ test("the product opens on architecture and keeps advanced actions in an accessi
   assert.match(stylesCss, /\.stage-readout \{ display: none;/);
 });
 
+test("initial rendering does not wait for optional development diagnostics", () => {
+  const refreshSource = appJs.slice(appJs.indexOf("async function refresh()"), appJs.indexOf("function render()"));
+  assert.match(refreshSource, /state = await request\("\/api\/state"\);/);
+  assert.match(refreshSource, /void refreshDevelopmentStatus\(\);/);
+  assert.doesNotMatch(refreshSource, /Promise\.all\(/);
+  assert.match(appJs, /async function refreshDevelopmentStatus\(\)/);
+});
+
 test("architecture is a static four-layer overview with backend-owned status dots", () => {
   const observed = new Set(["load-generator", "frontend-web", "frontend-proxy", "frontend", "checkout", "cart", "payment", "currency", "shipping", "product-catalog", "recommendation", "ad", "email", "kafka", "accounting", "fraud-detection", "quote", "image-provider", "flagd", "telemetry-docs", "otelcol-contrib", "astronomy-db"]);
   const nodes = ARCHITECTURE_LAYERS.flatMap((layer) => layer.ids.filter((id) => observed.has(id)).map((id, index) => ({ id, label: id, kind: index === 0 ? "client" : "service" })));

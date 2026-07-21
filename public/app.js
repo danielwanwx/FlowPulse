@@ -184,19 +184,30 @@ await refresh();
 async function refresh() {
   setLoading(true);
   try {
-    [state, developmentStatus] = await Promise.all([
-      request("/api/state"),
-      request("/api/development/status").catch(() => null)
-    ]);
+    state = await request("/api/state");
     cursor = availableStage(state.events);
     connectAgentStream();
     hideError();
     render();
+    // Local-development diagnostics can spend seconds probing Docker and the
+    // optional flag API. They must never delay the canonical browser state.
+    void refreshDevelopmentStatus();
   } catch (error) {
     showError(error.message);
   } finally {
     setLoading(false);
   }
+}
+
+async function refreshDevelopmentStatus() {
+  try {
+    developmentStatus = await request("/api/development/status");
+  } catch {
+    developmentStatus = null;
+  }
+  if (!state) return;
+  renderDevelopmentControl();
+  updateControls();
 }
 
 function render() {

@@ -47,6 +47,7 @@ const authorityReceiptSecret = randomBytes(32);
 const authorityReceiptBindings = new Map();
 const CAPTURE_CLOCK_SKEW_MS = 1_000;
 const BROWSER_RESPONSE_MAX_BYTES = 512 * 1024;
+const DEVELOPMENT_STATUS_CACHE_TTL_MS = 10_000;
 // This is a server-side work bound, deliberately much smaller than an
 // unbounded ledger scan and independent of the 256 KiB browser response cap.
 const PROJECTION_LEDGER_MAX_BYTES = 2 * 1024 * 1024;
@@ -66,6 +67,7 @@ const DEMO_REPLAY_FRAMES = [
   { id: "downstream_propagation", order: 3, phase: "DOWNSTREAM_PROPAGATION", node_ids: ["kafka", "accounting", "fraud-detection"], relation_ids: ["checkout->kafka", "kafka->accounting", "kafka->fraud-detection"], evidence_refs: ["ev-metric-kafka-lag", "ev-log-consumer-delay"] },
   { id: "incident_detected", order: 4, phase: "INCIDENT_DETECTED", node_ids: ["accounting", "checkout", "fraud-detection", "frontend", "kafka", "payment"], relation_ids: ["checkout->kafka", "checkout->payment", "frontend->checkout", "kafka->accounting", "kafka->fraud-detection"], evidence_refs: ["ev-metric-checkout-errors", "ev-metric-kafka-lag", "ev-log-consumer-delay"] }
 ];
+let developmentStatusCache = { value: null, expiresAt: 0, pending: null };
 let activeDemoRunId = initializeDemoRun();
 validateAutonomyPolicyArtifact(AUTONOMY_POLICY_ARTIFACT);
 const langfuseEnabled = await initializeObservability().catch(() => {
@@ -174,15 +176,21 @@ const server = createServer(async (request, response) => {
       }));
     }
     if (url.pathname === "/api/development/status" && request.method === "GET") {
-      return json(response, 200, await developmentAdapter.developmentStatus());
+      const status = await cachedDevelopmentStatus();
+      response.setHeader("x-flowpulse-development-status-cache", status.cache);
+      return json(response, 200, status.value);
     }
     if (url.pathname === "/api/development/setup" && request.method === "POST") {
       requireJson(request);
-      return json(response, 200, await developmentAdapter.setupDevelopment());
+      const result = await developmentAdapter.setupDevelopment();
+      invalidateDevelopmentStatusCache();
+      return json(response, 200, result);
     }
     if (url.pathname === "/api/development/start" && request.method === "POST") {
       requireJson(request);
-      return json(response, 200, await developmentAdapter.startDevelopment());
+      const result = await developmentAdapter.startDevelopment();
+      invalidateDevelopmentStatusCache();
+      return json(response, 200, result);
     }
     if (url.pathname === "/api/development/case" && request.method === "POST") {
       requireJson(request);
@@ -916,6 +924,25 @@ function setHeaders(response) {
 
 function json(response, status, value) {
   send(response, status, JSON.stringify(value), "application/json; charset=utf-8");
+}
+
+async function cachedDevelopmentStatus() {
+  const now = Date.now();
+  if (developmentStatusCache.value && developmentStatusCache.expiresAt > now) return { value: developmentStatusCache.value, cache: "hit" };
+  if (developmentStatusCache.pending) return { value: await developmentStatusCache.pending, cache: "coalesced" };
+  const pending = developmentAdapter.developmentStatus();
+  developmentStatusCache.pending = pending;
+  try {
+    const value = await pending;
+    developmentStatusCache = { value, expiresAt: Date.now() + DEVELOPMENT_STATUS_CACHE_TTL_MS, pending: null };
+    return { value, cache: "miss" };
+  } finally {
+    if (developmentStatusCache.pending === pending) developmentStatusCache.pending = null;
+  }
+}
+
+function invalidateDevelopmentStatusCache() {
+  developmentStatusCache = { value: null, expiresAt: 0, pending: null };
 }
 
 function send(response, status, body, contentType = "text/plain; charset=utf-8") {

@@ -443,6 +443,9 @@ test("an active demo centrally blocks every non-demo write before side effects",
   for (const pathname of ["/api/health", "/api/state", "/api/source", "/api/evidence", "/api/agent-control", "/api/development/status", "/"]) {
     assert.equal((await fetch(`http://127.0.0.1:${port}${pathname}`)).status, 200, pathname);
   }
+  const cachedDevelopmentStatus = await fetch(`http://127.0.0.1:${port}/api/development/status`);
+  assert.equal(cachedDevelopmentStatus.status, 200);
+  assert.equal(cachedDevelopmentStatus.headers.get("x-flowpulse-development-status-cache"), "hit");
   const eventStream = await fetch(`http://127.0.0.1:${port}/api/agent-control/events?after=999999`);
   assert.equal(eventStream.status, 200);
   await eventStream.body.cancel();
