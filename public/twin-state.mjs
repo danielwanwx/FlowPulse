@@ -1333,6 +1333,29 @@ export function availableStage(events = []) {
   return 0;
 }
 
+export function canonicalTwinDisplay({ sourceStates = {}, metric = null } = {}) {
+  const nodeStates = Object.fromEntries(TWIN_NODES.map((node) => {
+    const canonicalId = node.id === "fraud" ? "fraud-detection" : node.id;
+    const status = sourceStates[canonicalId];
+    if (["root", "impact", "fault", "failed", "degraded"].includes(status)) return [node.id, "impact"];
+    if (status === "verified") return [node.id, "verified"];
+    if (status === "healthy") return [node.id, "healthy"];
+    return [node.id, "observed"];
+  }));
+  const edgeStates = Object.fromEntries(TWIN_EDGES.map((edge) => [edge.id, "observed"]));
+  const completeMetric = metric && [metric.checkout_error_rate_percent, metric.payment_reachability_percent, metric.kafka_lag].every(Number.isFinite);
+  const metrics = completeMetric ? {
+    checkout: { value: `${metric.checkout_error_rate_percent}%`, note: `${metric.phase || "Recorded"} evidence` },
+    payment: { value: `${metric.payment_reachability_percent}%`, note: `${metric.phase || "Recorded"} evidence` },
+    kafka: { value: metric.kafka_lag.toLocaleString(), note: `${metric.phase || "Recorded"} evidence` }
+  } : {
+    checkout: { value: "Unavailable", note: "Awaiting evidence" },
+    payment: { value: "Unavailable", note: "Awaiting evidence" },
+    kafka: { value: "Unavailable", note: "Awaiting evidence" }
+  };
+  return { nodeStates, edgeStates, metrics };
+}
+
 export function frameFor(stageIndex) {
   const index = clampStage(stageIndex);
   const nodeStates = Object.fromEntries(TWIN_NODES.map((node) => [node.id, node.kind === "change" ? "dormant" : node.kind === "database" ? "recording" : "healthy"]));

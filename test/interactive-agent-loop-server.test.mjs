@@ -83,6 +83,34 @@ test("interactive loop starts asynchronously, streams safe events, resumes, and 
     assert.equal(view.incident_id, workspace.topology.incident_id);
     assert.equal(view.projection_revision, workspace.topology.projection_revision);
   }
+  const planEvent = events.find((item) => item.payload.event.type === "local_fault_loop.plan.proposed").payload.event;
+  const authorityEvent = events.find((item) => item.payload.event.type === "local_fault_loop.authority.decided").payload.event;
+  const repairEvent = events.find((item) => item.payload.event.type === "local_fault_loop.repair.executed").payload.event;
+  const verificationEvent = events.find((item) => item.payload.event.type === "local_fault_loop.verification.completed").payload.event;
+  assert.deepEqual([authorityEvent.actor, repairEvent.actor, verificationEvent.actor], ["runtime", "remediation", "verifier"]);
+  assert.equal(planEvent.sequence < authorityEvent.sequence && authorityEvent.sequence < repairEvent.sequence && repairEvent.sequence < verificationEvent.sequence, true);
+  assert.equal(authorityEvent.payload.execution_scope, "local_memory_only");
+  assert.equal(repairEvent.payload.execution_scope, "local_memory_only");
+  assert.deepEqual(verificationEvent.payload.checks.map(({ id, passed }) => [id, passed]), [
+    ["root_condition_removed", true],
+    ["direct_symptom_cleared", true],
+    ["downstream_lag_converged", true]
+  ]);
+  const workflowChat = await postJson(port, "/api/agent-control/chat", {
+    run_id: first.body.run_id,
+    incident_id: first.body.incident_id,
+    projection_revision: workspace.topology.projection_revision,
+    conversation_id: "conv-workflow-separation-001",
+    idempotency_key: "workflow-separation-message-001",
+    requested_agent: "orchestrator",
+    page_mode: "recovery",
+    selected_component: "checkout",
+    message: "What evidence proves this recovery was authorized and independently verified?"
+  });
+  assert.equal(workflowChat.status, 200, JSON.stringify(workflowChat.body));
+  assert.equal(workflowChat.body.citations.includes(authorityEvent.id), true);
+  assert.equal(workflowChat.body.citations.includes(verificationEvent.id), true);
+  assert.equal(workflowChat.body.tool_summaries.some((item) => item.tool === "read_workflow_projection" && item.result_count === 1), true);
   const reset = await postJson(port, "/api/demo/reset", {});
   assert.equal(reset.status, 201);
   assert.equal(reset.body.workspace_projection, null, "a clean reset must clear the prior canonical workspace run");
@@ -97,10 +125,15 @@ test("interactive loop starts asynchronously, streams safe events, resumes, and 
 
   const resumeAfter = sequences[5];
   const resumed = await readAllSse(port, `/api/demo/agent-loop/events?run_id=${first.body.run_id}&after=${resumeAfter}`, { "Last-Event-ID": String(resumeAfter) });
-  const resumedSequences = resumed.events.filter((item) => item.event === "local-fault-loop").map((item) => item.payload.event.sequence);
+  const resumedSequences = resumed.events
+    .filter((item) => item.event === "local-fault-loop" && item.payload.event.type.startsWith("local_fault_loop."))
+    .map((item) => item.payload.event.sequence);
   assert.equal(resumedSequences.every((sequence) => sequence > resumeAfter), true);
   assert.equal(new Set(resumedSequences).size, resumedSequences.length);
-  assert.deepEqual(resumedSequences, sequences.filter((sequence) => sequence > resumeAfter));
+  const expectedResumedSequences = events
+    .filter((item) => item.payload.event.type.startsWith("local_fault_loop.") && item.payload.event.sequence > resumeAfter)
+    .map((item) => item.payload.event.sequence);
+  assert.deepEqual(resumedSequences, expectedResumedSequences);
   assert.equal(resumed.states.length, 1);
 
   const negative = await postJson(port, "/api/demo/agent-loop/run", { case_id: "insufficient-evidence", round: 1, idempotency_key: "interactive-negative-001" });

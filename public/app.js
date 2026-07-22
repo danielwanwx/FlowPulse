@@ -22,6 +22,7 @@ import {
   nodeLiveInspectorProjection,
   compareFrames,
   compareProvenance,
+  canonicalTwinDisplay,
   eventsAtStage,
   frameFor,
   liveIncidentNodeStates,
@@ -661,19 +662,12 @@ function renderCanvas() {
 }
 
 function canonicalTwinFrame(shared, snapshot, index) {
-  const base = frameFor(0);
   const sourceStates = snapshot?.node_statuses || shared.node_statuses || {};
-  const twinState = (id) => {
-    const canonicalId = id === "fraud" ? "fraud-detection" : id;
-    const state = sourceStates[canonicalId];
-    if (["root", "impact", "fault", "failed", "degraded"].includes(state)) return "impact";
-    if (state === "verified") return "verified";
-    if (state === "healthy") return "healthy";
-    return base.nodeStates[id];
-  };
-  const nodeStates = Object.fromEntries(TWIN_NODES.map((node) => [node.id, twinState(node.id)]));
+  const metric = snapshot?.metric_sample || shared.metric_samples.current || null;
+  const display = canonicalTwinDisplay({ sourceStates, metric });
+  const nodeStates = { ...display.nodeStates };
   nodeStates.deployment = snapshot ? "change" : nodeStates.deployment;
-  const edgeStates = { ...base.edgeStates };
+  const edgeStates = { ...display.edgeStates };
   // Control-plane activity is rendered only when the canonical run recorded
   // the corresponding event.  The static twin definitions provide geometry,
   // not an alternate source of truth.
@@ -700,19 +694,13 @@ function canonicalTwinFrame(shared, snapshot, index) {
     if (adjacent.includes("impact")) edgeStates[edge.id] = "impact";
     else if (adjacent.includes("verified")) edgeStates[edge.id] = "verified";
   }
-  const metric = snapshot?.metric_sample || shared.metric_samples.current;
   const latest = shared.events.at(-1);
   return {
-    ...base,
     index,
     stage: { id: snapshot?.stage || shared.stage, label: (snapshot?.stage || shared.stage).replaceAll("-", " "), time: latest ? formatTime(latest.recorded_at) : "Awaiting event" },
     nodeStates,
     edgeStates,
-    metrics: metric ? {
-      checkout: { value: `${metric.checkout_error_rate_percent}%`, note: `${metric.phase} evidence` },
-      payment: { value: `${metric.payment_reachability_percent}%`, note: `${metric.phase} evidence` },
-      kafka: { value: metric.kafka_lag.toLocaleString(), note: `${metric.phase} evidence` }
-    } : base.metrics,
+    metrics: display.metrics,
     annotations: sharedRunAnnotations(shared)
   };
 }
@@ -3877,7 +3865,7 @@ function iconForLive(node) {
 }
 
 function statusLabel(status) {
-  return ({ healthy: "Healthy", observed: "Healthy", idle: "Sleeping", quiet: "Sleeping", dormant: "Sleeping", sleeping: "Sleeping", recording: "Recording", warning: "Pending", pending: "Pending", change: "Change pending", impact: "Fault", fault: "Fault", root: "Root cause", rejected: "Rejected", accepted: "Accepted", active: "Investigating", approval: "Approval required", verified: "Verified", learned: "Learning recorded" })[status] || status;
+  return ({ healthy: "Healthy", observed: "Observed", idle: "Sleeping", quiet: "Sleeping", dormant: "Sleeping", sleeping: "Sleeping", recording: "Recording", warning: "Pending", pending: "Pending", change: "Change pending", impact: "Fault", fault: "Fault", root: "Root cause", rejected: "Rejected", accepted: "Accepted", active: "Investigating", approval: "Approval required", verified: "Verified", learned: "Learning recorded" })[status] || status;
 }
 
 function sourceStatusLabel(status, sourceStatus) {

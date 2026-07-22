@@ -166,10 +166,11 @@ test("Orchestrator receives the canonical recorded authority decision and verifi
   const context = (runtime, runId) => {
     const base = contextForRun(runtime, runId);
     base.incident_projection.workflow = {
-      plan: { event_id: "event-plan-1", repair: "restore_checkout_payment_endpoint", target: "checkout", risk: "low", evidence_refs: ["ev-plan"] },
-      authority: { event_id: "event-authority-1", outcome: "auto_execute_pre_authorized", reason: "Low-risk reversible repair is confined to the in-memory fixture simulator.", execution_scope: "local_memory_only", evidence_refs: [] },
-      repair: { event_id: "event-repair-1", result: "applied", evidence_refs: ["ev-repair"] },
-      verification: { event_id: "event-verification-1", passed: true, checks: [{ id: "root_condition_removed", passed: true }, { id: "direct_symptom_cleared", passed: true }], evidence_refs: ["ev-verify"] }
+      plan: { event_id: "event-plan-1", actor: "orchestrator", sequence: 10, repair: "restore_checkout_payment_endpoint", target: "checkout", risk: "low", evidence_refs: ["ev-plan"] },
+      authority: { event_id: "event-authority-1", actor: "runtime", sequence: 11, outcome: "auto_execute_pre_authorized", reason: "Low-risk reversible repair is confined to the in-memory fixture simulator.", execution_scope: "local_memory_only", evidence_refs: [] },
+      repair: { event_id: "event-repair-1", actor: "remediation", sequence: 13, result: "applied", execution_scope: "local_memory_only", evidence_refs: ["ev-repair"] },
+      verification: { event_id: "event-verification-1", actor: "verifier", sequence: 16, passed: true, checks: [{ id: "root_condition_removed", passed: true }, { id: "direct_symptom_cleared", passed: true }, { id: "downstream_lag_converged", passed: true }], evidence_refs: ["ev-verify"] },
+      verification_boundary: { kind: "demo_role_separation", limitation: "The remediation and verifier actors are separate paths inside this demo workflow; this does not establish organizational or cryptographic independence." }
     };
     return base;
   };
@@ -185,11 +186,24 @@ test("Orchestrator receives the canonical recorded authority decision and verifi
   }));
 
   assert.equal(captured.role_context.workflow.authority.outcome, "auto_execute_pre_authorized");
+  assert.equal(captured.role_context.workflow.authority.actor, "runtime");
+  assert.equal(captured.role_context.workflow.plan.actor, "orchestrator");
+  assert.equal(captured.role_context.workflow.plan.sequence, 10);
+  assert.equal(captured.role_context.workflow.authority.sequence, 11);
+  assert.equal(captured.role_context.workflow.repair.actor, "remediation");
+  assert.equal(captured.role_context.workflow.repair.execution_scope, "local_memory_only");
+  assert.equal(captured.role_context.workflow.verification.actor, "verifier");
+  assert.equal(captured.role_context.workflow.verification.sequence, 16);
+  assert.equal(captured.role_context.workflow.plan.sequence < captured.role_context.workflow.authority.sequence, true);
+  assert.equal(captured.role_context.workflow.authority.sequence < captured.role_context.workflow.repair.sequence, true);
+  assert.equal(captured.role_context.workflow.repair.sequence < captured.role_context.workflow.verification.sequence, true);
   assert.equal(captured.role_context.workflow.verification.passed, true);
   assert.deepEqual(captured.role_context.workflow.verification.checks, [
     { id: "root_condition_removed", passed: true },
-    { id: "direct_symptom_cleared", passed: true }
+    { id: "direct_symptom_cleared", passed: true },
+    { id: "downstream_lag_converged", passed: true }
   ]);
+  assert.match(captured.role_context.workflow.verification_boundary.limitation, /does not establish organizational or cryptographic independence/);
   assert.equal(result.citations.includes("event-authority-1"), true);
   assert.equal(result.citations.includes("event-verification-1"), true);
 });

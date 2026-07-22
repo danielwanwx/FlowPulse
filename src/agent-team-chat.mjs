@@ -557,11 +557,14 @@ function boundedWorkflow(value) {
   }));
   const refs = (input) => safeIds(input);
   const text = (input) => safeText(input, 240);
+  const actor = (input) => safeText(input, 80);
+  const sequence = (input) => safeInt(input, 10_000_000);
   return {
-    plan: part(value?.plan, [["event_id", safeIdValue], ["repair", text], ["target", safeIdValue], ["risk", text], ["verification_plan", (input) => Array.isArray(input) ? input.slice(0, 8).map(text).filter(Boolean) : null], ["evidence_refs", refs]]),
-    authority: part(value?.authority, [["event_id", safeIdValue], ["outcome", text], ["reason", text], ["execution_scope", text], ["evidence_refs", refs]]),
-    repair: part(value?.repair, [["event_id", safeIdValue], ["result", text], ["execution_scope", text], ["rollback_available", (input) => typeof input === "boolean" ? input : null], ["evidence_refs", refs]]),
-    verification: part(value?.verification, [["event_id", safeIdValue], ["passed", (input) => typeof input === "boolean" ? input : null], ["checks", (input) => Array.isArray(input) ? input.slice(0, 8).map((check) => ({ id: safeIdValue(check?.id), passed: check?.passed === true })).filter((check) => check.id) : null], ["recovery_slo", (input) => plain(input) ? { target: text(input.target), observed: text(input.observed) } : null], ["evidence_refs", refs]])
+    plan: part(value?.plan, [["event_id", safeIdValue], ["actor", actor], ["sequence", sequence], ["repair", text], ["target", safeIdValue], ["risk", text], ["verification_plan", (input) => Array.isArray(input) ? input.slice(0, 8).map(text).filter(Boolean) : null], ["evidence_refs", refs]]),
+    authority: part(value?.authority, [["event_id", safeIdValue], ["actor", actor], ["sequence", sequence], ["outcome", text], ["reason", text], ["execution_scope", text], ["evidence_refs", refs]]),
+    repair: part(value?.repair, [["event_id", safeIdValue], ["actor", actor], ["sequence", sequence], ["result", text], ["execution_scope", text], ["rollback_available", (input) => typeof input === "boolean" ? input : null], ["evidence_refs", refs]]),
+    verification: part(value?.verification, [["event_id", safeIdValue], ["actor", actor], ["sequence", sequence], ["passed", (input) => typeof input === "boolean" ? input : null], ["checks", (input) => Array.isArray(input) ? input.slice(0, 8).map((check) => ({ id: safeIdValue(check?.id), passed: check?.passed === true })).filter((check) => check.id) : null], ["recovery_slo", (input) => plain(input) ? { target: text(input.target), observed: text(input.observed) } : null], ["evidence_refs", refs]]),
+    verification_boundary: part(value?.verification_boundary, [["kind", text], ["limitation", text]])
   };
 }
 

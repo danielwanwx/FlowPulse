@@ -1461,10 +1461,11 @@ function localLoopIncidentProjection(loop, fallback = {}) {
     stage_status: loop.state,
     human_gate: { ...(fallback?.human_gate || {}), status: loop.state === "needs_human" ? "requested" : "not_required" },
     workflow: {
-      plan: plan ? { event_id: plan.id, repair: plan.payload?.repair, target: plan.payload?.target, risk: plan.payload?.risk, verification_plan: plan.payload?.verification_plan, evidence_refs: plan.evidence_refs } : null,
-      authority: authority ? { event_id: authority.id, outcome: authority.payload?.outcome, reason: authority.payload?.reason, execution_scope: authority.payload?.execution_scope, evidence_refs: authority.evidence_refs } : null,
-      repair: repair ? { event_id: repair.id, result: repair.payload?.result, execution_scope: repair.payload?.execution_scope, rollback_available: repair.payload?.rollback_available, evidence_refs: repair.evidence_refs } : null,
-      verification: verification ? { event_id: verification.id, passed: verification.payload?.passed, checks: verification.payload?.checks, recovery_slo: verification.payload?.recovery_slo, evidence_refs: verification.evidence_refs } : null
+      plan: plan ? { event_id: plan.id, actor: plan.actor, sequence: plan.sequence, repair: plan.payload?.repair, target: plan.payload?.target, risk: plan.payload?.risk, verification_plan: plan.payload?.verification_plan, evidence_refs: plan.evidence_refs } : null,
+      authority: authority ? { event_id: authority.id, actor: authority.actor, sequence: authority.sequence, outcome: authority.payload?.outcome, reason: authority.payload?.reason, execution_scope: authority.payload?.execution_scope, evidence_refs: authority.evidence_refs } : null,
+      repair: repair ? { event_id: repair.id, actor: repair.actor, sequence: repair.sequence, result: repair.payload?.result, execution_scope: repair.payload?.execution_scope, rollback_available: repair.payload?.rollback_available, evidence_refs: repair.evidence_refs } : null,
+      verification: verification ? { event_id: verification.id, actor: verification.actor, sequence: verification.sequence, passed: verification.payload?.passed, checks: verification.payload?.checks, recovery_slo: verification.payload?.recovery_slo, evidence_refs: verification.evidence_refs } : null,
+      verification_boundary: { kind: "demo_role_separation", limitation: "The remediation and verifier actors are separate paths inside this demo workflow; this does not establish organizational or cryptographic independence." }
     }
   };
 }

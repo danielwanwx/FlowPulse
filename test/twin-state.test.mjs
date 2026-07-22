@@ -24,6 +24,7 @@ import {
   architecturePositions,
   compareFrames,
   compareProvenance,
+  canonicalTwinDisplay,
   eventsAtStage,
   frameFor,
   liveEdgePath,
@@ -43,6 +44,20 @@ import {
 const indexHtml = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
 const appJs = readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
 const stylesCss = readFileSync(new URL("../public/styles.css", import.meta.url), "utf8");
+
+test("canonical display never turns observed or missing backend facts into fixed healthy demo data", () => {
+  const display = canonicalTwinDisplay({ sourceStates: { checkout: "observed" }, metric: null });
+  assert.equal(display.nodeStates.checkout, "observed");
+  assert.equal(display.nodeStates.frontend, "observed");
+  assert.equal(Object.values(display.edgeStates).every((status) => status === "observed"), true);
+  assert.deepEqual(display.metrics, {
+    checkout: { value: "Unavailable", note: "Awaiting evidence" },
+    payment: { value: "Unavailable", note: "Awaiting evidence" },
+    kafka: { value: "Unavailable", note: "Awaiting evidence" }
+  });
+  assert.doesNotMatch(JSON.stringify(display), /0\.8|99\.98|620|healthy/i);
+  assert.deepEqual(canonicalTwinDisplay({ metric: { checkout_error_rate_percent: 4.2, payment_reachability_percent: null, kafka_lag: 17 } }).metrics, display.metrics);
+});
 const architectureRefinementCss = stylesCss.slice(stylesCss.lastIndexOf("/* Architecture refinement: compact nested anatomy"));
 const architectureMaterialCss = architectureRefinementCss.slice(0, architectureRefinementCss.indexOf("@media (max-width: 1320px)"));
 const architectureStaticCss = stylesCss.slice(stylesCss.lastIndexOf("/* Architecture static overview: flat alpha-only material. */"));
