@@ -110,6 +110,7 @@ let busy = false;
 let comparePercent = 50;
 let compareFocus = "impact";
 let selected = null;
+let recoverySelectedRole = null;
 let architectureDetail = null;
 let activeTab = "evidence";
 let toastTimer;
@@ -146,7 +147,15 @@ els["retry-button"].addEventListener("click", refresh);
 els["live-button"].addEventListener("click", () => { closeWorkspaceMenu(); runLive(); });
 els["details-button"].addEventListener("click", () => { closeWorkspaceMenu(); openDrawer({ type: "run", id: state?.run_id }, "evidence"); });
 els["open-incident-button"].addEventListener("click", () => openDrawer({ type: "run", id: state?.run_id }, "agent"));
-els["recovery-status-button"].addEventListener("click", () => setMode("agents"));
+els["recovery-status-button"].addEventListener("click", () => {
+  // This is the only visible path that can approve a consequential
+  // development repair. All other states keep the button as navigation.
+  if (state?.mode === "development" && state.waiting_for_approval) {
+    void approveRepair();
+    return;
+  }
+  setMode("agents");
+});
 els["development-button"].addEventListener("click", handleDevelopmentAction);
 els["drawer-close"].addEventListener("click", closeDrawer);
 els["restart-button"].addEventListener("click", restartReplay);
@@ -168,9 +177,6 @@ els["compare-even"].addEventListener("click", () => setComparePercent(50));
 els["compare-verified"].addEventListener("click", () => setComparePercent(30));
 els["compare-control"].addEventListener("click", handleCompareFocus);
 els["operations-team-rail"].addEventListener("click", handleOperationsTeamRail);
-els["operations-team-rail"].addEventListener("submit", handleAgentTeamSubmit);
-els["operations-team-rail"].addEventListener("keydown", handleAgentTeamComposerKeydown);
-els["operations-team-rail"].addEventListener("input", handleAgentTeamDraft);
 els["operations-team-rail"].addEventListener("scroll", (event) => {
   if (event.target.matches("[data-live-inspector-scroll]")) liveInspector = { ...liveInspector, scroll_top: event.target.scrollTop };
 }, true);
@@ -208,7 +214,9 @@ async function refresh() {
   setLoading(true);
   try {
     state = await request("/api/state");
-    cursor = availableStage(state.events);
+    bindCanonicalWorkspace(state.workspace_projection);
+    const canonical = sharedRunModel();
+    cursor = canonical?.events.length ? canonical.events.length - 1 : availableStage(state.events);
     connectAgentStream();
     hideError();
     render();
@@ -223,6 +231,23 @@ async function refresh() {
   } finally {
     setLoading(false);
   }
+}
+
+function bindCanonicalWorkspace(value) {
+  if (value == null) return;
+  const loop = agentLoopProjection(value, { runId: value?.run_id || null });
+  if (!loop) {
+    sharedRun = { run_id: null, incident_id: null, loop: null, last_sequence: 0, error: "Canonical workspace projection is incompatible." };
+    return;
+  }
+  sharedRun = {
+    run_id: loop.run_id,
+    incident_id: loop.incident_id,
+    loop,
+    last_sequence: loop.events.at(-1)?.sequence || 0,
+    error: null
+  };
+  persistSharedRun();
 }
 
 function restoreSharedRun() {
@@ -428,8 +453,12 @@ function renderHeader() {
   els["capture-label"].className = `capture-label source-${mode === "compare" ? compareProvenance(state.events).tone : source.status}`;
   els["zoom-controls"].hidden = mode !== "live";
   updateZoomControls();
-  els["canvas-caption"].textContent = modeCaption(frame);
+  els["canvas-caption"].textContent = mode === "replay" && shared ? canonicalDiagnosisCaption(shared) : modeCaption(frame);
   els["app-shell"].dataset.mode = mode;
+  els["app-shell"].dataset.workspaceMode = mode === "replay" ? "diagnose" : mode;
+  // Expose the product-facing workspace name without changing the internal
+  // replay state used by the deterministic timeline and existing CSS.
+  els["app-shell"].mode = mode === "replay" ? "diagnose" : mode;
   els["timeline-dock"].hidden = !["replay", "agents", "compare"].includes(mode);
   els["live-button"].hidden = !state.live_available;
   renderThemeToggle();
@@ -533,7 +562,7 @@ function renderSharedRunMetrics(shared) {
   const baseline = shared.metric_samples.baseline;
   const incident = shared.metric_samples.incident;
   const verified = shared.metric_samples.verified;
-  const current = shared.metric_samples.current;
+  const current = mode === "replay" ? incident || shared.metric_samples.current : shared.metric_samples.current;
   els["metric-checkout-label"].textContent = "Checkout errors";
   els["metric-payment-label"].textContent = "Payment reachable";
   els["metric-kafka-label"].textContent = "Kafka lag";
@@ -564,11 +593,15 @@ function renderCanvas() {
   stopLiveSignalLoop();
   const shared = sharedRunModelAtCursor();
   const sharedPendingTopology = Boolean(sharedRun?.loop && !shared);
+  const canonicalLegacyView = Boolean(shared && (mode === "replay" || mode === "compare"));
   els["twin-canvas"].classList.toggle("is-compare-mode", mode === "compare");
-  els["twin-canvas"].classList.toggle("is-source-topology", mode === "architecture" || mode === "live" || Boolean(shared && ["replay", "compare"].includes(mode)));
+  els["twin-canvas"].classList.toggle("is-source-topology", mode === "architecture" || mode === "live" || canonicalLegacyView);
   els["twin-canvas"].classList.toggle("is-architecture-source", mode === "architecture");
-  els["twin-canvas"].classList.toggle("is-live-source", mode === "live" || Boolean(shared && ["replay", "compare"].includes(mode)));
+  els["twin-canvas"].classList.toggle("is-live-source", mode === "live" || Boolean(shared && (mode === "replay" || mode === "compare")));
   els["twin-canvas"].classList.toggle("is-agent-source", mode === "agents");
+  // Canonical Diagnose and Compare reuse the compact approved twin geometry,
+  // rather than the full Live source-topology geometry.
+  if (canonicalLegacyView) els["twin-canvas"].classList.remove("is-source-topology", "is-live-source");
   configureCanvasWorld(mode === "live");
   if (mode === "architecture") {
     renderSourceCanvas("architecture");
@@ -587,15 +620,7 @@ function renderCanvas() {
   if (mode === "compare") {
     if (sharedPendingTopology) return renderCanonicalTopologyPending("Compare is waiting for the canonical topology binding.");
     if (shared) {
-      const verified = shared.topology.verification.passed === true;
-      const snapshot = verified ? shared.topology.snapshots.verified : shared.topology.current;
-      renderSourceCanvas("live", { ...shared.topology, current: snapshot }, verified
-        ? `Compare verified canonical topology for run ${shared.run_id}.`
-        : `Compare is pending independent verification for canonical run ${shared.run_id}.`);
-      els["twin-canvas"].dataset.compareState = verified ? "verified" : "verification_pending";
-      els["compare-handle"].hidden = true;
-      els["compare-canvas-range"].hidden = true;
-      setAnnotations(verified ? sharedRunAnnotations(shared) : [{ id: "recovery", tone: "warning", title: "Verification pending", copy: "Compare remains locked until the same run records a passed independent verification." }]);
+      renderCanonicalCompareCanvas(shared);
       return;
     }
     const { incident, recovered } = compareFrames();
@@ -611,8 +636,17 @@ function renderCanvas() {
   }
   if (sharedPendingTopology) return renderCanonicalTopologyPending("Diagnose is waiting for the canonical topology binding.");
   if (shared) {
-    renderSourceCanvas("live", shared.topology, `Diagnose canonical topology for run ${shared.run_id}.`);
-    setAnnotations(sharedRunAnnotations(shared));
+    const diagnosisFrame = canonicalTwinFrame(shared, shared.topology.snapshots.incident, cursor);
+    els["canvas-layers"].innerHTML = renderTwinLayer(diagnosisFrame, "current", true, { runtimeOnly: true, includeControl: true });
+    els["compare-handle"].hidden = true;
+    els["compare-canvas-range"].hidden = true;
+    els["twin-canvas"].setAttribute("data-testid", "diagnose-canvas");
+    els["twin-canvas"].dataset.runId = shared.run_id;
+    els["twin-canvas"].dataset.incidentId = shared.incident_id;
+    els["twin-canvas"].dataset.projectionRevision = shared.projection_revision;
+    els["twin-canvas"].setAttribute("aria-label", `Incident diagnosis for canonical run ${shared.run_id}.`);
+    const annotations = sharedRunAnnotations(shared).filter((annotation) => annotation.id !== "recovery");
+    setAnnotations(annotations.length ? [annotations.at(-1)] : []);
     return;
   }
   const frame = currentFrame();
@@ -624,6 +658,96 @@ function renderCanvas() {
   const annotations = state.mode === "development" ? developmentAnnotations(cursor) : frame.annotations;
   setAnnotations(annotations.length ? [annotations.at(-1)] : []);
   els["twin-canvas"].setAttribute("aria-label", `Incident diagnosis at ${frame.stage.label}`);
+}
+
+function canonicalTwinFrame(shared, snapshot, index) {
+  const base = frameFor(0);
+  const sourceStates = snapshot?.node_statuses || shared.node_statuses || {};
+  const twinState = (id) => {
+    const canonicalId = id === "fraud" ? "fraud-detection" : id;
+    const state = sourceStates[canonicalId];
+    if (["root", "impact", "fault", "failed", "degraded"].includes(state)) return "impact";
+    if (state === "verified") return "verified";
+    if (state === "healthy") return "healthy";
+    return base.nodeStates[id];
+  };
+  const nodeStates = Object.fromEntries(TWIN_NODES.map((node) => [node.id, twinState(node.id)]));
+  nodeStates.deployment = snapshot ? "change" : nodeStates.deployment;
+  const edgeStates = { ...base.edgeStates };
+  // Control-plane activity is rendered only when the canonical run recorded
+  // the corresponding event.  The static twin definitions provide geometry,
+  // not an alternate source of truth.
+  const has = (type) => shared.events.some((event) => event.type === type);
+  if (has("local_fault_loop.fault.injected")) {
+    nodeStates.deployment = "change";
+    edgeStates["deployment-checkout"] = "change";
+  }
+  if (has("local_fault_loop.hypothesis.proposed")) {
+    nodeStates.agent = "active";
+    edgeStates["agent-evaluator"] = "active";
+  }
+  if (has("local_fault_loop.evaluation.rejected") || has("local_fault_loop.evaluation.accepted")) {
+    nodeStates.evaluator = "active";
+    edgeStates["evaluator-ledger"] = "active";
+  }
+  if (has("local_fault_loop.evidence.recorded")) {
+    nodeStates.ledger = "recording";
+    edgeStates["checkout-ledger"] = "recording";
+    edgeStates["kafka-ledger"] = "recording";
+  }
+  for (const edge of TWIN_EDGES) {
+    const adjacent = [nodeStates[edge.from], nodeStates[edge.to]];
+    if (adjacent.includes("impact")) edgeStates[edge.id] = "impact";
+    else if (adjacent.includes("verified")) edgeStates[edge.id] = "verified";
+  }
+  const metric = snapshot?.metric_sample || shared.metric_samples.current;
+  const latest = shared.events.at(-1);
+  return {
+    ...base,
+    index,
+    stage: { id: snapshot?.stage || shared.stage, label: (snapshot?.stage || shared.stage).replaceAll("-", " "), time: latest ? formatTime(latest.recorded_at) : "Awaiting event" },
+    nodeStates,
+    edgeStates,
+    metrics: metric ? {
+      checkout: { value: `${metric.checkout_error_rate_percent}%`, note: `${metric.phase} evidence` },
+      payment: { value: `${metric.payment_reachability_percent}%`, note: `${metric.phase} evidence` },
+      kafka: { value: metric.kafka_lag.toLocaleString(), note: `${metric.phase} evidence` }
+    } : base.metrics,
+    annotations: sharedRunAnnotations(shared)
+  };
+}
+
+function canonicalDiagnosisCaption(shared) {
+  const incident = shared.events.find((event) => event.type === "local_fault_loop.fault.injected") || shared.events.at(-1);
+  const count = shared.events.length;
+  return `${incident?.recorded_at ? formatTime(incident.recorded_at) : "Recorded incident"} · ${count} immutable event${count === 1 ? "" : "s"}`;
+}
+
+function renderCanonicalCompareCanvas(shared) {
+  const topology = shared.topology;
+  const verified = topology.verification.passed === true && topology.snapshots.verified !== null;
+  els["twin-canvas"].dataset.runId = shared.run_id;
+  els["twin-canvas"].dataset.incidentId = shared.incident_id;
+  els["twin-canvas"].dataset.projectionRevision = shared.projection_revision;
+  els["twin-canvas"].dataset.compareState = verified ? "verified" : "verification_pending";
+  els["twin-canvas"].setAttribute("data-testid", "compare-canvas");
+  if (!verified) {
+    const incident = canonicalTwinFrame(shared, topology.snapshots.incident, cursor);
+    els["canvas-layers"].innerHTML = renderTwinLayer(incident, "current", true, { runtimeOnly: true });
+    els["compare-handle"].hidden = true;
+    els["compare-canvas-range"].hidden = true;
+    setAnnotations([{ id: "recovery", tone: "warning", title: "Verification pending", copy: "Compare remains locked until this run records passed independent verification." }]);
+    return;
+  }
+  const incident = canonicalTwinFrame(shared, topology.snapshots.incident, cursor);
+  const recovered = canonicalTwinFrame(shared, topology.snapshots.verified, cursor);
+  els["canvas-layers"].innerHTML = `${renderTwinLayer(recovered, "after", true, { runtimeOnly: true })}${renderTwinLayer(incident, "before", false, { runtimeOnly: true })}`;
+  els["compare-handle"].hidden = false;
+  els["compare-canvas-range"].hidden = false;
+  setAnnotations([]);
+  els["twin-canvas"].setAttribute("aria-label", `Compare incident and verified snapshots for canonical run ${shared.run_id}.`);
+  els["compare-canvas-range"].setAttribute("aria-label", "Compare incident and verified recovery");
+  renderComparePosition();
 }
 
 function renderCanonicalTopologyPending(message = "Waiting for the backend-owned canonical topology projection.") {
@@ -995,44 +1119,109 @@ function renderAgentCanvas() {
 
 function renderSharedRecoveryCanvas(shared) {
   const events = shared.events;
-  const topology = shared.topology;
   const roleEvent = (role) => [...events].reverse().find((event) => event.type === "local_fault_loop.role.response" && event.payload?.role === role)
     || [...events].reverse().find((event) => event.type === "local_fault_loop.role.working" && event.payload?.role === role);
   const stageEvent = (type) => [...events].reverse().find((event) => event.type === type);
-  const roles = [
-    ["observer", "Observer", "Collecting bounded anomaly evidence", roleEvent("observer")],
-    ["orchestrator", "Orchestrator", "Selecting the safe workflow", roleEvent("orchestrator")],
-    ["investigator", "Investigator", "Testing causal hypotheses", roleEvent("investigator")],
-    ["evaluator", "Evaluator", "Challenging causal claims", roleEvent("evaluator")],
-    ["recovery", "Recovery Engineer", "Applying only an authorized reversible fixture repair", stageEvent("local_fault_loop.repair.executed") || stageEvent("local_fault_loop.plan.proposed")],
-    ["verifier", "Verifier", "Checking root condition, symptom, and lag convergence", stageEvent("local_fault_loop.verification.completed")]
-  ].map(([id, label, task, event]) => ({ id, label, task, event }));
-  const handoffs = events.filter((event) => event.type === "local_fault_loop.handoff.recorded").slice(-5);
   const plan = stageEvent("local_fault_loop.plan.proposed");
-  const fault = stageEvent("local_fault_loop.fault.injected");
+  const authority = stageEvent("local_fault_loop.authority.decided");
   const repair = stageEvent("local_fault_loop.repair.executed");
   const verification = stageEvent("local_fault_loop.verification.completed");
-  const gate = stageEvent("local_fault_loop.authority.decided");
-  const roleCard = ({ id, label, task, event }) => {
-    const status = !event ? "queued" : event.type === "local_fault_loop.role.response" || event.type === "local_fault_loop.repair.executed" || event.type === "local_fault_loop.verification.completed" ? "done" : "working";
-    const citations = event?.evidence_refs || [];
-    const output = event?.payload?.safe_answer || event?.payload?.repair || event?.payload?.result || "Awaiting a canonical event";
-    return `<article class="recovery-workflow-node is-${escapeHtml(status === "done" ? "verified" : status === "working" ? "active" : "quiet")}" data-shared-role="${escapeHtml(id)}"><i class="ph ph-${escapeHtml(id === "recovery" ? "wrench" : id === "verifier" ? "shield-check" : id === "orchestrator" ? "git-branch" : id === "evaluator" ? "scales" : id === "observer" ? "binoculars" : "brain")}" aria-hidden="true"></i><div><strong>${escapeHtml(label)}</strong><small>${escapeHtml(status)} · ${escapeHtml(task)}</small><small>${event ? `${escapeHtml(event.type.replace("local_fault_loop.", ""))} · ${escapeHtml(formatTime(event.recorded_at))}${Number.isSafeInteger(event.payload?.duration_ms) ? ` · ${event.payload.duration_ms}ms` : ""}` : "No event yet"}</small><small>${escapeHtml(String(output).slice(0, 180))}</small>${citations.length ? `<code>${escapeHtml(citations.slice(0, 3).join(" · "))}</code>` : ""}</div></article>`;
-  };
-  const planCard = plan ? `<section class="recovery-diagnosis"><div class="diagnosis-state"><span>Proposed reversible remediation</span><strong>${escapeHtml(plan.payload.repair)}</strong><small>${escapeHtml(plan.payload.target)} · risk ${escapeHtml(plan.payload.risk)}</small></div><p>Before: ${escapeHtml(fault?.payload?.fault || "bounded fault condition")}. After: ${escapeHtml(repair?.payload?.result || "pending execution")}. Rollback: ${repair?.payload?.rollback_available ? "available" : "not executed"}. Authority: ${escapeHtml(gate?.payload?.outcome || "not decided")}.</p>${plan.evidence_refs.length ? `<div class="citation-list">${plan.evidence_refs.map((id) => `<button type="button" class="citation" data-shared-evidence-id="${escapeHtml(id)}">${escapeHtml(id)}</button>`).join("")}</div>` : ""}</section>` : `<section class="recovery-diagnosis"><div class="diagnosis-state"><span>Recovery state</span><strong>${escapeHtml(shared.stage)}</strong><small>Awaiting a server-owned remediation event</small></div><p>Topology, agent state, and any authority gate below are immutable projections of this run. No recovery action is client-authored.</p></section>`;
-  const verificationCard = verification ? `<section class="recovery-verification" data-testid="${verification.payload.passed ? "verification-passed" : "verification-failed"}"><header><div><span>Independent quality gates</span><strong>${verification.payload.passed ? "Passed" : "Not passed"}</strong></div><small>${escapeHtml(verification.payload.recovery_slo?.observed || "verification recorded")}</small></header><div class="recovery-workflow-nodes">${(verification.payload.checks || []).map((check) => `<article class="recovery-workflow-node is-${check.passed ? "verified" : "rejected"}"><div><strong>${escapeHtml(check.id)}</strong><small>${check.passed ? "passed" : "failed"}</small></div></article>`).join("")}</div>${verification.evidence_refs.length ? `<div class="citation-list">${verification.evidence_refs.map((id) => `<button type="button" class="citation" data-shared-evidence-id="${escapeHtml(id)}">${escapeHtml(id)}</button>`).join("")}</div>` : ""}</section>` : "";
-  const topologyGraph = canonicalRecoveryTopologyMarkup(topology);
-  els["canvas-layers"].innerHTML = `<div class="recovery-console-layout" data-shared-run="${escapeHtml(shared.run_id)}" data-projection-revision="${escapeHtml(topology.projection_revision)}">${planCard}${topologyGraph}<section class="recovery-graph-panel recovery-workflow-facts recovery-collaboration-panel" aria-label="Event-driven collaboration"><header><div><span>Collaboration</span><strong>${escapeHtml(shared.stage)}</strong></div><small>${escapeHtml(shared.run_id)}</small></header><div class="recovery-workflow-nodes">${roles.map(roleCard).join("")}</div>${handoffs.length ? `<div class="citation-list">${handoffs.map((event) => `<span class="citation">${escapeHtml(`${event.payload.from} → ${event.payload.to}`)}</span>`).join("")}</div>` : ""}${verificationCard}</section></div>`;
-  setAnnotations(sharedRunAnnotations(shared));
+  const verificationTestId = verification ? ` data-testid="${verification.payload.passed ? "verification-passed" : "verification-failed"}"` : "";
+  const team = recoveryWorkflowModel(events);
+  const current = team.find((node) => node.status === "active") || team.find((node) => node.status === "blocked") || team.at(-1);
+  const selectedRole = team.find((node) => node.id === recoverySelectedRole) || current;
+  recoverySelectedRole = selectedRole.id;
+  const detail = recoveryRoleDetail(selectedRole, { events, plan, authority, repair, verification });
+  els["canvas-layers"].innerHTML = `<div class="recovery-console-layout" data-shared-run="${escapeHtml(shared.run_id)}" data-projection-revision="${escapeHtml(shared.projection_revision)}">
+    <section class="recovery-diagnosis" aria-label="Recovery status">
+      <div class="diagnosis-state"><span>Recovery status</span><strong>${escapeHtml(shared.state === "recovered" ? "Recovery complete" : shared.stage)}</strong><small>Current stage · ${escapeHtml(shared.stage)}</small></div>
+    </section>
+    <section class="recovery-graph-panel recovery-workflow-facts" aria-label="Projected recovery workflow"${verificationTestId}>
+      <header><div><span>Execution workflow</span><strong>${escapeHtml(current.status === "complete" ? "Workflow complete" : current.label)}</strong></div><small>${escapeHtml(current.task)}</small></header>
+      <div class="recovery-execution-grid">
+        <div class="recovery-workflow-nodes">${team.map((node, index) => `${index ? `<span class="recovery-handoff ${node.handoffActive ? "is-active" : ""}" aria-hidden="true"><i class="ph ph-arrow-right"></i></span>` : ""}<button type="button" class="recovery-workflow-node is-${escapeHtml(node.status)} ${node.id === selectedRole.id ? "is-selected" : ""}" data-shared-role="${escapeHtml(node.id)}" data-recovery-role="${escapeHtml(node.id)}" aria-pressed="${String(node.id === selectedRole.id)}"><i class="ph ph-${escapeHtml(node.icon)}" aria-hidden="true"></i><div><strong>${escapeHtml(node.label)}</strong><small>${escapeHtml(node.statusLabel)} · ${escapeHtml(node.task)}</small></div></button>`).join("")}</div>
+        <section class="recovery-step-detail" data-testid="recovery-step-detail" data-recovery-detail-role="${escapeHtml(selectedRole.id)}" aria-label="${escapeHtml(selectedRole.label)} execution detail">
+          <header><div><span>Selected step</span><strong>${escapeHtml(selectedRole.label)}</strong></div><em class="is-${escapeHtml(selectedRole.status)}">${escapeHtml(selectedRole.statusLabel)}</em></header>
+          <dl>${detail.facts.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("")}</dl>
+          ${detail.evidence.length ? `<details><summary>${detail.evidence.length} cited record${detail.evidence.length === 1 ? "" : "s"}</summary><div>${detail.evidence.map((id) => `<code>${escapeHtml(id)}</code>`).join("")}</div></details>` : ""}
+          ${detail.chatRole ? `<button type="button" class="recovery-ask-agent" data-recovery-chat-role="${escapeHtml(detail.chatRole)}">Ask ${escapeHtml(detail.chatLabel)}</button>` : ""}
+        </section>
+      </div>
+    </section>
+  </div>`;
+  for (const button of els["canvas-layers"].querySelectorAll("[data-recovery-chat-role]")) {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      void openAgentTeamSession(button.dataset.recoveryChatRole);
+    });
+  }
+  setAnnotations([]);
   els["compare-handle"].hidden = true;
   els["compare-canvas-range"].hidden = true;
-  els["twin-canvas"].dataset.runId = topology.run_id;
-  els["twin-canvas"].dataset.incidentId = topology.incident_id;
-  els["twin-canvas"].dataset.projectionRevision = topology.projection_revision;
-  els["twin-canvas"].dataset.canonicalNodeCount = String(topology.node_ids.length);
-  els["twin-canvas"].dataset.canonicalEdgeCount = String(topology.edge_ids.length);
+  els["twin-canvas"].dataset.runId = shared.run_id;
+  els["twin-canvas"].dataset.incidentId = shared.incident_id;
+  els["twin-canvas"].dataset.projectionRevision = shared.projection_revision;
   els["twin-canvas"].setAttribute("data-testid", "recovery-canvas");
   els["twin-canvas"].setAttribute("aria-label", `Recovery Console for canonical run ${shared.run_id}.`);
+}
+
+function recoveryWorkflowModel(events) {
+  const latest = (type, role) => [...events].reverse().find((event) => event.type === type && (!role || event.payload?.role === role));
+  const authority = latest("local_fault_loop.authority.decided");
+  const needsHuman = authority?.payload?.outcome === "needs_human";
+  const specs = [
+    ["orchestrator", "Commander", "git-branch", "orchestrator", "Select workflow"],
+    ["observer", "Observer", "binoculars", "observer", "Bound the incident"],
+    ["investigator", "Investigator", "brain", "investigator", "Test the cause"],
+    ["evaluator", "Critic", "scales", "evaluator", "Challenge the claim"],
+    ["recovery", "Recovery Engineer", "wrench", null, "Execute bounded repair"],
+    ["verifier", "Verifier", "shield-check", null, "Verify recovery"]
+  ];
+  const completed = [
+    Boolean(latest("local_fault_loop.role.response", "orchestrator")),
+    Boolean(latest("local_fault_loop.role.response", "observer")),
+    Boolean(latest("local_fault_loop.role.response", "investigator")),
+    Boolean(latest("local_fault_loop.role.response", "evaluator")),
+    Boolean(latest("local_fault_loop.repair.executed")),
+    Boolean(latest("local_fault_loop.verification.completed"))
+  ];
+  const activeIndex = completed.findIndex((value) => !value);
+  return specs.map(([id, label, icon, role, task], index) => {
+    const blocked = needsHuman && index >= 4 && !completed[index];
+    const active = !blocked && index === activeIndex;
+    const status = completed[index] ? "complete" : blocked ? "blocked" : active ? "active" : "pending";
+    return { id, label, icon, role, task, status, statusLabel: ({ complete: "Complete", blocked: "Blocked", active: "Current", pending: "Queued" })[status], handoffActive: active };
+  });
+}
+
+function recoveryRoleDetail(node, { events, plan, authority, repair, verification }) {
+  const roleEvent = node.role ? [...events].reverse().find((event) => event.type === "local_fault_loop.role.response" && event.payload?.role === node.role) : null;
+  const evidence = [...new Set((roleEvent?.evidence_refs || (node.id === "recovery" ? [...(plan?.evidence_refs || []), ...(repair?.evidence_refs || [])] : verification?.evidence_refs || [])).filter(Boolean))];
+  const plain = (value, fallback) => value ? plainLanguageAgentAnswer(String(value)).slice(0, 220) : fallback;
+  if (node.id === "recovery") return {
+    facts: [
+      ["Input", plain(plan?.payload?.target, "Awaiting an evaluated repair plan")],
+      ["Proposed action", plain(plan?.payload?.repair, "No action projected")],
+      ["Execution", repair ? `${plain(repair.payload?.result, "Recorded")} · ${plain(repair.payload?.execution_scope, "bounded scope")}` : authority?.payload?.outcome === "needs_human" ? "Waiting for owner decision" : "Not executed"],
+      ["Verification condition", Array.isArray(plan?.payload?.verification_plan) ? plan.payload.verification_plan.map((item) => item.replaceAll("_", " ")).join(" · ") : "Not projected"]
+    ], evidence, chatRole: "orchestrator", chatLabel: "Orchestrator"
+  };
+  if (node.id === "verifier") return {
+    facts: [
+      ["Input", repair ? "Bounded repair result" : "Awaiting repair execution"],
+      ["Agent output", verification?.payload?.passed ? "All independent checks passed" : "Verification not complete"],
+      ["Proposed action", verification?.payload?.passed ? "Record recovered state" : "Continue verification"],
+      ["Verification condition", verification?.payload?.recovery_slo?.target || "All projected checks pass"]
+    ], evidence, chatRole: null, chatLabel: null
+  };
+  return {
+    facts: [
+      ["Input", node.task],
+      ["Agent output", plain(roleEvent?.payload?.safe_answer, "Awaiting canonical role output")],
+      ["Proposed action", plain(roleEvent?.payload?.recommended_handoff?.reason, roleEvent ? "Output recorded" : "Not projected")],
+      ["Verification condition", node.id === "evaluator" ? "Causal claim survives adversarial review" : "Cited evidence supports the handoff"]
+    ], evidence, chatRole: node.role, chatLabel: node.label
+  };
 }
 
 function canonicalRecoveryTopologyMarkup(topology) {
@@ -1073,9 +1262,9 @@ function canonicalRecoveryTopologyMarkup(topology) {
   return `<section class="recovery-graph-panel recovery-topology-panel" data-testid="recovery-topology" aria-label="Canonical recovery topology" data-canonical-node-count="${topology.node_ids.length}" data-canonical-edge-count="${topology.edge_ids.length}" data-projection-revision="${escapeHtml(topology.projection_revision)}"><header><div><span>Canonical topology</span><strong>${topology.node_ids.length} nodes · ${topology.edge_ids.length} edges</strong></div><small>${escapeHtml(topology.projection_revision.slice(0, 12))}</small></header><div class="recovery-topology-map is-live-source" data-node-ids="${escapeHtml(topology.node_ids.join(","))}" data-edge-ids="${escapeHtml(topology.edge_ids.join(","))}" data-affected-node-ids="${escapeHtml(topology.affected_node_ids.join(","))}" data-affected-edge-ids="${escapeHtml(topology.affected_edge_ids.join(","))}"><svg class="edge-map fixed-live-edge-map" viewBox="0 0 ${LIVE_WORLD.width} ${LIVE_WORLD.height}" preserveAspectRatio="none">${edges}</svg>${nodes}</div></section>`;
 }
 
-function renderTwinLayer(frame, layerName, interactive, { runtimeOnly = false } = {}) {
+function renderTwinLayer(frame, layerName, interactive, { runtimeOnly = false, includeControl = false } = {}) {
   const suffix = `${layerName}-${frame.index}`;
-  const visibleNodes = runtimeOnly ? TWIN_NODES.filter((node) => node.plane === "runtime") : TWIN_NODES;
+  const visibleNodes = runtimeOnly ? TWIN_NODES.filter((node) => node.plane === "runtime" || (includeControl && node.plane === "control")) : TWIN_NODES;
   const visibleIds = new Set(visibleNodes.map((node) => node.id));
   const edges = TWIN_EDGES.filter((edge) => visibleIds.has(edge.from) && visibleIds.has(edge.to)).map((edge) => {
     const status = frame.edgeStates[edge.id] || "quiet";
@@ -1224,7 +1413,10 @@ function renderTimeline() {
     const events = shared?.events || sharedRun.loop.events || [];
     const currentIndex = Math.max(0, Math.min(cursor, Math.max(0, events.length - 1)));
     const markers = sharedTimelineMarkers(events);
-    const compactMarkers = markers.filter((marker) => Math.abs(marker.index - currentIndex) <= 1);
+    const recoveryTypes = new Set(["local_fault_loop.plan.proposed", "local_fault_loop.authority.decided", "local_fault_loop.repair.executed", "local_fault_loop.verification.completed", "local_fault_loop.recovered"]);
+    const compactMarkers = mode === "agents"
+      ? markers.filter((marker) => recoveryTypes.has(marker.event.type)).slice(-5)
+      : markers.filter((marker) => Math.abs(marker.index - currentIndex) <= 1);
     els["stage-track"].style.setProperty("--stage-count", String(Math.max(1, compactMarkers.length)));
     els["stage-track"].innerHTML = compactMarkers.map((marker) => `<button class="stage-marker stage-${escapeHtml(marker.stage)} stage-group-incident ${marker.index <= currentIndex ? "is-available" : ""} ${marker.index === currentIndex ? "is-current" : ""}" type="button" data-shared-event-index="${marker.index}"><span>${escapeHtml(formatTime(marker.event.recorded_at))}</span><strong>${escapeHtml(marker.label)}</strong></button>`).join("");
     for (const button of els["stage-track"].querySelectorAll("[data-shared-event-index]")) button.addEventListener("click", () => seekSharedEvent(Number(button.dataset.sharedEventIndex)));
@@ -1319,10 +1511,13 @@ function renderApproval() {
   }
   const visible = state.waiting_for_approval && (mode === "live" || (mode === "replay" && cursor >= 5));
   const activeIncident = state.mode === "development" && activeIncidentState(state.events);
+  const canApproveDevelopmentRepair = visible && state.mode === "development";
   els["approval-banner"].hidden = !visible;
   els["incident-strip"].hidden = visible || mode !== "live" || !activeIncident;
   els["approval-copy"].textContent = state.mode === "development" ? "Restore the known-good flag and recreate only the local checkout container." : "Rollback is bounded to checkout:2.18.0.";
-  els["recovery-status-button"].textContent = "View recovery status";
+  els["recovery-status-button"].textContent = canApproveDevelopmentRepair ? "Approve bounded recovery" : "View recovery status";
+  els["recovery-status-button"].dataset.testid = canApproveDevelopmentRepair ? "owner-approve" : "recovery-status";
+  els["recovery-status-button"].setAttribute("aria-label", canApproveDevelopmentRepair ? "Approve bounded checkout recovery" : "View recovery status");
 }
 
 function renderDrawer() {
@@ -1390,20 +1585,43 @@ function renderOperationsTeamRail() {
       ? workspaceEvidenceRailMarkup()
       : agentTeam.panel === "session"
         ? agentTeamSessionMarkup(controls)
-        : isUnifiedRailWorkspace()
+        : ["agents", "compare"].includes(mode)
           ? workspaceSummaryRailMarkup()
           : agentTeamHomeMarkup(controls);
+  bindOperationsTeamRailControls(rail);
   restoreLiveInspectorSnapshot();
 }
 
-function handleOperationsTeamRail(event) {
-  const sendControl = event.target.closest("[data-agent-team-send]");
-  if (sendControl) {
-    event.preventDefault();
-    const form = sendControl.closest("[data-agent-team-composer]");
-    if (form) void submitAgentTeamComposer(form);
-    return;
+function bindOperationsTeamRailControls(rail) {
+  for (const button of rail.querySelectorAll("[data-agent-team-role]")) {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const restoreInspector = Boolean(selected?.type === "node" && isRailRuntimeNode(selected.id));
+      void openAgentTeamSession(button.dataset.agentTeamRole, { restoreInspector, inspectorSnapshot: restoreInspector ? captureLiveInspectorSnapshot() : null });
+    });
   }
+  const form = rail.querySelector("[data-agent-team-composer]");
+  if (!form) return;
+  form.addEventListener("submit", (event) => {
+    event.stopPropagation();
+    handleAgentTeamSubmit(event);
+  });
+  form.querySelector("[data-agent-team-input]")?.addEventListener("input", (event) => {
+    event.stopPropagation();
+    handleAgentTeamDraft(event);
+  });
+  form.querySelector("[data-agent-team-input]")?.addEventListener("keydown", (event) => {
+    event.stopPropagation();
+    handleAgentTeamComposerKeydown(event);
+  });
+  form.querySelector("[data-agent-team-send]")?.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    void submitAgentTeamComposer(form);
+  });
+}
+
+function handleOperationsTeamRail(event) {
   if (event.target.closest("[data-workspace-evidence-close]")) {
     closeDrawer();
     return;
@@ -1454,12 +1672,6 @@ function handleOperationsTeamRail(event) {
   const askObserver = event.target.closest("[data-ask-observer]");
   if (askObserver) {
     void openAgentTeamSession("observer", { restoreInspector: true, inspectorSnapshot: captureLiveInspectorSnapshot() });
-    return;
-  }
-  const roleTile = event.target.closest("[data-agent-team-role]");
-  if (roleTile) {
-    const restoreInspector = Boolean(selected?.type === "node" && isRailRuntimeNode(selected.id));
-    void openAgentTeamSession(roleTile.dataset.agentTeamRole, { restoreInspector, inspectorSnapshot: restoreInspector ? captureLiveInspectorSnapshot() : null });
     return;
   }
   const suggestion = event.target.closest("[data-agent-team-suggestion]");
@@ -1672,14 +1884,14 @@ function workspaceSummaryModel(report) {
       actions: [{ label: "Ask Investigator", role: "investigator" }, { label: "Ask Observer", role: "observer" }, { label: "View cited evidence", kind: "evidence" }]
     };
     if (mode === "agents") return {
-      title: "Event-driven recovery",
-      status: plan ? "Remediation is projected from this run" : "Recovery is locked until a plan is recorded",
+      title: "Recovery Status",
+      status: plan ? "Recovery proposal is projected from this run" : "Recovery proposal unavailable",
       tone: verification?.payload?.passed ? "verified" : plan ? "active" : "idle",
-      facts: compact([["Proposed repair", plan?.payload?.repair || "Not recorded"], ["Risk", plan?.payload?.risk || "Not recorded"], ["Authority", events.find((event) => event.type === "local_fault_loop.authority.decided")?.payload?.outcome || "Not decided"], ["Verification", verification?.payload?.passed ? "Passed" : "Pending"], ["Evidence", `${shared.citations.length} cited records`]]),
+      facts: compact([["Risk", plan?.payload?.risk || "Not projected"], ["Owner gate", recoveryGateLabel(events)], ["Verification", verification?.payload?.passed ? "Passed" : "Not projected"], ["Next permitted action", recoveryNextAction(events)]]),
       actions: [{ label: "Ask Orchestrator", role: "orchestrator" }, { label: "Ask Evaluator", role: "evaluator" }]
     };
     return {
-      title: "Verification comparison",
+      title: "Verification Summary",
       status: shared.state === "recovered" ? "Baseline, incident, and verified samples are server-recorded" : "Compare remains locked until independent verification",
       tone: shared.state === "recovered" ? "verified" : "standby",
       available: shared.state === "recovered",
@@ -1730,6 +1942,24 @@ function workspaceSummaryModel(report) {
     ]),
     actions: [{ label: "Ask Evaluator", role: "evaluator" }]
   };
+}
+
+function recoveryGateLabel(events) {
+  const authority = [...events].reverse().find((event) => event.type === "local_fault_loop.authority.decided");
+  if (!authority) return "Not yet decided";
+  if (authority.payload?.outcome === "needs_human") return "Owner decision required";
+  if (authority.payload?.outcome === "auto_execute_pre_authorized") return "Pre-authorized bounded execution";
+  return String(authority.payload?.outcome || "Recorded").replaceAll("_", " ");
+}
+
+function recoveryNextAction(events) {
+  const verification = [...events].reverse().find((event) => event.type === "local_fault_loop.verification.completed");
+  if (verification?.payload?.passed) return "Review verified recovery";
+  const authority = [...events].reverse().find((event) => event.type === "local_fault_loop.authority.decided");
+  if (authority?.payload?.outcome === "needs_human") return "Owner decision outside this workspace";
+  if (events.some((event) => event.type === "local_fault_loop.repair.executed")) return "Wait for independent verification";
+  if (events.some((event) => event.type === "local_fault_loop.plan.proposed")) return "Wait for recorded authority decision";
+  return "Wait for evaluated repair plan";
 }
 
 function compactAgentSwitcherMarkup(controls) {
@@ -1825,7 +2055,7 @@ function agentTeamTimelineMarkup() {
 
 function agentTeamMessageMarkup(message) {
   if (message.kind === "handoff") return `<article class="agent-team-entry is-handoff"><strong>${escapeHtml(message.from)} → ${escapeHtml(message.to)}</strong><p>${escapeHtml(message.reason)}</p></article>`;
-  if (message.kind === "assistant") return `<article class="agent-team-entry is-answer"><strong>${escapeHtml(message.responding_agent)}</strong><p>${escapeHtml(message.text)}</p>${agentTeamCitationMarkup(message.citations)}</article>`;
+  if (message.kind === "assistant") return `<article class="agent-team-entry is-answer"><strong>${escapeHtml(message.responding_agent)}</strong><p>${escapeHtml(plainLanguageAgentAnswer(message.text))}</p>${agentTeamCitationMarkup(message.citations)}</article>`;
   if (message.kind === "user") return `<article class="agent-team-entry is-user"><strong>You → ${escapeHtml(message.requested_agent)}</strong><p>${escapeHtml(message.text)}</p></article>`;
   if (message.kind === "tool_request") return `<article class="agent-team-entry is-tool"><strong>${escapeHtml(message.agent)}</strong><p>Requested ${escapeHtml(message.tool)} for ${escapeHtml(message.component_id)}.</p></article>`;
   if (message.kind === "tool_result") return `<article class="agent-team-entry is-tool"><strong>${escapeHtml(message.agent)}</strong><p>${escapeHtml(message.tool)} returned ${message.result_count} bounded record${message.result_count === 1 ? "" : "s"}.</p>${agentTeamCitationMarkup(message.citations)}</article>`;
@@ -1839,8 +2069,16 @@ function agentTeamMessageMarkup(message) {
 
 function agentLoopItemMarkup(item) {
   if (item.kind === "handoff") return `<article class="agent-team-entry is-handoff"><strong>${escapeHtml(item.from)} → ${escapeHtml(item.to)}</strong><p>${escapeHtml(item.reason)}</p></article>`;
-  if (item.kind === "answer") return `<article class="agent-team-entry is-answer"><strong>${escapeHtml(item.role)}</strong><p>${escapeHtml(item.answer)}</p>${agentTeamCitationMarkup(item.citations)}</article>`;
+  if (item.kind === "answer") return `<article class="agent-team-entry is-answer"><strong>${escapeHtml(item.role)}</strong><p>${escapeHtml(plainLanguageAgentAnswer(item.answer))}</p>${agentTeamCitationMarkup(item.citations)}</article>`;
   return `<article class="agent-team-entry is-state"><strong>${escapeHtml(item.label)}</strong></article>`;
+}
+
+function plainLanguageAgentAnswer(answer) {
+  return String(answer || "")
+    .replace(/\s*Citations?:\s*ev-local-[^\n]*/gi, "")
+    .replace(/ev-local-[a-z0-9-]+/gi, "recorded evidence")
+    .replace(/\s+([,.;:])/g, "$1")
+    .trim();
 }
 
 function agentTeamCitationMarkup(citations) {
@@ -2447,6 +2685,12 @@ function selectionEntities() {
 }
 
 function handleCanvasSelection(event) {
+  const recoveryRole = event.target.closest("[data-recovery-role]");
+  if (recoveryRole) {
+    recoverySelectedRole = recoveryRole.dataset.recoveryRole;
+    renderCanvas();
+    return;
+  }
   const sharedEvidence = event.target.closest("[data-shared-evidence-id]");
   if (sharedEvidence) {
     selected = null;
@@ -2571,6 +2815,18 @@ function setMode(nextMode) {
     showToast(`This workspace is unavailable until ${shared.workspace_actions?.[requiredAction]?.prerequisites?.filter((item) => !item.satisfied).map((item) => item.id.replaceAll("_", " ")).join(" and ") || "its server prerequisites are recorded"}.`);
     return;
   }
+  if (["replay", "agents", "compare"].includes(nextMode)) {
+    // Workspace navigation returns to the approved summary rail. A chat
+    // session is available only after the user explicitly opens an agent.
+    selected = null;
+    liveInspector = emptyLiveInspector();
+    if (agentTeam.panel === "session") {
+      agentTeamEventSource?.close();
+      agentTeamEventSource = null;
+      agentTeam = { ...agentTeam, panel: "home", role: null, conversation: null, error: null, sending: false, restore_inspector: false, inspector_snapshot: null, disclosures: { capability: false, run: false }, draft: "" };
+      persistAgentTeamState();
+    }
+  }
   if (!isSelectionValidForMode(selected, nextMode)) {
     selected = null;
     liveInspector = emptyLiveInspector();
@@ -2581,7 +2837,6 @@ function setMode(nextMode) {
   else if (mode === "live" || mode === "agents") cursor = availableStage(state.events);
   render();
   ensureSelectedLiveComponentDetail();
-  if (shared && agentTeam.panel === "home" && (mode === "replay" || mode === "agents")) void openAgentTeamSession(mode === "replay" ? "investigator" : "orchestrator");
 }
 
 function configureCanvasWorld(active) {

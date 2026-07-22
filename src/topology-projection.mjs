@@ -70,7 +70,7 @@ export function composeTopologyViews({ manifest, incidentProjection, overlay, co
   const demo = normalizeDemoLifecycle(demoLifecycle, incident, base);
   const control = controlSystem(controls, incident);
   const externalEvidence = externalChangeEvidence(controls, base);
-  const readiness = readinessFor(incident, base.available, demo);
+  const readiness = readinessFor(incident, base.available, demo, controls);
   const truth = truthFor(manifest);
   const incidentOverlay = diagnoseOverlay(overlay, incident, base, demo);
   const live = liveGraph(base, incidentOverlay, demo);
@@ -352,14 +352,14 @@ function diagnoseOverlay(overlay, incident, base, demo) {
   return { status: "available", node_ids: [...overlay.node_ids].sort(), edges: [...edges].sort((left, right) => left.id.localeCompare(right.id)) };
 }
 
-function readinessFor(incident, graphAvailable, demo) {
+function readinessFor(incident, graphAvailable, demo, controls) {
   if (demo) return {
     architecture_available: graphAvailable,
     live_available: graphAvailable,
     incident_detected: demo.phase === "INCIDENT_DETECTED",
     diagnose_available: demo.phase === "INCIDENT_DETECTED",
     agent_available: false,
-    compare_available: false
+    compare_available: demo.phase === "INCIDENT_DETECTED" && controls?.replay_complete === true
   };
   const incidentDetected = incident.available;
   const diagnoseAvailable = incidentDetected && VIEW_READY_STAGES.has(incident.stage_status);

@@ -712,9 +712,6 @@ function recordedStep(index, bundle) {
       before: [
         proposal("diagnosis", "diagnosis.proposed", "DiagnosisCandidate", {
           id: "hyp-checkout-config", title: "Checkout deployment selected an unreachable payment endpoint", claim: "checkout:2.18.0 fell back to payment:9090 after commit c7e1b9a renamed the payment environment key.", confidence: 0.96
-        }, causal),
-        proposal("adversarial_evaluator", "evaluation.accepted", "EvaluationVerdict", {
-          hypothesis_id: "hyp-checkout-config", accepted: true, score: 0.94, reason: "Change, mechanism, timing, and propagation are cited."
         }, causal)
       ], after: []
     },

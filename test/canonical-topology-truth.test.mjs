@@ -29,6 +29,8 @@ test("one canonical run topology is the exact Live, Diagnose, Recovery, and Comp
   assert.equal(shared.topology.node_ids.includes("fraud-detection"), true);
   assert.equal(shared.topology.verification.passed, true);
   assert.equal(shared.topology.compare.state, "verified");
+  assert.equal(shared.topology.affected_node_ids.every((id) => shared.topology.snapshots.verified.node_statuses[id] === "verified"), true);
+  assert.equal(shared.topology.affected_edge_ids.every((id) => shared.topology.snapshots.verified.edge_statuses[id] === "verified"), true);
 });
 
 test("Compare remains verification_pending for the same canonical run without a passed verification", async () => {

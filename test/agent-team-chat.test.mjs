@@ -161,6 +161,39 @@ test("routing is explicit, persisted in order, and duplicate idempotency keys do
   assert.equal(events.every((event, index) => index === 0 || event.sequence > events[index - 1].sequence), true);
 });
 
+test("Orchestrator receives the canonical recorded authority decision and verification checks", async () => {
+  let captured;
+  const context = (runtime, runId) => {
+    const base = contextForRun(runtime, runId);
+    base.incident_projection.workflow = {
+      plan: { event_id: "event-plan-1", repair: "restore_checkout_payment_endpoint", target: "checkout", risk: "low", evidence_refs: ["ev-plan"] },
+      authority: { event_id: "event-authority-1", outcome: "auto_execute_pre_authorized", reason: "Low-risk reversible repair is confined to the in-memory fixture simulator.", execution_scope: "local_memory_only", evidence_refs: [] },
+      repair: { event_id: "event-repair-1", result: "applied", evidence_refs: ["ev-repair"] },
+      verification: { event_id: "event-verification-1", passed: true, checks: [{ id: "root_condition_removed", passed: true }, { id: "direct_symptom_cleared", passed: true }], evidence_refs: ["ev-verify"] }
+    };
+    return base;
+  };
+  const { runtime, runId, service } = setup({
+    context,
+    modelAdapter: { async respond(input) { captured = input.context; return { answer: "Recorded workflow authority and verification are cited." }; } }
+  });
+
+  const result = await service.submit(request(runtime, runId, {
+    page_mode: "recovery",
+    message: "What recorded authority decision permitted this repair and which checks passed?",
+    idempotency_key: "chat-key-workflow-truth"
+  }));
+
+  assert.equal(captured.role_context.workflow.authority.outcome, "auto_execute_pre_authorized");
+  assert.equal(captured.role_context.workflow.verification.passed, true);
+  assert.deepEqual(captured.role_context.workflow.verification.checks, [
+    { id: "root_condition_removed", passed: true },
+    { id: "direct_symptom_cleared", passed: true }
+  ]);
+  assert.equal(result.citations.includes("event-authority-1"), true);
+  assert.equal(result.citations.includes("event-verification-1"), true);
+});
+
 test("role tools stay isolated, Ledger language routes to a conversational role, and read projections never call a provider", async () => {
   let calls = 0;
   const { runtime, runId, service } = setup({ modelAdapter: { async respond() { calls++; return { answer: "Source freshness is bounded and read-only.", provider: "recorded", model: "recorded-test" }; } } });

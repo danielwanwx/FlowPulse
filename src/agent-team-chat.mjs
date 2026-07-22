@@ -457,6 +457,17 @@ function buildContext({ request, state, external, role }) {
   };
   const humanGate = { status: safeEnum(projection.human_gate?.status, ["requested", "granted", "not_required", "not_actionable"], state.waiting_for_approval ? "requested" : "not_required") };
   const roleTools = external?.node_plane ? (role === "orchestrator" ? ROLE_TOOLS.orchestrator : (ROLE_NODE_TOOL_ALLOWLIST[role] || [])) : ROLE_TOOLS[role];
+  const workflow = boundedWorkflow(projection?.workflow);
+  const workflowCitations = safeIds([
+    workflow.plan?.event_id,
+    workflow.authority?.event_id,
+    workflow.repair?.event_id,
+    workflow.verification?.event_id,
+    ...(workflow.plan?.evidence_refs || []),
+    ...(workflow.authority?.evidence_refs || []),
+    ...(workflow.repair?.evidence_refs || []),
+    ...(workflow.verification?.evidence_refs || [])
+  ]);
   const context = {
     role,
     message: redactText(request.message),
@@ -476,9 +487,11 @@ function buildContext({ request, state, external, role }) {
     incident,
     human_gate: humanGate,
     evidence,
-    citations: evidence.map((item) => item.id),
+    citations: [...new Set(role === "orchestrator"
+      ? [...workflowCitations, ...evidence.map((item) => item.id)]
+      : [...evidence.map((item) => item.id), ...workflowCitations])].slice(0, AGENT_TEAM_CHAT_LIMITS.max_evidence_refs),
     tool_allowlist: [...roleTools],
-    role_context: roleContextFor({ role, source, incident, humanGate, evidence, projection, componentDetail: external?.selected_component_detail })
+    role_context: roleContextFor({ role, source, incident, humanGate, evidence, projection, workflow, componentDetail: external?.selected_component_detail })
   };
   if (Buffer.byteLength(JSON.stringify(context), "utf8") > AGENT_TEAM_CHAT_LIMITS.max_context_bytes) throw new AgentTeamChatError("context_byte_budget_exhausted", 429);
   return context;
@@ -515,18 +528,14 @@ function boundedEvidence(state, projection, sourceEvidence, selectedComponent) {
   })).filter((item) => item.id);
 }
 
-function roleContextFor({ role, source, incident, humanGate, evidence, projection, componentDetail }) {
-  const workflow = {
-    stage: incident.stage,
-    stage_status: incident.stage_status,
-    human_gate: humanGate.status
-  };
+function roleContextFor({ role, source, incident, humanGate, evidence, projection, workflow, componentDetail }) {
+  const workflowContext = { stage: incident.stage, stage_status: incident.stage_status, human_gate: humanGate.status, ...workflow };
   const hypotheses = boundedHypotheses(projection?.investigation);
   if (role === "observer") return {
     source: { status: source.status, freshness_ms: source.freshness_ms, evidence_count: source.evidence_count },
     signal_summaries: evidence.map(({ id, kind, signal, title, entity, observed_at }) => ({ id, kind, signal, title, entity, observed_at }))
   };
-  if (role === "orchestrator") return { workflow };
+  if (role === "orchestrator") return { workflow: workflowContext };
   if (role === "investigator") return {
     selected_component: boundedComponentDetail(componentDetail),
     evidence_summaries: evidence.map(({ id, kind, signal, title, summary, entity, observed_at }) => ({ id, kind, signal, title, summary, entity, observed_at }))
@@ -538,6 +547,21 @@ function roleContextFor({ role, source, incident, humanGate, evidence, projectio
       evidence_refs: safeIds(projection?.investigation?.evaluator?.evidence_refs)
     },
     cited_evidence: evidence.map(({ id, kind, title, entity, observed_at }) => ({ id, kind, title, entity, observed_at }))
+  };
+}
+
+function boundedWorkflow(value) {
+  const part = (item, fields) => !plain(item) ? null : Object.fromEntries(fields.flatMap(([key, project]) => {
+    const projected = project(item[key]);
+    return projected == null ? [] : [[key, projected]];
+  }));
+  const refs = (input) => safeIds(input);
+  const text = (input) => safeText(input, 240);
+  return {
+    plan: part(value?.plan, [["event_id", safeIdValue], ["repair", text], ["target", safeIdValue], ["risk", text], ["verification_plan", (input) => Array.isArray(input) ? input.slice(0, 8).map(text).filter(Boolean) : null], ["evidence_refs", refs]]),
+    authority: part(value?.authority, [["event_id", safeIdValue], ["outcome", text], ["reason", text], ["execution_scope", text], ["evidence_refs", refs]]),
+    repair: part(value?.repair, [["event_id", safeIdValue], ["result", text], ["execution_scope", text], ["rollback_available", (input) => typeof input === "boolean" ? input : null], ["evidence_refs", refs]]),
+    verification: part(value?.verification, [["event_id", safeIdValue], ["passed", (input) => typeof input === "boolean" ? input : null], ["checks", (input) => Array.isArray(input) ? input.slice(0, 8).map((check) => ({ id: safeIdValue(check?.id), passed: check?.passed === true })).filter((check) => check.id) : null], ["recovery_slo", (input) => plain(input) ? { target: text(input.target), observed: text(input.observed) } : null], ["evidence_refs", refs]])
   };
 }
 

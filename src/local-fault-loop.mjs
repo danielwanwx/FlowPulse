@@ -748,7 +748,8 @@ function canonicalRunTopology(events, started, final = null, state = null) {
 function topologySnapshot({ graph, events, affectedNodeIds, affectedEdgeIds, state, name, sequence }) {
   const types = new Set(events.map((event) => event.type));
   const terminalState = state || [...events].reverse().find((event) => ["local_fault_loop.recovered", "local_fault_loop.stopped", "local_fault_loop.failed"].includes(event.type))?.payload?.state || "running";
-  const recovered = terminalState === "recovered" && types.has("local_fault_loop.verification.completed");
+  const passedVerification = events.some((event) => event.type === "local_fault_loop.verification.completed" && event.payload?.passed === true);
+  const recovered = passedVerification && (terminalState === "recovered" || name === "verified");
   const faulted = types.has("local_fault_loop.fault.injected");
   const accepted = types.has("local_fault_loop.hypothesis.accepted");
   const repaired = types.has("local_fault_loop.repair.executed");

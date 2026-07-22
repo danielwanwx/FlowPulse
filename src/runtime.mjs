@@ -145,9 +145,21 @@ const replayActions = [
       propagation: ["checkout", "payment", "kafka", "accounting", "fraud"]
     }, refs, offset);
     runtime.append(runId, "evaluation.accepted", "evaluator", {
+      accepted: true,
       hypothesis_id: "hyp-checkout-config",
       score: 0.94,
-      reason: "The evidence establishes change, mechanism, timing, and downstream propagation."
+      classification: "confirmed_system_bug",
+      phase: "diagnosis_pre_approval",
+      gate_checks: {
+        initiating_change: true,
+        temporal_order: true,
+        implementation_semantics: true,
+        controlled_off_on_contrast: true,
+        repeated_direct_failures: true
+      },
+      reason: "The evidence establishes change, mechanism, timing, and downstream propagation.",
+      missing_evidence: [],
+      counter_evidence_refs: refs
     }, refs, offset + 1);
     return runtime.append(runId, "loop.root_cause_confirmed", "runtime", { step: "confirm root cause" }, refs, offset + 2);
   },

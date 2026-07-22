@@ -65,6 +65,28 @@ test("interactive loop starts asynchronously, streams safe events, resumes, and 
   assert.equal(secondStream.states.length, 1);
   assert.deepEqual(secondStream.events.filter((item) => item.event === "local-fault-loop").map((item) => item.payload.event.sequence), sequences);
 
+  const canonicalState = await getJson(port, "/api/state");
+  assert.equal(canonicalState.status, 200);
+  const workspace = canonicalState.body.workspace_projection;
+  assert.ok(workspace, `page state must expose the active canonical workspace without sessionStorage: ${JSON.stringify(Object.keys(canonicalState.body))}`);
+  assert.equal(workspace.run_id, first.body.run_id);
+  assert.equal(workspace.incident_id, first.body.incident_id);
+  assert.equal(workspace.topology.current.state, "recovered");
+  assert.notEqual(workspace.topology.current.metric_sample?.phase, "baseline", "Diagnose must not fall back to healthy/baseline after an incident");
+  assert.equal(workspace.topology.verification.passed, true);
+  assert.equal(workspace.events.some((event) => event.type === "local_fault_loop.plan.proposed"), true);
+  assert.equal(workspace.events.some((event) => event.type === "local_fault_loop.repair.executed"), true);
+  assert.equal(workspace.topology.compare.state, "verified");
+  assert.ok(workspace.topology.snapshots.verified, "verified Compare requires a server-owned verified snapshot");
+  for (const view of [workspace.topology.live, workspace.topology.diagnose, workspace.topology.recovery, workspace.topology.compare]) {
+    assert.equal(view.run_id, workspace.topology.run_id);
+    assert.equal(view.incident_id, workspace.topology.incident_id);
+    assert.equal(view.projection_revision, workspace.topology.projection_revision);
+  }
+  const reset = await postJson(port, "/api/demo/reset", {});
+  assert.equal(reset.status, 201);
+  assert.equal(reset.body.workspace_projection, null, "a clean reset must clear the prior canonical workspace run");
+
   const roles = events.filter((item) => item.payload.event.type === "local_fault_loop.role.response").map((item) => item.payload.event.payload);
   assert.equal(roles.length, 4);
   assert.deepEqual(roles.map((item) => item.role), ["observer", "orchestrator", "investigator", "evaluator"]);

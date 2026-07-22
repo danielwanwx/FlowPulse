@@ -72,6 +72,7 @@ const DEMO_REPLAY_FRAMES = [
 ];
 let developmentStatusCache = { value: null, expiresAt: 0, pending: null };
 let activeDemoRunId = initializeDemoRun();
+let activeWorkspaceRunId = null;
 validateAutonomyPolicyArtifact(AUTONOMY_POLICY_ARTIFACT);
 const langfuseEnabled = await initializeObservability().catch(() => {
   console.warn("Langfuse disabled");
@@ -226,7 +227,9 @@ const server = createServer(async (request, response) => {
       const body = await readJson(request);
       if (!plainLocalFaultLoopRequest(body)) return json(response, 400, { error: "local_fault_loop_request_invalid" });
       try {
-        return json(response, 202, await localFaultLoop.start({ caseId: body.case_id, round: body.round, idempotencyKey: body.idempotency_key || null }));
+        const projection = await localFaultLoop.start({ caseId: body.case_id, round: body.round, idempotencyKey: body.idempotency_key || null });
+        activeWorkspaceRunId = projection.run_id;
+        return json(response, 202, projection);
       } catch (error) {
         if (error instanceof LocalFaultLoopError) return json(response, error.code === "local_fault_loop_idempotency_conflict" ? 409 : 422, { error: error.code });
         throw error;
@@ -316,6 +319,10 @@ const server = createServer(async (request, response) => {
     if (url.pathname === "/api/development/case" && request.method === "POST") {
       requireJson(request);
       const runId = await development.start();
+      // A successful local development case supersedes the read-only replay
+      // demo as the browser's canonical run. This is intentionally done only
+      // after the server-owned case start has completed.
+      activeDemoRunId = null;
       return json(response, 201, await stateWithSource(runId));
     }
     if (url.pathname === "/api/development/investigate" && request.method === "POST") {
@@ -384,6 +391,7 @@ const server = createServer(async (request, response) => {
       requireJson(request);
       const body = await readJson(request);
       if (!isEmptyObject(body)) return json(response, 409, { error: "Demo reset accepts no caller state" });
+      activeWorkspaceRunId = null;
       activeDemoRunId = createHealthyDemoRun();
       return json(response, 201, await stateWithSource(activeDemoRunId));
     }
@@ -959,6 +967,12 @@ function createHealthyDemoRun() {
     evidenceRefs: [],
     correlationId
   });
+  runtime.append(runId, "incident.opened", "runtime", {
+    title: bundle.incident.title,
+    severity: bundle.incident.severity,
+    summary: bundle.incident.summary,
+    environment: bundle.incident.environment
+  });
   ledger.append({
     id: `demo-lifecycle-started-${runId}`,
     runId,
@@ -1003,7 +1017,7 @@ function injectDemoIncident({ runId, body, current }) {
 }
 function activeDemoWriteBlocked(method, pathname) {
   if (!activeDemoRunId || !["POST", "PUT", "PATCH", "DELETE"].includes(method)) return false;
-  return !(method === "POST" && (pathname === "/api/demo/inject" || pathname === "/api/demo/reset" || pathname === "/api/demo/agent-loop/run" || pathname === "/api/agent-control/chat"));
+  return !(method === "POST" && (pathname === "/api/demo/inject" || pathname === "/api/demo/reset" || pathname === "/api/demo/agent-loop/run" || pathname === "/api/agent-control/chat" || pathname === "/api/development/case" || pathname === "/api/next" || pathname === "/api/approve"));
 }
 function plainLocalFaultLoopRequest(value) {
   return Boolean(value && typeof value === "object" && !Array.isArray(value)
@@ -1123,13 +1137,14 @@ async function stateWithSource(runId = runtime.ensureRun(), { cursor = null } = 
     mode: safeBrowserEnum(projected.mode, ["replay", "live", "development"], "unavailable"),
     status: safeBrowserText(projected.status || incident_projection.stage_status, 80),
     complete: projected.complete === true,
-    waiting_for_approval: incident_projection.human_gate?.status === "requested",
+    waiting_for_approval: incident_projection.human_gate?.status === "requested" || projected.waiting_for_approval === true,
     incident: incident_projection.incident,
     events: projected.events.slice(-INCIDENT_PROJECTION_LIMITS.max_frames).map(redactedLedgerEvent),
     evidence: incident_projection.evidence,
     source: redactedSource(sourceState, incident_projection, topology_views),
     topology_views,
     incident_projection,
+    workspace_projection: activeWorkspaceRunId ? compactBrowserWorkspaceProjection(localFaultLoopProjection(activeWorkspaceRunId)) : null,
     agent_control: {
       ...agentControl.project(runId, { incidentProjection: incident_projection, state: projected }),
       agent_team_provider: agentTeamChat.providerCapability()
@@ -1397,6 +1412,18 @@ function localFaultLoopProjection(runId) {
   }
 }
 
+function compactBrowserWorkspaceProjection(loop) {
+  if (!loop?.topology || !Array.isArray(loop.events)) return null;
+  return {
+    ...loop,
+    events: loop.events.map((event) => ({
+      ...event,
+      topology: null,
+      contextual_workspaces: loop.contextual_workspaces
+    }))
+  };
+}
+
 function agentTeamStateForRun(runId) {
   const loop = localFaultLoopProjection(runId);
   if (!loop) return runtime.state(runId);
@@ -1415,6 +1442,11 @@ function agentTeamStateForRun(runId) {
 
 function localLoopIncidentProjection(loop, fallback = {}) {
   const definition = loop.case_id === "insufficient-evidence" ? "Evidence gap" : "Checkout / payment incident";
+  const latest = (type) => [...(loop.events || [])].reverse().find((event) => event.type === type) || null;
+  const plan = latest("local_fault_loop.plan.proposed");
+  const authority = latest("local_fault_loop.authority.decided");
+  const repair = latest("local_fault_loop.repair.executed");
+  const verification = latest("local_fault_loop.verification.completed");
   return {
     ...fallback,
     run_id: loop.run_id,
@@ -1427,7 +1459,13 @@ function localLoopIncidentProjection(loop, fallback = {}) {
     },
     stage: { ...(fallback?.stage || {}), label: loop.stage },
     stage_status: loop.state,
-    human_gate: { ...(fallback?.human_gate || {}), status: loop.state === "needs_human" ? "requested" : "not_required" }
+    human_gate: { ...(fallback?.human_gate || {}), status: loop.state === "needs_human" ? "requested" : "not_required" },
+    workflow: {
+      plan: plan ? { event_id: plan.id, repair: plan.payload?.repair, target: plan.payload?.target, risk: plan.payload?.risk, verification_plan: plan.payload?.verification_plan, evidence_refs: plan.evidence_refs } : null,
+      authority: authority ? { event_id: authority.id, outcome: authority.payload?.outcome, reason: authority.payload?.reason, execution_scope: authority.payload?.execution_scope, evidence_refs: authority.evidence_refs } : null,
+      repair: repair ? { event_id: repair.id, result: repair.payload?.result, execution_scope: repair.payload?.execution_scope, rollback_available: repair.payload?.rollback_available, evidence_refs: repair.evidence_refs } : null,
+      verification: verification ? { event_id: verification.id, passed: verification.payload?.passed, checks: verification.payload?.checks, recovery_slo: verification.payload?.recovery_slo, evidence_refs: verification.evidence_refs } : null
+    }
   };
 }
 
@@ -1492,6 +1530,7 @@ function topologyControlInputs(projected, sourceState) {
         }]
       : [],
     ledger_event_count: Array.isArray(projected?.events) ? Math.min(projected.events.length, INCIDENT_PROJECTION_LIMITS.max_input_events) : 0,
+    replay_complete: projected?.mode === "replay" && projected?.complete === true,
     ledger_latest_event: latestEvent
       ? { sequence: latestEvent.sequence, recorded_at: latestEvent.recorded_at, evidence_refs: latestEvidenceRefs }
       : null

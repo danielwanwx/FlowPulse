@@ -823,7 +823,7 @@ test("Agent Team rail is session-driven, retains Live selection, and never uses 
   assert.match(appJs, /AGENT_TEAM_ROLES,/);
   assert.match(railSource, /data-agent-team-role/);
   assert.match(railSource, /data-agent-team-send/);
-  assert.match(railSource, /const sendControl = event\.target\.closest\("\[data-agent-team-send\]"\)/);
+  assert.match(railSource, /querySelector\("\[data-agent-team-send\]"\)[\s\S]*?submitAgentTeamComposer\(form\)/);
   assert.match(railSource, /textarea name="message" data-agent-team-input/);
   assert.match(railSource, /data-testid="agent-chatbox"/);
   assert.match(railSource, /data-testid="agent-chat-input"/);
@@ -905,7 +905,7 @@ test("Unified Context Rail keeps one surface through workspace summaries, inspec
   assert.match(railSource, /workspaceEvidenceRailMarkup\(\)/);
   assert.match(railSource, /workspaceSummaryRailMarkup\(\)/);
   assert.match(railHandler, /closeAgentTeamSession\(\{ restoreInspector: true \}\)/);
-  assert.match(railHandler, /openAgentTeamSession\(roleTile\.dataset\.agentTeamRole/);
+  assert.match(railSource, /querySelectorAll\("\[data-agent-team-role\]"\)[\s\S]*?openAgentTeamSession\(button\.dataset\.agentTeamRole/);
   assert.match(modeSource, /isSelectionValidForMode\(selected, nextMode\)/);
   assert.match(appJs, /data-workspace-evidence-close/);
   assert.match(appJs, /data-workspace-view-evidence/);
@@ -1400,6 +1400,9 @@ test("recovery console keeps workflow facts in the canvas while the Unified Cont
   assert.match(appJs, /Projected recovery workflow/);
   assert.match(appJs, /See Unified Context Rail/);
   assert.match(appJs, /workspaceSummaryRailMarkup\(\)/);
+  assert.match(appJs, /bindOperationsTeamRailControls\(rail\)/);
+  assert.match(appJs, /querySelectorAll\("\[data-agent-team-role\]"\)[\s\S]*?openAgentTeamSession\(button\.dataset\.agentTeamRole/);
+  assert.match(appJs, /querySelector\("\[data-agent-team-send\]"\)[\s\S]*?submitAgentTeamComposer\(form\)/);
   assert.doesNotMatch(appJs, /recovery-command-form/);
 });
 
