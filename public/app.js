@@ -18,11 +18,10 @@ import {
   sharedRunReadModel,
   agentTeamConversationProjection,
   agentTeamProviderProjection,
+  canonicalWorkspaceVisual,
   componentDetailProjection,
   nodeLiveInspectorProjection,
-  compareFrames,
   compareProvenance,
-  canonicalTwinDisplay,
   eventsAtStage,
   frameFor,
   liveIncidentNodeStates,
@@ -37,6 +36,7 @@ import {
   orderedSignalEdges,
   primaryLiveEdges,
   projectAgentCollaborators,
+  recoveryWorkflowProjection,
   topologyIntegrity
 } from "./twin-state.mjs";
 
@@ -148,15 +148,9 @@ els["retry-button"].addEventListener("click", refresh);
 els["live-button"].addEventListener("click", () => { closeWorkspaceMenu(); runLive(); });
 els["details-button"].addEventListener("click", () => { closeWorkspaceMenu(); openDrawer({ type: "run", id: state?.run_id }, "evidence"); });
 els["open-incident-button"].addEventListener("click", () => openDrawer({ type: "run", id: state?.run_id }, "agent"));
-els["recovery-status-button"].addEventListener("click", () => {
-  // This is the only visible path that can approve a consequential
-  // development repair. All other states keep the button as navigation.
-  if (state?.mode === "development" && state.waiting_for_approval) {
-    void approveRepair();
-    return;
-  }
-  setMode("agents");
-});
+// Recovery status is navigation only. Repair authority stays in the
+// server-owned owner gate and cannot be granted by a canvas control.
+els["recovery-status-button"].addEventListener("click", () => setMode("agents"));
 els["development-button"].addEventListener("click", handleDevelopmentAction);
 els["drawer-close"].addEventListener("click", closeDrawer);
 els["restart-button"].addEventListener("click", restartReplay);
@@ -451,7 +445,8 @@ function renderHeader() {
   els["status-text"].textContent = modeStatus();
   els["ledger-state"].textContent = `${canonicalEvents().length} immutable events`;
   els["capture-label"].textContent = captureLabel();
-  els["capture-label"].className = `capture-label source-${mode === "compare" ? compareProvenance(state.events).tone : source.status}`;
+  const canonicalWorkspacePending = ["replay", "agents", "compare"].includes(mode) && !shared;
+  els["capture-label"].className = `capture-label source-${canonicalWorkspacePending ? "unavailable" : mode === "compare" ? compareProvenance(state.events).tone : source.status}`;
   els["zoom-controls"].hidden = mode !== "live";
   updateZoomControls();
   els["canvas-caption"].textContent = mode === "replay" && shared ? canonicalDiagnosisCaption(shared) : modeCaption(frame);
@@ -549,10 +544,10 @@ function renderMetrics() {
   els["metric-checkout-label"].textContent = "Checkout errors";
   els["metric-payment-label"].textContent = "Payment";
   els["metric-kafka-label"].textContent = "Kafka lag";
-  if (mode === "compare") {
-    setMetric("checkout", "38.4% → 0.8%", "incident to verified");
-    setMetric("payment", "61.6% → 99.98%", "reachability");
-    setMetric("kafka", "11,842 → 620", "lag draining");
+  if (["replay", "agents", "compare"].includes(mode)) {
+    setMetric("checkout", "Unavailable", "Awaiting canonical evidence");
+    setMetric("payment", "Unavailable", "Awaiting canonical evidence");
+    setMetric("kafka", "Unavailable", "Awaiting canonical evidence");
     return;
   }
   const metrics = currentFrame().metrics;
@@ -560,29 +555,30 @@ function renderMetrics() {
 }
 
 function renderSharedRunMetrics(shared) {
-  const baseline = shared.metric_samples.baseline;
-  const incident = shared.metric_samples.incident;
-  const verified = shared.metric_samples.verified;
-  const current = mode === "replay" ? incident || shared.metric_samples.current : shared.metric_samples.current;
   els["metric-checkout-label"].textContent = "Checkout errors";
   els["metric-payment-label"].textContent = "Payment reachable";
   els["metric-kafka-label"].textContent = "Kafka lag";
-  if (mode === "compare" && baseline && incident && verified) {
-    const target = sharedRunModelAtCursor()?.metric_samples.current || verified;
-    setMetric("checkout", `${incident.checkout_error_rate_percent}% → ${target.checkout_error_rate_percent}%`, `baseline ${baseline.checkout_error_rate_percent}% · ${target.phase} evidence`);
-    setMetric("payment", `${incident.payment_reachability_percent}% → ${target.payment_reachability_percent}%`, `baseline ${baseline.payment_reachability_percent}% · ${target.phase} evidence`);
-    setMetric("kafka", `${incident.kafka_lag.toLocaleString()} → ${target.kafka_lag.toLocaleString()}`, `baseline ${baseline.kafka_lag.toLocaleString()} · ${target.phase} evidence`);
+  const snapshot = mode === "replay" ? shared.topology.snapshots.incident : shared.topology.current;
+  const current = canonicalWorkspaceVisual(shared.topology, snapshot);
+  if (current.availability !== "ready") {
+    for (const [name, metric] of Object.entries(current.metrics)) setMetric(name, metric.value, metric.note);
     return;
   }
-  if (!current) {
-    setMetric("checkout", "Awaiting", "No canonical metric sample yet");
-    setMetric("payment", "Awaiting", "No canonical metric sample yet");
-    setMetric("kafka", "Awaiting", "No canonical metric sample yet");
+  if (mode === "compare") {
+    const incident = canonicalWorkspaceVisual(shared.topology, shared.topology.snapshots.incident);
+    const verified = canonicalWorkspaceVisual(shared.topology, shared.topology.snapshots.verified);
+    if (incident.availability !== "ready" || verified.availability !== "ready" || shared.topology.verification.passed !== true) {
+      setMetric("checkout", "Unavailable", "Verification pending");
+      setMetric("payment", "Unavailable", "Verification pending");
+      setMetric("kafka", "Unavailable", "Verification pending");
+      return;
+    }
+    setMetric("checkout", `${incident.metrics.checkout.value} → ${verified.metrics.checkout.value}`, "incident to verified evidence");
+    setMetric("payment", `${incident.metrics.payment.value} → ${verified.metrics.payment.value}`, "incident to verified evidence");
+    setMetric("kafka", `${incident.metrics.kafka.value} → ${verified.metrics.kafka.value}`, "incident to verified evidence");
     return;
   }
-  setMetric("checkout", `${current.checkout_error_rate_percent}%`, `${current.phase} · ${formatTime(current.recorded_at)}`);
-  setMetric("payment", `${current.payment_reachability_percent}%`, `${current.phase} · ${formatTime(current.recorded_at)}`);
-  setMetric("kafka", current.kafka_lag.toLocaleString(), `${current.phase} · isolated fixture evidence`);
+  for (const [name, metric] of Object.entries(current.metrics)) setMetric(name, metric.value, metric.note);
 }
 
 function setMetric(name, value, note) {
@@ -593,116 +589,47 @@ function setMetric(name, value, note) {
 function renderCanvas() {
   stopLiveSignalLoop();
   const shared = sharedRunModelAtCursor();
-  const sharedPendingTopology = Boolean(sharedRun?.loop && !shared);
-  const canonicalLegacyView = Boolean(shared && (mode === "replay" || mode === "compare"));
+  const canonicalWorkspace = ["replay", "agents", "compare"].includes(mode);
   els["twin-canvas"].classList.toggle("is-compare-mode", mode === "compare");
-  els["twin-canvas"].classList.toggle("is-source-topology", mode === "architecture" || mode === "live" || canonicalLegacyView);
+  els["twin-canvas"].classList.toggle("is-source-topology", mode === "architecture" || mode === "live" || canonicalWorkspace);
   els["twin-canvas"].classList.toggle("is-architecture-source", mode === "architecture");
-  els["twin-canvas"].classList.toggle("is-live-source", mode === "live" || Boolean(shared && (mode === "replay" || mode === "compare")));
+  els["twin-canvas"].classList.toggle("is-live-source", mode === "live" || mode === "replay" || mode === "compare");
   els["twin-canvas"].classList.toggle("is-agent-source", mode === "agents");
-  // Canonical Diagnose and Compare reuse the compact approved twin geometry,
-  // rather than the full Live source-topology geometry.
-  if (canonicalLegacyView) els["twin-canvas"].classList.remove("is-source-topology", "is-live-source");
-  configureCanvasWorld(mode === "live");
+  configureCanvasWorld(mode === "live" || mode === "replay" || mode === "compare");
   if (mode === "architecture") {
     renderSourceCanvas("architecture");
     return;
   }
   if (mode === "live") {
-    if (sharedPendingTopology) return renderCanonicalTopologyPending();
+    if (sharedRun?.loop && !shared) return renderCanonicalTopologyPending();
     renderSourceCanvas("live", shared?.topology || null, shared ? `Live canonical topology for run ${shared.run_id}.` : null);
     return;
   }
+  if (canonicalWorkspace && !shared) {
+    const label = mode === "agents" ? "Recovery Console" : mode === "compare" ? "Compare" : "Diagnose";
+    renderCanonicalTopologyPending(`${label} is waiting for the backend-owned canonical topology binding.`);
+    return;
+  }
   if (mode === "agents") {
-    if (sharedPendingTopology) return renderCanonicalTopologyPending("Recovery Console is waiting for the canonical topology binding.");
     renderAgentCanvas();
     return;
   }
   if (mode === "compare") {
-    if (sharedPendingTopology) return renderCanonicalTopologyPending("Compare is waiting for the canonical topology binding.");
-    if (shared) {
-      renderCanonicalCompareCanvas(shared);
-      return;
-    }
-    const { incident, recovered } = compareFrames();
-    const provenance = compareProvenance(state.events);
-    els["canvas-layers"].innerHTML = `${renderTwinLayer(recovered, "after", true, { runtimeOnly: true })}${renderTwinLayer(incident, "before", false, { runtimeOnly: true })}`;
-    els["compare-handle"].hidden = false;
-    els["compare-canvas-range"].hidden = false;
-    setAnnotations([]);
-    els["twin-canvas"].setAttribute("aria-label", `Compare incident impact on the left with ${provenance.aria} on the right`);
-    els["compare-canvas-range"].setAttribute("aria-label", `Drag to compare incident with ${provenance.aria}`);
-    renderComparePosition();
+    renderCanonicalCompareCanvas(shared);
     return;
   }
-  if (sharedPendingTopology) return renderCanonicalTopologyPending("Diagnose is waiting for the canonical topology binding.");
-  if (shared) {
-    const diagnosisFrame = canonicalTwinFrame(shared, shared.topology.snapshots.incident, cursor);
-    els["canvas-layers"].innerHTML = renderTwinLayer(diagnosisFrame, "current", true, { runtimeOnly: true, includeControl: true });
-    els["compare-handle"].hidden = true;
-    els["compare-canvas-range"].hidden = true;
-    els["twin-canvas"].setAttribute("data-testid", "diagnose-canvas");
-    els["twin-canvas"].dataset.runId = shared.run_id;
-    els["twin-canvas"].dataset.incidentId = shared.incident_id;
-    els["twin-canvas"].dataset.projectionRevision = shared.projection_revision;
-    els["twin-canvas"].setAttribute("aria-label", `Incident diagnosis for canonical run ${shared.run_id}.`);
-    const annotations = sharedRunAnnotations(shared).filter((annotation) => annotation.id !== "recovery");
-    setAnnotations(annotations.length ? [annotations.at(-1)] : []);
+  const diagnosis = canonicalTopologyLayerMarkup(shared.topology, shared.topology.snapshots.incident, { layerName: "current", pulse: false });
+  if (diagnosis.visual.availability !== "ready") {
+    renderCanonicalTopologyPending("Diagnose is waiting for an incident snapshot with complete canonical node and edge status.");
     return;
   }
-  const frame = currentFrame();
-  els["canvas-layers"].innerHTML = renderTwinLayer(frame, "current", true, { runtimeOnly: true });
+  els["canvas-layers"].innerHTML = diagnosis.markup;
   els["compare-handle"].hidden = true;
   els["compare-canvas-range"].hidden = true;
-  // Keep one causal cue on the canvas. The full evidence trail remains in the
-  // drawer and timeline, so the diagnosis map can stay readable at a glance.
-  const annotations = state.mode === "development" ? developmentAnnotations(cursor) : frame.annotations;
+  bindCanonicalCanvasIdentity(diagnosis.visual, "diagnose-canvas");
+  const annotations = sharedRunAnnotations(shared).filter((annotation) => annotation.id !== "recovery");
   setAnnotations(annotations.length ? [annotations.at(-1)] : []);
-  els["twin-canvas"].setAttribute("aria-label", `Incident diagnosis at ${frame.stage.label}`);
-}
-
-function canonicalTwinFrame(shared, snapshot, index) {
-  const sourceStates = snapshot?.node_statuses || shared.node_statuses || {};
-  const metric = snapshot?.metric_sample || shared.metric_samples.current || null;
-  const display = canonicalTwinDisplay({ sourceStates, metric });
-  const nodeStates = { ...display.nodeStates };
-  nodeStates.deployment = snapshot ? "change" : nodeStates.deployment;
-  const edgeStates = { ...display.edgeStates };
-  // Control-plane activity is rendered only when the canonical run recorded
-  // the corresponding event.  The static twin definitions provide geometry,
-  // not an alternate source of truth.
-  const has = (type) => shared.events.some((event) => event.type === type);
-  if (has("local_fault_loop.fault.injected")) {
-    nodeStates.deployment = "change";
-    edgeStates["deployment-checkout"] = "change";
-  }
-  if (has("local_fault_loop.hypothesis.proposed")) {
-    nodeStates.agent = "active";
-    edgeStates["agent-evaluator"] = "active";
-  }
-  if (has("local_fault_loop.evaluation.rejected") || has("local_fault_loop.evaluation.accepted")) {
-    nodeStates.evaluator = "active";
-    edgeStates["evaluator-ledger"] = "active";
-  }
-  if (has("local_fault_loop.evidence.recorded")) {
-    nodeStates.ledger = "recording";
-    edgeStates["checkout-ledger"] = "recording";
-    edgeStates["kafka-ledger"] = "recording";
-  }
-  for (const edge of TWIN_EDGES) {
-    const adjacent = [nodeStates[edge.from], nodeStates[edge.to]];
-    if (adjacent.includes("impact")) edgeStates[edge.id] = "impact";
-    else if (adjacent.includes("verified")) edgeStates[edge.id] = "verified";
-  }
-  const latest = shared.events.at(-1);
-  return {
-    index,
-    stage: { id: snapshot?.stage || shared.stage, label: (snapshot?.stage || shared.stage).replaceAll("-", " "), time: latest ? formatTime(latest.recorded_at) : "Awaiting event" },
-    nodeStates,
-    edgeStates,
-    metrics: display.metrics,
-    annotations: sharedRunAnnotations(shared)
-  };
+  els["twin-canvas"].setAttribute("aria-label", `Incident diagnosis for canonical run ${diagnosis.visual.run_id}.`);
 }
 
 function canonicalDiagnosisCaption(shared) {
@@ -714,26 +641,29 @@ function canonicalDiagnosisCaption(shared) {
 function renderCanonicalCompareCanvas(shared) {
   const topology = shared.topology;
   const verified = topology.verification.passed === true && topology.snapshots.verified !== null;
-  els["twin-canvas"].dataset.runId = shared.run_id;
-  els["twin-canvas"].dataset.incidentId = shared.incident_id;
-  els["twin-canvas"].dataset.projectionRevision = shared.projection_revision;
-  els["twin-canvas"].dataset.compareState = verified ? "verified" : "verification_pending";
-  els["twin-canvas"].setAttribute("data-testid", "compare-canvas");
+  const incident = canonicalTopologyLayerMarkup(topology, topology.snapshots.incident, { layerName: "before", pulse: false });
+  bindCanonicalCanvasIdentity(incident.visual, "compare-canvas", verified ? "verified" : "verification_pending");
+  if (incident.visual.availability !== "ready") {
+    renderCanonicalTopologyPending("Compare is waiting for a complete canonical incident snapshot.");
+    return;
+  }
   if (!verified) {
-    const incident = canonicalTwinFrame(shared, topology.snapshots.incident, cursor);
-    els["canvas-layers"].innerHTML = renderTwinLayer(incident, "current", true, { runtimeOnly: true });
+    els["canvas-layers"].innerHTML = canonicalTopologyLayerMarkup(topology, topology.snapshots.incident, { layerName: "current", pulse: false }).markup;
     els["compare-handle"].hidden = true;
     els["compare-canvas-range"].hidden = true;
     setAnnotations([{ id: "recovery", tone: "warning", title: "Verification pending", copy: "Compare remains locked until this run records passed independent verification." }]);
     return;
   }
-  const incident = canonicalTwinFrame(shared, topology.snapshots.incident, cursor);
-  const recovered = canonicalTwinFrame(shared, topology.snapshots.verified, cursor);
-  els["canvas-layers"].innerHTML = `${renderTwinLayer(recovered, "after", true, { runtimeOnly: true })}${renderTwinLayer(incident, "before", false, { runtimeOnly: true })}`;
+  const recovered = canonicalTopologyLayerMarkup(topology, topology.snapshots.verified, { layerName: "after", pulse: false });
+  if (recovered.visual.availability !== "ready") {
+    renderCanonicalTopologyPending("Compare is waiting for a complete canonical verified snapshot.");
+    return;
+  }
+  els["canvas-layers"].innerHTML = `${recovered.markup}${incident.markup}`;
   els["compare-handle"].hidden = false;
   els["compare-canvas-range"].hidden = false;
   setAnnotations([]);
-  els["twin-canvas"].setAttribute("aria-label", `Compare incident and verified snapshots for canonical run ${shared.run_id}.`);
+  els["twin-canvas"].setAttribute("aria-label", `Compare incident and verified snapshots for canonical run ${incident.visual.run_id}.`);
   els["compare-canvas-range"].setAttribute("aria-label", "Compare incident and verified recovery");
   renderComparePosition();
 }
@@ -743,7 +673,67 @@ function renderCanonicalTopologyPending(message = "Waiting for the backend-owned
   els["compare-handle"].hidden = true;
   els["compare-canvas-range"].hidden = true;
   setAnnotations([]);
+  clearCanonicalCanvasIdentity();
   els["twin-canvas"].setAttribute("aria-label", message);
+}
+
+// Diagnose, Recovery and Compare all render this same backend-owned visual
+// projection. The layout is intentionally local to the viewport; identities,
+// state and metrics always remain the exact canonical run values.
+function canonicalTopologyLayerMarkup(topology, snapshot, { layerName = "current", pulse = false } = {}) {
+  const visual = canonicalWorkspaceVisual(topology, snapshot);
+  if (visual.availability !== "ready") return { visual, markup: "" };
+  const positioned = livePositions(visual.nodes);
+  const positions = new Map(positioned.map((node) => [node.id, node]));
+  const nodeStates = Object.fromEntries(visual.nodes.map((node) => [node.id, node.status]));
+  const source = {
+    status: visual.source_truth?.source_health || "unavailable",
+    label: visual.source_truth?.label || "Canonical source unavailable"
+  };
+  const runtimeEdges = visual.edges.filter((edge) => positions.has(edge.from) && positions.has(edge.to));
+  const pulseEdges = runtimeEdges.filter((edge) => edge.kind === "calls");
+  const pulseSlots = livePulseSlots({ nodes: visual.nodes, edges: pulseEdges });
+  const signalOrder = new Map(orderedSignalEdges(pulseEdges, pulseSlots).map((edge, index) => [edge.id, index]));
+  const routeBuildOrder = new Map(orderedLiveRouteBuildEdges(runtimeEdges, positioned).map((edge, index) => [edge.id, index]));
+  const edges = runtimeEdges.map((edge, index) => {
+    const visualEdge = {
+      ...edge,
+      order: signalOrder.get(edge.id) ?? pulseEdges.length + index,
+      routeOrder: routeBuildOrder.get(edge.id) ?? index,
+      pulse: pulse && edge.kind === "calls",
+      tone: edge.status
+    };
+    const path = liveEdgePath(positions.get(edge.from), positions.get(edge.to), {
+      canvasWidth: LIVE_WORLD.width,
+      canvasHeight: LIVE_WORLD.height,
+      nodeWidth: 180,
+      nodeHeight: 60,
+      lane: visualEdge.order
+    });
+    return fixedLiveEdgeMarkup(visualEdge, path, positions.get(edge.from)?.label || edge.from, positions.get(edge.to)?.label || edge.to);
+  }).join("");
+  const nodes = positioned.map((node) => sourceNodeMarkup(node, { layout: "live", source, nodeStates })).join("");
+  const markup = `<div class="twin-layer layer-${escapeHtml(layerName)} canonical-topology-layer" data-canonical-run-id="${escapeHtml(visual.run_id)}" data-canonical-incident-id="${escapeHtml(visual.incident_id)}" data-projection-revision="${escapeHtml(visual.projection_revision)}" data-node-ids="${escapeHtml(visual.node_ids.join(","))}" data-edge-ids="${escapeHtml(visual.edge_ids.join(","))}"><svg class="edge-map fixed-live-edge-map" viewBox="0 0 ${LIVE_WORLD.width} ${LIVE_WORLD.height}" preserveAspectRatio="none">${edges}</svg>${nodes}</div>`;
+  return { visual, markup };
+}
+
+function bindCanonicalCanvasIdentity(visual, testId, compareState = null) {
+  if (visual.availability !== "ready") {
+    clearCanonicalCanvasIdentity();
+    return;
+  }
+  els["twin-canvas"].setAttribute("data-testid", testId);
+  els["twin-canvas"].dataset.runId = visual.run_id;
+  els["twin-canvas"].dataset.incidentId = visual.incident_id;
+  els["twin-canvas"].dataset.projectionRevision = visual.projection_revision;
+  els["twin-canvas"].dataset.canonicalNodeIds = visual.node_ids.join(",");
+  els["twin-canvas"].dataset.canonicalEdgeIds = visual.edge_ids.join(",");
+  if (compareState) els["twin-canvas"].dataset.compareState = compareState;
+  else delete els["twin-canvas"].dataset.compareState;
+}
+
+function clearCanonicalCanvasIdentity() {
+  for (const key of ["runId", "incidentId", "projectionRevision", "canonicalNodeIds", "canonicalEdgeIds", "compareState"]) delete els["twin-canvas"].dataset[key];
 }
 
 function renderSourceCanvas(layout, runTopology = null, ariaLabel = null) {
@@ -1115,7 +1105,7 @@ function renderSharedRecoveryCanvas(shared) {
   const repair = stageEvent("local_fault_loop.repair.executed");
   const verification = stageEvent("local_fault_loop.verification.completed");
   const verificationTestId = verification ? ` data-testid="${verification.payload.passed ? "verification-passed" : "verification-failed"}"` : "";
-  const team = recoveryWorkflowModel(events);
+  const team = recoveryWorkflowProjection(events).nodes;
   const current = team.find((node) => node.status === "active") || team.find((node) => node.status === "blocked") || team.at(-1);
   const selectedRole = team.find((node) => node.id === recoverySelectedRole) || current;
   recoverySelectedRole = selectedRole.id;
@@ -1124,7 +1114,8 @@ function renderSharedRecoveryCanvas(shared) {
     <section class="recovery-diagnosis" aria-label="Recovery status">
       <div class="diagnosis-state"><span>Recovery status</span><strong>${escapeHtml(shared.state === "recovered" ? "Recovery complete" : shared.stage)}</strong><small>Current stage · ${escapeHtml(shared.stage)}</small></div>
     </section>
-    <section class="recovery-graph-panel recovery-workflow-facts" aria-label="Projected recovery workflow"${verificationTestId}>
+    ${canonicalRecoveryTopologyMarkup(shared.topology)}
+    <section class="recovery-graph-panel recovery-collaboration-panel recovery-workflow-facts" aria-label="Projected recovery workflow"${verificationTestId}>
       <header><div><span>Execution workflow</span><strong>${escapeHtml(current.status === "complete" ? "Workflow complete" : current.label)}</strong></div><small>${escapeHtml(current.task)}</small></header>
       <div class="recovery-execution-grid">
         <div class="recovery-workflow-nodes">${team.map((node, index) => `${index ? `<span class="recovery-handoff ${node.handoffActive ? "is-active" : ""}" aria-hidden="true"><i class="ph ph-arrow-right"></i></span>` : ""}<button type="button" class="recovery-workflow-node is-${escapeHtml(node.status)} ${node.id === selectedRole.id ? "is-selected" : ""}" data-shared-role="${escapeHtml(node.id)}" data-recovery-role="${escapeHtml(node.id)}" aria-pressed="${String(node.id === selectedRole.id)}"><i class="ph ph-${escapeHtml(node.icon)}" aria-hidden="true"></i><div><strong>${escapeHtml(node.label)}</strong><small>${escapeHtml(node.statusLabel)} · ${escapeHtml(node.task)}</small></div></button>`).join("")}</div>
@@ -1146,40 +1137,8 @@ function renderSharedRecoveryCanvas(shared) {
   setAnnotations([]);
   els["compare-handle"].hidden = true;
   els["compare-canvas-range"].hidden = true;
-  els["twin-canvas"].dataset.runId = shared.run_id;
-  els["twin-canvas"].dataset.incidentId = shared.incident_id;
-  els["twin-canvas"].dataset.projectionRevision = shared.projection_revision;
-  els["twin-canvas"].setAttribute("data-testid", "recovery-canvas");
+  bindCanonicalCanvasIdentity(canonicalWorkspaceVisual(shared.topology, shared.topology.current), "recovery-canvas");
   els["twin-canvas"].setAttribute("aria-label", `Recovery Console for canonical run ${shared.run_id}.`);
-}
-
-function recoveryWorkflowModel(events) {
-  const latest = (type, role) => [...events].reverse().find((event) => event.type === type && (!role || event.payload?.role === role));
-  const authority = latest("local_fault_loop.authority.decided");
-  const needsHuman = authority?.payload?.outcome === "needs_human";
-  const specs = [
-    ["orchestrator", "Commander", "git-branch", "orchestrator", "Select workflow"],
-    ["observer", "Observer", "binoculars", "observer", "Bound the incident"],
-    ["investigator", "Investigator", "brain", "investigator", "Test the cause"],
-    ["evaluator", "Critic", "scales", "evaluator", "Challenge the claim"],
-    ["recovery", "Recovery Engineer", "wrench", null, "Execute bounded repair"],
-    ["verifier", "Verifier", "shield-check", null, "Verify recovery"]
-  ];
-  const completed = [
-    Boolean(latest("local_fault_loop.role.response", "orchestrator")),
-    Boolean(latest("local_fault_loop.role.response", "observer")),
-    Boolean(latest("local_fault_loop.role.response", "investigator")),
-    Boolean(latest("local_fault_loop.role.response", "evaluator")),
-    Boolean(latest("local_fault_loop.repair.executed")),
-    Boolean(latest("local_fault_loop.verification.completed"))
-  ];
-  const activeIndex = completed.findIndex((value) => !value);
-  return specs.map(([id, label, icon, role, task], index) => {
-    const blocked = needsHuman && index >= 4 && !completed[index];
-    const active = !blocked && index === activeIndex;
-    const status = completed[index] ? "complete" : blocked ? "blocked" : active ? "active" : "pending";
-    return { id, label, icon, role, task, status, statusLabel: ({ complete: "Complete", blocked: "Blocked", active: "Current", pending: "Queued" })[status], handoffActive: active };
-  });
 }
 
 function recoveryRoleDetail(node, { events, plan, authority, repair, verification }) {
@@ -1213,20 +1172,20 @@ function recoveryRoleDetail(node, { events, plan, authority, repair, verificatio
 }
 
 function canonicalRecoveryTopologyMarkup(topology) {
-  const graph = topologyIntegrity({ nodes: topology.graph.nodes, edges: topology.graph.edges });
-  const positioned = livePositions(graph.nodes);
+  const visual = canonicalWorkspaceVisual(topology, topology?.current);
+  if (visual.availability !== "ready") {
+    return `<section class="recovery-graph-panel recovery-topology-panel" data-testid="recovery-topology-unavailable" aria-label="Canonical recovery topology unavailable"><div class="source-empty"><i class="ph ph-plugs" aria-hidden="true"></i><strong>Recovery topology unavailable</strong><span>Awaiting a complete canonical run snapshot.</span></div></section>`;
+  }
+  const positioned = livePositions(visual.nodes);
   const positions = new Map(positioned.map((node) => [node.id, node]));
-  const nodeStates = {
-    ...Object.fromEntries(graph.nodes.map((node) => [node.id, node.status])),
-    ...(topology.current?.node_statuses || {})
-  };
+  const nodeStates = Object.fromEntries(visual.nodes.map((node) => [node.id, node.status]));
   const source = {
-    status: topology.source_truth?.source_health || "captured",
-    label: topology.source_truth?.label || "Isolated fixture evidence"
+    status: visual.source_truth?.source_health || "unavailable",
+    label: visual.source_truth?.label || "Canonical source unavailable"
   };
-  const runtimeEdges = graph.edges.filter((edge) => positions.has(edge.from) && positions.has(edge.to));
+  const runtimeEdges = visual.edges.filter((edge) => positions.has(edge.from) && positions.has(edge.to));
   const pulseEdges = runtimeEdges.filter((edge) => edge.kind === "calls");
-  const pulseSlots = livePulseSlots({ ...graph, edges: pulseEdges });
+  const pulseSlots = livePulseSlots({ nodes: visual.nodes, edges: pulseEdges });
   const signalOrder = new Map(orderedSignalEdges(pulseEdges, pulseSlots).map((edge, index) => [edge.id, index]));
   const routeBuildOrder = new Map(orderedLiveRouteBuildEdges(runtimeEdges, positioned).map((edge, index) => [edge.id, index]));
   const edges = runtimeEdges.map((edge, index) => {
@@ -1235,7 +1194,7 @@ function canonicalRecoveryTopologyMarkup(topology) {
       order: signalOrder.get(edge.id) ?? pulseEdges.length + index,
       routeOrder: routeBuildOrder.get(edge.id) ?? index,
       pulse: false,
-      tone: topology.current?.edge_statuses?.[edge.id] || liveSignalTone(edge, nodeStates)
+      tone: edge.status
     };
     const path = liveEdgePath(positions.get(edge.from), positions.get(edge.to), {
       canvasWidth: LIVE_WORLD.width,
@@ -1247,7 +1206,7 @@ function canonicalRecoveryTopologyMarkup(topology) {
     return fixedLiveEdgeMarkup(visualEdge, path, positions.get(edge.from)?.label || edge.from, positions.get(edge.to)?.label || edge.to);
   }).join("");
   const nodes = positioned.map((node) => sourceNodeMarkup(node, { layout: "live", source, nodeStates })).join("");
-  return `<section class="recovery-graph-panel recovery-topology-panel" data-testid="recovery-topology" aria-label="Canonical recovery topology" data-canonical-node-count="${topology.node_ids.length}" data-canonical-edge-count="${topology.edge_ids.length}" data-projection-revision="${escapeHtml(topology.projection_revision)}"><header><div><span>Canonical topology</span><strong>${topology.node_ids.length} nodes · ${topology.edge_ids.length} edges</strong></div><small>${escapeHtml(topology.projection_revision.slice(0, 12))}</small></header><div class="recovery-topology-map is-live-source" data-node-ids="${escapeHtml(topology.node_ids.join(","))}" data-edge-ids="${escapeHtml(topology.edge_ids.join(","))}" data-affected-node-ids="${escapeHtml(topology.affected_node_ids.join(","))}" data-affected-edge-ids="${escapeHtml(topology.affected_edge_ids.join(","))}"><svg class="edge-map fixed-live-edge-map" viewBox="0 0 ${LIVE_WORLD.width} ${LIVE_WORLD.height}" preserveAspectRatio="none">${edges}</svg>${nodes}</div></section>`;
+  return `<section class="recovery-graph-panel recovery-topology-panel" data-testid="recovery-topology" aria-label="Canonical recovery topology" data-canonical-node-count="${visual.node_ids.length}" data-canonical-edge-count="${visual.edge_ids.length}" data-node-ids="${escapeHtml(visual.node_ids.join(","))}" data-edge-ids="${escapeHtml(visual.edge_ids.join(","))}" data-projection-revision="${escapeHtml(visual.projection_revision)}"><header><div><span>Canonical topology</span><strong>${visual.node_ids.length} nodes · ${visual.edge_ids.length} edges</strong></div><small>${escapeHtml(visual.projection_revision.slice(0, 12))}</small></header><div class="recovery-topology-map is-live-source"><svg class="edge-map fixed-live-edge-map" viewBox="0 0 ${LIVE_WORLD.width} ${LIVE_WORLD.height}" preserveAspectRatio="none">${edges}</svg>${nodes}</div></section>`;
 }
 
 function renderTwinLayer(frame, layerName, interactive, { runtimeOnly = false, includeControl = false } = {}) {
@@ -1499,13 +1458,12 @@ function renderApproval() {
   }
   const visible = state.waiting_for_approval && (mode === "live" || (mode === "replay" && cursor >= 5));
   const activeIncident = state.mode === "development" && activeIncidentState(state.events);
-  const canApproveDevelopmentRepair = visible && state.mode === "development";
   els["approval-banner"].hidden = !visible;
   els["incident-strip"].hidden = visible || mode !== "live" || !activeIncident;
-  els["approval-copy"].textContent = state.mode === "development" ? "Restore the known-good flag and recreate only the local checkout container." : "Rollback is bounded to checkout:2.18.0.";
-  els["recovery-status-button"].textContent = canApproveDevelopmentRepair ? "Approve bounded recovery" : "View recovery status";
-  els["recovery-status-button"].dataset.testid = canApproveDevelopmentRepair ? "owner-approve" : "recovery-status";
-  els["recovery-status-button"].setAttribute("aria-label", canApproveDevelopmentRepair ? "Approve bounded checkout recovery" : "View recovery status");
+  els["approval-copy"].textContent = state.mode === "development" ? "Recovery requires a server-recorded owner decision." : "Rollback authority remains bounded to checkout:2.18.0.";
+  els["recovery-status-button"].textContent = "View recovery status";
+  els["recovery-status-button"].dataset.testid = "recovery-status";
+  els["recovery-status-button"].setAttribute("aria-label", "View recovery status");
 }
 
 function renderDrawer() {
@@ -3038,25 +2996,6 @@ async function restartReplay() {
   }
 }
 
-async function approveRepair() {
-  setBusy(true);
-  try {
-    const path = state.mode === "development" ? "/api/development/approve" : "/api/approve";
-    state = await request(path, { method: "POST", body: JSON.stringify({ owner: state.mode === "development" ? "Local development owner" : "Commerce incident owner" }) });
-    cursor = availableStage(state.events);
-    mode = "agents";
-    showToast(state.mode === "development" ? "Local checkout rollback executed after owner approval." : "Checkout-only rollback approved and recorded.");
-    render();
-  } catch (error) {
-    showToast(error.message, true);
-    return;
-  } finally {
-    setBusy(false);
-  }
-  if (state.mode !== "development") await playReplay();
-  else monitorDevelopmentVerification();
-}
-
 async function monitorDevelopmentVerification() {
   for (let attempt = 0; attempt < 12; attempt++) {
     await wait(1_500);
@@ -3802,8 +3741,7 @@ function captureLabel() {
   if (shared) return shared.state === "recovered" ? "LOCAL CODEX · VERIFIED" : "LOCAL CODEX · CANONICAL RUN";
   if (mode === "architecture") return architectureView()?.truth.label || "Architecture unavailable";
   if (mode === "live") return liveTopologyView()?.truth.label || "Live projection unavailable";
-  if (mode === "agents") return agentControl().langfuse === "observing" ? "Agent traces live" : "Ledger agent view";
-  if (mode === "compare") return compareProvenance(state.events).label;
+  if (["replay", "agents", "compare"].includes(mode)) return "Canonical workspace pending";
   return state.mode === "development" ? "Hashed incident" : "Captured incident";
 }
 

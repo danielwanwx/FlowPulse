@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { Ledger } from "../src/ledger.mjs";
 import { LocalFaultLoop } from "../src/local-fault-loop.mjs";
-import { sharedRunReadModel } from "../public/twin-state.mjs";
+import { canonicalWorkspaceVisual, recoveryWorkflowProjection, sharedRunReadModel } from "../public/twin-state.mjs";
 
 test("one canonical run topology is the exact Live, Diagnose, Recovery, and Compare truth", async () => {
   const ledger = new Ledger(join(mkdtempSync(join(tmpdir(), "flowpulse-canonical-topology-")), "ledger.db"));
@@ -44,6 +44,57 @@ test("Compare remains verification_pending for the same canonical run without a 
   assert.equal(shared?.topology.verification.snapshot, null);
   assert.equal(shared?.topology.compare.state, "verification_pending");
   assert.equal(run.events.some((event) => event.type === "local_fault_loop.repair.executed"), false);
+});
+
+test("canonical workspace visuals preserve the active graph identities and fail closed without a usable snapshot", async () => {
+  const ledger = new Ledger(join(mkdtempSync(join(tmpdir(), "flowpulse-canonical-visual-")), "ledger.db"));
+  const loop = new LocalFaultLoop({ ledger, modelAdapter: localCodexAdapter() });
+  const run = await loop.run({ caseId: "checkout-payment-config", round: 1 });
+  const shared = sharedRunReadModel(run);
+
+  const incident = canonicalWorkspaceVisual(shared.topology, shared.topology.snapshots.incident);
+  const verified = canonicalWorkspaceVisual(shared.topology, shared.topology.snapshots.verified);
+  assert.equal(incident.availability, "ready");
+  assert.equal(verified.availability, "ready");
+  assert.deepEqual(incident.node_ids, shared.topology.node_ids);
+  assert.deepEqual(incident.edge_ids, shared.topology.edge_ids);
+  assert.deepEqual(verified.node_ids, shared.topology.node_ids);
+  assert.deepEqual(verified.edge_ids, shared.topology.edge_ids);
+  assert.equal(incident.nodes.find((node) => node.id === "checkout").status, "impact");
+  assert.equal(verified.nodes.find((node) => node.id === "checkout").status, "verified");
+  assert.equal(incident.metrics.checkout.value, "38.4%");
+  assert.equal(verified.metrics.checkout.value, "0.8%");
+
+  const missingSnapshot = canonicalWorkspaceVisual(shared.topology, null);
+  assert.equal(missingSnapshot.availability, "unavailable");
+  assert.deepEqual(missingSnapshot.node_ids, []);
+  assert.deepEqual(missingSnapshot.edge_ids, []);
+  assert.equal(missingSnapshot.metrics.checkout.value, "Unavailable");
+  assert.equal(missingSnapshot.metrics.payment.value, "Unavailable");
+  assert.equal(missingSnapshot.metrics.kafka.value, "Unavailable");
+});
+
+test("recovery workflow follows recorded agent handoffs and never invents a Commander", () => {
+  const events = [
+    { sequence: 1, type: "local_fault_loop.role.response", actor: "observer", payload: { role: "observer" } },
+    { sequence: 2, type: "local_fault_loop.role.response", actor: "orchestrator", payload: { role: "orchestrator" } },
+    { sequence: 3, type: "local_fault_loop.role.response", actor: "investigator", payload: { role: "investigator" } },
+    { sequence: 4, type: "local_fault_loop.role.response", actor: "evaluator", payload: { role: "evaluator" } },
+    { sequence: 5, type: "local_fault_loop.repair.executed", actor: "remediation", payload: {} },
+    { sequence: 6, type: "local_fault_loop.verification.completed", actor: "verifier", payload: { passed: true } }
+  ];
+  const workflow = recoveryWorkflowProjection(events);
+  assert.deepEqual(workflow.nodes.map((node) => node.id), ["observer", "orchestrator", "investigator", "evaluator", "recovery", "verifier"]);
+  assert.equal(workflow.nodes.every((node) => node.status === "complete"), true);
+  assert.equal(workflow.nodes.some((node) => node.id === "commander"), false);
+  assert.equal(workflow.nodes.every((node, index) => node.sequence === index + 1), true);
+
+  const commanderWorkflow = recoveryWorkflowProjection([
+    ...events,
+    { sequence: 7, type: "local_fault_loop.commander.noted", actor: "commander", payload: {} }
+  ]);
+  assert.equal(commanderWorkflow.nodes.at(-1).id, "commander");
+  assert.equal(commanderWorkflow.nodes.at(-1).sequence, 7);
 });
 
 function localCodexAdapter() {

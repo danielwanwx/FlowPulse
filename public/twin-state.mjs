@@ -539,6 +539,121 @@ export function sharedRunReadModel(loop, { throughSequence = null } = {}) {
   };
 }
 
+// This is the only browser-facing projection for a canonical local-fault-loop
+// topology.  It deliberately carries the exact backend node/edge identifiers
+// and the selected immutable snapshot status.  Rendering code may choose a
+// viewport layout, but it must never substitute the legacy twin ids, statuses,
+// or metric values when this projection is unavailable.
+export function canonicalWorkspaceVisual(topology, snapshot) {
+  const unavailable = (reason) => ({
+    availability: "unavailable",
+    reason,
+    run_id: null,
+    incident_id: null,
+    projection_revision: null,
+    node_ids: [],
+    edge_ids: [],
+    nodes: [],
+    edges: [],
+    source_truth: null,
+    metrics: unavailableCanonicalMetrics()
+  });
+  if (!plainRecord(topology) || !validCanonicalRunTopology(topology, { runId: topology.run_id, incidentId: topology.incident_id })) return unavailable("canonical_topology_invalid");
+  const nodeIds = topology.node_ids;
+  const edgeIds = topology.edge_ids;
+  if (!validCanonicalSnapshot(snapshot, nodeIds, edgeIds)) return unavailable("canonical_snapshot_unavailable");
+  return {
+    availability: "ready",
+    reason: null,
+    run_id: topology.run_id,
+    incident_id: topology.incident_id,
+    projection_revision: topology.projection_revision,
+    node_ids: [...nodeIds],
+    edge_ids: [...edgeIds],
+    nodes: topology.graph.nodes.map((node) => ({ ...node, status: snapshot.node_statuses[node.id] })),
+    edges: topology.graph.edges.map((edge) => ({ ...edge, status: snapshot.edge_statuses[edge.id] })),
+    source_truth: { ...topology.source_truth },
+    metrics: canonicalMetricPresentation(snapshot.metric_sample)
+  };
+}
+
+function unavailableCanonicalMetrics() {
+  return {
+    checkout: { value: "Unavailable", note: "Awaiting canonical evidence" },
+    payment: { value: "Unavailable", note: "Awaiting canonical evidence" },
+    kafka: { value: "Unavailable", note: "Awaiting canonical evidence" }
+  };
+}
+
+function canonicalMetricPresentation(metric) {
+  if (!validCanonicalMetric(metric, true)) return unavailableCanonicalMetrics();
+  const phase = metric.phase || "recorded";
+  return {
+    checkout: { value: `${metric.checkout_error_rate_percent}%`, note: `${phase} evidence` },
+    payment: { value: `${metric.payment_reachability_percent}%`, note: `${phase} evidence` },
+    kafka: { value: metric.kafka_lag.toLocaleString(), note: `${phase} evidence` }
+  };
+}
+
+// A recovery canvas reports the roles that have evidence in the canonical
+// ledger.  It never creates a fictional Commander.  If a future backend emits
+// a real commander action, that coordinator is shown explicitly and only then.
+export function recoveryWorkflowProjection(events = []) {
+  const ordered = Array.isArray(events)
+    ? [...events].filter((event) => plainRecord(event)).sort((left, right) => (left.sequence || 0) - (right.sequence || 0))
+    : [];
+  const roleEvent = (role) => [...ordered].reverse().find((event) => event.type === "local_fault_loop.role.response" && event.payload?.role === role) || null;
+  const stageEvent = (type) => [...ordered].reverse().find((event) => event.type === type) || null;
+  const authority = stageEvent("local_fault_loop.authority.decided");
+  const needsHuman = authority?.payload?.outcome === "needs_human";
+  const specifications = [
+    ["observer", "Observer", "binoculars", "observer", "Bound the incident", roleEvent("observer")],
+    ["orchestrator", "Orchestrator", "git-branch", "orchestrator", "Select workflow", roleEvent("orchestrator")],
+    ["investigator", "Investigator", "brain", "investigator", "Test the cause", roleEvent("investigator")],
+    ["evaluator", "Evaluator", "scales", "evaluator", "Challenge the claim", roleEvent("evaluator")],
+    ["recovery", "Recovery Engineer", "wrench", null, "Execute bounded repair", stageEvent("local_fault_loop.repair.executed")],
+    ["verifier", "Verifier", "shield-check", null, "Verify recovery", stageEvent("local_fault_loop.verification.completed")]
+  ];
+  const completed = specifications.map(([, , , , , event]) => Boolean(event));
+  const activeIndex = completed.findIndex((value) => !value);
+  const workflow = specifications.map(([id, label, icon, role, task, event], index) => {
+    const blocked = needsHuman && index >= 4 && !completed[index];
+    const active = !blocked && index === activeIndex;
+    const status = completed[index] ? "complete" : blocked ? "blocked" : active ? "active" : "pending";
+    return {
+      id,
+      label,
+      icon,
+      role,
+      task,
+      sequence: event?.sequence || null,
+      status,
+      statusLabel: ({ complete: "Complete", blocked: "Blocked", active: "Current", pending: "Queued" })[status],
+      handoffActive: active
+    };
+  });
+  const commanderEvent = [...ordered].reverse().find((event) => event.actor === "commander" || event.payload?.role === "commander") || null;
+  if (!commanderEvent) return { nodes: workflow, needs_human: needsHuman };
+  const commander = {
+      id: "commander",
+      label: "Commander",
+      icon: "git-branch",
+      role: "commander",
+      task: "Coordinate recorded workflow",
+      sequence: commanderEvent.sequence || null,
+      status: "complete",
+      statusLabel: "Complete",
+      handoffActive: false
+  };
+  const sequenceOrder = (left, right) => {
+    if (left.sequence === null && right.sequence === null) return 0;
+    if (left.sequence === null) return 1;
+    if (right.sequence === null) return -1;
+    return left.sequence - right.sequence;
+  };
+  return { nodes: [...workflow, commander].sort(sequenceOrder), needs_human: needsHuman };
+}
+
 function validCanonicalRunTopology(value, { runId, incidentId }) {
   const keys = ["schema_version", "run_id", "incident_id", "projection_revision", "graph", "node_ids", "edge_ids", "affected_node_ids", "affected_edge_ids", "source_truth", "current", "metric_samples", "snapshots", "verification", "live", "diagnose", "recovery", "compare", "raw_payload_excluded"];
   if (!plainRecord(value) || !sameKeys(value, keys) || value.schema_version !== "flowpulse.canonical-run-topology.v1"

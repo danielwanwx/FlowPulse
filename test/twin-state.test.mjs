@@ -856,7 +856,7 @@ test("Agent Team rail is session-driven, retains Live selection, and never uses 
   assert.doesNotMatch(appJs.slice(appJs.indexOf("function agentTeamTimelineMarkup"), appJs.indexOf("function agentTeamMessageMarkup")), /message\.sequence <= throughSequence/);
   assert.match(appJs, /projection_revision: projectionRevision/);
   assert.match(appJs, /data-testid="recovery-topology"/);
-  assert.match(appJs, /data-testid", "recovery-canvas"/);
+  assert.match(appJs, /bindCanonicalCanvasIdentity\(canonicalWorkspaceVisual\(shared\.topology, shared\.topology\.current\), "recovery-canvas"\)/);
   assert.match(appJs, /function canonicalRecoveryTopologyMarkup/);
   assert.match(appJs, /data-node-ids=/);
   assert.match(appJs, /data-edge-ids=/);
@@ -1093,7 +1093,7 @@ test("Compare keeps its split canvas while Unified Context Rail owns the verific
   assert.match(appJs, /workspaceSummaryRailMarkup\(\)/);
 });
 
-test("compare is always available and labels captured previews separately from current verification", () => {
+test("compare labels legacy previews separately while canonical workspaces require verified evidence", () => {
   assert.deepEqual(compareProvenance([]), {
     label: "Captured recovery preview",
     tone: "preview",
@@ -1111,8 +1111,10 @@ test("compare is always available and labels captured previews separately from c
   });
   const setModeSource = appJs.match(/function setMode\(nextMode\) \{[\s\S]+?\n\}/)?.[0] || "";
   assert.doesNotMatch(setModeSource, /nextMode === "compare"/);
-  assert.match(appJs, /Drag to compare incident with \$\{provenance\.aria\}/);
-  assert.match(appJs, /mode === "compare" \? compareProvenance\(state\.events\)\.tone : source\.status/);
+  assert.match(appJs, /function canonicalTopologyLayerMarkup/);
+  assert.match(appJs, /Compare remains locked until this run records passed independent verification/);
+  assert.match(appJs, /const canonicalWorkspacePending = \["replay", "agents", "compare"\]\.includes\(mode\) && !shared/);
+  assert.match(appJs, /Canonical workspace pending/);
   assert.match(stylesCss, /\.capture-label\.source-preview::before \{ background: var\(--amber\); \}/);
 });
 
@@ -1250,7 +1252,7 @@ test("Live pulse ordering remains deterministic across the complete backend runt
   assert.match(renderSourceCanvasSource, /fixed-live-edge-map/);
   assert.match(renderSourceCanvasSource, /liveEdgePath\(positions\.get\(edge\.from\), positions\.get\(edge\.to\)/);
   assert.doesNotMatch(renderSourceCanvasSource, /class="pulse-flow/);
-  assert.match(appJs, /classList\.toggle\("is-live-source", mode === "live" \|\| Boolean\(shared/);
+  assert.match(appJs, /classList\.toggle\("is-live-source", mode === "live" \|\| mode === "replay" \|\| mode === "compare"\)/);
   assert.match(appJs, /function startLiveSignalLoop\(/);
   assert.match(appJs, /const concurrentPulseCount = Math\.min\(3, groups\.length\);/);
   assert.match(appJs, /groups\.slice\(0, concurrentPulseCount\)\.forEach\(/);
