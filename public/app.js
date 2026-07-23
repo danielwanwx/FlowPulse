@@ -19,6 +19,7 @@ import {
   agentTeamConversationProjection,
   agentTeamProviderProjection,
   canonicalWorkspaceVisual,
+  containedCanvasView,
   componentDetailProjection,
   nodeLiveInspectorProjection,
   compareProvenance,
@@ -31,6 +32,7 @@ import {
   livePulseSlots,
   livePositions,
   liveViewTopology,
+  isCanvasNavigationMode,
   normalizeServiceId,
   orderedLiveRouteBuildEdges,
   orderedSignalEdges,
@@ -447,7 +449,7 @@ function renderHeader() {
   els["capture-label"].textContent = captureLabel();
   const canonicalWorkspacePending = ["replay", "agents", "compare"].includes(mode) && !shared;
   els["capture-label"].className = `capture-label source-${canonicalWorkspacePending ? "unavailable" : mode === "compare" ? compareProvenance(state.events).tone : source.status}`;
-  els["zoom-controls"].hidden = mode !== "live";
+  els["zoom-controls"].hidden = !isCanvasNavigationMode(mode);
   updateZoomControls();
   els["canvas-caption"].textContent = mode === "replay" && shared ? canonicalDiagnosisCaption(shared) : modeCaption(frame);
   els["app-shell"].dataset.mode = mode;
@@ -734,6 +736,7 @@ function bindCanonicalCanvasIdentity(visual, testId, compareState = null) {
 
 function clearCanonicalCanvasIdentity() {
   for (const key of ["runId", "incidentId", "projectionRevision", "canonicalNodeIds", "canonicalEdgeIds", "compareState"]) delete els["twin-canvas"].dataset[key];
+  els["twin-canvas"].setAttribute("data-testid", "canonical-topology-pending");
 }
 
 function renderSourceCanvas(layout, runTopology = null, ariaLabel = null) {
@@ -2799,12 +2802,12 @@ function configureCanvasWorld(active) {
   world.style.width = `${LIVE_WORLD.width}px`;
   world.style.height = `${LIVE_WORLD.height}px`;
   world.style.inset = "auto";
-  if (!liveView.initialized || renderedMode !== "live") resetLiveView();
+  if (!liveView.initialized || renderedMode !== mode) resetLiveView();
   else applyLiveView();
 }
 
 function setLiveZoom(nextScale) {
-  if (mode !== "live") return;
+  if (!isCanvasNavigationMode(mode)) return;
   const scale = Math.max(LIVE_WORLD.minScale, Math.min(LIVE_WORLD.maxScale, Math.round(nextScale * 10) / 10));
   const rect = els["twin-canvas"].getBoundingClientRect();
   const center = { x: rect.width / 2, y: rect.height / 2 };
@@ -2820,18 +2823,19 @@ function resetLiveView() {
 }
 
 function containedLiveView(rect = els["twin-canvas"].getBoundingClientRect()) {
-  const inset = 24;
-  const scale = Math.max(LIVE_WORLD.minScale, Math.min(1, (rect.width - inset * 2) / LIVE_WORLD.width, (rect.height - inset * 2) / LIVE_WORLD.height));
-  return {
-    scale,
-    x: (rect.width - LIVE_WORLD.width * scale) / 2,
-    y: (rect.height - LIVE_WORLD.height * scale) / 2,
-    initialized: true
-  };
+  return containedCanvasView({
+    viewportWidth: rect.width,
+    viewportHeight: rect.height,
+    worldWidth: LIVE_WORLD.width,
+    worldHeight: LIVE_WORLD.height,
+    minScale: LIVE_WORLD.minScale,
+    maxScale: 1,
+    inset: 24
+  });
 }
 
 function applyLiveView() {
-  if (mode !== "live") return;
+  if (!isCanvasNavigationMode(mode)) return;
   els["canvas-layers"].style.transform = `translate(${Math.round(liveView.x)}px, ${Math.round(liveView.y)}px) scale(${liveView.scale})`;
   updateZoomControls();
 }
@@ -2840,13 +2844,13 @@ function updateZoomControls() {
   if (!els["zoom-level"]) return;
   const fitted = containedLiveView();
   els["zoom-level"].textContent = `${Math.round(liveView.scale * 100)}%`;
-  els["zoom-out"].disabled = mode !== "live" || liveView.scale <= LIVE_WORLD.minScale;
-  els["zoom-in"].disabled = mode !== "live" || liveView.scale >= LIVE_WORLD.maxScale;
-  els["zoom-reset"].disabled = mode !== "live" || (Math.abs(liveView.scale - fitted.scale) < .001 && Math.abs(liveView.x - fitted.x) < 1 && Math.abs(liveView.y - fitted.y) < 1);
+  els["zoom-out"].disabled = !isCanvasNavigationMode(mode) || liveView.scale <= LIVE_WORLD.minScale;
+  els["zoom-in"].disabled = !isCanvasNavigationMode(mode) || liveView.scale >= LIVE_WORLD.maxScale;
+  els["zoom-reset"].disabled = !isCanvasNavigationMode(mode) || (Math.abs(liveView.scale - fitted.scale) < .001 && Math.abs(liveView.x - fitted.x) < 1 && Math.abs(liveView.y - fitted.y) < 1);
 }
 
 function startLivePan(event) {
-  if (mode !== "live" || event.button !== 0 || event.target.closest(".twin-node, .edge-hit, button, input, summary")) return;
+  if (!isCanvasNavigationMode(mode) || event.button !== 0 || event.target.closest(".twin-node, .edge-hit, button, input, summary")) return;
   livePan = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, x: liveView.x, y: liveView.y };
   els["twin-canvas"].classList.add("is-panning");
   els["twin-canvas"].setPointerCapture?.(event.pointerId);

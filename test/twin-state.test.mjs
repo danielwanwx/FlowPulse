@@ -24,6 +24,7 @@ import {
   architecturePositions,
   compareFrames,
   compareProvenance,
+  containedCanvasView,
   canonicalTwinDisplay,
   eventsAtStage,
   frameFor,
@@ -38,6 +39,7 @@ import {
   orderedSignalEdges,
   primaryLiveEdges,
   projectAgentCollaborators,
+  isCanvasNavigationMode,
   topologyIntegrity
 } from "../public/twin-state.mjs";
 
@@ -681,13 +683,57 @@ test("Stage C Live layout keeps the backend layer ordering with room for later p
   assert.match(appJs, /livePositions\(topology\.nodes\)/);
   assert.match(indexHtml, /id="zoom-out"[^>]+aria-label="Zoom out"/);
   assert.match(indexHtml, /id="zoom-in"[^>]+aria-label="Zoom in"/);
+  assert.match(indexHtml, /id="zoom-controls"[^>]+aria-label="Canvas zoom"/);
   assert.match(appJs, /minScale: \.6, maxScale: 1\.6/);
   assert.match(appJs, /function containedLiveView/);
-  assert.match(appJs, /\(rect\.width - inset \* 2\) \/ LIVE_WORLD\.width/);
+  assert.match(appJs, /containedCanvasView\(\{[\s\S]+?worldWidth: LIVE_WORLD\.width,[\s\S]+?worldHeight: LIVE_WORLD\.height,/);
   assert.match(appJs, /live-column-\$\{node\.layerIndex\} live-count-\$\{node\.layerSize\} live-index-\$\{node\.layerPosition\}/);
   assert.doesNotMatch(appJs, /style="left:\$\{Number\(node\.x\)\.toFixed\(3\)/);
   assert.match(stylesCss, /\.is-live-source \.live-column-0 \{ left: 10%; \}/);
   assert.match(stylesCss, /\.is-live-source \.live-count-9\.live-index-8 \{ top: 93\.75%; \}/);
+});
+
+test("canonical Diagnose and Compare keep a bounded pan and zoom canvas at constrained viewports", () => {
+  assert.equal(isCanvasNavigationMode("live"), true);
+  assert.equal(isCanvasNavigationMode("replay"), true);
+  assert.equal(isCanvasNavigationMode("compare"), true);
+  assert.equal(isCanvasNavigationMode("agents"), false);
+
+  const constrained = containedCanvasView({
+    viewportWidth: 840,
+    viewportHeight: 430,
+    worldWidth: 1480,
+    worldHeight: 680,
+    minScale: .6,
+    maxScale: 1,
+    inset: 24
+  });
+  assert.equal(constrained.scale, .6);
+  assert.equal(constrained.pan_required, true);
+  assert.ok(constrained.x < 0);
+
+  const fitted = containedCanvasView({
+    viewportWidth: 1280,
+    viewportHeight: 720,
+    worldWidth: 1480,
+    worldHeight: 680,
+    minScale: .6,
+    maxScale: 1,
+    inset: 24
+  });
+  assert.ok(fitted.scale > .6 && fitted.scale < 1);
+  assert.equal(fitted.pan_required, false);
+  assert.match(appJs, /els\["zoom-controls"\]\.hidden = !isCanvasNavigationMode\(mode\);/);
+  assert.match(appJs, /if \(!isCanvasNavigationMode\(mode\)\) return;/);
+  assert.match(appJs, /if \(!liveView\.initialized \|\| renderedMode !== mode\) resetLiveView\(\);/);
+  assert.match(stylesCss, /\.app-shell\[data-mode="replay"\] \.zoom-controls:not\(\[hidden\]\),[\s\S]+?\.app-shell\[data-mode="compare"\] \.zoom-controls:not\(\[hidden\]\)/);
+});
+
+test("pending canonical canvases clear every ready identity and test selector", () => {
+  const clearSource = appJs.match(/function clearCanonicalCanvasIdentity\(\) \{[\s\S]+?\n\}/)?.[0] || "";
+  assert.match(clearSource, /delete els\["twin-canvas"\]\.dataset\[key\]/);
+  assert.match(clearSource, /setAttribute\("data-testid", "canonical-topology-pending"\)/);
+  assert.doesNotMatch(clearSource, /diagnose-canvas|compare-canvas|recovery-canvas/);
 });
 
 test("live topology normalizes endpoints and explains true telemetry islands", () => {

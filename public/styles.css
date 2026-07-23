@@ -4106,9 +4106,7 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .app-shell[data-mode="replay"] .legend-menu,
 .app-shell[data-mode="agents"] .legend-menu,
 .app-shell[data-mode="compare"] .legend-menu,
-.app-shell[data-mode="replay"] .zoom-controls,
-.app-shell[data-mode="agents"] .zoom-controls,
-.app-shell[data-mode="compare"] .zoom-controls { display: none; }
+.app-shell[data-mode="agents"] .zoom-controls { display: none; }
 .app-shell[data-mode="replay"] .metric-cluster,
 .app-shell[data-mode="agents"] .metric-cluster,
 .app-shell[data-mode="compare"] .metric-cluster {
@@ -4143,6 +4141,13 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .app-shell[data-mode="replay"] .canvas-toolbar { grid-template-columns: minmax(0, 1fr) auto; }
 .app-shell[data-mode="replay"] .canvas-toolbar > div:first-child { display: block; }
 .app-shell[data-mode="replay"] .metric-cluster { width: auto; justify-self: end; }
+.app-shell[data-mode="replay"] .zoom-controls:not([hidden]),
+.app-shell[data-mode="compare"] .zoom-controls:not([hidden]) {
+  display: flex;
+  justify-self: end;
+}
+.app-shell[data-mode="compare"] .canvas-toolbar { grid-template-columns: minmax(0, 1fr) auto; }
+.app-shell[data-mode="compare"] .metric-cluster { width: auto; justify-self: end; }
 .app-shell[data-mode="replay"] .plane-guides { display: block; }
 .app-shell[data-mode="replay"] .plane-guide.runtime-guide { left: 18px; }
 .app-shell[data-mode="replay"] .plane-guide.control-guide { left: auto; right: calc(var(--flowpulse-control-rail-width) + var(--flowpulse-control-rail-inset-x) + 22px); }

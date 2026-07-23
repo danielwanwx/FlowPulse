@@ -9,6 +9,40 @@ export const TWIN_STAGES = [
   { id: "learn", label: "Learn", time: "16:07" }
 ];
 
+// Live, Diagnose (internal replay), and Compare all expose the same bounded
+// canonical canvas. Keep the viewport rule here so a narrow screen cannot
+// silently make the canonical incident graph unreachable on one workspace.
+export function isCanvasNavigationMode(mode) {
+  return ["live", "replay", "compare"].includes(mode);
+}
+
+export function containedCanvasView({
+  viewportWidth,
+  viewportHeight,
+  worldWidth,
+  worldHeight,
+  minScale,
+  maxScale = 1,
+  inset = 24
+} = {}) {
+  const values = [viewportWidth, viewportHeight, worldWidth, worldHeight, minScale, maxScale, inset];
+  if (!values.every((value) => Number.isFinite(value)) || viewportWidth <= 0 || viewportHeight <= 0 || worldWidth <= 0 || worldHeight <= 0 || minScale <= 0 || maxScale < minScale || inset < 0) {
+    return { scale: minScale > 0 ? minScale : 1, x: 0, y: 0, initialized: true, pan_required: false };
+  }
+  const availableWidth = Math.max(0, viewportWidth - inset * 2);
+  const availableHeight = Math.max(0, viewportHeight - inset * 2);
+  const scale = Math.max(minScale, Math.min(maxScale, availableWidth / worldWidth, availableHeight / worldHeight));
+  const renderedWidth = worldWidth * scale;
+  const renderedHeight = worldHeight * scale;
+  return {
+    scale,
+    x: (viewportWidth - renderedWidth) / 2,
+    y: (viewportHeight - renderedHeight) / 2,
+    initialized: true,
+    pan_required: renderedWidth > viewportWidth || renderedHeight > viewportHeight
+  };
+}
+
 export const TWIN_NODES = [
   { id: "frontend", label: "Frontend", detail: "storefront", kind: "client", plane: "runtime", x: 10, y: 46 },
   { id: "checkout", label: "Checkout", detail: "commerce service", kind: "service", plane: "runtime", x: 27, y: 46 },

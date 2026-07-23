@@ -137,7 +137,11 @@ test("the complete replay crosses the typed harness before every specialist runt
   assert.equal(completed.length, 9);
   assert.equal(completed.filter((event) => event.payload.validation === "agent_team_harness").length, 8);
   assert.equal(completed.find((event) => event.payload.target === "executor").payload.validation, "owner_gate_and_allowlist");
-  assert.equal(projection.orchestration.proposal_count, 14);
+  // The recorded plan has 13 harness proposals: 2 + 1 + 1 + 1 + 2 + 1 + 1
+  // before the owner gate, none for the direct allowlisted executor step, and
+  // 1 + 3 for verification and offline learning. The executor deliberately
+  // crosses the owner-gate/allowlist path instead of inventing a proposal.
+  assert.equal(projection.orchestration.proposal_count, 13);
   assert.equal(projection.orchestration.proposals.every((item) => item.content_sha256.length === 64), true);
   assert.equal(state.events.some((event) => event.type === "backtest.completed" && event.actor === "agent:test"), true);
   assert.equal(state.events.find((event) => event.type === "backtest.completed").payload.source, "captured_fixture");
