@@ -425,6 +425,9 @@ function testCodexResponse() {
 function testCodexDelay() {
   if (process.env.NODE_ENV !== "test") return 0;
   const value = Number(process.env.FLOWPULSE_TEST_CODEX_DELAY_MS || 0);
-  return Number.isInteger(value) && value >= 0 && value <= 5_000 ? value : 0;
+  // Test-only latency injection must be bounded, but it also has to be able
+  // to outlive a short lease so restart recovery can prove that no provider
+  // work is resumed after process loss.
+  return Number.isInteger(value) && value >= 0 && value <= 120_000 ? value : 0;
 }
 function tempRoot() { return tmpdir(); }

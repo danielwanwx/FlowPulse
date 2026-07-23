@@ -108,10 +108,18 @@ test("Agent Team HTTP and SSE projections preserve a chat's transparent routing 
     execution_mode: initial.body.topology_views.truth.execution_mode
   });
 
-  const conversation = await getJson(port, "/api/agent-control/conversation?conversation_id=conv-sidebar-001");
+  // A conversation is always bound to the run that produced it.  Once the
+  // local loop above becomes the ambient workspace, an unscoped read must not
+  // silently project this recorded conversation onto that unrelated run.
+  const unscopedConversation = await getJson(port, "/api/agent-control/conversation?conversation_id=conv-sidebar-001");
+  assert.deepEqual(unscopedConversation, { status: 400, body: { error: "conversation_run_id_required" } });
+  const unscopedStream = await getJson(port, "/api/agent-control/events?conversation_id=conv-sidebar-001");
+  assert.deepEqual(unscopedStream, { status: 400, body: { error: "conversation_run_id_required" } });
+
+  const conversation = await getJson(port, `/api/agent-control/conversation?run_id=${initial.body.run_id}&conversation_id=conv-sidebar-001`);
   assert.equal(conversation.status, 200);
   assert.equal(conversation.body.messages.at(-1).responding_agent, "investigator");
-  const streamed = await readSse(port, "/api/agent-control/events?conversation_id=conv-sidebar-001&after=0");
+  const streamed = await readSse(port, `/api/agent-control/events?run_id=${initial.body.run_id}&conversation_id=conv-sidebar-001&after=0`);
   assert.equal(streamed.agent_control.agent_team_provider.truth_label, "RECORDED/DEMO");
   assert.equal(streamed.conversation.messages.at(-1).kind, "assistant");
   const rejected = await postJson(port, "/api/agent-control/chat", {

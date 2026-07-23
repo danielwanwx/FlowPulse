@@ -27,6 +27,14 @@ test("interactive loop starts asynchronously, streams safe events, resumes, and 
   context.after(() => stop(child));
   await waitForHealth(child, port);
 
+  // Preserve a known, non-loop run before a local loop becomes the ambient
+  // workspace. A later explicit request for this run must not inherit the
+  // active loop workspace from another browser tab.
+  const originalRun = await getJson(port, "/api/state");
+  assert.equal(originalRun.status, 200, JSON.stringify(originalRun.body));
+  const originalRunId = originalRun.body.run_id;
+  assert.ok(originalRunId);
+
   const startedAt = Date.now();
   const [first, duplicate] = await Promise.all([
     postJson(port, "/api/demo/agent-loop/run", { case_id: "checkout-payment-config", round: 1, idempotency_key: "interactive-checkout-001" }),
@@ -72,6 +80,15 @@ test("interactive loop starts asynchronously, streams safe events, resumes, and 
   // contract to that loop. A refresh cannot leave Live on one run while the
   // workspace/Agent Chat point at another globally-active run.
   assertCanonicalLoopBrowserState(canonicalState.body, first.body);
+  assert.deepEqual(
+    sourceTruth(canonicalState.body.incident_projection),
+    sourceTruth(canonicalState.body.topology_views.truth),
+    "the incident projection must expose the same source-truth axes as the canonical topology"
+  );
+  const explicitlyPinnedOriginal = await getJson(port, `/api/state?run_id=${encodeURIComponent(originalRunId)}`);
+  assert.equal(explicitlyPinnedOriginal.status, 200, JSON.stringify(explicitlyPinnedOriginal.body));
+  assert.equal(explicitlyPinnedOriginal.body.run_id, originalRunId);
+  assert.equal(explicitlyPinnedOriginal.body.workspace_projection, null, "an explicit non-loop run must not receive the active local-loop workspace");
   const canonicalSource = await getJson(port, "/api/source");
   assert.equal(canonicalSource.status, 200);
   assert.equal(canonicalSource.body.mode, "deterministic_replay");
@@ -130,6 +147,11 @@ test("interactive loop starts asynchronously, streams safe events, resumes, and 
     message: "What evidence proves this recovery was authorized and independently verified?"
   });
   assert.equal(workflowChat.status, 200, JSON.stringify(workflowChat.body));
+  assert.deepEqual(
+    workflowChat.body.conversation.messages.find((message) => message.kind === "context").source_truth,
+    sourceTruth(canonicalState.body.topology_views.truth),
+    "Agent Control must receive the same source-truth axes as Live/Diagnose/Recovery/Compare"
+  );
   assert.equal(workflowChat.body.citations.includes(authorityEvent.id), true);
   assert.equal(workflowChat.body.citations.includes(verificationEvent.id), true);
   assert.equal(workflowChat.body.tool_summaries.some((item) => item.tool === "read_workflow_projection" && item.result_count === 1), true);
@@ -211,6 +233,14 @@ function assertCanonicalLoopBrowserState(state, started) {
   assert.equal(state.events.every((event) => event.run_id === runId && event.incident_id === incidentId), true, "event ledger must not contain a second run");
   assert.equal(state.source?.mode, "deterministic_replay", "local loop source provenance must be the captured replay source");
   assert.equal(state.source?.status, "captured", "local loop source must not splice in live collector state");
+}
+
+function sourceTruth(value) {
+  return {
+    source_health: value.source_health,
+    evidence_mode: value.evidence_mode,
+    execution_mode: value.execution_mode
+  };
 }
 
 test("a restarted server terminalizes an expired reservation without replaying model or repair side effects", async (context) => {

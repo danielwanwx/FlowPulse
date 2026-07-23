@@ -85,22 +85,11 @@ const agentTeamChat = new AgentTeamChatService({
   stateForRun: (runId) => agentTeamStateForRun(runId),
   incidentIdForRun: (runId) => localFaultLoopProjection(runId)?.incident_id || runtime.bundle.incident.id,
   contextForRun: async (_runtime, runId, request = {}) => {
-    const loop = localFaultLoopProjection(runId);
     const state = await nodeStateForRun(runId);
-    // The Agent Team receives the same canonical source-truth axes as the
-    // browser topology view. A compatibility IncidentProjection can carry
-    // legacy source metadata, but it must not make captured evidence sound
-    // like a live source in a safe answer.
-    const canonicalTruth = state.topology_views?.truth;
-    const baseIncidentProjection = loop ? localLoopIncidentProjection(loop, state.incident_projection) : state.incident_projection;
-    const incidentProjection = canonicalTruth
-      ? {
-          ...baseIncidentProjection,
-          source_health: canonicalTruth.source_health,
-          evidence_mode: canonicalTruth.evidence_mode,
-          execution_mode: canonicalTruth.execution_mode
-        }
-      : baseIncidentProjection;
+    // Agent Control consumes the browser state projection directly.  Do not
+    // reconstruct or patch its source truth here: a chat answer must describe
+    // the exact same evidence authority as the visible workspace.
+    const incidentProjection = state.incident_projection;
     const selectedComponent = typeof request.selected_component === "string" ? request.selected_component : null;
     const plane = await nodeInvestigationPlaneForRun(runId, state);
     const source = plane.source;
@@ -216,13 +205,18 @@ const server = createServer(async (request, response) => {
     }
     if (url.pathname === "/api/agent-control/events" && request.method === "GET") {
       const requestedRunId = url.searchParams.get("run_id");
+      const conversationId = url.searchParams.get("conversation_id");
+      if (conversationId !== null && requestedRunId === null) return json(response, 400, { error: "conversation_run_id_required" });
       if (requestedRunId !== null && !safeBrowserId(requestedRunId)) return json(response, 400, { error: "browser_state_run_id_invalid" });
       if (!knownAgentRun(requestedRunId || browserRunId())) return json(response, 409, { error: "agent_control_run_unavailable" });
       return streamAgentEvents(request, response, url);
     }
     if (url.pathname === "/api/agent-control/conversation" && request.method === "GET") {
       const conversationId = url.searchParams.get("conversation_id");
-      const runId = url.searchParams.get("run_id") || browserRunId();
+      const requestedRunId = url.searchParams.get("run_id");
+      if (conversationId !== null && requestedRunId === null) return json(response, 400, { error: "conversation_run_id_required" });
+      if (requestedRunId !== null && !safeBrowserId(requestedRunId)) return json(response, 400, { error: "browser_state_run_id_invalid" });
+      const runId = requestedRunId || browserRunId();
       if (!knownAgentRun(runId)) return json(response, 409, { error: "conversation_run_unavailable" });
       try {
         return json(response, 200, agentTeamChat.project({ runId, conversationId }));
@@ -1158,6 +1152,11 @@ async function stateWithSource(runId = runtime.ensureRun(), { cursor = null } = 
     controls: topologyControlInputs(projected, sourceState),
     demoLifecycle: demoLifecycle.ok ? demoLifecycle.value : null
   });
+  // An explicit request is authoritative.  The ambient browser workspace is
+  // only safe to expose when it is the very same selected run; otherwise a
+  // previous tab's local loop would splice its repair/verification state into
+  // an unrelated captured or live run.
+  const selectedWorkspace = activeWorkspaceRunId === runId ? localFaultLoopProjection(runId) : null;
   const state = {
     schema_version: "flowpulse.browser-state.v1",
     run_id: incident_projection.run_id || safeBrowserId(projected.run_id),
@@ -1171,7 +1170,7 @@ async function stateWithSource(runId = runtime.ensureRun(), { cursor = null } = 
     source: redactedSource(sourceState, incident_projection, topology_views),
     topology_views,
     incident_projection,
-    workspace_projection: activeWorkspaceRunId ? compactBrowserWorkspaceProjection(localFaultLoopProjection(activeWorkspaceRunId)) : null,
+    workspace_projection: selectedWorkspace ? compactBrowserWorkspaceProjection(selectedWorkspace) : null,
     agent_control: {
       ...agentControl.project(runId, { incidentProjection: incident_projection, state: projected }),
       agent_team_provider: agentTeamChat.providerCapability()
@@ -1190,6 +1189,11 @@ async function browserStateForRun(runId, { cursor = null } = {}) {
     error.code = "browser_state_run_unavailable";
     throw error;
   }
+  // Local-loop detection reads the complete run from the ledger. Refuse an
+  // oversized run before that lookup so a browser read cannot materialize an
+  // unbounded payload merely to decide whether it is a local loop.
+  const preflight = projectionLedgerPreflight(runId);
+  if (!preflight.ok) return nonActionableBrowserState(runId, preflight.code);
   const loop = localFaultLoopProjection(runId);
   if (loop) return localLoopBrowserState(loop, { cursor });
   if (runId !== browserRunId() && !knownNodeRun(runId)) {
@@ -1411,7 +1415,7 @@ async function nodeInvestigationPlaneForRun(runId, state = null) {
     topologyViews: current.topology_views,
     source,
     sourceState: await sourceProjection(runId, source),
-    incidentProjection: loop ? localLoopIncidentProjection(loop, current.incident_projection) : current.incident_projection
+    incidentProjection: current.incident_projection
   });
 }
 
@@ -1433,7 +1437,7 @@ async function localLoopBrowserState(loop, { cursor = null } = {}) {
   const evidence = localLoopEvidence(loop);
   const source = await selectedEvidenceSource(loop.run_id, projected.mode);
   const sourceState = await sourceProjection(loop.run_id, source);
-  const incidentProjection = localLoopIncidentProjection(loop, { cursor, evidence });
+  const incidentProjection = localLoopIncidentProjection(loop, { cursor, evidence, sourceTruth: topologySourceTruth() });
   // The static overlay schema is keyed to its captured fixture incident. It
   // is a presentation scaffold only; stateWithLocalLoopTopology immediately
   // binds the emitted view identity and runtime graph to this local loop.
@@ -1588,7 +1592,15 @@ function agentTeamStateForRun(runId) {
   };
 }
 
-function localLoopIncidentProjection(loop, { cursor = null, evidence = localLoopEvidence(loop) } = {}) {
+function topologySourceTruth() {
+  return {
+    source_health: topologyManifest.source_health,
+    evidence_mode: topologyManifest.evidence_mode,
+    execution_mode: topologyManifest.execution_mode
+  };
+}
+
+function localLoopIncidentProjection(loop, { cursor = null, evidence = localLoopEvidence(loop), sourceTruth = topologySourceTruth() } = {}) {
   const definition = loop.case_id === "insufficient-evidence" ? "Evidence gap" : "Checkout / payment incident";
   const latest = (type) => [...(loop.events || [])].reverse().find((event) => event.type === type) || null;
   const plan = latest("local_fault_loop.plan.proposed");
@@ -1612,9 +1624,9 @@ function localLoopIncidentProjection(loop, { cursor = null, evidence = localLoop
     },
     stage: stage.value,
     stage_status: stage.status,
-    source_health: "live",
-    evidence_mode: "captured_fixture",
-    execution_mode: "captured_simulation",
+    source_health: sourceTruth.source_health,
+    evidence_mode: sourceTruth.evidence_mode,
+    execution_mode: sourceTruth.execution_mode,
     graph,
     timeline: { frames: (loop.events || []).slice(-INCIDENT_PROJECTION_LIMITS.max_frames).map((event) => ({ event_id: event.id, sequence: event.sequence, type: event.type, recorded_at: event.recorded_at, evidence_refs: [...(event.evidence_refs || [])] })), total_frames: (loop.events || []).length, cursor },
     evidence: evidence.map((record) => ({ id: record.id, kind: record.kind, title: record.title, entity: record.entity, source: record.source, observed_at: record.at, provenance: { status: record.hash ? "record_bound" : "legacy_detail_unavailable", sha256: record.hash } })),
