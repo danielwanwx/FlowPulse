@@ -116,7 +116,7 @@ const agentTeamChat = new AgentTeamChatService({
       }
     }
     const sourceMetadata = source.metadata();
-    const sourceState = await sourceProjection(loop ? browserRunId() : runId, source);
+    const sourceState = await sourceProjection(runId, source);
     return {
       topology_views: state.topology_views,
       incident_projection: incidentProjection,
@@ -157,7 +157,14 @@ const server = createServer(async (request, response) => {
       }
     }
     if (url.pathname === "/api/source" && request.method === "GET") {
-      return json(response, 200, (await stateWithSource(browserRunId())).source);
+      const requestedRunId = url.searchParams.get("run_id");
+      if (requestedRunId !== null && !safeBrowserId(requestedRunId)) return json(response, 400, { error: "browser_state_run_id_invalid" });
+      try {
+        return json(response, 200, (await browserStateForRun(requestedRunId || browserRunId())).source);
+      } catch (error) {
+        if (error?.code === "browser_state_run_unavailable") return json(response, 404, { error: error.code });
+        throw error;
+      }
     }
     if (url.pathname.startsWith("/api/components/") && url.pathname.endsWith("/events") && request.method === "GET") {
       return await streamNodeEvidenceEvents(request, response, url);
@@ -198,9 +205,19 @@ const server = createServer(async (request, response) => {
       return json(response, 200, { source: redactedSource(source.metadata()), evidence: redactedEvidenceDetail(source.detail(id)) });
     }
     if (url.pathname === "/api/agent-control" && request.method === "GET") {
-      return json(response, 200, (await stateWithSource()).agent_control);
+      const requestedRunId = url.searchParams.get("run_id");
+      if (requestedRunId !== null && !safeBrowserId(requestedRunId)) return json(response, 400, { error: "browser_state_run_id_invalid" });
+      try {
+        return json(response, 200, (await browserStateForRun(requestedRunId || browserRunId())).agent_control);
+      } catch (error) {
+        if (error?.code === "browser_state_run_unavailable") return json(response, 404, { error: error.code });
+        throw error;
+      }
     }
     if (url.pathname === "/api/agent-control/events" && request.method === "GET") {
+      const requestedRunId = url.searchParams.get("run_id");
+      if (requestedRunId !== null && !safeBrowserId(requestedRunId)) return json(response, 400, { error: "browser_state_run_id_invalid" });
+      if (!knownAgentRun(requestedRunId || browserRunId())) return json(response, 409, { error: "agent_control_run_unavailable" });
       return streamAgentEvents(request, response, url);
     }
     if (url.pathname === "/api/agent-control/conversation" && request.method === "GET") {
@@ -921,7 +938,10 @@ function sameCanonicalEvaluation(eventPayload, gatePayload) {
 function isEmptyObject(value) { return Boolean(value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === 0); }
 function approvalOwner(value) { return value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === 1 && boundedText(value.owner, 160) ? value.owner : null; }
 function runMode(runId) { return ledger.list(runId).find((event) => event.type === "run.started")?.payload?.mode || null; }
-function browserRunId() { return activeDemoRunId || runtime.ensureRun(); }
+// The current browser selection is a run, not an ambient demo fixture. Once a
+// local loop starts, an unpinned refresh must resolve to that exact run until
+// reset; explicit query parameters are handled separately and never fall back.
+function browserRunId() { return activeWorkspaceRunId || activeDemoRunId || runtime.ensureRun(); }
 function initializeDemoRun() {
   const latest = ledger.latestRun(bundle.incident.id);
   if (!latest) return createHealthyDemoRun();
@@ -1171,10 +1191,7 @@ async function browserStateForRun(runId, { cursor = null } = {}) {
     throw error;
   }
   const loop = localFaultLoopProjection(runId);
-  if (loop) {
-    const browserState = await stateWithSource(browserRunId(), { cursor });
-    return stateWithLocalLoopTopology(browserState, loop);
-  }
+  if (loop) return localLoopBrowserState(loop, { cursor });
   if (runId !== browserRunId() && !knownNodeRun(runId)) {
     const error = new Error("browser_state_run_unavailable");
     error.code = "browser_state_run_unavailable";
@@ -1362,21 +1379,24 @@ async function selectedEvidenceSource(runId = runtime.ensureRun(), knownMode = n
 
 async function sourceProjection(runId = runtime.ensureRun(), source = null) {
   const selected = source || await selectedEvidenceSource(runId);
-  const project = await liveSource.project();
   const metadata = selected.metadata();
+  // A captured/local-loop selection is immutable evidence. Reading the live
+  // collector here would silently splice a different runtime into the selected
+  // run. Only a live evidence source is allowed to query the collector.
+  const project = metadata?.status === "live" ? await liveSource.project() : null;
   // Replay must project the selected captured bundle, not an unrelated current
   // collector window. The projection remains read-only and deliberately carries
   // no policy, approval, or execution material.
-  const topology = typeof selected.topology === "function" ? selected.topology() : project.topology;
+  const topology = typeof selected.topology === "function" ? selected.topology() : project?.topology;
   return {
     ...metadata,
     kind: "otlp-jsonl",
-    live_status: project.status,
-    last_observed_at: project.last_observed_at,
-    freshness_ms: project.freshness_ms,
-    counts: project.counts,
+    live_status: project?.status || "unavailable",
+    last_observed_at: project?.last_observed_at || null,
+    freshness_ms: project?.freshness_ms ?? null,
+    counts: project?.counts || metadata?.counts || {},
     topology,
-    errors: project.errors,
+    errors: project?.errors || [],
     evidence: selected.list({ limit: 50 }).items,
     raw_records_excluded: true
   };
@@ -1390,7 +1410,7 @@ async function nodeInvestigationPlaneForRun(runId, state = null) {
   return new NodeInvestigationPlane({
     topologyViews: current.topology_views,
     source,
-    sourceState: await sourceProjection(loop ? browserRunId() : runId, source),
+    sourceState: await sourceProjection(runId, source),
     incidentProjection: loop ? localLoopIncidentProjection(loop, current.incident_projection) : current.incident_projection
   });
 }
@@ -1405,8 +1425,82 @@ function knownAgentRun(runId) {
 
 async function nodeStateForRun(runId) {
   const loop = localFaultLoopProjection(runId);
-  const state = await stateWithSource(loop ? browserRunId() : runId);
-  return loop ? stateWithLocalLoopTopology(state, loop) : state;
+  return loop ? localLoopBrowserState(loop) : stateWithSource(runId);
+}
+
+async function localLoopBrowserState(loop, { cursor = null } = {}) {
+  const projected = localLoopRuntimeState(loop);
+  const evidence = localLoopEvidence(loop);
+  const source = await selectedEvidenceSource(loop.run_id, projected.mode);
+  const sourceState = await sourceProjection(loop.run_id, source);
+  const incidentProjection = localLoopIncidentProjection(loop, { cursor, evidence });
+  // The static overlay schema is keyed to its captured fixture incident. It
+  // is a presentation scaffold only; stateWithLocalLoopTopology immediately
+  // binds the emitted view identity and runtime graph to this local loop.
+  const viewIncidentProjection = {
+    ...incidentProjection,
+    incident: { ...incidentProjection.incident, id: incidentTopologyOverlay.incident_id }
+  };
+  const topologyViews = composeTopologyViews({
+    manifest: topologyManifest,
+    incidentProjection: viewIncidentProjection,
+    overlay: incidentTopologyOverlay,
+    controls: topologyControlInputs(projected, sourceState),
+    demoLifecycle: null
+  });
+  const state = {
+    schema_version: "flowpulse.browser-state.v1",
+    run_id: loop.run_id,
+    mode: projected.mode,
+    status: projected.status,
+    complete: projected.complete,
+    waiting_for_approval: projected.waiting_for_approval,
+    incident: incidentProjection.incident,
+    events: projected.events.slice(-INCIDENT_PROJECTION_LIMITS.max_frames).map(redactedLedgerEvent),
+    evidence: incidentProjection.evidence,
+    source: redactedSource(sourceState, incidentProjection, topologyViews),
+    topology_views: topologyViews,
+    incident_projection: incidentProjection,
+    workspace_projection: compactBrowserWorkspaceProjection(loop),
+    agent_control: {
+      ...agentControl.project(loop.run_id, { incidentProjection, state: projected }),
+      agent_team_provider: agentTeamChat.providerCapability()
+    },
+    harness: redactedHarness(harnessProjection(projected.events))
+  };
+  return enforceBrowserResponseCap(stateWithLocalLoopTopology(state, loop));
+}
+
+function localLoopRuntimeState(loop) {
+  const terminal = ["recovered", "needs_human", "failed"].includes(loop.state);
+  return {
+    run_id: loop.run_id,
+    mode: "replay",
+    status: loop.state,
+    complete: terminal,
+    waiting_for_approval: loop.state === "needs_human",
+    incident: { id: loop.incident_id, title: loop.case_id === "insufficient-evidence" ? "Evidence gap" : "Checkout / payment incident", severity: loop.case_id === "insufficient-evidence" ? "unknown" : "SEV-2", environment: "isolated local fixture" },
+    events: (loop.events || []).map((event) => ({ ...event, run_id: loop.run_id, incident_id: loop.incident_id }))
+  };
+}
+
+function localLoopEvidence(loop) {
+  const records = new Map();
+  for (const event of loop.events || []) {
+    if (event.type !== "local_fault_loop.evidence.recorded") continue;
+    const record = event.payload;
+    if (!safeBrowserId(record?.id) || records.has(record.id)) continue;
+    records.set(record.id, {
+      id: record.id,
+      kind: safeBrowserText(record.kind || "evidence", 80),
+      source: "local fixture simulator",
+      entity: safeBrowserText(record.entity || "unknown", 120),
+      title: safeBrowserText(record.summary || "Local evidence", 180),
+      at: safeBrowserText(record.observed_at || event.recorded_at, 40),
+      hash: safeBrowserHash(record.record_sha256)
+    });
+  }
+  return [...records.values()];
 }
 
 function stateWithLocalLoopTopology(state, loop) {
@@ -1482,7 +1576,6 @@ function compactBrowserWorkspaceProjection(loop) {
 function agentTeamStateForRun(runId) {
   const loop = localFaultLoopProjection(runId);
   if (!loop) return runtime.state(runId);
-  const browser = runtime.state(browserRunId());
   return {
     run_id: loop.run_id,
     incident: { id: loop.incident_id },
@@ -1491,30 +1584,50 @@ function agentTeamStateForRun(runId) {
     waiting_for_approval: loop.state === "needs_human",
     complete: ["recovered", "needs_human", "failed"].includes(loop.state),
     events: loop.events,
-    topology: browser.topology
+    topology: loop.topology?.graph || { nodes: [], edges: [] }
   };
 }
 
-function localLoopIncidentProjection(loop, fallback = {}) {
+function localLoopIncidentProjection(loop, { cursor = null, evidence = localLoopEvidence(loop) } = {}) {
   const definition = loop.case_id === "insufficient-evidence" ? "Evidence gap" : "Checkout / payment incident";
   const latest = (type) => [...(loop.events || [])].reverse().find((event) => event.type === type) || null;
   const plan = latest("local_fault_loop.plan.proposed");
   const authority = latest("local_fault_loop.authority.decided");
   const repair = latest("local_fault_loop.repair.executed");
   const verification = latest("local_fault_loop.verification.completed");
+  const accepted = latest("local_fault_loop.evaluation.accepted");
+  const rejected = latest("local_fault_loop.evaluation.rejected");
+  const stage = localLoopProjectionStage(loop);
+  const graph = topologyViewGraph(loop.topology?.graph || { nodes: [], edges: [] });
+  const cited = [...new Set((loop.events || []).flatMap((event) => event.evidence_refs || []))].filter(safeBrowserId);
   return {
-    ...fallback,
+    schema_version: "flowpulse.incident-projection.v1",
+    projection_revision: safeBrowserHash(loop.topology?.projection_revision),
     run_id: loop.run_id,
     incident: {
-      ...(fallback?.incident || {}),
       id: loop.incident_id,
       title: definition,
       severity: loop.case_id === "insufficient-evidence" ? "unknown" : "SEV-2",
       environment: "isolated local fixture"
     },
-    stage: { ...(fallback?.stage || {}), label: loop.stage },
-    stage_status: loop.state,
-    human_gate: { ...(fallback?.human_gate || {}), status: loop.state === "needs_human" ? "requested" : "not_required" },
+    stage: stage.value,
+    stage_status: stage.status,
+    source_health: "live",
+    evidence_mode: "captured_fixture",
+    execution_mode: "captured_simulation",
+    graph,
+    timeline: { frames: (loop.events || []).slice(-INCIDENT_PROJECTION_LIMITS.max_frames).map((event) => ({ event_id: event.id, sequence: event.sequence, type: event.type, recorded_at: event.recorded_at, evidence_refs: [...(event.evidence_refs || [])] })), total_frames: (loop.events || []).length, cursor },
+    evidence: evidence.map((record) => ({ id: record.id, kind: record.kind, title: record.title, entity: record.entity, source: record.source, observed_at: record.at, provenance: { status: record.hash ? "record_bound" : "legacy_detail_unavailable", sha256: record.hash } })),
+    investigation: { hypotheses: [], counter_evidence: rejected ? { hypothesis_id: rejected.payload?.hypothesis_id || rejected.id, evidence_refs: [...rejected.evidence_refs] } : null, evaluator: { verdict: accepted ? "accepted" : rejected ? "rejected" : "pending", evidence_refs: [...(accepted?.evidence_refs || rejected?.evidence_refs || [])] }, diagnosis_gate: { status: accepted ? "passed" : "pending", event_id: accepted?.id || null, evidence_refs: [...(accepted?.evidence_refs || [])] }, replan: { status: "not_recorded", event_id: null } },
+    decision: { status: authority ? "auto_execute_pre_authorized" : "not_recorded", decision_id: authority?.id || null, risk_tier: plan?.payload?.risk || null, evidence_refs: [...(plan?.evidence_refs || [])] },
+    human_gate: { status: loop.state === "needs_human" ? "requested" : "not_required", request_id: null, approval_id: null },
+    action: { status: repair ? "executed" : "not_started", event_id: repair?.id || null, truth: repair ? "ledger_recorded" : null },
+    verification: { status: verification?.payload?.passed === true ? "passed" : "not_recorded", event_id: verification?.id || null, passed: verification?.payload?.passed === true ? true : null, evidence_refs: [...(verification?.evidence_refs || [])] },
+    learning: { regression_id: null, backtest_id: null, policy_id: null, backtest_source: "captured_fixture" },
+    why_stopped: { code: loop.state === "needs_human" ? "insufficient_evidence" : null, detail_status: loop.state === "needs_human" ? "recorded" : "not_stopped" },
+    truncated: false,
+    truncation: { graph_nodes: 0, graph_edges: 0, timeline_frames: 0, evidence_summaries: Math.max(0, cited.length - evidence.length), serialized_bytes: 0 },
+    next_cursor: null,
     workflow: {
       plan: plan ? { event_id: plan.id, actor: plan.actor, sequence: plan.sequence, repair: plan.payload?.repair, target: plan.payload?.target, risk: plan.payload?.risk, verification_plan: plan.payload?.verification_plan, evidence_refs: plan.evidence_refs } : null,
       authority: authority ? { event_id: authority.id, actor: authority.actor, sequence: authority.sequence, outcome: authority.payload?.outcome, reason: authority.payload?.reason, execution_scope: authority.payload?.execution_scope, evidence_refs: authority.evidence_refs } : null,
@@ -1523,6 +1636,15 @@ function localLoopIncidentProjection(loop, fallback = {}) {
       verification_boundary: { kind: "demo_role_separation", limitation: "The remediation and verifier actors are separate paths inside this demo workflow; this does not establish organizational or cryptographic independence." }
     }
   };
+}
+
+function localLoopProjectionStage(loop) {
+  if (loop.state === "recovered") return { value: { id: "decision_recovery", label: "Decision & Recovery" }, status: "verified" };
+  if (loop.state === "needs_human") return { value: { id: "agent_workbench", label: "Agent Workbench" }, status: "blocked" };
+  if (["repair", "verify"].includes(loop.stage)) return { value: { id: "decision_recovery", label: "Decision & Recovery" }, status: "executing" };
+  if (["plan", "approve-or-auto"].includes(loop.stage)) return { value: { id: "decision_recovery", label: "Decision & Recovery" }, status: "approved" };
+  if (["diagnose", "evaluate"].includes(loop.stage)) return { value: { id: "agent_workbench", label: "Agent Workbench" }, status: "evaluating" };
+  return { value: { id: "monitor", label: "Monitor" }, status: "collecting" };
 }
 
 function componentDetailResponse(snapshot) {
@@ -1794,7 +1916,10 @@ function streamAgentEvents(request, response, url) {
     connection: "keep-alive"
   });
   const sendProjection = async () => {
-    const projection = (await stateWithSource(runId)).agent_control;
+    // The stream must use the same selected-run read model as the initial
+    // page. Calling stateWithSource directly would rebuild a local-loop SSE
+    // update from the unrelated runtime state after the page was correct.
+    const projection = (await browserStateForRun(runId)).agent_control;
     if (projection.last_sequence <= lastSequence) return;
     lastSequence = projection.last_sequence;
     let payload = projection;

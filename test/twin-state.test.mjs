@@ -520,7 +520,9 @@ test("initial rendering does not wait for optional development diagnostics", () 
   assert.match(refreshSource, /void refreshDevelopmentStatus\(\);/);
   assert.doesNotMatch(refreshSource, /Promise\.all\(/);
   assert.match(appJs, /async function refreshDevelopmentStatus\(\)/);
-  assert.match(appJs, /function browserStatePath\(\)[\s\S]*pinnedRunId/);
+  assert.match(appJs, /function browserStatePath\(\)[\s\S]*selectedRunId/);
+  assert.match(appJs, /function readRequestedRunId\(\)[\s\S]*get\("run_id"\)/);
+  assert.match(appJs, /function bindCanonicalRunSelection\(loop\)[\s\S]*history\.replaceState/);
 });
 
 test("architecture is a static four-layer overview with backend-owned status dots", () => {

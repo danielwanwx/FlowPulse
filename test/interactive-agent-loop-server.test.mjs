@@ -68,6 +68,27 @@ test("interactive loop starts asynchronously, streams safe events, resumes, and 
 
   const canonicalState = await getJson(port, "/api/state");
   assert.equal(canonicalState.status, 200);
+  // Starting a local loop without a deep link must bind the whole browser
+  // contract to that loop. A refresh cannot leave Live on one run while the
+  // workspace/Agent Chat point at another globally-active run.
+  assertCanonicalLoopBrowserState(canonicalState.body, first.body);
+  const canonicalSource = await getJson(port, "/api/source");
+  assert.equal(canonicalSource.status, 200);
+  assert.equal(canonicalSource.body.mode, "deterministic_replay");
+  assert.equal(canonicalSource.body.status, "captured");
+  assert.equal((await getJson(port, "/api/source?run_id=missing-run")).status, 404, "an unknown source deep link must fail closed");
+  const canonicalAgentControl = await getJson(port, "/api/agent-control");
+  assert.equal(canonicalAgentControl.status, 200);
+  assert.equal(canonicalAgentControl.body.run_id, first.body.run_id);
+  assert.equal(canonicalAgentControl.body.incident_id, first.body.incident_id);
+  assert.equal((await getJson(port, "/api/agent-control?run_id=missing-run")).status, 404, "an unknown Agent Chat deep link must fail closed");
+  const agentSse = await readFirstAgentSse(port, `/api/agent-control/events?run_id=${encodeURIComponent(first.body.run_id)}`);
+  assert.equal(agentSse.status, 200, agentSse.raw);
+  assert.equal(agentSse.payload?.run_id, first.body.run_id, "Agent Chat SSE must retain the selected local loop run");
+  assert.equal(agentSse.payload?.incident_id, first.body.incident_id, "Agent Chat SSE must retain the selected local loop incident");
+  assert.equal(agentSse.payload?.last_sequence, canonicalAgentControl.body.last_sequence, "Agent Chat SSE must project the same selected-run event cursor as the page");
+  const invalidAgentSse = await getJson(port, "/api/agent-control/events?run_id=not%20a%20run");
+  assert.equal(invalidAgentSse.status, 400, "an invalid Agent Chat deep link must fail closed");
   const workspace = canonicalState.body.workspace_projection;
   assert.ok(workspace, `page state must expose the active canonical workspace without sessionStorage: ${JSON.stringify(Object.keys(canonicalState.body))}`);
   assert.equal(workspace.run_id, first.body.run_id);
@@ -151,6 +172,7 @@ test("interactive loop starts asynchronously, streams safe events, resumes, and 
   // contract shared by Live, Diagnose, Recovery, Compare, and Agent Chat.
   const pinnedCheckout = await getJson(port, `/api/state?run_id=${encodeURIComponent(first.body.run_id)}`);
   assert.equal(pinnedCheckout.status, 200, JSON.stringify(pinnedCheckout.body));
+  assertCanonicalLoopBrowserState(pinnedCheckout.body, first.body);
   assert.equal(pinnedCheckout.body.run_id, first.body.run_id);
   assert.equal(pinnedCheckout.body.incident?.id, first.body.incident_id);
   assert.equal(pinnedCheckout.body.workspace_projection?.run_id, first.body.run_id);
@@ -167,9 +189,29 @@ test("interactive loop starts asynchronously, streams safe events, resumes, and 
   }
   const unknownPinned = await getJson(port, "/api/state?run_id=missing-run");
   assert.equal(unknownPinned.status, 404, "an explicit unknown run must fail closed instead of falling back");
+  const invalidPinned = await getJson(port, "/api/state?run_id=not%20a%20run");
+  assert.equal(invalidPinned.status, 400, "an explicitly invalid run must fail closed instead of falling back");
 
   assert.equal(roles.length + negativeStream.events.filter((item) => item.payload?.event?.type === "local_fault_loop.role.response").length, 8, "duplicate start must not create a second four-role execution");
 });
+
+function assertCanonicalLoopBrowserState(state, started) {
+  const runId = started.run_id;
+  const incidentId = started.incident_id;
+  assert.equal(state.run_id, runId, "top-level state must use the local loop run");
+  assert.equal(state.incident?.id, incidentId, "top-level state must use the local loop incident");
+  assert.equal(state.topology_views?.run_id, runId, "all topology views must use the local loop run");
+  assert.equal(state.topology_views?.incident_id, incidentId, "all topology views must use the local loop incident");
+  assert.equal(state.incident_projection?.run_id, runId, "incident projection must use the local loop run");
+  assert.equal(state.incident_projection?.incident?.id, incidentId, "incident projection must use the local loop incident");
+  assert.equal(state.workspace_projection?.run_id, runId, "workspace projection must use the local loop run");
+  assert.equal(state.workspace_projection?.incident_id, incidentId, "workspace projection must use the local loop incident");
+  assert.equal(state.agent_control?.run_id, runId, "agent control must use the local loop run");
+  assert.equal(state.agent_control?.incident_id, incidentId, "agent control must use the local loop incident");
+  assert.equal(state.events.every((event) => event.run_id === runId && event.incident_id === incidentId), true, "event ledger must not contain a second run");
+  assert.equal(state.source?.mode, "deterministic_replay", "local loop source provenance must be the captured replay source");
+  assert.equal(state.source?.status, "captured", "local loop source must not splice in live collector state");
+}
 
 test("a restarted server terminalizes an expired reservation without replaying model or repair side effects", async (context) => {
   const root = mkdtempSync(join(tmpdir(), "flowpulse-interactive-restart-"));
@@ -252,6 +294,25 @@ async function readIncrementalSse(port, pathname) {
 async function readAllSse(port, pathname, headers = {}) {
   const response = await fetch(`http://127.0.0.1:${port}${pathname}`, { headers });
   return parseSse(await response.text());
+}
+
+async function readFirstAgentSse(port, pathname) {
+  const response = await fetch(`http://127.0.0.1:${port}${pathname}`);
+  if (!response.body) return { status: response.status, payload: null, raw: "" };
+  const reader = response.body.getReader();
+  let raw = "";
+  try {
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const next = await reader.read();
+      if (next.done) break;
+      raw += new TextDecoder().decode(next.value);
+      const agentEvent = parseSse(raw).events.find((item) => item.event === "agent-control");
+      if (agentEvent) return { status: response.status, payload: agentEvent.payload.agent_control || agentEvent.payload, raw };
+    }
+  } finally {
+    await reader.cancel();
+  }
+  return { status: response.status, payload: null, raw };
 }
 
 async function readRemaining(reader) {

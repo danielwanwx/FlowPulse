@@ -142,12 +142,17 @@ let liveInspector = emptyLiveInspector();
 // `run_id` is a deliberate browser contract, not a hint. When present, every
 // state refresh must ask the backend for that exact run rather than whichever
 // loop happened to start most recently in another tab.
-const pinnedRunId = readPinnedRunId();
+let selectedRunId = readRequestedRunId();
 // This is a connection/cache controller, not a second incident store. Every
 // displayed run fact is a parsed record from /api/demo/agent-loop or its SSE.
 let sharedRun = restoreSharedRun();
 let sharedRunReconnectTimer = null;
 let sharedRunFollowing = true;
+
+window.addEventListener("popstate", () => {
+  selectedRunId = readRequestedRunId();
+  void refresh();
+});
 
 for (const button of document.querySelectorAll("[data-mode]")) button.addEventListener("click", () => setMode(button.dataset.mode));
 for (const button of document.querySelectorAll("[data-nav-tab]")) button.addEventListener("click", () => handleNavigation(button.dataset.navTab));
@@ -237,10 +242,17 @@ async function refresh() {
 }
 
 function bindCanonicalWorkspace(value) {
-  if (value == null) return;
+  if (value == null) {
+    if (selectedRunId !== null) {
+      sharedRun = { run_id: null, incident_id: null, loop: null, last_sequence: 0, error: "The requested run is unavailable." };
+      persistSharedRun();
+    }
+    return;
+  }
   const loop = agentLoopProjection(value, { runId: value?.run_id || null });
-  if (!loop) {
+  if (!loop || (selectedRunId !== null && loop.run_id !== selectedRunId)) {
     sharedRun = { run_id: null, incident_id: null, loop: null, last_sequence: 0, error: "Canonical workspace projection is incompatible." };
+    persistSharedRun();
     return;
   }
   sharedRun = {
@@ -263,17 +275,31 @@ function restoreSharedRun() {
   }
 }
 
-function readPinnedRunId() {
+function readRequestedRunId() {
   try {
-    const value = new URLSearchParams(window.location.search).get("run_id");
-    return /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(value || "") ? value : null;
+    // Do not validate away a caller's explicit query. The server owns the
+    // validation and must be allowed to fail closed rather than returning the
+    // currently active run for an invalid deep link.
+    return new URLSearchParams(window.location.search).get("run_id");
   } catch {
     return null;
   }
 }
 
 function browserStatePath() {
-  return pinnedRunId ? `/api/state?run_id=${encodeURIComponent(pinnedRunId)}` : "/api/state";
+  return selectedRunId !== null ? `/api/state?run_id=${encodeURIComponent(selectedRunId)}` : "/api/state";
+}
+
+function bindCanonicalRunSelection(loop) {
+  const runId = loop?.run_id;
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(runId || "")) throw new Error("Demo loop did not return a valid canonical run.");
+  const next = new URL(window.location.href);
+  next.searchParams.set("run_id", runId);
+  // Update the mutable selector and the visible URL synchronously before the
+  // next hydration/SSE refresh. This prevents a refresh from selecting a
+  // different loop that happened to start in another tab.
+  selectedRunId = runId;
+  history.replaceState({ ...(history.state || {}), flowpulse_run_id: runId }, "", `${next.pathname}${next.search}${next.hash}`);
 }
 
 function persistSharedRun() {
@@ -2269,6 +2295,7 @@ async function runAgentTeamDemo() {
     });
     const loop = agentLoopStartProjection(payload);
     if (!loop) throw new Error("Demo loop response is incompatible with the safe browser contract.");
+    bindCanonicalRunSelection(loop);
     sharedRun = { run_id: loop.run_id, incident_id: loop.incident_id, loop: null, last_sequence: 0, error: null };
     agentTeam = { ...agentTeam, loop, loop_items: [], loop_after: 0, starting: false };
     persistSharedRun();
