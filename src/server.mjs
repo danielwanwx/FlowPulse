@@ -1413,7 +1413,12 @@ function stateWithLocalLoopTopology(state, loop) {
   const topology = loop?.topology;
   if (!topology?.graph?.nodes?.length || !topology?.graph?.edges?.length || typeof topology.projection_revision !== "string") return state;
   const views = structuredClone(state.topology_views);
-  const graph = structuredClone(topology.graph);
+  const graph = topologyViewGraph(topology.graph);
+  // A stored captured demo lifecycle is scoped to the source run that produced
+  // it.  A local loop owns a different canonical run, so retaining that stale
+  // lifecycle makes the strict v2 view parser reject every workspace.  `null`
+  // explicitly means no captured lifecycle is projected for this run.
+  views.demo = null;
   for (const scope of [views.architecture, views.live, views.diagnose]) {
     if (!scope?.runtime_data) continue;
     scope.runtime_data.graph = structuredClone(graph);
@@ -1431,6 +1436,24 @@ function stateWithLocalLoopTopology(state, loop) {
     // Keep this exact local-fault-loop source available to every UI workspace,
     // even when a newer loop is globally active in another tab.
     workspace_projection: compactBrowserWorkspaceProjection(loop)
+  };
+}
+
+function topologyViewGraph(graph) {
+  const planeOrder = { runtime: 0, data: 1, control: 2, evidence: 3 };
+  const layerOrder = { experience: 0, commerce: 1, processing: 2, platform: 3, observation: 4, orchestration: 5, investigation: 6, evaluation: 7, evidence: 8 };
+  return {
+    ...structuredClone(graph),
+    nodes: [...graph.nodes].map((node) => ({ ...node })).sort((left, right) =>
+      planeOrder[left.plane] - planeOrder[right.plane]
+      || layerOrder[left.layer] - layerOrder[right.layer]
+      || left.id.localeCompare(right.id)),
+    edges: [...graph.edges].map((edge) => ({ ...edge })).sort((left, right) =>
+      planeOrder[left.plane] - planeOrder[right.plane]
+      || left.from.localeCompare(right.from)
+      || left.to.localeCompare(right.to)
+      || left.kind.localeCompare(right.kind)
+      || left.id.localeCompare(right.id))
   };
 }
 

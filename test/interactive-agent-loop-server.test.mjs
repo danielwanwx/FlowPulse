@@ -5,6 +5,7 @@ import { spawn } from "node:child_process";
 import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { architectureViewTopology, liveViewTopology } from "../public/twin-state.mjs";
 
 test("interactive loop starts asynchronously, streams safe events, resumes, and suppresses duplicate repair work", async (context) => {
   const root = mkdtempSync(join(tmpdir(), "flowpulse-interactive-loop-"));
@@ -155,6 +156,9 @@ test("interactive loop starts asynchronously, streams safe events, resumes, and 
   assert.equal(pinnedCheckout.body.workspace_projection?.run_id, first.body.run_id);
   assert.equal(pinnedCheckout.body.workspace_projection?.topology?.current?.state, "recovered");
   assert.equal(pinnedCheckout.body.workspace_projection?.topology?.compare?.state, "verified");
+  const strictArchitecture = architectureViewTopology(pinnedCheckout.body.topology_views);
+  assert.ok(strictArchitecture, "the deep-linked run must retain a strict Architecture view");
+  assert.ok(liveViewTopology(pinnedCheckout.body.topology_views), "the deep-linked run must retain a strict Live view");
   for (const view of ["live", "diagnose", "recovery", "compare"]) {
     const projection = pinnedCheckout.body.workspace_projection?.topology?.[view];
     assert.equal(projection?.run_id, first.body.run_id, `${view} must retain the deep-linked run`);
