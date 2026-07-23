@@ -139,6 +139,10 @@ let agentLoopEventSource;
 let agentTeamRestoreAttempted = false;
 let agentTeam = restoreAgentTeamState();
 let liveInspector = emptyLiveInspector();
+// `run_id` is a deliberate browser contract, not a hint. When present, every
+// state refresh must ask the backend for that exact run rather than whichever
+// loop happened to start most recently in another tab.
+const pinnedRunId = readPinnedRunId();
 // This is a connection/cache controller, not a second incident store. Every
 // displayed run fact is a parsed record from /api/demo/agent-loop or its SSE.
 let sharedRun = restoreSharedRun();
@@ -212,7 +216,7 @@ await refresh();
 async function refresh() {
   setLoading(true);
   try {
-    state = await request("/api/state");
+    state = await request(browserStatePath());
     bindCanonicalWorkspace(state.workspace_projection);
     const canonical = sharedRunModel();
     cursor = canonical?.events.length ? canonical.events.length - 1 : availableStage(state.events);
@@ -257,6 +261,19 @@ function restoreSharedRun() {
   } catch {
     return null;
   }
+}
+
+function readPinnedRunId() {
+  try {
+    const value = new URLSearchParams(window.location.search).get("run_id");
+    return /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(value || "") ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function browserStatePath() {
+  return pinnedRunId ? `/api/state?run_id=${encodeURIComponent(pinnedRunId)}` : "/api/state";
 }
 
 function persistSharedRun() {
@@ -3096,7 +3113,7 @@ async function runLive() {
     showToast(`Live evaluator score ${Math.round(response.result.evaluation.score * 100)}%.`);
     render();
   } catch (error) {
-    try { state = await request("/api/state"); } catch { /* keep the last visible projection */ }
+    try { state = await request(browserStatePath()); } catch { /* keep the last visible projection */ }
     showToast(error.message, true);
     render();
   } finally {
@@ -3594,7 +3611,9 @@ async function openArchitectureDetail(id) {
   requestAnimationFrame(() => els["canvas-layers"].querySelector("[data-architecture-detail-id]")?.focus());
   const topologyRevision = architectureView()?.projection_revision;
   try {
-    const value = await request(`/api/components/${encodeURIComponent(context.node.id)}`);
+    const runId = canonicalRunId();
+    if (!runId) throw new Error("component_detail_unavailable");
+    const value = await request(`/api/components/${encodeURIComponent(context.node.id)}?run_id=${encodeURIComponent(runId)}&window=15m&signal=all&limit=8`);
     const detail = componentDetailProjection(value, { nodeId: context.node.id, topologyRevision });
     if (!detail) throw new Error("component_detail_unavailable");
     if (architectureDetail?.scope === "architecture" && architectureDetail.nodeId === context.node.id) {
@@ -3921,7 +3940,7 @@ function connectAgentStream() {
     clearTimeout(streamRefreshTimer);
     streamRefreshTimer = setTimeout(async () => {
       try {
-        state = await request("/api/state");
+        state = await request(browserStatePath());
         cursor = availableStage(state.events);
         render();
         ensureSelectedLiveComponentDetail();

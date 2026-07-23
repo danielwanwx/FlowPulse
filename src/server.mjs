@@ -147,7 +147,14 @@ const server = createServer(async (request, response) => {
       return json(response, 409, { error: "demo_mode_active" });
     }
     if (url.pathname === "/api/state" && request.method === "GET") {
-      return json(response, 200, await stateWithSource(browserRunId(), { cursor: url.searchParams.get("projection_cursor") }));
+      const requestedRunId = url.searchParams.get("run_id");
+      if (requestedRunId !== null && !safeBrowserId(requestedRunId)) return json(response, 400, { error: "browser_state_run_id_invalid" });
+      try {
+        return json(response, 200, await browserStateForRun(requestedRunId || browserRunId(), { cursor: url.searchParams.get("projection_cursor") }));
+      } catch (error) {
+        if (error?.code === "browser_state_run_unavailable") return json(response, 404, { error: error.code });
+        throw error;
+      }
     }
     if (url.pathname === "/api/source" && request.method === "GET") {
       return json(response, 200, (await stateWithSource(browserRunId())).source);
@@ -1154,6 +1161,28 @@ async function stateWithSource(runId = runtime.ensureRun(), { cursor = null } = 
   return enforceBrowserResponseCap(state);
 }
 
+// A browser deep link is an explicit, immutable run selection. It must never
+// silently fall back to the newest workspace run, otherwise one tab can show a
+// recovered checkout loop while another shows an unrelated human-gated loop.
+async function browserStateForRun(runId, { cursor = null } = {}) {
+  if (!safeBrowserId(runId)) {
+    const error = new Error("browser_state_run_unavailable");
+    error.code = "browser_state_run_unavailable";
+    throw error;
+  }
+  const loop = localFaultLoopProjection(runId);
+  if (loop) {
+    const browserState = await stateWithSource(browserRunId(), { cursor });
+    return stateWithLocalLoopTopology(browserState, loop);
+  }
+  if (runId !== browserRunId() && !knownNodeRun(runId)) {
+    const error = new Error("browser_state_run_unavailable");
+    error.code = "browser_state_run_unavailable";
+    throw error;
+  }
+  return stateWithSource(runId, { cursor });
+}
+
 function projectionLedgerPreflight(runId) {
   if (!safeBrowserId(runId)) return { ok: false, code: "projection_ledger_preflight_invalid" };
   try {
@@ -1398,7 +1427,10 @@ function stateWithLocalLoopTopology(state, loop) {
     ...state,
     run_id: loop.run_id,
     incident: { ...state.incident, id: loop.incident_id },
-    topology_views: views
+    topology_views: views,
+    // Keep this exact local-fault-loop source available to every UI workspace,
+    // even when a newer loop is globally active in another tab.
+    workspace_projection: compactBrowserWorkspaceProjection(loop)
   };
 }
 

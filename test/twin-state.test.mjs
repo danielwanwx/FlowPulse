@@ -516,10 +516,11 @@ test("the shared header omits nonessential capture, theme, and workspace-menu ch
 
 test("initial rendering does not wait for optional development diagnostics", () => {
   const refreshSource = appJs.slice(appJs.indexOf("async function refresh()"), appJs.indexOf("function render()"));
-  assert.match(refreshSource, /state = await request\("\/api\/state"\);/);
+  assert.match(refreshSource, /state = await request\(browserStatePath\(\)\);/);
   assert.match(refreshSource, /void refreshDevelopmentStatus\(\);/);
   assert.doesNotMatch(refreshSource, /Promise\.all\(/);
   assert.match(appJs, /async function refreshDevelopmentStatus\(\)/);
+  assert.match(appJs, /function browserStatePath\(\)[\s\S]*pinnedRunId/);
 });
 
 test("architecture is a static four-layer overview with backend-owned status dots", () => {

@@ -145,6 +145,25 @@ test("interactive loop starts asynchronously, streams safe events, resumes, and 
   assert.equal(negativeStream.states[0].payload.contextual_workspaces.actions.compare_recovery.available, false);
   assert.equal(negativeStream.events.some((item) => item.payload?.event?.type === "local_fault_loop.repair.executed"), false);
 
+  // A deep-linked completed checkout run must remain authoritative even after
+  // another tab starts a later insufficient-evidence run. This is the browser
+  // contract shared by Live, Diagnose, Recovery, Compare, and Agent Chat.
+  const pinnedCheckout = await getJson(port, `/api/state?run_id=${encodeURIComponent(first.body.run_id)}`);
+  assert.equal(pinnedCheckout.status, 200, JSON.stringify(pinnedCheckout.body));
+  assert.equal(pinnedCheckout.body.run_id, first.body.run_id);
+  assert.equal(pinnedCheckout.body.incident?.id, first.body.incident_id);
+  assert.equal(pinnedCheckout.body.workspace_projection?.run_id, first.body.run_id);
+  assert.equal(pinnedCheckout.body.workspace_projection?.topology?.current?.state, "recovered");
+  assert.equal(pinnedCheckout.body.workspace_projection?.topology?.compare?.state, "verified");
+  for (const view of ["live", "diagnose", "recovery", "compare"]) {
+    const projection = pinnedCheckout.body.workspace_projection?.topology?.[view];
+    assert.equal(projection?.run_id, first.body.run_id, `${view} must retain the deep-linked run`);
+    assert.equal(projection?.incident_id, first.body.incident_id, `${view} must retain the deep-linked incident`);
+    assert.equal(projection?.projection_revision, workspace.topology.projection_revision, `${view} must retain the deep-linked revision`);
+  }
+  const unknownPinned = await getJson(port, "/api/state?run_id=missing-run");
+  assert.equal(unknownPinned.status, 404, "an explicit unknown run must fail closed instead of falling back");
+
   assert.equal(roles.length + negativeStream.events.filter((item) => item.payload?.event?.type === "local_fault_loop.role.response").length, 8, "duplicate start must not create a second four-role execution");
 });
 
