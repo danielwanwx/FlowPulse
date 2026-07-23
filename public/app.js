@@ -19,6 +19,7 @@ import {
   agentTeamConversationProjection,
   agentTeamProviderProjection,
   canonicalWorkspaceVisual,
+  canvasPointerTransition,
   containedCanvasView,
   componentDetailProjection,
   nodeLiveInspectorProjection,
@@ -123,6 +124,7 @@ let streamRefreshTimer;
 let liveView = { scale: 1, x: 0, y: 0, initialized: false };
 let livePan = null;
 let compareDrag = null;
+let canvasPointer = null;
 let liveSignalTimers = [];
 let liveSignalIndex = 0;
 let liveSignalFrames = new Set();
@@ -1331,7 +1333,7 @@ function setComparePercent(value) {
 }
 
 function startCompareDrag(event) {
-  if (mode !== "compare" || event.button !== 0 || event.target.closest(".twin-node, .causal-note, .edge-hit")) return;
+  if (!claimCanvasPointer(event, "compare-divider")) return;
   compareDrag = event.pointerId;
   els["compare-handle"].classList.add("is-dragging");
   els["twin-canvas"].setPointerCapture?.(event.pointerId);
@@ -1340,14 +1342,15 @@ function startCompareDrag(event) {
 }
 
 function moveCompareDrag(event) {
-  if (compareDrag !== event.pointerId) return;
+  if (compareDrag !== event.pointerId || canvasPointer?.action !== "compare-divider") return;
   updateCompareFromPointer(event.clientX);
 }
 
 function endCompareDrag(event) {
-  if (compareDrag !== event.pointerId) return;
+  if (compareDrag !== event.pointerId || canvasPointer?.action !== "compare-divider") return;
   updateCompareFromPointer(event.clientX);
   compareDrag = null;
+  canvasPointer = transitionCanvasPointer(event, "up");
   els["compare-handle"].classList.remove("is-dragging");
   els["twin-canvas"].releasePointerCapture?.(event.pointerId);
 }
@@ -2780,6 +2783,13 @@ function setMode(nextMode) {
     selected = null;
     liveInspector = emptyLiveInspector();
   }
+  // A workspace switch cannot inherit a captured pointer from the previous
+  // canvas. In particular, Compare's divider must never leak into Live pan.
+  livePan = null;
+  compareDrag = null;
+  canvasPointer = null;
+  els["twin-canvas"].classList.remove("is-panning");
+  els["compare-handle"].classList.remove("is-dragging");
   mode = nextMode;
   if (architectureDetail?.scope !== mode) architectureDetail = null;
   if (shared && sharedRunFollowing) cursor = Math.max(0, shared.events.length - 1);
@@ -2850,7 +2860,7 @@ function updateZoomControls() {
 }
 
 function startLivePan(event) {
-  if (!isCanvasNavigationMode(mode) || event.button !== 0 || event.target.closest(".twin-node, .edge-hit, button, input, summary")) return;
+  if (!claimCanvasPointer(event, "pan")) return;
   livePan = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, x: liveView.x, y: liveView.y };
   els["twin-canvas"].classList.add("is-panning");
   els["twin-canvas"].setPointerCapture?.(event.pointerId);
@@ -2858,16 +2868,34 @@ function startLivePan(event) {
 }
 
 function moveLivePan(event) {
-  if (!livePan || event.pointerId !== livePan.pointerId) return;
+  if (!livePan || event.pointerId !== livePan.pointerId || canvasPointer?.action !== "pan") return;
   liveView = { ...liveView, x: livePan.x + event.clientX - livePan.startX, y: livePan.y + event.clientY - livePan.startY, initialized: true };
   applyLiveView();
 }
 
 function endLivePan(event) {
-  if (!livePan || event.pointerId !== livePan.pointerId) return;
+  if (!livePan || event.pointerId !== livePan.pointerId || canvasPointer?.action !== "pan") return;
   livePan = null;
+  canvasPointer = transitionCanvasPointer(event, "up");
   els["twin-canvas"].classList.remove("is-panning");
   els["twin-canvas"].releasePointerCapture?.(event.pointerId);
+}
+
+function transitionCanvasPointer(event, phase) {
+  return canvasPointerTransition({
+    current: canvasPointer,
+    mode,
+    phase,
+    pointerId: event.pointerId,
+    button: event.button,
+    isCompareHandle: Boolean(event.target.closest("#compare-handle")),
+    isInteractive: Boolean(event.target.closest(".twin-node, .causal-note, .edge-hit, button, input, summary"))
+  });
+}
+
+function claimCanvasPointer(event, action) {
+  canvasPointer = transitionCanvasPointer(event, "down");
+  return canvasPointer?.pointerId === event.pointerId && canvasPointer.action === action;
 }
 
 async function togglePlayback() {

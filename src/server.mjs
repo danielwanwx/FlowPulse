@@ -1017,7 +1017,7 @@ function injectDemoIncident({ runId, body, current }) {
 }
 function activeDemoWriteBlocked(method, pathname) {
   if (!activeDemoRunId || !["POST", "PUT", "PATCH", "DELETE"].includes(method)) return false;
-  return !(method === "POST" && (pathname === "/api/demo/inject" || pathname === "/api/demo/reset" || pathname === "/api/demo/agent-loop/run" || pathname === "/api/agent-control/chat" || pathname === "/api/development/case" || pathname === "/api/next" || pathname === "/api/approve"));
+  return !(method === "POST" && (pathname === "/api/demo/inject" || pathname === "/api/demo/reset" || pathname === "/api/demo/agent-loop/run" || pathname === "/api/agent-control/chat"));
 }
 function plainLocalFaultLoopRequest(value) {
   return Boolean(value && typeof value === "object" && !Array.isArray(value)

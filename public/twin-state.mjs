@@ -16,6 +16,33 @@ export function isCanvasNavigationMode(mode) {
   return ["live", "replay", "compare"].includes(mode);
 }
 
+// A canvas gesture has one owner. Compare reserves its visible divider for
+// comparison; every other empty-canvas gesture remains graph navigation.
+// Keeping this transition pure makes the browser interaction testable without
+// teaching the read model about DOM elements.
+export function canvasPointerTransition({
+  current = null,
+  mode,
+  phase,
+  pointerId,
+  button = 0,
+  isCompareHandle = false,
+  isInteractive = false
+} = {}) {
+  if (phase === "down") {
+    if (current) return current;
+    if (button !== 0 || isInteractive) return null;
+    const action = mode === "compare" && isCompareHandle
+      ? "compare-divider"
+      : isCanvasNavigationMode(mode) && !isCompareHandle
+        ? "pan"
+        : null;
+    return action ? { action, pointerId } : null;
+  }
+  if (!current || current.pointerId !== pointerId) return current;
+  return ["up", "cancel"].includes(phase) ? null : current;
+}
+
 export function containedCanvasView({
   viewportWidth,
   viewportHeight,

@@ -24,6 +24,7 @@ import {
   architecturePositions,
   compareFrames,
   compareProvenance,
+  canvasPointerTransition,
   containedCanvasView,
   canonicalTwinDisplay,
   eventsAtStage,
@@ -1125,6 +1126,23 @@ test("compare uses incident and verified frames without changing layout", () => 
   assert.match(appJs, /function updateCompareFromPointer\(clientX\)/);
   assert.doesNotMatch(appJs, /Math\.round\(comparePercent \/ 10\)/);
   assert.doesNotMatch(stylesCss, /\.compare-value-\d+/);
+});
+
+test("Compare pointer sequence gives a blank canvas to pan and its divider to comparison only", () => {
+  const down = (input) => canvasPointerTransition({ phase: "down", mode: "compare", pointerId: 41, ...input });
+  const pan = down();
+  assert.deepEqual(pan, { action: "pan", pointerId: 41 });
+  assert.deepEqual(canvasPointerTransition({ current: pan, phase: "move", pointerId: 41 }), pan);
+  assert.equal(canvasPointerTransition({ current: pan, phase: "up", pointerId: 41 }), null);
+
+  const divider = down({ isCompareHandle: true });
+  assert.deepEqual(divider, { action: "compare-divider", pointerId: 41 });
+  assert.deepEqual(canvasPointerTransition({ current: divider, phase: "move", pointerId: 41 }), divider);
+  assert.equal(canvasPointerTransition({ current: divider, phase: "up", pointerId: 41 }), null);
+
+  assert.equal(down({ isInteractive: true }), null);
+  assert.match(appJs, /claimCanvasPointer\(event, "pan"\)/);
+  assert.match(appJs, /claimCanvasPointer\(event, "compare-divider"\)/);
 });
 
 test("Compare keeps its split canvas while Unified Context Rail owns the verification summary", () => {
