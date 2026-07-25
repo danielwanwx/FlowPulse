@@ -18,7 +18,6 @@ import {
   sharedRunReadModel,
   agentTeamConversationProjection,
   agentTeamProviderProjection,
-  canonicalPresentationFocus,
   canonicalWorkspaceVisual,
   canvasPointerTransition,
   containedCanvasView,
@@ -30,6 +29,7 @@ import {
   frameFor,
   liveIncidentNodeStates,
   liveEdgePath,
+  incidentFocusWorkspace,
   liveSignalDuration,
   liveSignalProgress,
   livePulseSlots,
@@ -674,12 +674,7 @@ function renderCanvas() {
     renderCanonicalCompareCanvas(shared);
     return;
   }
-  const diagnosis = canonicalTopologyLayerMarkup(shared.topology, shared.topology.snapshots.incident, {
-    layerName: "current",
-    pulse: false,
-    presentation: "diagnosis",
-    diagnoseView: diagnoseViewTopology(state?.topology_views)
-  });
+  const diagnosis = incidentFocusLayerMarkup(shared.topology, shared.topology.snapshots.incident, { layerName: "current", workspace: "diagnose", pulse: true });
   if (diagnosis.visual.availability !== "ready") {
     renderCanonicalTopologyPending("Diagnose is waiting for a matching server-projected causal path.");
     return;
@@ -689,8 +684,17 @@ function renderCanvas() {
   els["compare-canvas-range"].hidden = true;
   bindCanonicalCanvasIdentity(diagnosis.visual, "diagnose-canvas");
   const annotations = sharedRunAnnotations(shared).filter((annotation) => annotation.id !== "recovery");
-  setAnnotations(annotations.length ? [annotations.at(-1)] : []);
+  const change = diagnosis.visual.change_record;
+  if (change) {
+    const affected = change.affected_node_ids
+      .map((id) => diagnosis.visual.nodes.find((node) => node.id === id)?.label)
+      .filter(Boolean)
+      .join(", ");
+    annotations.push({ id: "observed-change", tone: "warning", title: "Observed change", copy: `${affected || "Affected component"} has linked change evidence.` });
+  }
+  setAnnotations(annotations.slice(-2));
   els["twin-canvas"].setAttribute("aria-label", "Incident diagnosis.");
+  startIncidentFocusSignals();
 }
 
 function canonicalDiagnosisCaption(shared) {
@@ -702,20 +706,20 @@ function canonicalDiagnosisCaption(shared) {
 function renderCanonicalCompareCanvas(shared) {
   const topology = shared.topology;
   const verified = topology.verification.passed === true && topology.snapshots.verified !== null;
-  const incident = canonicalTopologyLayerMarkup(topology, topology.snapshots.incident, { layerName: "before", pulse: false });
+  const incident = incidentFocusLayerMarkup(topology, topology.snapshots.incident, { layerName: "before", workspace: "compare", pulse: true });
   bindCanonicalCanvasIdentity(incident.visual, "compare-canvas", verified ? "verified" : "verification_pending");
   if (incident.visual.availability !== "ready") {
     renderCanonicalTopologyPending("Compare is waiting for a complete canonical incident snapshot.");
     return;
   }
   if (!verified) {
-    els["canvas-layers"].innerHTML = canonicalTopologyLayerMarkup(topology, topology.snapshots.incident, { layerName: "current", pulse: false }).markup;
+    els["canvas-layers"].innerHTML = incidentFocusLayerMarkup(topology, topology.snapshots.incident, { layerName: "current", workspace: "compare", pulse: false }).markup;
     els["compare-handle"].hidden = true;
     els["compare-canvas-range"].hidden = true;
     setAnnotations([{ id: "recovery", tone: "warning", title: "Verification pending", copy: "Compare remains locked until this run records passed independent verification." }]);
     return;
   }
-  const recovered = canonicalTopologyLayerMarkup(topology, topology.snapshots.verified, { layerName: "after", pulse: false });
+  const recovered = incidentFocusLayerMarkup(topology, topology.snapshots.verified, { layerName: "after", workspace: "compare", pulse: false });
   if (recovered.visual.availability !== "ready") {
     renderCanonicalTopologyPending("Compare is waiting for a complete canonical verified snapshot.");
     return;
@@ -727,6 +731,7 @@ function renderCanonicalCompareCanvas(shared) {
   els["twin-canvas"].setAttribute("aria-label", "Compare incident and verified snapshots.");
   els["compare-canvas-range"].setAttribute("aria-label", "Compare incident and verified recovery");
   renderComparePosition();
+  startIncidentFocusSignals();
 }
 
 function renderCanonicalTopologyPending(message = "Waiting for the backend-owned canonical topology projection.") {
@@ -743,33 +748,20 @@ function renderCanonicalTopologyPending(message = "Waiting for the backend-owned
   els["twin-canvas"].setAttribute("aria-label", message);
 }
 
-// Diagnose, Recovery and Compare all render this same backend-owned visual
-// projection. The layout is intentionally local to the viewport; identities,
-// state and metrics always remain the exact canonical run values.
-function canonicalTopologyLayerMarkup(topology, snapshot, { layerName = "current", pulse = false, presentation = "standard", diagnoseView = null } = {}) {
+// This complete-topology renderer remains for complete canonical surfaces.
+// Incident workspaces use incidentFocusLayerMarkup below instead.
+function canonicalTopologyLayerMarkup(topology, snapshot, { layerName = "current", pulse = false } = {}) {
   const visual = canonicalWorkspaceVisual(topology, snapshot);
   if (visual.availability !== "ready") return { visual, markup: "" };
-  const focus = presentation === "diagnosis" ? canonicalPresentationFocus(topology, snapshot, diagnoseView) : null;
-  if (focus && focus.availability !== "ready") return { visual: { ...visual, availability: "unavailable", reason: "canonical_focus_invalid" }, markup: "" };
-  const affectedNodes = new Set(focus?.affected_node_ids || []);
-  const affectedEdges = new Set(focus?.affected_edge_ids || []);
   const positioned = livePositions(visual.nodes);
   const positions = new Map(positioned.map((node) => [node.id, node]));
   const nodeStates = Object.fromEntries(visual.nodes.map((node) => [node.id, node.status]));
-  // A Diagnose overlay is itself backend-owned incident truth. Its explicit
-  // causal membership is allowed to emphasize a node even when an older
-  // local-loop snapshot did not include the upstream frontend status yet.
-  if (focus) for (const nodeId of affectedNodes) nodeStates[nodeId] = "impact";
   const source = {
     status: visual.source_truth?.source_health || "unavailable",
     label: visual.source_truth?.label || "Canonical source unavailable"
   };
   const runtimeEdges = visual.edges.filter((edge) => positions.has(edge.from) && positions.has(edge.to));
-  const runtimeEdgeIds = new Set(runtimeEdges.map((edge) => edge.id));
-  const supportingOverlayRelations = (focus?.affected_relations || [])
-    .filter((edge) => !runtimeEdgeIds.has(edge.id) && positions.has(edge.from) && positions.has(edge.to))
-    .map((edge) => ({ ...edge, kind: edge.relation, status: "impact" }));
-  const renderedEdges = [...runtimeEdges, ...supportingOverlayRelations];
+  const renderedEdges = runtimeEdges;
   const pulseEdges = runtimeEdges.filter((edge) => edge.kind === "calls");
   const pulseSlots = livePulseSlots({ nodes: visual.nodes, edges: pulseEdges });
   const signalOrder = new Map(orderedSignalEdges(pulseEdges, pulseSlots).map((edge, index) => [edge.id, index]));
@@ -781,7 +773,7 @@ function canonicalTopologyLayerMarkup(topology, snapshot, { layerName = "current
       routeOrder: routeBuildOrder.get(edge.id) ?? index,
       pulse: pulse && edge.kind === "calls",
       tone: edge.status,
-      presentation: focus ? affectedEdges.has(edge.id) ? "affected" : "context" : "standard"
+      presentation: "standard"
     };
     const path = liveEdgePath(positions.get(edge.from), positions.get(edge.to), {
       canvasWidth: LIVE_WORLD.width,
@@ -792,9 +784,64 @@ function canonicalTopologyLayerMarkup(topology, snapshot, { layerName = "current
     });
     return fixedLiveEdgeMarkup(visualEdge, path, positions.get(edge.from)?.label || edge.from, positions.get(edge.to)?.label || edge.to);
   }).join("");
-  const nodes = positioned.map((node) => sourceNodeMarkup(node, { layout: "live", source, nodeStates, presentation: focus ? affectedNodes.has(node.id) ? "affected" : "context" : "standard" })).join("");
-  const markup = `<div class="twin-layer layer-${escapeHtml(layerName)} canonical-topology-layer presentation-${escapeHtml(presentation)}" data-canonical-run-id="${escapeHtml(visual.run_id)}" data-canonical-incident-id="${escapeHtml(visual.incident_id)}" data-projection-revision="${escapeHtml(visual.projection_revision)}" data-node-ids="${escapeHtml(visual.node_ids.join(","))}" data-edge-ids="${escapeHtml(visual.edge_ids.join(","))}" data-rendered-relation-count="${renderedEdges.length}" data-affected-node-ids="${escapeHtml(focus?.affected_node_ids.join(",") || "")}" data-affected-edge-ids="${escapeHtml(focus?.affected_edge_ids.join(",") || "")}"><svg class="edge-map fixed-live-edge-map" viewBox="0 0 ${LIVE_WORLD.width} ${LIVE_WORLD.height}" preserveAspectRatio="none">${edges}</svg>${nodes}</div>`;
+  const nodes = positioned.map((node) => sourceNodeMarkup(node, { layout: "live", source, nodeStates })).join("");
+  const markup = `<div class="twin-layer layer-${escapeHtml(layerName)} canonical-topology-layer" data-canonical-run-id="${escapeHtml(visual.run_id)}" data-canonical-incident-id="${escapeHtml(visual.incident_id)}" data-projection-revision="${escapeHtml(visual.projection_revision)}" data-node-ids="${escapeHtml(visual.node_ids.join(","))}" data-edge-ids="${escapeHtml(visual.edge_ids.join(","))}" data-rendered-relation-count="${renderedEdges.length}"><svg class="edge-map fixed-live-edge-map" viewBox="0 0 ${LIVE_WORLD.width} ${LIVE_WORLD.height}" preserveAspectRatio="none">${edges}</svg>${nodes}</div>`;
   return { visual, markup };
+}
+
+// The focused incident workspaces deliberately share one pure server-owned
+// projection. Architecture and Live continue to call their complete-topology
+// renderers; this function is never a fallback for either view.
+function incidentFocusLayerMarkup(topology, snapshot, { layerName = "current", workspace = "diagnose", pulse = false } = {}) {
+  const focus = incidentFocusWorkspace(topology, snapshot, diagnoseViewTopology(state?.topology_views), {
+    canvasWidth: LIVE_WORLD.width,
+    canvasHeight: LIVE_WORLD.height,
+    nodeWidth: 172,
+    nodeHeight: 62
+  });
+  if (focus.availability !== "ready") return { visual: focus, markup: "" };
+  const source = {
+    status: focus.source_truth?.source_health || "unavailable",
+    label: focus.source_truth?.label || "Canonical source unavailable"
+  };
+  const nodeStates = Object.fromEntries(focus.nodes.map((node) => [node.id, node.status]));
+  // The Diagnose/incident Compare side uses the explicitly server-projected
+  // overlay as its causal snapshot. Recovery and verified Compare retain their
+  // recorded snapshot statuses instead of recoloring browser-side.
+  if (workspace === "diagnose" || layerName === "before") {
+    for (const node of focus.nodes) nodeStates[node.id] = "impact";
+  }
+  const edges = focus.edges.map((edge, index) => fixedLiveEdgeMarkup({
+    ...edge,
+    kind: edge.relation,
+    tone: workspace === "diagnose" || layerName === "before" ? "impact" : edge.status,
+    presentation: "affected",
+    pulse,
+    order: index,
+    routeOrder: index
+  }, edge.path, focus.nodes.find((node) => node.id === edge.from)?.label || edge.from, focus.nodes.find((node) => node.id === edge.to)?.label || edge.to)).join("");
+  const nodes = focus.nodes.map((node) => sourceNodeMarkup(node, {
+    layout: "incident-focus",
+    source,
+    nodeStates,
+    presentation: "affected"
+  })).join("");
+  const markup = `<div class="twin-layer layer-${escapeHtml(layerName)} canonical-topology-layer incident-focus-workspace incident-focus-${escapeHtml(workspace)}" data-canonical-run-id="${escapeHtml(focus.run_id)}" data-canonical-incident-id="${escapeHtml(focus.incident_id)}" data-projection-revision="${escapeHtml(focus.projection_revision)}" data-node-ids="${escapeHtml(focus.node_ids.join(","))}" data-edge-ids="${escapeHtml(focus.edge_ids.join(","))}" data-focus-node-count="${focus.nodes.length}" data-focus-edge-count="${focus.edges.length}"><svg class="edge-map fixed-live-edge-map" viewBox="0 0 ${LIVE_WORLD.width} ${LIVE_WORLD.height}" preserveAspectRatio="none">${edges}</svg>${nodes}</div>`;
+  return { visual: focus, markup };
+}
+
+function startIncidentFocusSignals() {
+  if (!els["canvas-layers"].querySelector(".incident-focus-workspace [data-live-edge-id]")) return;
+  applyIncidentFocusRouteDelays();
+  requestAnimationFrame(() => startLiveSignalLoop());
+}
+
+function applyIncidentFocusRouteDelays() {
+  for (const group of els["canvas-layers"].querySelectorAll(".incident-focus-workspace [data-live-route]")) {
+    const delay = Number(group.dataset.routeOrder) * 54;
+    const line = group.querySelector(".edge-line");
+    if (Number.isSafeInteger(delay) && delay >= 0 && line) line.style.animationDelay = `${delay}ms`;
+  }
 }
 
 function bindCanonicalCanvasIdentity(visual, testId, compareState = null) {
@@ -977,20 +1024,39 @@ function controlSystemTileMarkup(node, { rail = false } = {}) {
 
 function sourceNodeMarkup(node, { layout, source, nodeStates, presentation = "standard" }) {
   const nodeState = node.connectivity === "unlinked" ? "unlinked" : nodeStates[node.id] || "dormant";
-  const nodeStatus = sourceStatusLabel(nodeState, source.status);
+  const nodeStatus = layout === "incident-focus" ? incidentFocusStatusLabel(nodeState) : sourceStatusLabel(nodeState, source.status);
   const ariaStatus = nodeState === "unlinked" ? "Insufficient dependency evidence" : nodeStatus;
   const profile = sourceComponentProfile(node);
   // Live positions are a fixed, CSS-authored grid. The route world consumes the
   // same canonical percentages through livePositions(), so port geometry and
   // card placement cannot drift apart at a given viewport.
-  const livePositionClass = layout === "live" ? ` live-column-${node.layerIndex} live-count-${node.layerSize} live-index-${node.layerPosition}` : "";
-  const activeStatus = ["impact", "root", "rejected", "warning", "pending", "active", "recording", "verified"].includes(nodeState) ? `<span class="node-status">${escapeHtml(nodeStatus)}</span>` : "";
-  const copy = `<span class="node-copy"><strong>${escapeHtml(node.label)}</strong>${activeStatus}</span>`;
-  return `<button class="twin-node source-node plane-${escapeHtml(node.plane || "runtime")} kind-${escapeHtml(node.kind)} is-${nodeState} presentation-${escapeHtml(presentation)}${livePositionClass}" type="button" data-node-id="${escapeHtml(node.id)}" data-status="${escapeHtml(nodeState)}" data-transition-key="${escapeHtml(transitionKey(node.id))}" aria-label="${escapeHtml(profile.capability)}, ${escapeHtml(kindLabel(node.kind))}, ${escapeHtml(ariaStatus)}">
+  const livePositionClass = layout === "live" ? ` live-column-${node.layerIndex} live-count-${node.layerSize} live-index-${node.layerPosition}` : layout === "incident-focus" ? " incident-focus-node" : "";
+  // The focus canvas deliberately owns its port geometry. The helper emits a
+  // bounded grid (four lanes by three rows), so semantic position classes keep
+  // the authored port map stable while the general Live 50/50 baseline remains
+  // available to the full topology.
+  const incidentPositionClass = layout === "incident-focus"
+    ? ` incident-focus-x-${Math.round(Number(node.x))} incident-focus-y-${Math.round(Number(node.y))}`
+    : "";
+  const activeStatus = layout === "incident-focus" || ["impact", "root", "rejected", "warning", "pending", "active", "recording", "verified"].includes(nodeState) ? `<span class="node-status">${escapeHtml(nodeStatus)}</span>` : "";
+  const signal = layout === "incident-focus" && node.signal ? `<span class="node-signal is-${escapeHtml(node.signal.tone)}">${escapeHtml(node.signal.value)}</span>` : "";
+  const copy = `<span class="node-copy"><strong>${escapeHtml(node.label)}</strong>${activeStatus}${signal}</span>`;
+  return `<button class="twin-node source-node plane-${escapeHtml(node.plane || "runtime")} kind-${escapeHtml(node.kind)} is-${nodeState} presentation-${escapeHtml(presentation)}${livePositionClass}${incidentPositionClass}" type="button" data-node-id="${escapeHtml(node.id)}" data-status="${escapeHtml(nodeState)}" data-transition-key="${escapeHtml(transitionKey(node.id))}" aria-label="${escapeHtml(profile.capability)}, ${escapeHtml(kindLabel(node.kind))}, ${escapeHtml(ariaStatus)}">
     <span class="node-icon" aria-hidden="true"><i class="ph ph-${iconForLive(node)}"></i></span>
     ${copy}
     <span class="node-status-dot" aria-hidden="true"></span>
   </button>`;
+}
+
+function incidentFocusStatusLabel(status) {
+  const labels = {
+    impact: "Affected",
+    root: "Root cause",
+    active: "In progress",
+    verified: "Verified",
+    observed: "Observed"
+  };
+  return labels[status] || "Status unavailable";
 }
 
 function liveSignalTone(edge, nodeStates) {
@@ -1191,11 +1257,12 @@ function renderSharedRecoveryCanvas(shared) {
   const selectedRole = team.find((node) => node.id === recoverySelectedRole) || current;
   recoverySelectedRole = selectedRole.id;
   const detail = recoveryRoleDetail(selectedRole, { events, plan, authority, repair, verification });
+  const recoveryTopology = canonicalRecoveryTopologyMarkup(shared.topology);
   els["canvas-layers"].innerHTML = `<div class="recovery-console-layout" data-shared-run="${escapeHtml(shared.run_id)}" data-projection-revision="${escapeHtml(shared.projection_revision)}">
     <section class="recovery-diagnosis" aria-label="Recovery status">
       <div class="diagnosis-state"><span>Recovery status</span><strong>${escapeHtml(shared.state === "recovered" ? "Recovery complete" : humanStageLabel(shared.stage))}</strong><small data-testid="recovery-owner-gate">Owner gate · ${escapeHtml(recoveryGateLabel(events))}</small></div>
     </section>
-    ${canonicalRecoveryTopologyMarkup(shared.topology)}
+    ${recoveryTopology.markup}
     <section class="recovery-graph-panel recovery-collaboration-panel recovery-workflow-facts" aria-label="Projected recovery workflow"${verificationTestId}>
       <header><div><span>Execution workflow</span><strong>${escapeHtml(current.status === "complete" ? "Workflow complete" : current.label)}</strong></div><small>${escapeHtml(current.task)}</small></header>
       <div class="recovery-execution-grid">
@@ -1218,8 +1285,9 @@ function renderSharedRecoveryCanvas(shared) {
   setAnnotations([]);
   els["compare-handle"].hidden = true;
   els["compare-canvas-range"].hidden = true;
-  bindCanonicalCanvasIdentity(canonicalWorkspaceVisual(shared.topology, shared.topology.current), "recovery-canvas");
+  bindCanonicalCanvasIdentity(recoveryTopology.visual, "recovery-canvas");
   els["twin-canvas"].setAttribute("aria-label", `Recovery Console for canonical run ${shared.run_id}.`);
+  startIncidentFocusSignals();
 }
 
 function recoveryRoleDetail(node, { events, plan, authority, repair, verification }) {
@@ -1253,41 +1321,11 @@ function recoveryRoleDetail(node, { events, plan, authority, repair, verificatio
 }
 
 function canonicalRecoveryTopologyMarkup(topology) {
-  const visual = canonicalWorkspaceVisual(topology, topology?.current);
-  if (visual.availability !== "ready") {
-    return `<section class="recovery-graph-panel recovery-topology-panel" data-testid="recovery-topology-unavailable" aria-label="Canonical recovery topology unavailable"><div class="source-empty"><i class="ph ph-plugs" aria-hidden="true"></i><strong>Recovery topology unavailable</strong><span>Awaiting a complete canonical run snapshot.</span></div></section>`;
+  const focus = incidentFocusLayerMarkup(topology, topology?.current, { layerName: "current", workspace: "recovery", pulse: true });
+  if (focus.visual.availability !== "ready") {
+    return { visual: focus.visual, markup: `<section class="recovery-graph-panel recovery-topology-panel" data-testid="recovery-topology-unavailable" aria-label="Canonical recovery topology unavailable"><div class="source-empty"><i class="ph ph-plugs" aria-hidden="true"></i><strong>Recovery topology unavailable</strong><span>Awaiting a complete canonical incident projection.</span></div></section>` };
   }
-  const positioned = livePositions(visual.nodes);
-  const positions = new Map(positioned.map((node) => [node.id, node]));
-  const nodeStates = Object.fromEntries(visual.nodes.map((node) => [node.id, node.status]));
-  const source = {
-    status: visual.source_truth?.source_health || "unavailable",
-    label: visual.source_truth?.label || "Canonical source unavailable"
-  };
-  const runtimeEdges = visual.edges.filter((edge) => positions.has(edge.from) && positions.has(edge.to));
-  const pulseEdges = runtimeEdges.filter((edge) => edge.kind === "calls");
-  const pulseSlots = livePulseSlots({ nodes: visual.nodes, edges: pulseEdges });
-  const signalOrder = new Map(orderedSignalEdges(pulseEdges, pulseSlots).map((edge, index) => [edge.id, index]));
-  const routeBuildOrder = new Map(orderedLiveRouteBuildEdges(runtimeEdges, positioned).map((edge, index) => [edge.id, index]));
-  const edges = runtimeEdges.map((edge, index) => {
-    const visualEdge = {
-      ...edge,
-      order: signalOrder.get(edge.id) ?? pulseEdges.length + index,
-      routeOrder: routeBuildOrder.get(edge.id) ?? index,
-      pulse: false,
-      tone: edge.status
-    };
-    const path = liveEdgePath(positions.get(edge.from), positions.get(edge.to), {
-      canvasWidth: LIVE_WORLD.width,
-      canvasHeight: LIVE_WORLD.height,
-      nodeWidth: RECOVERY_LIVE_NODE.width,
-      nodeHeight: RECOVERY_LIVE_NODE.height,
-      lane: visualEdge.order
-    });
-    return fixedLiveEdgeMarkup(visualEdge, path, positions.get(edge.from)?.label || edge.from, positions.get(edge.to)?.label || edge.to);
-  }).join("");
-  const nodes = positioned.map((node) => sourceNodeMarkup(node, { layout: "live", source, nodeStates })).join("");
-  return `<section class="recovery-graph-panel recovery-topology-panel" data-testid="recovery-topology" aria-label="Recovery impact topology" data-canonical-node-count="${visual.node_ids.length}" data-canonical-edge-count="${visual.edge_ids.length}" data-node-ids="${escapeHtml(visual.node_ids.join(","))}" data-edge-ids="${escapeHtml(visual.edge_ids.join(","))}" data-projection-revision="${escapeHtml(visual.projection_revision)}"><header><div><strong>Recovery impact</strong></div></header><div class="recovery-topology-map is-live-source"><svg class="edge-map fixed-live-edge-map" viewBox="0 0 ${LIVE_WORLD.width} ${LIVE_WORLD.height}" preserveAspectRatio="none">${edges}</svg>${nodes}</div></section>`;
+  return { visual: focus.visual, markup: `<section class="recovery-graph-panel recovery-topology-panel" data-testid="recovery-topology" aria-label="Recovery impact topology" data-canonical-node-count="${focus.visual.node_ids.length}" data-canonical-edge-count="${focus.visual.edge_ids.length}" data-node-ids="${escapeHtml(focus.visual.node_ids.join(","))}" data-edge-ids="${escapeHtml(focus.visual.edge_ids.join(","))}" data-projection-revision="${escapeHtml(focus.visual.projection_revision)}"><header><div><strong>Recovery impact</strong></div></header><div class="recovery-topology-map is-live-source">${focus.markup}</div></section>` };
 }
 
 function renderTwinLayer(frame, layerName, interactive, { runtimeOnly = false, includeControl = false } = {}) {
@@ -2855,7 +2893,20 @@ function setMode(nextMode) {
   const shared = sharedRunModel();
   const actionByMode = { replay: "view_diagnosis", agents: "open_recovery_console", compare: "compare_recovery" };
   const requiredAction = actionByMode[nextMode];
-  if (shared && requiredAction && shared.workspace_actions?.[requiredAction]?.available !== true) {
+  // The Diagnose canvas is an immutable incident snapshot. When the server
+  // supplies its complete, revision-bound focus overlay, it remains useful for
+  // post-incident review even if the loop has since terminally failed or
+  // recovered and has therefore disabled the forward workflow action. This is
+  // not a browser readiness inference: incidentFocusWorkspace validates the
+  // exact server run, revision, six nodes, and five relations before allowing
+  // the historical view. Recovery and Compare remain governed solely by their
+  // server action gates.
+  const serverFocusReady = nextMode === "replay" && shared && incidentFocusWorkspace(
+    shared.topology,
+    shared.topology?.snapshots?.incident,
+    diagnoseViewTopology(state?.topology_views)
+  ).availability === "ready";
+  if (shared && requiredAction && shared.workspace_actions?.[requiredAction]?.available !== true && !serverFocusReady) {
     showToast(`This workspace is unavailable until ${shared.workspace_actions?.[requiredAction]?.prerequisites?.filter((item) => !item.satisfied).map((item) => item.id.replaceAll("_", " ")).join(" and ") || "its server prerequisites are recorded"}.`);
     return;
   }

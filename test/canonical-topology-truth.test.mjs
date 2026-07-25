@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { Ledger } from "../src/ledger.mjs";
 import { LocalFaultLoop } from "../src/local-fault-loop.mjs";
-import { agentLoopProjection, canonicalPresentationFocus, canonicalWorkspaceVisual, recoveryWorkflowProjection, sharedRunReadModel } from "../public/twin-state.mjs";
+import { agentLoopProjection, canonicalPresentationFocus, canonicalWorkspaceVisual, incidentFocusWorkspace, recoveryWorkflowProjection, sharedRunReadModel } from "../public/twin-state.mjs";
 
 test("one canonical run topology is the exact Live, Diagnose, Recovery, and Compare truth", async () => {
   const ledger = new Ledger(join(mkdtempSync(join(tmpdir(), "flowpulse-canonical-topology-")), "ledger.db"));
@@ -123,6 +123,78 @@ test("Diagnose accepts the same canonical identities when the independent projec
   assert.equal(focus.availability, "ready");
   assert.deepEqual(focus.affected_node_ids, diagnoseView.overlay.node_ids);
   assert.deepEqual(focus.affected_edge_ids, overlay.map(({ id }) => id));
+});
+
+test("incident focus renders only the matching server overlay with one stable shared geometry", async () => {
+  const ledger = new Ledger(join(mkdtempSync(join(tmpdir(), "flowpulse-incident-focus-")), "ledger.db"));
+  const loop = new LocalFaultLoop({ ledger, modelAdapter: localCodexAdapter() });
+  const run = await loop.run({ caseId: "checkout-payment-config", round: 1 });
+  const shared = sharedRunReadModel(run);
+  const overlay = [
+    { id: "checkout->kafka", from: "checkout", to: "kafka", relation: "evidence_grounded_relation" },
+    { id: "checkout->payment", from: "checkout", to: "payment", relation: "observed_dependency" },
+    { id: "frontend->checkout", from: "frontend", to: "checkout", relation: "observed_dependency" },
+    { id: "kafka->accounting", from: "kafka", to: "accounting", relation: "evidence_grounded_relation" },
+    { id: "kafka->fraud-detection", from: "kafka", to: "fraud-detection", relation: "evidence_grounded_relation" }
+  ];
+  const diagnoseView = {
+    run_id: shared.run_id,
+    incident_id: shared.incident_id,
+    projection_revision: shared.projection_revision,
+    runtime_data: {
+      graph: { nodes: shared.topology.graph.nodes, edges: shared.topology.graph.edges },
+      supporting_relations: overlay.filter(({ relation }) => relation === "evidence_grounded_relation").map(({ id, from, to }) => ({ id, from, to }))
+    },
+    external_change_evidence: {
+      records: [{ id: "change-checkout", kind: "deployment_change", status: "observed", affected_node_ids: ["checkout"], provenance_refs: ["evidence://change-checkout"] }]
+    },
+    overlay: { status: "available", node_ids: ["accounting", "checkout", "fraud-detection", "frontend", "kafka", "payment"], edges: overlay }
+  };
+  const focus = incidentFocusWorkspace(shared.topology, shared.topology.snapshots.incident, diagnoseView);
+
+  assert.equal(focus.availability, "ready");
+  assert.equal(focus.run_id, shared.run_id);
+  assert.equal(focus.incident_id, shared.incident_id);
+  assert.equal(focus.projection_revision, shared.projection_revision);
+  assert.deepEqual(focus.node_ids, diagnoseView.overlay.node_ids);
+  assert.deepEqual(focus.edge_ids, overlay.map(({ id }) => id));
+  assert.equal(focus.nodes.length, 6);
+  assert.equal(focus.edges.length, 5);
+  assert.equal(focus.nodes.every(({ id }) => diagnoseView.overlay.node_ids.includes(id)), true);
+  assert.equal(focus.edges.every(({ id }) => overlay.some((edge) => edge.id === id)), true);
+  assert.equal(focus.nodes.every(({ x, y }) => x >= 12 && x <= 88 && y >= 20 && y <= 80), true);
+  assert.equal(focus.edges.every(({ path }) => /^M [0-9.]+ [0-9.]+ C /.test(path)), true);
+  assert.equal(focus.nodes.find(({ id }) => id === "checkout").signal.value, "38.4% errors");
+  assert.equal(focus.nodes.find(({ id }) => id === "payment").signal.value, "61.6% reachable");
+  assert.equal(focus.nodes.find(({ id }) => id === "kafka").signal.value, "11,842 lag");
+  assert.equal(focus.nodes.find(({ id }) => id === "frontend").signal, null);
+  assert.deepEqual(focus.change_record, { id: "change-checkout", kind: "deployment_change", status: "observed", affected_node_ids: ["checkout"], provenance_refs: ["evidence://change-checkout"] });
+  const recovery = incidentFocusWorkspace(shared.topology, shared.topology.current, diagnoseView);
+  const comparison = incidentFocusWorkspace(shared.topology, shared.topology.snapshots.verified, diagnoseView);
+  for (const workspace of [recovery, comparison]) {
+    assert.equal(workspace.availability, "ready");
+    assert.equal(workspace.run_id, focus.run_id);
+    assert.equal(workspace.incident_id, focus.incident_id);
+    assert.equal(workspace.projection_revision, focus.projection_revision);
+    assert.deepEqual(workspace.node_ids, focus.node_ids);
+    assert.deepEqual(workspace.edge_ids, focus.edge_ids);
+    assert.deepEqual(workspace.nodes.map(({ id, x, y }) => ({ id, x, y })), focus.nodes.map(({ id, x, y }) => ({ id, x, y })));
+    assert.deepEqual(workspace.edges.map(({ id, path }) => ({ id, path })), focus.edges.map(({ id, path }) => ({ id, path })));
+  }
+  assert.notEqual(comparison.edges.find(({ id }) => id === "checkout->kafka").status, "impact", "verified snapshots do not promote an unstated supporting relation into a failure");
+  assert.deepEqual(canonicalWorkspaceVisual(shared.topology, shared.topology.snapshots.incident).node_ids, shared.topology.node_ids, "Architecture and Live remain complete canonical views");
+});
+
+test("incident focus fails closed for an absent or mismatched server overlay", async () => {
+  const ledger = new Ledger(join(mkdtempSync(join(tmpdir(), "flowpulse-incident-focus-invalid-")), "ledger.db"));
+  const loop = new LocalFaultLoop({ ledger, modelAdapter: localCodexAdapter() });
+  const run = await loop.run({ caseId: "checkout-payment-config", round: 1 });
+  const shared = sharedRunReadModel(run);
+
+  const focus = incidentFocusWorkspace(shared.topology, shared.topology.snapshots.incident, null);
+  assert.equal(focus.availability, "unavailable");
+  assert.deepEqual(focus.node_ids, []);
+  assert.deepEqual(focus.edge_ids, []);
 });
 
 test("strict loop parsing accepts a same-role advisory without inventing an ownership handoff", async () => {

@@ -3829,7 +3829,7 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .app-shell[data-mode="replay"] .plane-guides,
 .app-shell[data-mode="agents"] .plane-guides,
 .app-shell[data-mode="compare"] .plane-guides { display: none; }
-.app-shell[data-mode="agents"] .recovery-console-layout { grid-template-columns: minmax(0, 1.8fr) minmax(300px, .85fr); }
+.app-shell[data-mode="agents"] .recovery-console-layout { grid-template-columns: minmax(760px, 2.65fr) minmax(280px, .72fr); }
 .app-shell[data-mode="agents"] .recovery-topology-panel { grid-column: 1; grid-row: 2; }
 .app-shell[data-mode="agents"] .recovery-collaboration-panel { grid-column: 2; grid-row: 2; border-right: 0; overflow: auto; }
 .app-shell[data-mode="agents"] .recovery-workflow-facts > header small { display: none; }
@@ -3878,7 +3878,7 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .recovery-workflow-node div { min-width: 0; display: grid; gap: 2px; }
 .recovery-workflow-node strong { overflow: hidden; color: #111827; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .recovery-workflow-node small { overflow: hidden; color: var(--architecture-muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
-.app-shell[data-mode="agents"] .recovery-console-layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: 66px minmax(0, 1fr); }
+.app-shell[data-mode="agents"] .recovery-console-layout { grid-template-columns: minmax(760px, 2.65fr) minmax(280px, .72fr); grid-template-rows: 66px minmax(0, 1fr); }
 .app-shell[data-mode="agents"] .recovery-graph-panel { border-right: 0; }
 .recovery-execution-grid { min-height: 0; flex: 1; display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(290px, .8fr); }
 .app-shell[data-mode="agents"] .recovery-workflow-nodes {
@@ -4236,4 +4236,122 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
     opacity: .52;
     filter: none;
   }
+}
+
+/* Incident-focused workspaces share one six-node, server-projected spatial
+   map. It is intentionally distinct from the full Architecture/Live canvas:
+   only the strict Diagnose overlay may enter this surface. */
+.incident-focus-workspace {
+  position: absolute;
+  inset: 0;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.incident-focus-workspace .fixed-live-edge-map { z-index: 1; overflow: visible; }
+.incident-focus-workspace .incident-focus-node,
+.recovery-topology-map .incident-focus-workspace .incident-focus-node {
+  width: 172px;
+  height: 62px;
+  min-height: 62px;
+  grid-template-columns: 30px minmax(0, 1fr);
+  gap: 8px;
+  padding: 8px 13px 8px 10px;
+  border: 0;
+  border-radius: var(--architecture-node-radius);
+  background: rgba(255, 255, 255, .86);
+  box-shadow: none;
+  opacity: 0;
+  animation: incident-focus-node-enter .54s cubic-bezier(.22,.78,.28,1) both;
+}
+.incident-focus-workspace .incident-focus-node.incident-focus-x-14 { left: 14% !important; }
+.incident-focus-workspace .incident-focus-node.incident-focus-x-38 { left: 38% !important; }
+.incident-focus-workspace .incident-focus-node.incident-focus-x-62 { left: 62% !important; }
+.incident-focus-workspace .incident-focus-node.incident-focus-x-86 { left: 86% !important; }
+.incident-focus-workspace .incident-focus-node.incident-focus-y-30 { top: 30% !important; }
+.incident-focus-workspace .incident-focus-node.incident-focus-y-50 { top: 50% !important; }
+.incident-focus-workspace .incident-focus-node.incident-focus-y-70 { top: 70% !important; }
+.incident-focus-workspace .incident-focus-node:nth-of-type(2) { animation-delay: .055s; }
+.incident-focus-workspace .incident-focus-node:nth-of-type(3) { animation-delay: .11s; }
+.incident-focus-workspace .incident-focus-node:nth-of-type(4) { animation-delay: .165s; }
+.incident-focus-workspace .incident-focus-node:nth-of-type(5) { animation-delay: .22s; }
+.incident-focus-workspace .incident-focus-node:nth-of-type(6) { animation-delay: .275s; }
+.incident-focus-workspace .incident-focus-node:hover,
+.incident-focus-workspace .incident-focus-node.is-selected {
+  transform: translate(-50%, -50%) translateY(-2px);
+  border: 0;
+  outline: none;
+  background: rgba(255, 255, 255, .95);
+  box-shadow: none;
+}
+.incident-focus-workspace .incident-focus-node.is-impact,
+.incident-focus-workspace .incident-focus-node.is-root {
+  box-shadow: 0 0 0 3px rgba(205, 73, 83, .1);
+}
+.incident-focus-workspace .incident-focus-node.is-verified {
+  box-shadow: 0 0 0 3px rgba(44, 132, 75, .1);
+}
+.incident-focus-workspace .incident-focus-node .node-icon,
+.recovery-topology-map .incident-focus-workspace .incident-focus-node .node-icon {
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 12px;
+  background: rgba(211, 220, 226, .58);
+  color: #111827;
+  font-size: 16px;
+}
+.incident-focus-workspace .incident-focus-node strong,
+.recovery-topology-map .incident-focus-workspace .incident-focus-node strong { color: #111827; font-size: 13px; }
+.incident-focus-workspace .incident-focus-node .node-status,
+.recovery-topology-map .incident-focus-workspace .incident-focus-node .node-status { margin: 1px 0 0; color: #64748b; font-size: 10px; font-weight: 500; letter-spacing: 0; }
+.incident-focus-workspace .incident-focus-node .node-signal {
+  display: inline-block;
+  width: max-content;
+  max-width: 100%;
+  margin-top: 2px;
+  overflow: hidden;
+  color: #a34141;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.incident-focus-workspace .incident-focus-node .node-signal.is-warning { color: #9a6700; }
+.incident-focus-workspace .incident-focus-node.is-verified .node-signal { color: #257942; }
+.incident-focus-workspace .incident-focus-node .node-status-dot { top: 8px; right: 8px; width: 7px; height: 7px; }
+.incident-focus-workspace .edge-group .edge-line {
+  stroke: rgba(173, 71, 76, .7);
+  stroke-width: 1.8;
+  opacity: 0;
+  stroke-dasharray: 1000;
+  stroke-dashoffset: 1000;
+  animation: incident-focus-path-enter .42s cubic-bezier(.22,.78,.28,1) both;
+}
+.incident-focus-workspace .edge-group:nth-of-type(2) .edge-line { animation-delay: .054s; }
+.incident-focus-workspace .edge-group:nth-of-type(3) .edge-line { animation-delay: .108s; }
+.incident-focus-workspace .edge-group:nth-of-type(4) .edge-line { animation-delay: .162s; }
+.incident-focus-workspace .edge-group:nth-of-type(5) .edge-line { animation-delay: .216s; }
+.incident-focus-workspace .edge-group.signal-verified .edge-line { stroke: rgba(41, 121, 66, .7); }
+.incident-focus-workspace .edge-group .signal-projectile-halo { stroke: var(--red); opacity: .14; }
+.incident-focus-workspace .edge-group .signal-projectile-core { stroke: var(--red); opacity: .92; }
+.incident-focus-workspace .edge-group.signal-verified .signal-projectile-halo,
+.incident-focus-workspace .edge-group.signal-verified .signal-projectile-core { stroke: var(--green); }
+.incident-focus-workspace .edge-group .edge-hit { pointer-events: stroke; }
+@keyframes incident-focus-node-enter {
+  from { opacity: 0; transform: translate(-50%, -50%) translateY(10px) scale(.985); }
+  to { opacity: 1; transform: translate(-50%, -50%); }
+}
+@keyframes incident-focus-path-enter {
+  from { opacity: 0; stroke-dashoffset: 1000; }
+  to { opacity: .82; stroke-dashoffset: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .incident-focus-workspace .incident-focus-node,
+  .incident-focus-workspace .edge-group .edge-line { animation: none; opacity: 1; stroke-dashoffset: 0; }
+  .incident-focus-workspace .edge-group.is-signal-active .signal-projectile { display: none; }
+}
+@media (prefers-reduced-transparency: reduce) {
+  .incident-focus-workspace .incident-focus-node { background: #ffffff; }
 }

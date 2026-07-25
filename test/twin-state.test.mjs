@@ -698,18 +698,17 @@ test("Stage C Live layout keeps the backend layer ordering with room for later p
   assert.match(appJs, /function containedLiveView/);
   assert.match(appJs, /containedCanvasView\(\{[\s\S]+?worldWidth: LIVE_WORLD\.width,[\s\S]+?worldHeight: LIVE_WORLD\.height,/);
   assert.match(appJs, /live-column-\$\{node\.layerIndex\} live-count-\$\{node\.layerSize\} live-index-\$\{node\.layerPosition\}/);
-  assert.doesNotMatch(appJs, /style="left:\$\{Number\(node\.x\)\.toFixed\(3\)/);
+  const sourceCanvasSource = appJs.slice(appJs.indexOf("function renderSourceCanvas"), appJs.indexOf("function architectureLayerStatus"));
+  assert.doesNotMatch(sourceCanvasSource, /style="left:\$\{Number\(node\.x\)\.toFixed\(3\)/);
   assert.match(stylesCss, /\.is-live-source \.live-column-0 \{ left: 10%; \}/);
   assert.match(stylesCss, /\.is-live-source \.live-count-9\.live-index-8 \{ top: 93\.75%; \}/);
 });
 
 test("Recovery compact canvas keeps canonical cards and endpoints inside its reserved workspace", () => {
   const recoverySource = appJs.slice(appJs.indexOf("function canonicalRecoveryTopologyMarkup"), appJs.indexOf("function renderTwinLayer"));
-  assert.match(appJs, /const RECOVERY_LIVE_NODE = Object\.freeze\(\{ width: 126, height: 44 \}\)/);
-  assert.match(recoverySource, /nodeWidth: RECOVERY_LIVE_NODE\.width/);
-  assert.match(recoverySource, /nodeHeight: RECOVERY_LIVE_NODE\.height/);
-  assert.match(stylesCss, /\.recovery-topology-map \.live-column-0 \{ left: 12%; \}/);
-  assert.match(stylesCss, /\.recovery-topology-map \.live-column-4 \{ left: 90%; \}/);
+  assert.match(recoverySource, /incidentFocusLayerMarkup\(topology, topology\?\.current, \{ layerName: "current", workspace: "recovery", pulse: true \}\)/);
+  assert.match(recoverySource, /data-canonical-node-count="\$\{focus\.visual\.node_ids\.length\}"/);
+  assert.match(stylesCss, /\.recovery-topology-map \.incident-focus-workspace \.incident-focus-node/);
 });
 
 test("canonical Diagnose and Compare keep a bounded pan and zoom canvas at constrained viewports", () => {
@@ -759,6 +758,10 @@ test("workspace navigation binds only mode buttons so app-shell state cannot res
   assert.equal([...appJs.matchAll(/document\.querySelectorAll\("button\.mode-button\[data-mode\]"\)/g)].length, 2);
   assert.doesNotMatch(appJs, /for \(const button of document\.querySelectorAll\("\[data-mode\]"\)\) button\.addEventListener\("click", \(\) => setMode/);
   assert.match(appJs, /const diagnose = mode === "replay";[\s\S]+?Diagnose needs an active incident[\s\S]+?Start or select an incident in Live/s);
+  const modeSource = appJs.slice(appJs.indexOf("function setMode"), appJs.indexOf("function configureCanvasWorld"));
+  assert.match(modeSource, /const serverFocusReady = nextMode === "replay"[\s\S]+?incidentFocusWorkspace\(/);
+  assert.match(modeSource, /shared\.workspace_actions\?\.\[requiredAction\]\?\.available !== true && !serverFocusReady/);
+  assert.match(modeSource, /Recovery and Compare remain governed solely by their[\s\S]+?server action gates/);
 });
 
 test("live topology normalizes endpoints and explains true telemetry islands", () => {
@@ -927,7 +930,7 @@ test("Agent Team rail is session-driven, retains Live selection, and never uses 
   assert.doesNotMatch(appJs.slice(appJs.indexOf("function agentTeamTimelineMarkup"), appJs.indexOf("function agentTeamMessageMarkup")), /message\.sequence <= throughSequence/);
   assert.match(appJs, /projection_revision: projectionRevision/);
   assert.match(appJs, /data-testid="recovery-topology"/);
-  assert.match(appJs, /bindCanonicalCanvasIdentity\(canonicalWorkspaceVisual\(shared\.topology, shared\.topology\.current\), "recovery-canvas"\)/);
+  assert.match(appJs, /bindCanonicalCanvasIdentity\(recoveryTopology\.visual, "recovery-canvas"\)/);
   assert.match(appJs, /function canonicalRecoveryTopologyMarkup/);
   assert.match(appJs, /data-node-ids=/);
   assert.match(appJs, /data-edge-ids=/);
@@ -1534,17 +1537,18 @@ test("P0.6 keeps internal provenance out of primary chrome and makes recovery au
   assert.match(recoverySource, /Owner gate/);
 });
 
-test("Diagnose makes only server-projected causal evidence visually primary without reducing canonical membership", () => {
-  const diagnosisSource = appJs.slice(appJs.indexOf("function canonicalTopologyLayerMarkup"), appJs.indexOf("function controlSystemTileMarkup"));
-  assert.match(appJs, /canonicalPresentationFocus/);
+test("incident workspaces render only the strict server focus projection while Architecture and Live stay complete", () => {
+  const diagnosisSource = appJs.slice(appJs.indexOf("function incidentFocusLayerMarkup"), appJs.indexOf("function bindCanonicalCanvasIdentity"));
+  assert.match(appJs, /incidentFocusWorkspace/);
   assert.match(appJs, /diagnoseViewTopology\(state\?\.topology_views\)/);
-  assert.match(diagnosisSource, /presentation === "diagnosis"/);
-  assert.match(diagnosisSource, /data-affected-node-ids/);
-  assert.match(diagnosisSource, /data-affected-edge-ids/);
-  assert.match(diagnosisSource, /presentation: focus \? affectedNodes\.has\(node\.id\) \? "affected" : "context" : "standard"/);
-  assert.match(stylesCss, /\.canonical-topology-layer\.presentation-diagnosis \.source-node\.presentation-context/);
-  assert.match(stylesCss, /\.canonical-topology-layer\.presentation-diagnosis \.edge-group\.presentation-affected/);
-  assert.doesNotMatch(diagnosisSource, /filter\(.*affected_node_ids/);
+  assert.match(diagnosisSource, /data-focus-node-count/);
+  assert.match(diagnosisSource, /data-focus-edge-count/);
+  assert.match(diagnosisSource, /layout: "incident-focus"/);
+  assert.match(appJs, /renderSourceCanvas\("architecture"\)/);
+  assert.match(appJs, /renderSourceCanvas\("live", shared\?\.topology/);
+  assert.match(stylesCss, /\.incident-focus-workspace \.incident-focus-node/);
+  assert.match(stylesCss, /@keyframes incident-focus-path-enter/);
+  assert.doesNotMatch(diagnosisSource, /failure observed/i);
 });
 
 test("recovery console keeps workflow facts in the canvas while the Unified Context Rail owns interaction", () => {

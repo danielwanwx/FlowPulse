@@ -727,6 +727,167 @@ export function canonicalPresentationFocus(topology, snapshot, diagnoseView = nu
   };
 }
 
+// Diagnose, Recovery, and Compare share this bounded presentation adapter.
+// It consumes only the strict server overlay above: no DOM label, adjacency,
+// or browser-owned status can enlarge the causal subgraph.
+export function incidentFocusWorkspace(topology, snapshot, diagnoseView = null, {
+  canvasWidth = 1480,
+  canvasHeight = 680,
+  nodeWidth = 172,
+  nodeHeight = 62
+} = {}) {
+  const unavailable = (reason) => ({
+    availability: "unavailable",
+    reason,
+    run_id: null,
+    incident_id: null,
+    projection_revision: null,
+    node_ids: [],
+    edge_ids: [],
+    nodes: [],
+    edges: [],
+    source_truth: null,
+    change_record: null
+  });
+  const visual = canonicalWorkspaceVisual(topology, snapshot);
+  const focus = canonicalPresentationFocus(topology, snapshot, diagnoseView);
+  if (visual.availability !== "ready") return unavailable(visual.reason);
+  if (focus.availability !== "ready") return unavailable("canonical_focus_invalid");
+
+  const nodeById = new Map(visual.nodes.map((node) => [node.id, node]));
+  const runtimeById = new Map(visual.edges.map((edge) => [edge.id, edge]));
+  const supportingById = new Map((diagnoseView.runtime_data?.supporting_relations || []).map((edge) => [edge.id, edge]));
+  const relationSource = (relation) => runtimeById.get(relation.id) || supportingById.get(relation.id) || null;
+  if (!focus.affected_node_ids.every((id) => nodeById.has(id)) || !focus.affected_relations.every((relation) => {
+    const source = relationSource(relation);
+    return source && source.from === relation.from && source.to === relation.to;
+  })) return unavailable("canonical_focus_endpoint_invalid");
+
+  const positions = incidentFocusPositions(focus.affected_node_ids, focus.affected_relations);
+  const metric = snapshot.metric_sample;
+  const nodes = focus.affected_node_ids.map((id) => {
+    const node = nodeById.get(id);
+    const position = positions.get(id);
+    return {
+      ...node,
+      ...position,
+      signal: incidentFocusSignal(id, metric)
+    };
+  });
+  const nodePositions = new Map(nodes.map((node) => [node.id, node]));
+  const edges = focus.affected_relations.map((relation, index) => {
+    const source = relationSource(relation);
+    const from = nodePositions.get(relation.from);
+    const to = nodePositions.get(relation.to);
+    return {
+      ...source,
+      ...relation,
+      // The incident overlay establishes membership; a snapshot only colors an
+      // edge when the server supplied that edge's state. Supporting relations
+      // without a snapshot state remain their captured source state instead of
+      // being promoted to an invented failure or recovery claim.
+      status: snapshot.edge_statuses[relation.id] || source.status,
+      order: index,
+      path: incidentFocusBezierPath(from, to, { canvasWidth, canvasHeight, nodeWidth, nodeHeight })
+    };
+  });
+  if (nodes.some((node) => !Number.isFinite(node.x) || !Number.isFinite(node.y)) || edges.some((edge) => !edge.path)) return unavailable("canonical_focus_layout_invalid");
+  const changeRecord = (diagnoseView?.external_change_evidence?.records || []).find((record) =>
+    record?.kind === "deployment_change" &&
+    record?.status === "observed" &&
+    Array.isArray(record.affected_node_ids) &&
+    record.affected_node_ids.length > 0 &&
+    record.affected_node_ids.every((id) => nodeById.has(id)) &&
+    record.affected_node_ids.some((id) => focus.affected_node_ids.includes(id))
+  ) || null;
+  return {
+    availability: "ready",
+    reason: null,
+    run_id: visual.run_id,
+    incident_id: visual.incident_id,
+    projection_revision: visual.projection_revision,
+    node_ids: [...focus.affected_node_ids],
+    edge_ids: [...focus.affected_edge_ids],
+    nodes,
+    edges,
+    source_truth: { ...visual.source_truth },
+    change_record: changeRecord ? {
+      id: changeRecord.id,
+      kind: changeRecord.kind,
+      status: changeRecord.status,
+      affected_node_ids: [...changeRecord.affected_node_ids],
+      provenance_refs: [...changeRecord.provenance_refs]
+    } : null
+  };
+}
+
+function incidentFocusPositions(nodeIds, relations) {
+  const outgoing = new Map(nodeIds.map((id) => [id, []]));
+  const incoming = new Map(nodeIds.map((id) => [id, 0]));
+  for (const relation of relations) {
+    outgoing.get(relation.from)?.push(relation.to);
+    incoming.set(relation.to, (incoming.get(relation.to) || 0) + 1);
+  }
+  const rank = new Map();
+  const queue = nodeIds.filter((id) => incoming.get(id) === 0).sort();
+  for (const id of queue) rank.set(id, 0);
+  while (queue.length) {
+    const id = queue.shift();
+    for (const target of [...(outgoing.get(id) || [])].sort()) {
+      rank.set(target, Math.max(rank.get(target) || 0, (rank.get(id) || 0) + 1));
+      incoming.set(target, (incoming.get(target) || 0) - 1);
+      if (incoming.get(target) === 0) queue.push(target);
+    }
+  }
+  // A bounded server overlay may contain a cycle. The deterministic fallback
+  // keeps this presentation helper total without changing membership or edges.
+  for (const id of nodeIds) if (!rank.has(id)) rank.set(id, rank.size);
+  const rankValues = [...new Set(nodeIds.map((id) => rank.get(id)))].sort((left, right) => left - right);
+  const groups = new Map(rankValues.map((value) => [value, nodeIds.filter((id) => rank.get(id) === value).sort()]));
+  const result = new Map();
+  for (const [column, value] of rankValues.entries()) {
+    const group = groups.get(value);
+    const x = rankValues.length === 1 ? 50 : 14 + (72 * column) / (rankValues.length - 1);
+    group.forEach((id, index) => {
+      const y = group.length === 1 ? 50 : 30 + (40 * index) / (group.length - 1);
+      result.set(id, { x, y, focusColumn: column, focusIndex: index });
+    });
+  }
+  return result;
+}
+
+function incidentFocusSignal(id, metric) {
+  if (!validCanonicalMetric(metric, false)) return null;
+  if (id === "checkout") return { value: `${metric.checkout_error_rate_percent}% errors`, tone: "fault" };
+  if (id === "payment") return { value: `${metric.payment_reachability_percent}% reachable`, tone: "warning" };
+  if (id === "kafka") return { value: `${metric.kafka_lag.toLocaleString()} lag`, tone: "warning" };
+  return null;
+}
+
+export function incidentFocusBezierPath(from, to, {
+  canvasWidth = 1480,
+  canvasHeight = 680,
+  nodeWidth = 172,
+  nodeHeight = 62
+} = {}) {
+  if (!from || !to || !Number.isFinite(from.x) || !Number.isFinite(from.y) || !Number.isFinite(to.x) || !Number.isFinite(to.y)) return "";
+  const fromCenter = { x: from.x / 100 * canvasWidth, y: from.y / 100 * canvasHeight };
+  const toCenter = { x: to.x / 100 * canvasWidth, y: to.y / 100 * canvasHeight };
+  const horizontal = Math.abs(toCenter.x - fromCenter.x) >= Math.abs(toCenter.y - fromCenter.y);
+  const direction = horizontal ? Math.sign(toCenter.x - fromCenter.x) || 1 : Math.sign(toCenter.y - fromCenter.y) || 1;
+  const start = horizontal
+    ? { x: fromCenter.x + direction * nodeWidth / 2, y: fromCenter.y }
+    : { x: fromCenter.x, y: fromCenter.y + direction * nodeHeight / 2 };
+  const end = horizontal
+    ? { x: toCenter.x - direction * nodeWidth / 2, y: toCenter.y }
+    : { x: toCenter.x, y: toCenter.y - direction * nodeHeight / 2 };
+  const distance = horizontal ? Math.abs(end.x - start.x) : Math.abs(end.y - start.y);
+  const handle = Math.max(42, Math.min(180, distance * .46));
+  const controlOne = horizontal ? { x: start.x + direction * handle, y: start.y } : { x: start.x, y: start.y + direction * handle };
+  const controlTwo = horizontal ? { x: end.x - direction * handle, y: end.y } : { x: end.x, y: end.y - direction * handle };
+  return `M ${round(start.x)} ${round(start.y)} C ${round(controlOne.x)} ${round(controlOne.y)} ${round(controlTwo.x)} ${round(controlTwo.y)} ${round(end.x)} ${round(end.y)}`;
+}
+
 function unavailableCanonicalMetrics() {
   return {
     checkout: { value: "Unavailable", note: "Awaiting canonical evidence" },
