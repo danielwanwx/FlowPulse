@@ -27,6 +27,7 @@ import {
   canvasPointerTransition,
   containedCanvasView,
   canonicalTwinDisplay,
+  diagnoseViewTopology,
   eventsAtStage,
   frameFor,
   liveEdgePath,
@@ -479,10 +480,15 @@ test("active demo topology preserves the bounded causal evidence order and rende
   const active = activeDemoTopologyView();
   const architecture = architectureViewTopology(active);
   const live = liveViewTopology(active);
+  const diagnose = diagnoseViewTopology(active);
   assert.ok(architecture);
   assert.ok(live);
+  assert.ok(diagnose);
   assert.equal(live.incident_overlay.status, "active");
   assert.deepEqual(live.incident_overlay.node_ids, ["accounting", "checkout", "fraud-detection", "frontend", "kafka", "payment"]);
+  assert.equal(diagnose.overlay.status, "available");
+  assert.deepEqual(diagnose.overlay.node_ids, ["accounting", "checkout", "fraud-detection", "frontend", "kafka", "payment"]);
+  assert.deepEqual(diagnose.overlay.edges.map(({ id }) => id), ["checkout->kafka", "checkout->payment", "frontend->checkout", "kafka->accounting", "kafka->fraud-detection"]);
   assert.deepEqual(active.demo.frames[3].evidence_refs, ["ev-metric-kafka-lag", "ev-log-consumer-delay"]);
   const unsafe = activeDemoTopologyView();
   unsafe.demo.frames[4].evidence_refs.push("ev-untrusted");
@@ -1181,7 +1187,7 @@ test("compare labels legacy previews separately while canonical workspaces requi
   assert.match(appJs, /function canonicalTopologyLayerMarkup/);
   assert.match(appJs, /Compare remains locked until this run records passed independent verification/);
   assert.match(appJs, /const canonicalWorkspacePending = \["replay", "agents", "compare"\]\.includes\(mode\) && !shared/);
-  assert.match(appJs, /Canonical workspace pending/);
+  assert.match(appJs, /Workspace loading/);
   assert.match(stylesCss, /\.capture-label\.source-preview::before \{ background: var\(--amber\); \}/);
 });
 
@@ -1479,6 +1485,44 @@ test("P0.6 makes Diagnose, Recovery, and Compare canvas-first without technical 
   assert.doesNotMatch(twinLayerSource, /node-origin|node-detail/);
 });
 
+test("P0.6 keeps internal provenance out of primary chrome and makes recovery authority explicit", () => {
+  const headerSource = appJs.slice(appJs.indexOf("function renderHeader"), appJs.indexOf("function toggleTheme"));
+  const captionSource = appJs.slice(appJs.indexOf("function modeCaption"), appJs.indexOf("function tabForStage"));
+  const summarySource = appJs.slice(appJs.indexOf("function workspaceSummaryModel"), appJs.indexOf("function recoveryGateLabel"));
+  const railSource = appJs.slice(appJs.indexOf("function renderOperationsTeamRail"), appJs.indexOf("function bindOperationsTeamRailControls"));
+  const agentSessionSource = appJs.slice(appJs.indexOf("function agentTeamSessionMarkup"), appJs.indexOf("function agentTeamDisclosureMarkup"));
+  const recoverySource = appJs.slice(appJs.indexOf("function renderSharedRecoveryCanvas"), appJs.indexOf("function recoveryRoleDetail"));
+  const liveEventSource = appJs.slice(appJs.indexOf("function liveInspectorEventStreamMarkup"), appJs.indexOf("function liveInspectorDependenciesMarkup"));
+  assert.doesNotMatch(headerSource, /Canonical run \$\{shared\.run_id\}/);
+  assert.doesNotMatch(headerSource, /\$\{shared\.stage\} · \$\{shared\.run_id\}/);
+  assert.doesNotMatch(captionSource, /shared\.run_id/);
+  assert.doesNotMatch(captionSource, /isolated fixture evidence/);
+  assert.doesNotMatch(appJs, /Live canonical topology for run/);
+  assert.doesNotMatch(appJs, /Incident diagnosis for canonical run/);
+  assert.doesNotMatch(appJs, /Compare incident and verified snapshots for canonical run/);
+  assert.doesNotMatch(summarySource, /\["Run", shared\.run_id\]/);
+  assert.doesNotMatch(agentSessionSource, /\[workspace, component, sourceTruthLabel\(\)\]/);
+  assert.ok(agentSessionSource.indexOf("const runId") < agentSessionSource.indexOf("const runDetail"), "session identity must exist before collapsed Run details are composed");
+  assert.match(agentSessionSource, /const runDetail = \[/);
+  assert.match(agentSessionSource, /agentTeamDisclosureMarkup\("run", "Run details", runDetail\)/);
+  assert.doesNotMatch(liveEventSource, /event\.marker \?/);
+  assert.match(railSource, /\["replay", "agents", "compare"\]\.includes\(mode\)/);
+  assert.match(recoverySource, /Owner gate/);
+});
+
+test("Diagnose makes only server-projected causal evidence visually primary without reducing canonical membership", () => {
+  const diagnosisSource = appJs.slice(appJs.indexOf("function canonicalTopologyLayerMarkup"), appJs.indexOf("function controlSystemTileMarkup"));
+  assert.match(appJs, /canonicalPresentationFocus/);
+  assert.match(appJs, /diagnoseViewTopology\(state\?\.topology_views\)/);
+  assert.match(diagnosisSource, /presentation === "diagnosis"/);
+  assert.match(diagnosisSource, /data-affected-node-ids/);
+  assert.match(diagnosisSource, /data-affected-edge-ids/);
+  assert.match(diagnosisSource, /presentation: focus \? affectedNodes\.has\(node\.id\) \? "affected" : "context" : "standard"/);
+  assert.match(stylesCss, /\.canonical-topology-layer\.presentation-diagnosis \.source-node\.presentation-context/);
+  assert.match(stylesCss, /\.canonical-topology-layer\.presentation-diagnosis \.edge-group\.presentation-affected/);
+  assert.doesNotMatch(diagnosisSource, /filter\(.*affected_node_ids/);
+});
+
 test("recovery console keeps workflow facts in the canvas while the Unified Context Rail owns interaction", () => {
   assert.match(stylesCss, /\[data-mode="agents"\] \.metric-cluster, \.app-shell\[data-mode="agents"\] \.legend-menu \{ display: none;/);
   assert.match(appJs, /Projected recovery workflow/);
@@ -1488,6 +1532,10 @@ test("recovery console keeps workflow facts in the canvas while the Unified Cont
   assert.match(appJs, /querySelectorAll\("\[data-agent-team-role\]"\)[\s\S]*?openAgentTeamSession\(button\.dataset\.agentTeamRole/);
   assert.match(appJs, /querySelector\("\[data-agent-team-send\]"\)[\s\S]*?submitAgentTeamComposer\(form\)/);
   assert.doesNotMatch(appJs, /recovery-command-form/);
+  const recoveryTopologySource = appJs.slice(appJs.indexOf("function canonicalRecoveryTopologyMarkup"), appJs.indexOf("function renderTwinLayer"));
+  assert.match(recoveryTopologySource, /Recovery impact/);
+  assert.doesNotMatch(recoveryTopologySource, /Canonical topology/);
+  assert.doesNotMatch(recoveryTopologySource, /projection_revision\.slice/);
 });
 
 test("pure-black mode keeps structural component and connector edges high contrast", () => {

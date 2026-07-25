@@ -492,10 +492,30 @@ export function liveViewTopology(topologyViews = {}) {
   const views = topologyViewsV2(topologyViews);
   if (!views) return null;
   return {
+    run_id: views.run_id,
+    incident_id: views.incident_id,
     runtime_data: { ...views.live.runtime_data },
     control_system: { ...views.live.control_system },
     external_change_evidence: { ...views.live.external_change_evidence },
     incident_overlay: { ...views.live.incident_overlay },
+    truth: { ...views.truth },
+    readiness: { ...views.readiness },
+    projection_revision: views.projection_revision
+  };
+}
+
+// Diagnose has a stricter relationship to the runtime projection than Live:
+// it retains every runtime node and edge while separately naming the bounded
+// causal overlay.  Expose only that already-validated server projection so a
+// presentation layer cannot derive a larger or different incident path.
+export function diagnoseViewTopology(topologyViews = {}) {
+  const views = topologyViewsV2(topologyViews);
+  if (!views) return null;
+  return {
+    run_id: views.run_id,
+    incident_id: views.incident_id,
+    runtime_data: { ...views.diagnose.runtime_data },
+    overlay: { ...views.diagnose.overlay },
     truth: { ...views.truth },
     readiness: { ...views.readiness },
     projection_revision: views.projection_revision
@@ -635,6 +655,75 @@ export function canonicalWorkspaceVisual(topology, snapshot) {
     edges: topology.graph.edges.map((edge) => ({ ...edge, status: snapshot.edge_statuses[edge.id] })),
     source_truth: { ...topology.source_truth },
     metrics: canonicalMetricPresentation(snapshot.metric_sample)
+  };
+}
+
+// Presentation may reduce visual emphasis, but it cannot reduce graph
+// membership. This adapter carries only backend-validated causal membership so
+// Diagnose can distinguish the affected path from its canonical context.
+export function canonicalPresentationFocus(topology, snapshot, diagnoseView = null) {
+  const visual = canonicalWorkspaceVisual(topology, snapshot);
+  if (visual.availability !== "ready") {
+    return {
+      availability: "unavailable",
+      node_ids: [],
+      edge_ids: [],
+      affected_node_ids: [],
+      affected_edge_ids: [],
+      context_node_ids: [],
+      context_edge_ids: []
+    };
+  }
+  // The local-fault-loop topology is the ordered runtime narrative. The
+  // topology-views Diagnose overlay is the authoritative 6-node/5-relation
+  // causal path, including evidence-grounded supporting relations such as
+  // Checkout → Kafka. Never reconstruct either list from graph adjacency.
+  const overlay = diagnoseView?.overlay;
+  const runtimeEdgeIds = new Set(visual.edge_ids);
+  const supportingEdgeIds = new Set(diagnoseView?.runtime_data?.supporting_relations?.map(({ id }) => id));
+  // The two server-owned projections have their own deterministic ordering:
+  // the local loop orders ids for replay while topology-views orders nodes by
+  // layout layer.  Identity equality is the safety invariant here, not an
+  // incidental cross-endpoint array order.
+  const sameIdSet = (left, right) => Array.isArray(left) && Array.isArray(right)
+    && left.length === right.length
+    && new Set(left).size === left.length
+    && new Set(right).size === right.length
+    && left.every((id) => right.includes(id));
+  const overlayIsBounded = Array.isArray(overlay?.node_ids) && overlay.node_ids.length === 6 && new Set(overlay.node_ids).size === 6
+    && Array.isArray(overlay?.edges) && overlay.edges.length === 5 && new Set(overlay.edges.map(({ id }) => id)).size === 5
+    && overlay.node_ids.every((id) => visual.node_ids.includes(id))
+    && overlay.edges.every((edge) => edge && edge.id === `${edge.from}->${edge.to}` && overlay.node_ids.includes(edge.from) && overlay.node_ids.includes(edge.to)
+      && (edge.relation === "observed_dependency" ? runtimeEdgeIds.has(edge.id) : edge.relation === "evidence_grounded_relation" && supportingEdgeIds.has(edge.id)));
+  if (!diagnoseView || diagnoseView.run_id !== visual.run_id || diagnoseView.incident_id !== visual.incident_id
+    || diagnoseView.projection_revision !== visual.projection_revision || overlay?.status !== "available" || !overlayIsBounded
+    || !sameIdSet(diagnoseView.runtime_data?.graph?.nodes?.map(({ id }) => id), visual.node_ids)
+    || !sameIdSet(diagnoseView.runtime_data?.graph?.edges?.map(({ id }) => id), visual.edge_ids)) {
+    return {
+      availability: "unavailable",
+      node_ids: [],
+      edge_ids: [],
+      affected_node_ids: [],
+      affected_edge_ids: [],
+      affected_relations: [],
+      context_node_ids: [],
+      context_edge_ids: []
+    };
+  }
+  const affected_node_ids = [...overlay.node_ids];
+  const affected_relations = overlay.edges.map((edge) => ({ ...edge }));
+  const affected_edge_ids = affected_relations.map(({ id }) => id);
+  const affectedNodes = new Set(affected_node_ids);
+  const affectedEdges = new Set(affected_edge_ids);
+  return {
+    availability: "ready",
+    node_ids: [...visual.node_ids],
+    edge_ids: [...visual.edge_ids],
+    affected_node_ids,
+    affected_edge_ids,
+    affected_relations,
+    context_node_ids: visual.node_ids.filter((id) => !affectedNodes.has(id)),
+    context_edge_ids: visual.edge_ids.filter((id) => !affectedEdges.has(id))
   };
 }
 
@@ -921,7 +1010,12 @@ function validAgentTeamLoopRoleResponse(value) {
     && validAgentTeamLoopProvider(value.provider) && safeAgentTeamAnswer(value.safe_answer) && validHash(value.answer_sha256)
     && Number.isSafeInteger(value.answer_bytes) && value.answer_bytes >= 1 && value.answer_bytes <= 1_200
     && Number.isSafeInteger(value.duration_ms) && value.duration_ms >= 0 && value.duration_ms <= 120_000
-    && (value.handoff === null || validAgentTeamLoopHandoff(value.handoff, value.role)) && (value.recommended_handoff === null || validAgentTeamLoopHandoff(value.recommended_handoff, value.role))
+    // LocalFaultLoop stores the bounded provider recommendation in both
+    // compatibility fields. Neither field itself transfers ownership: only a
+    // separate local_fault_loop.handoff.recorded ledger event does that, and
+    // that event is emitted only for a different target role.
+    && (value.handoff === null || validAgentTeamLoopHandoff(value.handoff, value.role))
+    && (value.recommended_handoff === null || validAgentTeamLoopHandoff(value.recommended_handoff, value.role))
     && validAgentTeamRefs(value.citations, 12) && validAgentTeamLoopTools(value.tools);
 }
 
@@ -945,7 +1039,8 @@ function validAgentTeamLoopFinal(value, state) {
 
 function validAgentTeamLoopHandoff(value, from) {
   return plainRecord(value) && sameKeys(value, ["to", "reason"])
-    && AGENT_TEAM_CONVERSATIONAL_ROLES.has(value.to) && value.to !== from && safeAgentTeamText(value.reason, 200);
+    && AGENT_TEAM_CONVERSATIONAL_ROLES.has(from) && AGENT_TEAM_CONVERSATIONAL_ROLES.has(value.to)
+    && safeAgentTeamText(value.reason, 200);
 }
 
 function validAgentTeamLoopTools(value) {

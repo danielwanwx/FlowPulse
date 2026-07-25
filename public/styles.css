@@ -3952,6 +3952,24 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
    field, bounded canvas, and one identical contextual rail. Page-specific
    canvases keep their own evidence projection and controls inside this shell. */
 .app-shell[data-mode] {
+  /* The approved demo shell is deliberately light across every workspace.
+     Scope the legacy recovery/compare variables to that shell as well, so a
+     previously persisted dark preference cannot turn only those canvases into
+     a detached black product while Architecture and Live remain light. */
+  --page: #e9eef1;
+  --canvas: #f7f9fa;
+  --surface: rgba(255, 255, 255, .74);
+  --surface-2: rgba(239, 244, 248, .82);
+  --line: rgba(151, 166, 181, .28);
+  --line-strong: rgba(120, 139, 158, .46);
+  --ink: #111827;
+  --muted: #64748b;
+  --faint: #94a3b8;
+  --control-surface: rgba(255, 255, 255, .58);
+  --fault-surface: rgba(255, 244, 245, .78);
+  --overlay-surface: rgba(255, 255, 255, .88);
+  --inverse: #111827;
+  --on-inverse: #ffffff;
   --demo-page-field: #e9eef1;
   --demo-workspace-surface: rgba(255, 255, 255, .58);
   --demo-workspace-radius: 22px;
@@ -4148,9 +4166,11 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 }
 .app-shell[data-mode="compare"] .canvas-toolbar { grid-template-columns: minmax(0, 1fr) auto; }
 .app-shell[data-mode="compare"] .metric-cluster { width: auto; justify-self: end; }
-.app-shell[data-mode="replay"] .plane-guides { display: block; }
-.app-shell[data-mode="replay"] .plane-guide.runtime-guide { left: 18px; }
-.app-shell[data-mode="replay"] .plane-guide.control-guide { left: auto; right: calc(var(--flowpulse-control-rail-width) + var(--flowpulse-control-rail-inset-x) + 22px); }
+/* The Diagnose rail carries the human-facing causal context.  Keep the
+   canonical graph clear of legacy runtime/control-plane captions and their
+   technical sublabels so the six server-projected impact nodes remain the
+   visual focus. */
+.app-shell[data-mode="replay"] .plane-guides { display: none; }
 .app-shell[data-mode="replay"] .twin-node.node-agent,
 .app-shell[data-mode="replay"] .twin-node.node-evaluator,
 .app-shell[data-mode="replay"] .twin-node.node-ledger { left: 84%; }
@@ -4183,4 +4203,32 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
   .app-shell[data-mode="replay"] .metric-cluster,
   .app-shell[data-mode="agents"] .metric-cluster,
   .app-shell[data-mode="compare"] .metric-cluster { width: 100%; }
+}
+
+/* Canonical Diagnose keeps its complete server-owned graph. Only the
+   evidence-backed causal overlay becomes visually primary. */
+.app-shell[data-mode="replay"] .canonical-topology-layer.presentation-diagnosis .source-node.presentation-context {
+  opacity: .4;
+  filter: saturate(.6);
+}
+.app-shell[data-mode="replay"] .canonical-topology-layer.presentation-diagnosis .source-node.presentation-affected {
+  opacity: 1;
+  z-index: 3;
+}
+.app-shell[data-mode="replay"] .canonical-topology-layer.presentation-diagnosis .edge-group.presentation-context {
+  opacity: .2;
+}
+.app-shell[data-mode="replay"] .canonical-topology-layer.presentation-diagnosis .edge-group.presentation-affected {
+  opacity: 1;
+}
+.app-shell[data-mode="replay"] .canonical-topology-layer.presentation-diagnosis .edge-group.presentation-affected .edge-line {
+  stroke: var(--red);
+  stroke-width: 2px;
+  opacity: .96;
+}
+@media (prefers-reduced-transparency: reduce) {
+  .app-shell[data-mode="replay"] .canonical-topology-layer.presentation-diagnosis .source-node.presentation-context {
+    opacity: .52;
+    filter: none;
+  }
 }

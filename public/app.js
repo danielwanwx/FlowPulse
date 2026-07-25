@@ -18,10 +18,12 @@ import {
   sharedRunReadModel,
   agentTeamConversationProjection,
   agentTeamProviderProjection,
+  canonicalPresentationFocus,
   canonicalWorkspaceVisual,
   canvasPointerTransition,
   containedCanvasView,
   componentDetailProjection,
+  diagnoseViewTopology,
   nodeLiveInspectorProjection,
   compareProvenance,
   eventsAtStage,
@@ -480,15 +482,15 @@ function renderHeader() {
   const titles = { architecture: "Architecture", live: "Runtime activity", replay: "Incident diagnosis", agents: "Recovery Console", compare: "Recovery comparison" };
   const canvasTitles = { architecture: "Architecture", live: "Observed runtime", replay: "Incident reconstruction", agents: "Developer recovery workspace", compare: "Incident vs verified" };
   els["incident-title"].textContent = shared ? (shared.state === "needs_human" ? "Evidence gap incident" : "Checkout / payment incident") : state.incident.title;
-  els["incident-summary"].textContent = shared ? `Canonical run ${shared.run_id} · ${shared.events.length} ordered immutable events` : state.incident.summary;
+  els["incident-summary"].textContent = shared ? `${shared.events.length} server-recorded updates` : state.incident.summary;
   els.severity.textContent = shared ? (shared.state === "needs_human" ? "Unknown" : "SEV-2") : state.incident.severity;
-  els.environment.textContent = shared ? "Captured evidence" : state.incident.environment;
-  els["incident-stage"].textContent = shared?.stage || state.stage;
+  els.environment.textContent = shared ? "Incident workspace" : state.incident.environment;
+  els["incident-stage"].textContent = shared ? humanStageLabel(shared.stage) : state.stage;
   els["workspace-title"].textContent = titles[mode];
   els["canvas-title"].textContent = canvasTitles[mode];
   const architecture = mode === "architecture" ? architectureView() : null;
   const architectureSystems = architecture ? architectureBoundaries(architecture.graph) : null;
-  els.stage.textContent = mode === "architecture" ? architectureSystems ? `${architectureSystems.observed.nodes.length + architectureSystems.flowpulse.nodes.length} components` : "Architecture unavailable" : shared ? `${shared.stage} · ${shared.run_id}` : mode === "live" ? source.label : mode === "agents" ? agentControl().report.stage : mode === "compare" ? "Incident vs verified" : timelineStages()[cursor].label;
+  els.stage.textContent = mode === "architecture" ? architectureSystems ? `${architectureSystems.observed.nodes.length + architectureSystems.flowpulse.nodes.length} components` : "Architecture unavailable" : shared ? humanStageLabel(shared.stage) : mode === "live" ? telemetryStatusLabel(source.status) : mode === "agents" ? humanStageLabel(agentControl().report.stage) : mode === "compare" ? "Incident vs verified" : timelineStages()[cursor].label;
   els["status-text"].textContent = modeStatus();
   els["ledger-state"].textContent = `${canonicalEvents().length} immutable events`;
   els["capture-label"].textContent = captureLabel();
@@ -542,12 +544,12 @@ function renderMetrics() {
     return;
   }
   if (sharedRun?.loop && mode !== "architecture") {
-    els["metric-checkout-label"].textContent = "Canonical topology";
-    els["metric-payment-label"].textContent = "Run state";
-    els["metric-kafka-label"].textContent = "Event stream";
-    setMetric("checkout", "Binding", "backend projection pending");
-    setMetric("payment", sharedRun.loop.state, "no client fallback");
-    setMetric("kafka", String(sharedRun.loop.events?.length || 0), "ordered events");
+    els["metric-checkout-label"].textContent = "System";
+    els["metric-payment-label"].textContent = "State";
+    els["metric-kafka-label"].textContent = "Updates";
+    setMetric("checkout", "Loading", "Waiting for the server view");
+    setMetric("payment", humanStageLabel(sharedRun.loop.state), "Server state");
+    setMetric("kafka", String(sharedRun.loop.events?.length || 0), "Recorded updates");
     return;
   }
   if (mode === "agents") {
@@ -568,8 +570,8 @@ function renderMetrics() {
     els["metric-checkout-label"].textContent = "Components";
     els["metric-payment-label"].textContent = "Dependencies";
     els["metric-kafka-label"].textContent = "FlowPulse";
-    setMetric("checkout", String(boundaries?.observed.nodes.length || 0), view ? "captured source" : "Backend view unavailable");
-    setMetric("payment", String(boundaries?.observed.relations.length || 0), view ? "retained projection" : "No compatibility fallback");
+    setMetric("checkout", String(boundaries?.observed.nodes.length || 0), view ? "System view" : "Backend view unavailable");
+    setMetric("payment", String(boundaries?.observed.relations.length || 0), view ? "Observed relationships" : "No compatible view");
     setMetric("kafka", String(boundaries?.flowpulse.nodes.length || 0), view ? `${view.external_change_evidence.relation_count} evidence relation` : "Control system unavailable");
     return;
   }
@@ -582,10 +584,10 @@ function renderMetrics() {
     const visibleDependencies = mode === "live" ? 0 : topology?.edges?.length || 0;
     els["metric-checkout-label"].textContent = "Services";
     els["metric-payment-label"].textContent = "Dependencies";
-    els["metric-kafka-label"].textContent = "Source age";
+    els["metric-kafka-label"].textContent = "Last update";
     setMetric("checkout", String(topology?.nodes?.length || 0), "");
     setMetric("payment", String(topology?.edges?.length || 0), mode === "live" ? "projected runtime paths" : `${visibleDependencies} primary paths shown${topology.unlinked_node_ids.length ? ` · ${topology.unlinked_node_ids.length} gaps` : ""}`);
-    setMetric("kafka", source.freshness_ms == null ? source.label : formatAge(source.freshness_ms), "");
+    setMetric("kafka", source.freshness_ms == null ? "—" : formatAge(source.freshness_ms), source.freshness_ms == null ? telemetryStatusLabel(source.status) : "");
     return;
   }
   els["metric-checkout-label"].textContent = "Checkout errors";
@@ -649,7 +651,7 @@ function renderCanvas() {
   }
   if (mode === "live") {
     if (sharedRun?.loop && !shared) return renderCanonicalTopologyPending();
-    renderSourceCanvas("live", shared?.topology || null, shared ? `Live canonical topology for run ${shared.run_id}.` : null);
+    renderSourceCanvas("live", shared?.topology || null, shared ? "Live canonical topology." : null);
     return;
   }
   if (canonicalWorkspace && !shared) {
@@ -665,9 +667,14 @@ function renderCanvas() {
     renderCanonicalCompareCanvas(shared);
     return;
   }
-  const diagnosis = canonicalTopologyLayerMarkup(shared.topology, shared.topology.snapshots.incident, { layerName: "current", pulse: false });
+  const diagnosis = canonicalTopologyLayerMarkup(shared.topology, shared.topology.snapshots.incident, {
+    layerName: "current",
+    pulse: false,
+    presentation: "diagnosis",
+    diagnoseView: diagnoseViewTopology(state?.topology_views)
+  });
   if (diagnosis.visual.availability !== "ready") {
-    renderCanonicalTopologyPending("Diagnose is waiting for an incident snapshot with complete canonical node and edge status.");
+    renderCanonicalTopologyPending("Diagnose is waiting for a matching server-projected causal path.");
     return;
   }
   els["canvas-layers"].innerHTML = diagnosis.markup;
@@ -676,13 +683,13 @@ function renderCanvas() {
   bindCanonicalCanvasIdentity(diagnosis.visual, "diagnose-canvas");
   const annotations = sharedRunAnnotations(shared).filter((annotation) => annotation.id !== "recovery");
   setAnnotations(annotations.length ? [annotations.at(-1)] : []);
-  els["twin-canvas"].setAttribute("aria-label", `Incident diagnosis for canonical run ${diagnosis.visual.run_id}.`);
+  els["twin-canvas"].setAttribute("aria-label", "Incident diagnosis.");
 }
 
 function canonicalDiagnosisCaption(shared) {
   const incident = shared.events.find((event) => event.type === "local_fault_loop.fault.injected") || shared.events.at(-1);
   const count = shared.events.length;
-  return `${incident?.recorded_at ? formatTime(incident.recorded_at) : "Recorded incident"} · ${count} immutable event${count === 1 ? "" : "s"}`;
+  return `${incident?.recorded_at ? formatTime(incident.recorded_at) : "Recorded incident"} · ${count} recorded update${count === 1 ? "" : "s"}`;
 }
 
 function renderCanonicalCompareCanvas(shared) {
@@ -710,7 +717,7 @@ function renderCanonicalCompareCanvas(shared) {
   els["compare-handle"].hidden = false;
   els["compare-canvas-range"].hidden = false;
   setAnnotations([]);
-  els["twin-canvas"].setAttribute("aria-label", `Compare incident and verified snapshots for canonical run ${incident.visual.run_id}.`);
+  els["twin-canvas"].setAttribute("aria-label", "Compare incident and verified snapshots.");
   els["compare-canvas-range"].setAttribute("aria-label", "Compare incident and verified recovery");
   renderComparePosition();
 }
@@ -727,28 +734,42 @@ function renderCanonicalTopologyPending(message = "Waiting for the backend-owned
 // Diagnose, Recovery and Compare all render this same backend-owned visual
 // projection. The layout is intentionally local to the viewport; identities,
 // state and metrics always remain the exact canonical run values.
-function canonicalTopologyLayerMarkup(topology, snapshot, { layerName = "current", pulse = false } = {}) {
+function canonicalTopologyLayerMarkup(topology, snapshot, { layerName = "current", pulse = false, presentation = "standard", diagnoseView = null } = {}) {
   const visual = canonicalWorkspaceVisual(topology, snapshot);
   if (visual.availability !== "ready") return { visual, markup: "" };
+  const focus = presentation === "diagnosis" ? canonicalPresentationFocus(topology, snapshot, diagnoseView) : null;
+  if (focus && focus.availability !== "ready") return { visual: { ...visual, availability: "unavailable", reason: "canonical_focus_invalid" }, markup: "" };
+  const affectedNodes = new Set(focus?.affected_node_ids || []);
+  const affectedEdges = new Set(focus?.affected_edge_ids || []);
   const positioned = livePositions(visual.nodes);
   const positions = new Map(positioned.map((node) => [node.id, node]));
   const nodeStates = Object.fromEntries(visual.nodes.map((node) => [node.id, node.status]));
+  // A Diagnose overlay is itself backend-owned incident truth. Its explicit
+  // causal membership is allowed to emphasize a node even when an older
+  // local-loop snapshot did not include the upstream frontend status yet.
+  if (focus) for (const nodeId of affectedNodes) nodeStates[nodeId] = "impact";
   const source = {
     status: visual.source_truth?.source_health || "unavailable",
     label: visual.source_truth?.label || "Canonical source unavailable"
   };
   const runtimeEdges = visual.edges.filter((edge) => positions.has(edge.from) && positions.has(edge.to));
+  const runtimeEdgeIds = new Set(runtimeEdges.map((edge) => edge.id));
+  const supportingOverlayRelations = (focus?.affected_relations || [])
+    .filter((edge) => !runtimeEdgeIds.has(edge.id) && positions.has(edge.from) && positions.has(edge.to))
+    .map((edge) => ({ ...edge, kind: edge.relation, status: "impact" }));
+  const renderedEdges = [...runtimeEdges, ...supportingOverlayRelations];
   const pulseEdges = runtimeEdges.filter((edge) => edge.kind === "calls");
   const pulseSlots = livePulseSlots({ nodes: visual.nodes, edges: pulseEdges });
   const signalOrder = new Map(orderedSignalEdges(pulseEdges, pulseSlots).map((edge, index) => [edge.id, index]));
-  const routeBuildOrder = new Map(orderedLiveRouteBuildEdges(runtimeEdges, positioned).map((edge, index) => [edge.id, index]));
-  const edges = runtimeEdges.map((edge, index) => {
+  const routeBuildOrder = new Map(orderedLiveRouteBuildEdges(renderedEdges, positioned).map((edge, index) => [edge.id, index]));
+  const edges = renderedEdges.map((edge, index) => {
     const visualEdge = {
       ...edge,
       order: signalOrder.get(edge.id) ?? pulseEdges.length + index,
       routeOrder: routeBuildOrder.get(edge.id) ?? index,
       pulse: pulse && edge.kind === "calls",
-      tone: edge.status
+      tone: edge.status,
+      presentation: focus ? affectedEdges.has(edge.id) ? "affected" : "context" : "standard"
     };
     const path = liveEdgePath(positions.get(edge.from), positions.get(edge.to), {
       canvasWidth: LIVE_WORLD.width,
@@ -759,8 +780,8 @@ function canonicalTopologyLayerMarkup(topology, snapshot, { layerName = "current
     });
     return fixedLiveEdgeMarkup(visualEdge, path, positions.get(edge.from)?.label || edge.from, positions.get(edge.to)?.label || edge.to);
   }).join("");
-  const nodes = positioned.map((node) => sourceNodeMarkup(node, { layout: "live", source, nodeStates })).join("");
-  const markup = `<div class="twin-layer layer-${escapeHtml(layerName)} canonical-topology-layer" data-canonical-run-id="${escapeHtml(visual.run_id)}" data-canonical-incident-id="${escapeHtml(visual.incident_id)}" data-projection-revision="${escapeHtml(visual.projection_revision)}" data-node-ids="${escapeHtml(visual.node_ids.join(","))}" data-edge-ids="${escapeHtml(visual.edge_ids.join(","))}"><svg class="edge-map fixed-live-edge-map" viewBox="0 0 ${LIVE_WORLD.width} ${LIVE_WORLD.height}" preserveAspectRatio="none">${edges}</svg>${nodes}</div>`;
+  const nodes = positioned.map((node) => sourceNodeMarkup(node, { layout: "live", source, nodeStates, presentation: focus ? affectedNodes.has(node.id) ? "affected" : "context" : "standard" })).join("");
+  const markup = `<div class="twin-layer layer-${escapeHtml(layerName)} canonical-topology-layer presentation-${escapeHtml(presentation)}" data-canonical-run-id="${escapeHtml(visual.run_id)}" data-canonical-incident-id="${escapeHtml(visual.incident_id)}" data-projection-revision="${escapeHtml(visual.projection_revision)}" data-node-ids="${escapeHtml(visual.node_ids.join(","))}" data-edge-ids="${escapeHtml(visual.edge_ids.join(","))}" data-rendered-relation-count="${renderedEdges.length}" data-affected-node-ids="${escapeHtml(focus?.affected_node_ids.join(",") || "")}" data-affected-edge-ids="${escapeHtml(focus?.affected_edge_ids.join(",") || "")}"><svg class="edge-map fixed-live-edge-map" viewBox="0 0 ${LIVE_WORLD.width} ${LIVE_WORLD.height}" preserveAspectRatio="none">${edges}</svg>${nodes}</div>`;
   return { visual, markup };
 }
 
@@ -942,7 +963,7 @@ function controlSystemTileMarkup(node, { rail = false } = {}) {
   </button>`;
 }
 
-function sourceNodeMarkup(node, { layout, source, nodeStates }) {
+function sourceNodeMarkup(node, { layout, source, nodeStates, presentation = "standard" }) {
   const nodeState = node.connectivity === "unlinked" ? "unlinked" : nodeStates[node.id] || "dormant";
   const nodeStatus = sourceStatusLabel(nodeState, source.status);
   const ariaStatus = nodeState === "unlinked" ? "Insufficient dependency evidence" : nodeStatus;
@@ -953,7 +974,7 @@ function sourceNodeMarkup(node, { layout, source, nodeStates }) {
   const livePositionClass = layout === "live" ? ` live-column-${node.layerIndex} live-count-${node.layerSize} live-index-${node.layerPosition}` : "";
   const activeStatus = ["impact", "root", "rejected", "warning", "pending", "active", "recording", "verified"].includes(nodeState) ? `<span class="node-status">${escapeHtml(nodeStatus)}</span>` : "";
   const copy = `<span class="node-copy"><strong>${escapeHtml(node.label)}</strong>${activeStatus}</span>`;
-  return `<button class="twin-node source-node plane-${escapeHtml(node.plane || "runtime")} kind-${escapeHtml(node.kind)} is-${nodeState}${livePositionClass}" type="button" data-node-id="${escapeHtml(node.id)}" data-status="${escapeHtml(nodeState)}" data-transition-key="${escapeHtml(transitionKey(node.id))}" aria-label="${escapeHtml(profile.capability)}, ${escapeHtml(kindLabel(node.kind))}, ${escapeHtml(profile.runtimeIdentity)}, ${escapeHtml(ariaStatus)}">
+  return `<button class="twin-node source-node plane-${escapeHtml(node.plane || "runtime")} kind-${escapeHtml(node.kind)} is-${nodeState} presentation-${escapeHtml(presentation)}${livePositionClass}" type="button" data-node-id="${escapeHtml(node.id)}" data-status="${escapeHtml(nodeState)}" data-transition-key="${escapeHtml(transitionKey(node.id))}" aria-label="${escapeHtml(profile.capability)}, ${escapeHtml(kindLabel(node.kind))}, ${escapeHtml(ariaStatus)}">
     <span class="node-icon" aria-hidden="true"><i class="ph ph-${iconForLive(node)}"></i></span>
     ${copy}
     <span class="node-status-dot" aria-hidden="true"></span>
@@ -983,7 +1004,7 @@ function fixedLiveEdgeMarkup(edge, path, fromLabel, toLabel) {
   const pulse = edge.pulse ? `data-live-edge-id="${escapeHtml(edge.id)}" data-live-projectile="single" data-signal-from="${escapeHtml(edge.from)}" data-signal-to="${escapeHtml(edge.to)}" data-signal-order="${edge.order}"` : "";
   // Projectiles start fully masked. The active class only changes display, so
   // this prevents one full-path paint before its first animation frame arrives.
-  return `<g class="edge-group path-runtime relation-${escapeHtml(edge.kind)} signal-${escapeHtml(edge.tone)}" ${pulse} data-live-route="canonical-authored" data-route-order="${edge.routeOrder}"><path class="edge-line is-${escapeHtml(edge.tone)}" pathLength="1000" d="${path}"/><path class="signal-projectile signal-projectile-halo" pathLength="1000" stroke-dasharray="0 1000" stroke-dashoffset="1000" d="${path}" aria-hidden="true"/><path class="signal-projectile signal-projectile-core" pathLength="1000" stroke-dasharray="0 1000" stroke-dashoffset="1000" d="${path}" aria-hidden="true"/><path class="edge-hit" d="${path}" role="button" tabindex="0" aria-label="${escapeHtml(label)}" data-edge-id="${escapeHtml(edge.id)}" data-edge-from="${escapeHtml(edge.from)}" data-edge-to="${escapeHtml(edge.to)}"/></g>`;
+  return `<g class="edge-group path-runtime relation-${escapeHtml(edge.kind)} signal-${escapeHtml(edge.tone)} presentation-${escapeHtml(edge.presentation || "standard")}" ${pulse} data-edge-id="${escapeHtml(edge.id)}" data-live-route="canonical-authored" data-route-order="${edge.routeOrder}"><path class="edge-line is-${escapeHtml(edge.tone)}" pathLength="1000" d="${path}"/><path class="signal-projectile signal-projectile-halo" pathLength="1000" stroke-dasharray="0 1000" stroke-dashoffset="1000" d="${path}" aria-hidden="true"/><path class="signal-projectile signal-projectile-core" pathLength="1000" stroke-dasharray="0 1000" stroke-dashoffset="1000" d="${path}" aria-hidden="true"/><path class="edge-hit" d="${path}" role="button" tabindex="0" aria-label="${escapeHtml(label)}" data-edge-id="${escapeHtml(edge.id)}" data-edge-from="${escapeHtml(edge.from)}" data-edge-to="${escapeHtml(edge.to)}"/></g>`;
 }
 
 function positionLiveProjectile(path, projectile, progress, pathLength) {
@@ -1160,7 +1181,7 @@ function renderSharedRecoveryCanvas(shared) {
   const detail = recoveryRoleDetail(selectedRole, { events, plan, authority, repair, verification });
   els["canvas-layers"].innerHTML = `<div class="recovery-console-layout" data-shared-run="${escapeHtml(shared.run_id)}" data-projection-revision="${escapeHtml(shared.projection_revision)}">
     <section class="recovery-diagnosis" aria-label="Recovery status">
-      <div class="diagnosis-state"><span>Recovery status</span><strong>${escapeHtml(shared.state === "recovered" ? "Recovery complete" : shared.stage)}</strong><small>Current stage · ${escapeHtml(shared.stage)}</small></div>
+      <div class="diagnosis-state"><span>Recovery status</span><strong>${escapeHtml(shared.state === "recovered" ? "Recovery complete" : humanStageLabel(shared.stage))}</strong><small data-testid="recovery-owner-gate">Owner gate · ${escapeHtml(recoveryGateLabel(events))}</small></div>
     </section>
     ${canonicalRecoveryTopologyMarkup(shared.topology)}
     <section class="recovery-graph-panel recovery-collaboration-panel recovery-workflow-facts" aria-label="Projected recovery workflow"${verificationTestId}>
@@ -1254,7 +1275,7 @@ function canonicalRecoveryTopologyMarkup(topology) {
     return fixedLiveEdgeMarkup(visualEdge, path, positions.get(edge.from)?.label || edge.from, positions.get(edge.to)?.label || edge.to);
   }).join("");
   const nodes = positioned.map((node) => sourceNodeMarkup(node, { layout: "live", source, nodeStates })).join("");
-  return `<section class="recovery-graph-panel recovery-topology-panel" data-testid="recovery-topology" aria-label="Canonical recovery topology" data-canonical-node-count="${visual.node_ids.length}" data-canonical-edge-count="${visual.edge_ids.length}" data-node-ids="${escapeHtml(visual.node_ids.join(","))}" data-edge-ids="${escapeHtml(visual.edge_ids.join(","))}" data-projection-revision="${escapeHtml(visual.projection_revision)}"><header><div><span>Canonical topology</span><strong>${visual.node_ids.length} nodes · ${visual.edge_ids.length} edges</strong></div><small>${escapeHtml(visual.projection_revision.slice(0, 12))}</small></header><div class="recovery-topology-map is-live-source"><svg class="edge-map fixed-live-edge-map" viewBox="0 0 ${LIVE_WORLD.width} ${LIVE_WORLD.height}" preserveAspectRatio="none">${edges}</svg>${nodes}</div></section>`;
+  return `<section class="recovery-graph-panel recovery-topology-panel" data-testid="recovery-topology" aria-label="Recovery impact topology" data-canonical-node-count="${visual.node_ids.length}" data-canonical-edge-count="${visual.edge_ids.length}" data-node-ids="${escapeHtml(visual.node_ids.join(","))}" data-edge-ids="${escapeHtml(visual.edge_ids.join(","))}" data-projection-revision="${escapeHtml(visual.projection_revision)}"><header><div><strong>Recovery impact</strong></div></header><div class="recovery-topology-map is-live-source"><svg class="edge-map fixed-live-edge-map" viewBox="0 0 ${LIVE_WORLD.width} ${LIVE_WORLD.height}" preserveAspectRatio="none">${edges}</svg>${nodes}</div></section>`;
 }
 
 function renderTwinLayer(frame, layerName, interactive, { runtimeOnly = false, includeControl = false } = {}) {
@@ -1580,7 +1601,7 @@ function renderOperationsTeamRail() {
       ? workspaceEvidenceRailMarkup()
       : agentTeam.panel === "session"
         ? agentTeamSessionMarkup(controls)
-        : ["agents", "compare"].includes(mode)
+        : ["replay", "agents", "compare"].includes(mode)
           ? workspaceSummaryRailMarkup()
           : agentTeamHomeMarkup(controls);
   bindOperationsTeamRailControls(rail);
@@ -1759,9 +1780,7 @@ function liveNodeInspectorRailMarkup() {
   if (!inspector) return liveNodeInspectorUnavailableMarkup(context);
   const status = sourceStatusLabel(context.status, inspector.runtime.status);
   const freshness = inspector.runtime.freshness_ms == null ? null : formatAge(inspector.runtime.freshness_ms);
-  const sourceLine = sharedRunModel()
-    ? "captured evidence"
-    : [inspector.runtime.label, freshness ? `captured ${freshness} ago` : null].filter(Boolean).join(" · ");
+  const sourceLine = freshness ? `Updated ${freshness} ago` : "";
   return `<section class="architecture-system architecture-flowpulse-system live-node-inspector" aria-label="${escapeHtml(inspector.component.label)} live inspector">
     <header class="live-node-inspector-header">
       <span class="node-icon" aria-hidden="true"><i class="ph ph-${iconForLive(inspector.component)}"></i></span>
@@ -1824,7 +1843,7 @@ function liveInspectorPulseMarkup(items) {
 function liveInspectorEventStreamMarkup(events) {
   if (!events.length) return "";
   const visible = liveInspector.disclosures.events ? events : events.slice(0, 5);
-  return `<section class="live-inspector-section"><span>Event stream</span><div class="live-inspector-events">${visible.map((event) => `<article><div><strong>${escapeHtml(event.title)}</strong><small>${escapeHtml(event.event_kind)} · ${escapeHtml(formatTime(event.observed_at))}</small></div>${event.marker ? `<code>${escapeHtml(event.marker)}</code>` : ""}</article>`).join("")}</div>${events.length > 5 ? `<button type="button" class="live-inspector-disclosure" data-live-inspector-disclosure="events" aria-expanded="${String(liveInspector.disclosures.events)}">${liveInspector.disclosures.events ? "Show recent events" : `View ${events.length - 5} more`}</button>` : ""}</section>`;
+  return `<section class="live-inspector-section"><span>Event stream</span><div class="live-inspector-events">${visible.map((event) => `<article><div><strong>${escapeHtml(event.title)}</strong><small>${escapeHtml(event.event_kind)} · ${escapeHtml(formatTime(event.observed_at))}</small></div></article>`).join("")}</div>${events.length > 5 ? `<button type="button" class="live-inspector-disclosure" data-live-inspector-disclosure="events" aria-expanded="${String(liveInspector.disclosures.events)}">${liveInspector.disclosures.events ? "Show recent events" : `View ${events.length - 5} more`}</button>` : ""}</section>`;
 }
 
 function liveInspectorDependenciesMarkup(dependencies) {
@@ -1872,10 +1891,10 @@ function workspaceSummaryModel(report) {
     const plan = [...events].reverse().find((event) => event.type === "local_fault_loop.plan.proposed");
     const verification = [...events].reverse().find((event) => event.type === "local_fault_loop.verification.completed");
     if (mode === "replay") return {
-      title: "Live investigation",
+      title: "Diagnosis Summary",
       status: accepted ? "Causal evidence is under evaluator review" : "Roles are collecting bounded evidence",
       tone: accepted ? "observed" : "active",
-      facts: compact([["Run", shared.run_id], ["Selected node", shared.selected_component], ["Current stage", shared.stage], ["Causal hypothesis", accepted?.payload?.claim || "Not yet established"], ["Evidence", `${shared.citations.length} cited records`]]),
+      facts: compact([["Current stage", humanStageLabel(shared.stage)], ["Causal hypothesis", accepted?.payload?.claim || "Not yet established"], ["Evidence", `${shared.citations.length} cited records`]]),
       actions: [{ label: "Ask Investigator", role: "investigator" }, { label: "Ask Observer", role: "observer" }, { label: "View cited evidence", kind: "evidence" }]
     };
     if (mode === "agents") return {
@@ -1997,11 +2016,20 @@ function agentTeamSessionMarkup(controls) {
   const component = selected?.type === "node" ? sourceComponentContext(selected.id)?.node?.label || selected.id : null;
   const activity = detail.activity?.summary || null;
   const title = role === "ledger" ? "Evidence Ledger" : node.label;
-  const context = [workspace, component, sourceTruthLabel()].filter(Boolean).join(" · ");
-  const providerLabel = provider ? (provider.availability === "available" ? provider.truth_label : "Provider unavailable") : null;
+  // Keep the live rail readable: provenance and provider implementation belong
+  // in the collapsed Run details disclosure, while unavailable provider state
+  // remains explicit because it changes what the user can do.
+  const context = [workspace, component].filter(Boolean).join(" · ");
+  const providerLabel = provider?.availability === "available" ? null : provider ? "Provider unavailable" : null;
   const runId = agentTeam.loop?.run_id || agentTeam.run_id;
   const incidentId = agentTeam.loop?.incident_id || agentTeam.incident_id;
   const projectionRevision = canonicalProjectionRevision();
+  const runDetail = [
+    sourceTruthLabel() ? `<p><span>Source</span>${escapeHtml(sourceTruthLabel())}</p>` : "",
+    provider?.truth_label ? `<p><span>Provider</span>${escapeHtml(provider.truth_label)}</p>` : "",
+    runId ? `<code>${escapeHtml(runId)}</code>` : "",
+    incidentId ? `<code>${escapeHtml(incidentId)}</code>` : ""
+  ].join("");
   const canCompose = role !== "ledger" && Boolean(runId && incidentId && projectionRevision);
   return `<section class="architecture-system architecture-flowpulse-system agent-team-session" aria-label="${escapeHtml(title)} session">
     <header class="agent-team-session-header">
@@ -2012,7 +2040,7 @@ function agentTeamSessionMarkup(controls) {
     </header>
     <p class="agent-team-context" aria-label="Current context">${escapeHtml(context)}${providerLabel ? ` · ${escapeHtml(providerLabel)}` : ""}${activity ? ` · ${escapeHtml(activity)}` : ""}</p>
     ${agentTeamDisclosureMarkup("capability", "Agent capability", `<strong>${escapeHtml(detail.summary || "Capability details unavailable")}</strong>${boundedListMarkup("Inputs", detail.inputs)}${boundedListMarkup("Outputs", detail.outputs)}${detail.authority ? `<p><span>Boundary</span>${escapeHtml(detail.authority)}</p>` : ""}${detail.provenance_refs?.length ? `<p><span>Provenance</span>${detail.provenance_refs.map((ref) => `<code>${escapeHtml(ref)}</code>`).join("")}</p>` : ""}`)}
-    ${runId || incidentId ? agentTeamDisclosureMarkup("run", "Run details", `${runId ? `<code>${escapeHtml(runId)}</code>` : ""}${incidentId ? `<code>${escapeHtml(incidentId)}</code>` : ""}`) : ""}
+    ${runDetail ? agentTeamDisclosureMarkup("run", "Run details", runDetail) : ""}
     ${agentTeam.error ? `<p class="agent-team-error" role="alert">${escapeHtml(agentTeam.error)}</p>` : ""}
     <section class="agent-team-timeline" aria-live="polite">${agentTeamTimelineMarkup()}</section>
     ${agentTeamWorkspaceActionsMarkup()}
@@ -3289,9 +3317,38 @@ function modeStatus() {
   return "Deterministic reconstruction";
 }
 
+function humanStageLabel(stage) {
+  const value = String(stage || "").trim().toLowerCase();
+  const labels = {
+    monitor: "Monitoring",
+    monitoring: "Monitoring",
+    incident_detected: "Incident detected",
+    diagnosis_available: "Diagnosis ready",
+    investigate: "Investigating",
+    investigating: "Investigating",
+    evaluate: "Evaluating evidence",
+    evaluation: "Evaluating evidence",
+    repair: "Preparing recovery",
+    recovery: "Recovering",
+    verify: "Verifying recovery",
+    verification: "Verifying recovery",
+    recovered: "Recovery verified",
+    needs_human: "Human decision required",
+    failed: "Run failed"
+  };
+  return labels[value] || (value ? value.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase()) : "Awaiting status");
+}
+
+function telemetryStatusLabel(status) {
+  if (status === "live") return "Telemetry active";
+  if (status === "stale") return "Telemetry delayed";
+  if (status === "unavailable") return "Telemetry unavailable";
+  return "Telemetry ready";
+}
+
 function modeCaption(frame) {
   const shared = sharedRunModelAtCursor();
-  if (shared) return `${shared.run_id} · ${shared.stage} · ${shared.events.length} ordered events · isolated fixture evidence`;
+  if (shared) return `${humanStageLabel(shared.stage)} · ${shared.events.length} recorded updates`;
   if (mode === "architecture") {
     const view = architectureView();
     if (!view) return "Backend architecture projection unavailable";
@@ -3301,16 +3358,16 @@ function modeCaption(frame) {
   if (mode === "live") {
     const source = sourceState();
     return source.status === "live"
-      ? `Last record ${formatAge(source.freshness_ms)} · ${source.evidence.length} hashed signals`
-      : source.label;
+      ? `Last update ${formatAge(source.freshness_ms)}`
+      : telemetryStatusLabel(source.status);
   }
   if (mode === "agents") {
     const control = agentControl();
-    return `${agentLabel(control.current_agent_id)} · ledger ${control.last_sequence}`;
+    return `${agentLabel(control.current_agent_id)} is ready`;
   }
   if (mode === "compare") return compareProvenance(state.events).caption;
-  if (state.mode === "development") return `${timelineStages()[cursor].time} · hashed OTLP · ${eventsAtStage(state.events, cursor).length} events`;
-  return `${frame.stage.time} · ${eventsAtStage(state.events, cursor).length} immutable events`;
+  if (state.mode === "development") return `${timelineStages()[cursor].time} · ${eventsAtStage(state.events, cursor).length} recorded updates`;
+  return `${frame.stage.time} · ${eventsAtStage(state.events, cursor).length} recorded updates`;
 }
 
 function tabForStage(index) {
@@ -3816,11 +3873,11 @@ function liveSource(view) {
 
 function captureLabel() {
   const shared = sharedRunModel();
-  if (shared) return shared.state === "recovered" ? "LOCAL CODEX · VERIFIED" : "LOCAL CODEX · CANONICAL RUN";
-  if (mode === "architecture") return architectureView()?.truth.label || "Architecture unavailable";
-  if (mode === "live") return liveTopologyView()?.truth.label || "Live projection unavailable";
-  if (["replay", "agents", "compare"].includes(mode)) return "Canonical workspace pending";
-  return state.mode === "development" ? "Hashed incident" : "Captured incident";
+  if (shared) return shared.state === "recovered" ? "Verified" : humanStageLabel(shared.stage);
+  if (mode === "architecture") return architectureView() ? "System ready" : "Architecture unavailable";
+  if (mode === "live") return liveTopologyView() ? "Telemetry ready" : "Live projection unavailable";
+  if (["replay", "agents", "compare"].includes(mode)) return "Workspace loading";
+  return state.mode === "development" ? "Incident workspace" : "System workspace";
 }
 
 function sourceOrigin(layout) {
