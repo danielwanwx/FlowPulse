@@ -17,7 +17,8 @@ import {
   agentLoopStartProjection,
   sharedRunReadModel,
   canonicalIncidentWorkspaceStage,
-  hasAuthoritativeIncidentExecution,
+  incidentWorkflowEvidence,
+  sharedRunReconnectDelay,
   agentTeamConversationProjection,
   agentTeamProviderProjection,
   canonicalWorkspaceVisual,
@@ -167,10 +168,13 @@ let selectedRunId = readRequestedRunId();
 if (selectedRunId === null && sharedRun?.run_id) bindCanonicalRunSelection(sharedRun);
 let sharedRunReconnectTimer = null;
 let sharedRunReconnectAttempts = 0;
+let sharedRunReconnectRequiresSchemaFrame = false;
 let sharedRunFollowing = true;
 
 window.addEventListener("popstate", () => {
-  selectedRunId = readRequestedRunId();
+  const requestedRunId = readRequestedRunId();
+  if (requestedRunId !== selectedRunId) cancelSharedRunReconnect();
+  selectedRunId = requestedRunId;
   void refresh({ synchronizeIncidentStage: true });
 });
 
@@ -271,6 +275,13 @@ async function refresh({ synchronizeIncidentStage = false } = {}) {
     void refreshDevelopmentStatus();
   } catch (error) {
     showError(error.message);
+    // A restored terminal run cannot rely on a live EventSource to surface a
+    // failed reload. Keep its canonical identity pinned and enter the same
+    // rehydrate loop used for incompatible stream frames.
+    if (sharedRun?.run_id && selectedRunId === sharedRun.run_id) {
+      scheduleSharedRunReconnect({ error: "Canonical incident refresh is unavailable." });
+      renderSharedRunConnectionStatus();
+    }
   } finally {
     setLoading(false);
   }
@@ -291,6 +302,7 @@ function bindCanonicalWorkspace(value) {
     return;
   }
   if (selectedRunId === null) bindCanonicalRunSelection(loop);
+  if (sharedRun?.run_id && sharedRun.run_id !== loop.run_id) cancelSharedRunReconnect();
   resetIncidentStageForRun(loop.run_id);
   sharedRun = {
     run_id: loop.run_id,
@@ -336,6 +348,7 @@ function bindCanonicalRunSelection(loop) {
   // Update the mutable selector and the visible URL synchronously before the
   // next hydration/SSE refresh. This prevents a refresh from selecting a
   // different loop that happened to start in another tab.
+  if (selectedRunId !== runId) cancelSharedRunReconnect();
   selectedRunId = runId;
   resetIncidentStageForRun(runId);
   history.replaceState({ ...(history.state || {}), flowpulse_run_id: runId }, "", `${next.pathname}${next.search}${next.hash}`);
@@ -396,7 +409,11 @@ async function hydrateSharedRun() {
     if (sharedRun?.run_id !== runId || selectedRunId !== runId) return;
     const loop = agentLoopProjection(payload, { runId });
     if (!loop || loop.incident_id !== sharedRun.incident_id) throw new Error("Shared run projection is incompatible.");
-    sharedRun = { ...sharedRun, loop, last_sequence: Math.max(sharedRun.last_sequence || 0, loop.events.at(-1)?.sequence || 0), stream_state: sharedRunTerminal() ? "idle" : "connected", error: null };
+    // A successful full projection normally proves hydration has recovered.
+    // When the retry was caused by a malformed SSE envelope, keep the
+    // backoff until a valid frame proves the transport schema is usable.
+    if (!sharedRunReconnectRequiresSchemaFrame) sharedRunReconnectAttempts = 0;
+    sharedRun = { ...sharedRun, loop, last_sequence: Math.max(sharedRun.last_sequence || 0, loop.events.at(-1)?.sequence || 0), stream_state: ["recovered", "needs_human", "failed"].includes(loop.state) ? "idle" : "connected", error: null };
     agentTeam = {
       ...agentTeam,
       loop,
@@ -416,22 +433,33 @@ async function hydrateSharedRun() {
   }
 }
 
+function cancelSharedRunReconnect() {
+  if (sharedRunReconnectTimer) clearTimeout(sharedRunReconnectTimer);
+  sharedRunReconnectTimer = null;
+  sharedRunReconnectAttempts = 0;
+  sharedRunReconnectRequiresSchemaFrame = false;
+  agentLoopEventSource?.close();
+  agentLoopEventSource = null;
+}
+
 function scheduleSharedRunReconnect({ error = null } = {}) {
   const runId = sharedRun?.run_id;
-  if (!runId || selectedRunId !== runId || sharedRunTerminal() || sharedRunReconnectTimer) return;
+  if (!runId || selectedRunId !== runId || sharedRunReconnectTimer) return;
   agentLoopEventSource?.close();
   agentLoopEventSource = null;
   sharedRunReconnectAttempts += 1;
-  const delay = Math.min(8_000, 750 * (2 ** Math.min(sharedRunReconnectAttempts - 1, 3)));
+  const delay = sharedRunReconnectDelay(sharedRunReconnectAttempts);
   sharedRun = {
     ...sharedRun,
     stream_state: sharedRunReconnectAttempts >= 2 ? "stale" : "reconnecting",
     error
   };
+  renderSharedRunConnectionStatus();
+  if (!state && !sharedRunModel()) return;
   render();
   sharedRunReconnectTimer = setTimeout(() => {
     sharedRunReconnectTimer = null;
-    if (sharedRun?.run_id !== runId || selectedRunId !== runId || sharedRunTerminal()) return;
+    if (sharedRun?.run_id !== runId || selectedRunId !== runId) return;
     // Refresh the immutable projection before reopening SSE. Both a rejected
     // hydration and an incompatible stream frame travel through this same
     // bounded retry path, so the operator never sees a fake retrying state.
@@ -449,23 +477,33 @@ function connectSharedRunStream() {
   agentLoopEventSource = stream;
   stream.onopen = () => {
     if (agentLoopEventSource !== stream || sharedRun?.run_id !== runId) return;
-    sharedRunReconnectAttempts = 0;
-    sharedRun = { ...sharedRun, stream_state: "connected", error: null };
-    render();
+    // Transport open is not proof of a usable stream. Attempts reset only
+    // after a validated schema frame or a successful authoritative hydrate.
   };
   stream.addEventListener("local-fault-loop", (event) => {
     try {
       if (agentLoopEventSource !== stream || sharedRun?.run_id !== runId) return;
       const projection = agentLoopEventProjection(JSON.parse(event.data), { runId });
       if (!projection || projection.incident_id !== incidentId) throw new Error("Shared run event is incompatible.");
+      const needsAuthoritativeBrowserProjection = projection.topology !== null
+        && (state?.run_id !== runId || state?.topology_views?.projection_revision !== projection.topology.projection_revision);
       const incoming = projection.event;
       const events = [...(sharedRun.loop?.events || []), incoming]
         .filter((entry, index, all) => all.findIndex((candidate) => candidate.id === entry.id || candidate.sequence === entry.sequence) === index)
         .sort((left, right) => left.sequence - right.sequence)
         .slice(-160);
+      const loop = {
+        ...sharedRun.loop,
+        events,
+        topology: projection.topology || sharedRun.loop.topology,
+        contextual_workspaces: projection.contextual_workspaces,
+        stage: projection.contextual_workspaces.context.timeline.stage
+      };
+      sharedRunReconnectAttempts = 0;
+      sharedRunReconnectRequiresSchemaFrame = false;
       sharedRun = {
         ...sharedRun,
-        loop: { ...sharedRun.loop, events, contextual_workspaces: projection.contextual_workspaces, stage: projection.contextual_workspaces.context.timeline.stage },
+        loop,
         last_sequence: Math.max(sharedRun.last_sequence || 0, incoming.sequence),
         stream_state: "connected",
         error: null
@@ -474,17 +512,23 @@ function connectSharedRunStream() {
       synchronizeCanonicalIncidentStage(sharedRunModel());
       agentTeam = {
         ...agentTeam,
-        loop: { ...sharedRun.loop, contextual_workspaces: projection.contextual_workspaces },
+        loop,
         loop_after: sharedRun.last_sequence,
         loop_items: appendLoopTimelineItem(agentTeam.loop_items, incoming)
       };
       persistSharedRun();
+      // The focused Incident canvas also consumes the selected run's strict
+      // topology-view overlay. Refresh that authoritative browser projection
+      // as soon as SSE binds a new topology/revision, rather than leaving a
+      // completed replay on the pending canvas until a manual reload.
+      if (needsAuthoritativeBrowserProjection) void refresh({ synchronizeIncidentStage: true });
       if (incoming.type.startsWith("agent_team.") && agentTeam.panel === "session") void hydrateAgentTeamSession({ stream: false });
       render();
       ensureSelectedLiveComponentDetail();
     } catch {
       stream.close();
       if (sharedRun?.run_id !== runId) return;
+      sharedRunReconnectRequiresSchemaFrame = true;
       scheduleSharedRunReconnect({ error: "Shared run stream is incompatible." });
     }
   });
@@ -495,7 +539,6 @@ function connectSharedRunStream() {
   });
   stream.onerror = () => {
     if (agentLoopEventSource !== stream || sharedRun?.run_id !== runId) return;
-    if (sharedRunTerminal()) return;
     stream.close();
     scheduleSharedRunReconnect();
   };
@@ -532,12 +575,12 @@ function incidentAgentPageMode() {
 function incidentStageEvidence(shared) {
   const events = shared?.events || [];
   const has = (type) => events.some((event) => event.type === type);
+  const workflow = incidentWorkflowEvidence(events);
   return {
     investigate: Boolean(shared?.topology && incidentFocusWorkspace(shared.topology, shared.topology.snapshots?.incident, diagnoseViewTopology(state?.topology_views)).availability === "ready"),
     decide: has("local_fault_loop.plan.proposed") || shared?.workspace_actions?.open_recovery_console?.available === true,
-    execute: hasAuthoritativeIncidentExecution(events),
-    verify: shared?.topology?.verification?.passed === true && shared?.topology?.snapshots?.verified != null
-      || events.some((event) => event.type === "local_fault_loop.verification.completed" && typeof event.payload?.passed === "boolean")
+    execute: workflow.authorityGranted || workflow.repairExecuted,
+    verify: workflow.verificationAttempted
   };
 }
 
@@ -595,7 +638,7 @@ function render() {
 
 function canvasProjectionKey() {
   const shared = sharedRunModel();
-  if (shared && mode !== "architecture") return `${mode}:${incidentStage}:${shared.run_id}:${shared.timeline.position}:${cursor}`;
+  if (shared && mode !== "architecture") return `${mode}:${incidentStage}:${shared.run_id}:${shared.projection_revision}:${state?.topology_views?.run_id || "unavailable"}:${state?.topology_views?.projection_revision || "unavailable"}:${shared.timeline.position}:${cursor}`;
   if (mode === "architecture") {
     const detail = architectureDetail?.scope === "architecture"
       ? `${architectureDetail.nodeId}:${architectureDetail.loading ? "loading" : architectureDetail.failed ? "unavailable" : architectureDetail.detail?.detail_revision || "compact"}`
@@ -608,28 +651,33 @@ function canvasProjectionKey() {
 
 function renderHeader() {
   const shared = sharedRunModel();
+  const workflow = incidentWorkflowEvidence(shared?.events || []);
   const frame = shared ? null : currentFrame();
   const source = mode === "live" ? liveSource(liveTopologyView()) : sourceState();
   const titles = { architecture: "Architecture", live: "Runtime activity", incident: "Incident workspace", replay: "Incident diagnosis", agents: "Recovery Console", compare: "Recovery comparison" };
   const canvasTitles = { architecture: "Architecture", live: "Observed runtime", incident: "Incident workspace", replay: "Incident reconstruction", agents: "Developer recovery workspace", compare: "Incident vs verified" };
-  els["incident-title"].textContent = shared ? (shared.state === "needs_human" ? "Evidence gap incident" : "Checkout / payment incident") : state.incident.title;
-  els["incident-summary"].textContent = shared ? `${shared.events.length} server-recorded updates` : state.incident.summary;
-  const connectionMessage = sharedRun?.stream_state === "reconnecting"
-    ? "Reconnecting to live incident updates"
-    : sharedRun?.stream_state === "stale"
-      ? "Live incident updates are stale; retrying"
-      : "";
-  els["shared-run-connection"].hidden = !connectionMessage;
-  els["shared-run-connection"].textContent = connectionMessage;
-  els["shared-run-connection"].dataset.state = sharedRun?.stream_state || "";
+  els["incident-title"].textContent = shared
+    ? workflow.verificationFailed
+      ? "Recovery verification incident"
+      : shared.state === "needs_human"
+        ? "Evidence gap incident"
+        : "Checkout / payment incident"
+    : state.incident.title;
+  els["incident-summary"].textContent = shared
+    ? workflow.verificationFailed
+      ? `${shared.events.length} server-recorded updates · Repair executed; verification failed`
+      : `${shared.events.length} server-recorded updates`
+    : state.incident.summary;
+  renderSharedRunConnectionStatus();
   els.severity.textContent = shared ? (shared.state === "needs_human" ? "Unknown" : "SEV-2") : state.incident.severity;
   els.environment.textContent = shared ? "Incident workspace" : state.incident.environment;
-  els["incident-stage"].textContent = shared ? humanStageLabel(shared.stage) : state.stage;
+  const sharedStageLabel = workflow.verificationFailed ? "Verification failed" : humanStageLabel(shared?.stage);
+  els["incident-stage"].textContent = shared ? sharedStageLabel : state.stage;
   els["workspace-title"].textContent = titles[mode];
   els["canvas-title"].textContent = canvasTitles[mode];
   const architecture = mode === "architecture" ? architectureView() : null;
   const architectureSystems = architecture ? architectureBoundaries(architecture.graph) : null;
-  els.stage.textContent = mode === "architecture" ? architectureSystems ? `${architectureSystems.observed.nodes.length + architectureSystems.flowpulse.nodes.length} components` : "Architecture unavailable" : isIncidentWorkspace() ? `${INCIDENT_STAGES.find((stage) => stage.id === incidentStage)?.label || "Incident"} · ${shared ? humanStageLabel(shared.stage) : "Awaiting canonical evidence"}` : shared ? humanStageLabel(shared.stage) : mode === "live" ? telemetryStatusLabel(source.status) : mode === "agents" ? humanStageLabel(agentControl().report.stage) : mode === "compare" ? "Incident vs verified" : timelineStages()[cursor].label;
+  els.stage.textContent = mode === "architecture" ? architectureSystems ? `${architectureSystems.observed.nodes.length + architectureSystems.flowpulse.nodes.length} components` : "Architecture unavailable" : isIncidentWorkspace() ? `${INCIDENT_STAGES.find((stage) => stage.id === incidentStage)?.label || "Incident"} · ${shared ? sharedStageLabel : "Awaiting canonical evidence"}` : shared ? sharedStageLabel : mode === "live" ? telemetryStatusLabel(source.status) : mode === "agents" ? humanStageLabel(agentControl().report.stage) : mode === "compare" ? "Incident vs verified" : timelineStages()[cursor].label;
   els["status-text"].textContent = modeStatus();
   els["ledger-state"].textContent = `${canonicalEvents().length} immutable events`;
   els["capture-label"].textContent = captureLabel();
@@ -659,6 +707,20 @@ function renderHeader() {
     els["langfuse-link"].classList.add("is-disabled");
     els["langfuse-link"].textContent = "Tracing not configured";
   }
+}
+
+function renderSharedRunConnectionStatus() {
+  const connectionMessage = sharedRun?.stream_state === "reconnecting"
+    ? "Reconnecting to live incident updates"
+    : sharedRun?.stream_state === "stale"
+      ? "Live incident updates are stale; retrying"
+      : "";
+  els["shared-run-connection"].hidden = !connectionMessage;
+  els["shared-run-connection"].textContent = connectionMessage;
+  els["shared-run-connection"].dataset.state = sharedRun?.stream_state || "";
+  if (!connectionMessage) return;
+  els["incident-strip"].hidden = false;
+  els["incident-strip"].classList.add("is-connection-status");
 }
 
 function toggleTheme() {
@@ -755,12 +817,14 @@ function renderSharedRunMetrics(shared) {
     return;
   }
   if (isIncidentCompareStage() || mode === "compare") {
+    const workflow = incidentWorkflowEvidence(shared.events);
     const incident = canonicalWorkspaceVisual(shared.topology, shared.topology.snapshots.incident);
     const verified = canonicalWorkspaceVisual(shared.topology, shared.topology.snapshots.verified);
-    if (incident.availability !== "ready" || verified.availability !== "ready" || shared.topology.verification.passed !== true) {
-      setMetric("checkout", "Unavailable", "Verification pending");
-      setMetric("payment", "Unavailable", "Verification pending");
-      setMetric("kafka", "Unavailable", "Verification pending");
+    if (incident.availability !== "ready" || verified.availability !== "ready" || shared.topology.verification.passed !== true || !workflow.verificationPassed) {
+      const verificationNote = workflow.verificationFailed ? "Independent verification failed" : "Verification pending";
+      setMetric("checkout", "Unavailable", verificationNote);
+      setMetric("payment", "Unavailable", verificationNote);
+      setMetric("kafka", "Unavailable", verificationNote);
       return;
     }
     setMetric("checkout", `${incident.metrics.checkout.value} → ${verified.metrics.checkout.value}`, "incident to verified evidence");
@@ -880,7 +944,8 @@ function canonicalDiagnosisCaption(shared) {
 
 function renderCanonicalCompareCanvas(shared) {
   const topology = shared.topology;
-  const verified = topology.verification.passed === true && topology.snapshots.verified !== null;
+  const workflow = incidentWorkflowEvidence(shared.events);
+  const verified = workflow.verificationPassed && topology.verification.passed === true && topology.snapshots.verified !== null;
   const incident = incidentFocusLayerMarkup(topology, topology.snapshots.incident, { layerName: "before", workspace: "compare", pulse: true });
   bindCanonicalCanvasIdentity(incident.visual, "compare-canvas", verified ? "verified" : "verification_pending");
   if (incident.visual.availability !== "ready") {
@@ -891,7 +956,8 @@ function renderCanonicalCompareCanvas(shared) {
     els["canvas-layers"].innerHTML = incidentFocusLayerMarkup(topology, topology.snapshots.incident, { layerName: "current", workspace: "compare", pulse: false }).markup;
     els["compare-handle"].hidden = true;
     els["compare-canvas-range"].hidden = true;
-    setAnnotations([{ id: "recovery", tone: "warning", title: "Verification pending", copy: "Compare remains locked until this run records passed independent verification." }]);
+    setAnnotations([{ id: "recovery", tone: "warning", title: workflow.verificationFailed ? "Verification failed" : "Verification pending", copy: workflow.verificationFailed ? "A repair was executed, but independent verification failed. Review the recorded evidence before another action." : "Compare remains locked until this run records passed independent verification." }]);
+    els["twin-canvas"].setAttribute("aria-label", workflow.verificationFailed ? "Verification failed after a recorded repair." : "Verification is pending for the recorded repair.");
     return;
   }
   const recovered = incidentFocusLayerMarkup(topology, topology.snapshots.verified, { layerName: "after", workspace: "compare", pulse: false });
@@ -926,8 +992,9 @@ function renderIncidentStagePanel(shared) {
   const authority = [...events].reverse().find((event) => event.type === "local_fault_loop.authority.decided");
   const repair = [...events].reverse().find((event) => event.type === "local_fault_loop.repair.executed");
   const verification = [...events].reverse().find((event) => event.type === "local_fault_loop.verification.completed");
+  const workflow = incidentWorkflowEvidence(events);
   const stage = INCIDENT_STAGES.find((item) => item.id === incidentStage);
-  const common = `<header><span>${escapeHtml(stage?.label || "Incident")}</span><strong>${escapeHtml(humanStageLabel(shared.stage))}</strong></header>`;
+  const common = `<header><span>${escapeHtml(stage?.label || "Incident")}</span><strong>${escapeHtml(workflow.verificationFailed ? "Verification failed" : humanStageLabel(shared.stage))}</strong></header>`;
   if (incidentStage === "investigate") {
     panel.hidden = false;
     panel.innerHTML = `${common}<p>Follow the highlighted causal path. Ask an agent for evidence or select a service for its current context.</p><button type="button" data-agent-team-role="investigator">Ask Investigator</button>`;
@@ -951,7 +1018,13 @@ function renderIncidentStagePanel(shared) {
     return;
   }
   panel.hidden = false;
-  panel.innerHTML = `${common}<dl><div><dt>Verification</dt><dd>${escapeHtml(verification?.payload?.passed ? "Passed" : "Pending")}</dd></div><div><dt>Snapshots</dt><dd>${escapeHtml(verification?.payload?.passed ? "Incident and verified" : "Incident only")}</dd></div><div><dt>Evidence</dt><dd>${escapeHtml(`${shared.citations.length} cited records`)}</dd></div></dl><p>${verification?.payload?.passed ? "Drag the divider to compare the incident snapshot with independently verified recovery." : "Compare stays locked until the backend records independent verification."}</p><button type="button" data-agent-team-role="evaluator">Ask Evaluator</button>`;
+  const verificationLabel = verification?.payload?.passed ? "Passed" : workflow.verificationFailed ? "Failed" : "Awaiting independent check";
+  const verificationCopy = verification?.payload?.passed
+    ? "Drag the divider to compare the incident snapshot with independently verified recovery."
+    : workflow.verificationFailed
+      ? "A repair was executed, but independent verification failed. Review the recorded evidence before another action."
+      : "Compare stays locked until the backend records independent verification.";
+  panel.innerHTML = `${common}<dl><div><dt>Verification</dt><dd>${escapeHtml(verificationLabel)}</dd></div><div><dt>Snapshots</dt><dd>${escapeHtml(verification?.payload?.passed ? "Incident and verified" : "Incident only")}</dd></div><div><dt>Evidence</dt><dd>${escapeHtml(`${shared.citations.length} cited records`)}</dd></div></dl><p>${escapeHtml(verificationCopy)}</p><button type="button" data-agent-team-role="evaluator">Ask Evaluator</button>`;
 }
 
 function renderIncidentStageRail(focusedStage = null) {
@@ -1316,7 +1389,7 @@ function incidentFocusStatusLabel(status) {
 
 function liveSignalTone(edge, nodeStates) {
   if (nodeStates[edge.from] === "impact" || nodeStates[edge.to] === "impact") return "impact";
-  const verified = canonicalEvents().some((event) => (event.type === "verification.completed" && event.payload?.passed === true) || (event.type === "local_fault_loop.verification.completed" && event.payload?.passed === true));
+  const verified = incidentWorkflowEvidence(canonicalEvents()).verificationPassed;
   if (verified && ["checkout", "payment", "kafka", "accounting", "fraud-detection", "fraud"].some((id) => id === edge.from || id === edge.to)) return "verified";
   return "observed";
 }
@@ -1831,12 +1904,19 @@ function renderApproval() {
   const shared = sharedRunModelAtCursor();
   const connectionVisible = ["reconnecting", "stale"].includes(sharedRun?.stream_state);
   if (shared) {
+    const workflow = incidentWorkflowEvidence(shared.events);
     const visible = shared.state === "needs_human";
     els["approval-banner"].hidden = !visible;
     els["incident-strip"].hidden = !connectionVisible;
     els["incident-strip"].classList.toggle("is-connection-status", connectionVisible);
-    els["approval-copy"].textContent = visible ? "Evidence is insufficient. No repair or comparison was executed." : "Repair authority remains bounded to the isolated fixture event stream.";
-    els["recovery-status-button"].textContent = shared.workspace_actions.open_recovery_console.available ? "View recovery status" : "Recovery awaiting evidence";
+    els["approval-copy"].textContent = visible
+      ? workflow.verificationFailed
+        ? "Repair was executed, but independent verification failed. Operator decision is required."
+        : "Evidence is insufficient. No repair or comparison was executed."
+      : "Repair authority remains bounded to the isolated fixture event stream.";
+    els["recovery-status-button"].textContent = workflow.verificationFailed
+      ? "Review failed verification"
+      : shared.workspace_actions.open_recovery_console.available ? "View recovery status" : "Recovery awaiting evidence";
     return;
   }
   if (connectionVisible) {

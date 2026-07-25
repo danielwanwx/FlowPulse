@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node src/server.mjs",
     "demo": "npm run start",
-    "test": "node --test --test-concurrency=2 test/*.test.mjs",
+    "test": "node --test --test-concurrency=1 test/*.test.mjs",
     "judge": "npm test && node src/server.mjs",
     "submission:check": "node scripts/submission-check.mjs",
     "live:check": "node scripts/live-demo.mjs check",

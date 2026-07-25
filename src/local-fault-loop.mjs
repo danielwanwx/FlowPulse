@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { loadTopologyManifest } from "./topology-manifest.mjs";
+import { LOCAL_FAULT_LOOP_CASE_IDS, LOCAL_FAULT_LOOP_EXECUTION_SCOPE } from "../public/local-fault-loop-contract.mjs";
 
 export const LOCAL_FAULT_LOOP_SCHEMA_VERSION = "flowpulse.local-fault-loop.v2";
 export const LOCAL_FAULT_LOOP_TOPOLOGY_SCHEMA_VERSION = "flowpulse.canonical-run-topology.v1";
@@ -50,6 +51,10 @@ const ROLE_TOOLS = Object.freeze({
   evaluator: ["read_cited_hypotheses", "read_evidence_summaries"]
 });
 const CASES = new Map(LOCAL_FAULT_LOOP_CASES.map((item) => [item.id, item]));
+
+if (LOCAL_FAULT_LOOP_CASE_IDS.length !== CASES.size + 1 || !LOCAL_FAULT_LOOP_CASE_IDS.every((id) => id === NEGATIVE_CASE.id || CASES.has(id))) {
+  throw new Error("local_fault_loop_browser_contract_mismatch");
+}
 
 export class LocalFaultLoopError extends Error {
   constructor(code) {
@@ -192,7 +197,7 @@ export class LocalFaultLoop {
       stage: "approve-or-auto",
       outcome: "auto_execute_pre_authorized",
       reason: "Low-risk reversible repair is confined to the in-memory fixture simulator.",
-      execution_scope: "local_memory_only"
+      execution_scope: LOCAL_FAULT_LOOP_EXECUTION_SCOPE
     }, [], plan.id);
     let repairParent = authority.id;
     let verification;
@@ -206,7 +211,7 @@ export class LocalFaultLoop {
         target: definition.root_component,
         attempt,
         bounded: true,
-        execution_scope: "local_memory_only",
+        execution_scope: LOCAL_FAULT_LOOP_EXECUTION_SCOPE,
         rollback_available: true,
         result: repair.result
       }, repair.refs, repairParent);
@@ -219,7 +224,7 @@ export class LocalFaultLoop {
       const rolledBack = this.#append(session, "local_fault_loop.repair.rolled_back", "remediation", {
         stage: "repair",
         attempt,
-        execution_scope: "local_memory_only",
+        execution_scope: LOCAL_FAULT_LOOP_EXECUTION_SCOPE,
         reason: "independent_verification_failed",
         result: rollback.result
       }, rollback.refs, verified.id);
@@ -231,13 +236,25 @@ export class LocalFaultLoop {
       const reinvestigator = await this.#callRole(session, "investigator", definition, evidence, "Re-investigate after independent verification failed; preserve the original causal ordering.", retryInvestigatorHandoff.id);
       const retryEvaluatorHandoff = this.#handoff(session, "investigator", "evaluator", "Re-investigation is complete; Evaluator must re-check the evidence before retry.", reinvestigator.id);
       const reevaluator = await this.#callRole(session, "evaluator", definition, evidence, "Adversarially re-check the evidence before a second bounded repair attempt.", retryEvaluatorHandoff.id);
-      repairParent = this.#append(session, "local_fault_loop.plan.replanned", "orchestrator", {
+      const replanned = this.#append(session, "local_fault_loop.plan.replanned", "orchestrator", {
         stage: "plan",
         repair: definition.repair,
+        target: definition.root_component,
+        reversible: true,
         attempt: attempt + 1,
         reason: "independent_verification_failed",
         authority: "isolated_demo_task_authorization"
-      }, fault.root_cause_refs, reevaluator.id).id;
+      }, fault.root_cause_refs, reevaluator.id);
+      // A retry remains bounded but is separately authorized. The parent link
+      // keeps every repair and verification on an explicit backend authority
+      // chain instead of allowing the client to infer approval from a plan.
+      const retryAuthority = this.#append(session, "local_fault_loop.authority.decided", "runtime", {
+        stage: "approve-or-auto",
+        outcome: "auto_execute_pre_authorized",
+        reason: "A second low-risk reversible repair remains confined to the in-memory fixture simulator.",
+        execution_scope: LOCAL_FAULT_LOOP_EXECUTION_SCOPE
+      }, [], replanned.id);
+      repairParent = retryAuthority.id;
     }
     if (!verification?.passed || !verified) throw new LocalFaultLoopError("local_fault_loop_verification_unreachable");
     this.#append(session, "local_fault_loop.recovered", "runtime", {
@@ -369,7 +386,7 @@ export class LocalFaultLoop {
       case_id: request.definition.id,
       round: request.round,
       mode: "isolated_fixture",
-      execution_scope: "local_memory_only",
+      execution_scope: LOCAL_FAULT_LOOP_EXECUTION_SCOPE,
       max_remediation_attempts: MAX_REMEDIATION_ATTEMPTS,
       state: "running",
       stage: "monitor"
@@ -570,7 +587,7 @@ class FixtureSimulator {
         root_component: this.definition.root_component,
         affected_components: this.definition.affected_components,
         reversible: true,
-        execution_scope: "local_memory_only",
+        execution_scope: LOCAL_FAULT_LOOP_EXECUTION_SCOPE,
         ...(fixtureMetricSample(this.definition, "fault") ? { metric_sample: fixtureMetricSample(this.definition, "fault") } : {})
       },
       refs: evidence.map((item) => item.id),
@@ -687,6 +704,10 @@ function projectEvent(event) {
     type: event.type,
     actor: event.actor,
     evidence_refs: event.evidence_refs,
+    // The Incident client verifies the authorization chain from these bounded
+    // ledger links.  Keep the causal parent, but never expose correlation ids
+    // or the raw ledger record.
+    parent_id: event.parent_id,
     payload: event.payload
   };
 }

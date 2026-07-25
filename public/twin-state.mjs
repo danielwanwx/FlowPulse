@@ -1,3 +1,9 @@
+import {
+  LOCAL_FAULT_LOOP_EXECUTION_SCOPE,
+  LOCAL_FAULT_LOOP_VERIFICATION_CHECK_IDS,
+  validLocalFaultLoopCaseId
+} from "./local-fault-loop-contract.mjs";
+
 export const TWIN_STAGES = [
   { id: "healthy", label: "Healthy", time: "15:41" },
   { id: "deploy", label: "Deploy", time: "15:42" },
@@ -564,7 +570,7 @@ export function agentLoopProjection(value, { runId = null } = {}) {
   const keys = ["schema_version", "run_id", "incident_id", "case_id", "round", "state", "stage", "provider", "citations", "role_responses", "topology", "contextual_workspaces", "events", "final"];
   if (!plainRecord(value) || !sameKeys(value, keys) || value.schema_version !== "flowpulse.local-fault-loop.v2"
     || !safeAgentTeamId(value.run_id) || runId && value.run_id !== runId || !safeAgentTeamId(value.incident_id)
-    || !["checkout-payment-config", "insufficient-evidence"].includes(value.case_id) || !Number.isSafeInteger(value.round) || value.round < 1 || value.round > 3
+    || !validLocalFaultLoopCaseId(value.case_id) || !Number.isSafeInteger(value.round) || value.round < 1 || value.round > 3
     || !AGENT_TEAM_LOOP_STATES.has(value.state) || !safeAgentTeamText(value.stage, 80)
     || value.provider !== null && !validAgentTeamLoopProvider(value.provider)
     || !validAgentTeamRefs(value.citations, 64) || !Array.isArray(value.role_responses) || value.role_responses.length > 12 || !value.role_responses.every(validAgentTeamLoopRoleResponse)
@@ -579,7 +585,7 @@ export function agentLoopEventProjection(value, { runId = null } = {}) {
   const keys = ["schema_version", "run_id", "incident_id", "case_id", "round", "event", "topology", "contextual_workspaces"];
   if (!plainRecord(value) || !sameKeys(value, keys) || value.schema_version !== "flowpulse.local-fault-loop.v2"
     || !safeAgentTeamId(value.run_id) || runId && value.run_id !== runId || !safeAgentTeamId(value.incident_id)
-    || !["checkout-payment-config", "insufficient-evidence"].includes(value.case_id) || !Number.isSafeInteger(value.round) || value.round < 1 || value.round > 3
+    || !validLocalFaultLoopCaseId(value.case_id) || !Number.isSafeInteger(value.round) || value.round < 1 || value.round > 3
     || !validAgentTeamLoopEvent(value.event) || !(value.topology === null || validCanonicalRunTopology(value.topology, { runId: value.run_id, incidentId: value.incident_id })) || !validAgentTeamWorkspaces(value.contextual_workspaces, { runId: value.run_id, incidentId: value.incident_id })) return null;
   return value;
 }
@@ -622,57 +628,114 @@ export function sharedRunReadModel(loop, { throughSequence = null } = {}) {
 }
 
 function authorizedIncidentScope(payload) {
-  const scope = payload?.execution_scope;
-  return typeof scope === "string" && safeAgentTeamText(scope, 120) && scope !== "none" ? scope : null;
+  return payload?.execution_scope === LOCAL_FAULT_LOOP_EXECUTION_SCOPE ? LOCAL_FAULT_LOOP_EXECUTION_SCOPE : null;
 }
 
-function incidentExecutionEvidence(events) {
-  const authorizedScopes = new Set();
-  let authorityGranted = false;
-  let repairExecuted = false;
+function validIncidentPlan(event) {
+  const payload = event?.payload;
+  return ["local_fault_loop.plan.proposed", "local_fault_loop.plan.replanned"].includes(event?.type)
+    && event.actor === "orchestrator"
+    && safeAgentTeamId(event.id)
+    && payload?.stage === "plan"
+    && payload?.reversible === true
+    && payload?.authority === "isolated_demo_task_authorization"
+    && safeAgentTeamText(payload.repair, 160)
+    && safeAgentTeamText(payload.target, 160)
+    ? { id: event.id, repair: payload.repair, target: payload.target }
+    : null;
+}
+
+function validIncidentVerification(event, repair) {
+  const payload = event?.payload;
+  return event?.type === "local_fault_loop.verification.completed"
+    && event.actor === "verifier"
+    && safeAgentTeamId(event.id)
+    && event.parent_id === repair?.id
+    && payload?.stage === "verify"
+    && typeof payload.passed === "boolean"
+    && repair !== null
+    && Array.isArray(event.evidence_refs) && event.evidence_refs.length > 0
+    && Array.isArray(payload.checks) && payload.checks.length === LOCAL_FAULT_LOOP_VERIFICATION_CHECK_IDS.length
+    && payload.checks.every((check, index) => plainRecord(check)
+      && sameKeys(check, ["id", "passed"])
+      && check.id === LOCAL_FAULT_LOOP_VERIFICATION_CHECK_IDS[index]
+      && check.passed === payload.passed)
+    ? payload.passed
+    : null;
+}
+
+// The stage rail, terminal guidance, and stage picker all consume this one
+// authority-chain projection. It recognizes only the backend's explicit local
+// fixture scope and verifier contract.
+export function incidentWorkflowEvidence(events) {
+  let planned = null;
+  let authorized = null;
+  let repaired = null;
   let verificationFailed = false;
   let verificationPassed = false;
   let haltReason = "";
-  if (!Array.isArray(events)) return { authorityGranted, repairExecuted, verificationFailed, verificationPassed, haltReason };
+  if (!Array.isArray(events)) return { authorityGranted: false, repairExecuted: false, verificationAttempted: false, verificationFailed, verificationPassed, haltReason };
 
   for (const event of events) {
     if (!plainRecord(event) || !plainRecord(event.payload)) continue;
+    const plan = validIncidentPlan(event);
+    if (plan) {
+      planned = plan;
+      authorized = null;
+      repaired = null;
+      continue;
+    }
     const payload = event.payload;
     if (event.type === "local_fault_loop.authority.decided"
       && event.actor === "runtime"
+      && safeAgentTeamId(event.id)
+      && event.parent_id === planned?.id
       && payload.stage === "approve-or-auto"
-      && AUTHORIZED_INCIDENT_EXECUTION_OUTCOMES.has(payload.outcome)) {
-      const scope = authorizedIncidentScope(payload);
-      if (scope) {
-        authorizedScopes.add(scope);
-        authorityGranted = true;
-      }
+      && AUTHORIZED_INCIDENT_EXECUTION_OUTCOMES.has(payload.outcome)
+      && authorizedIncidentScope(payload)
+      && planned) {
+      authorized = { ...planned, scope: LOCAL_FAULT_LOOP_EXECUTION_SCOPE, id: event.id };
+      repaired = null;
       continue;
     }
     if (event.type === "local_fault_loop.repair.executed"
       && event.actor === "remediation"
+      && safeAgentTeamId(event.id)
+      && event.parent_id === authorized?.id
       && payload.stage === "repair"
       && payload.bounded === true
       && payload.rollback_available === true
-      && safeAgentTeamText(payload.repair, 160)
-      && safeAgentTeamText(payload.target, 160)
+      && payload.repair === authorized?.repair
+      && payload.target === authorized?.target
       && Number.isSafeInteger(payload.attempt) && payload.attempt >= 1 && payload.attempt <= 3
       && payload.result === "applied"
-      && authorizedScopes.has(authorizedIncidentScope(payload))) {
-      repairExecuted = true;
+      && authorizedIncidentScope(payload) === authorized?.scope
+      && Array.isArray(event.evidence_refs) && event.evidence_refs.length > 0) {
+      repaired = { ...authorized, id: event.id, attempt: payload.attempt };
       continue;
     }
-    if (event.type === "local_fault_loop.verification.completed" && typeof payload.passed === "boolean") {
-      verificationPassed ||= payload.passed;
-      verificationFailed ||= !payload.passed;
+    const verification = validIncidentVerification(event, repaired);
+    if (verification !== null) {
+      // The latest complete, chain-valid verification is authoritative for
+      // the current run. A later successful retry must clear an earlier
+      // failed attempt; a terminal failed run has no later pass to mask it.
+      verificationPassed = verification;
+      verificationFailed = !verification;
       continue;
     }
-    if (["local_fault_loop.stopped", "local_fault_loop.failed"].includes(event.type)) {
+    if (["local_fault_loop.stopped", "local_fault_loop.failed"].includes(event.type) && event.actor === "runtime") {
       const reason = payload.halt_reason || payload.reason;
       if (safeAgentTeamText(reason, 160)) haltReason = reason;
     }
   }
-  return { authorityGranted, repairExecuted, verificationFailed, verificationPassed, haltReason };
+  return {
+    authorityGranted: authorized !== null,
+    repairExecuted: repaired !== null,
+    verificationAttempted: verificationPassed || verificationFailed,
+    verificationFailed,
+    verificationPassed,
+    haltReason
+  };
 }
 
 // The Incident stage is a presentation of the current server projection, not
@@ -680,7 +743,7 @@ function incidentExecutionEvidence(events) {
 // bounded authority grant or a structurally valid repair that follows one;
 // a free-form repair.executed row can never unlock it.
 export function hasAuthoritativeIncidentExecution(events) {
-  const evidence = incidentExecutionEvidence(events);
+  const evidence = incidentWorkflowEvidence(events);
   return evidence.authorityGranted || evidence.repairExecuted;
 }
 
@@ -691,16 +754,21 @@ export function canonicalIncidentWorkspaceStage(shared) {
   const state = shared?.state;
   const topology = plainRecord(shared?.topology) ? shared.topology : null;
   const events = Array.isArray(shared?.events) ? shared.events : [];
-  const evidence = incidentExecutionEvidence(events);
-  if (state === "recovered" || topology?.verification?.passed === true || evidence.verificationPassed) return "verify";
+  const evidence = incidentWorkflowEvidence(events);
+  if (evidence.verificationPassed && (state === "recovered" || topology?.verification?.passed === true)) return "verify";
   // A terminal human stop does not erase the authoritative point at which the
   // loop halted. This keeps a failed independent verification in Verify and a
   // post-repair halt in Execute instead of sending both back to Investigate.
-  if (evidence.verificationFailed || /verif(?:y|ication)/i.test(evidence.haltReason)) return "verify";
+  if (evidence.verificationFailed) return "verify";
   if (evidence.authorityGranted || evidence.repairExecuted) return "execute";
   if (state === "needs_human" || state === "failed") return "investigate";
   if (events.some((event) => event?.type === "local_fault_loop.plan.proposed") || shared?.workspace_actions?.open_recovery_console?.available === true) return "decide";
   return "investigate";
+}
+
+export function sharedRunReconnectDelay(attempt) {
+  const boundedAttempt = Number.isSafeInteger(attempt) && attempt > 0 ? attempt : 1;
+  return Math.min(8_000, 750 * (2 ** Math.min(boundedAttempt - 1, 3)));
 }
 
 // This is the only browser-facing projection for a canonical local-fault-loop
@@ -1264,9 +1332,10 @@ function validAgentTeamLoopRoleResponse(value) {
 }
 
 function validAgentTeamLoopEvent(value) {
-  return plainRecord(value) && sameKeys(value, ["id", "sequence", "recorded_at", "type", "actor", "evidence_refs", "payload", "topology", "contextual_workspaces"])
+  return plainRecord(value) && sameKeys(value, ["id", "sequence", "recorded_at", "type", "actor", "evidence_refs", "parent_id", "payload", "topology", "contextual_workspaces"])
     && safeAgentTeamId(value.id) && Number.isSafeInteger(value.sequence) && value.sequence >= 1 && validTopologyTimestamp(value.recorded_at)
     && safeAgentTeamText(value.type, 120) && safeAgentTeamText(value.actor, 80) && validAgentTeamRefs(value.evidence_refs, 64)
+    && (value.parent_id === null || safeAgentTeamId(value.parent_id))
     && plainRecord(value.payload) && validAgentTeamWorkspacesForEvent(value.contextual_workspaces)
     && (value.type !== "local_fault_loop.handoff.recorded" || validAgentTeamLoopOwnershipHandoff(value));
 }

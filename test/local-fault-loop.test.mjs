@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { Ledger } from "../src/ledger.mjs";
 import { LOCAL_FAULT_LOOP_CASES, LOCAL_FAULT_LOOP_SCHEMA_VERSION, LocalFaultLoop, LocalFaultLoopError } from "../src/local-fault-loop.mjs";
+import { agentLoopProjection, canonicalIncidentWorkspaceStage, incidentWorkflowEvidence } from "../public/twin-state.mjs";
 
 test("three isolated reversible fault cases complete three evidence-grounded rounds each and preserve a negative human stop", async () => {
   const adapter = localCodexAdapter();
@@ -58,6 +59,8 @@ test("three isolated reversible fault cases complete three evidence-grounded rou
       }
       const incidentOpened = run.events.find((event) => event.type === "incident.opened");
       const plan = run.events.find((event) => event.type === "local_fault_loop.plan.proposed");
+      const authority = run.events.find((event) => event.type === "local_fault_loop.authority.decided" && event.payload.outcome === "auto_execute_pre_authorized");
+      const repair = run.events.find((event) => event.type === "local_fault_loop.repair.executed");
       assert.equal(incidentOpened.contextual_workspaces.actions.view_diagnosis.available, true);
       assert.equal(incidentOpened.contextual_workspaces.actions.open_recovery_console.available, false);
       assert.equal(plan.contextual_workspaces.actions.open_recovery_console.available, true);
@@ -65,6 +68,9 @@ test("three isolated reversible fault cases complete three evidence-grounded rou
       assert.equal(run.contextual_workspaces.actions.compare_recovery.available, true);
       assert.equal(run.contextual_workspaces.context.selected_component, definition.root_component);
       assert.equal(run.contextual_workspaces.context.timeline.position, run.events.at(-1).sequence);
+      assert.equal(authority.parent_id, plan.id);
+      assert.equal(repair.parent_id, authority.id);
+      assert.equal(verification.parent_id, repair.id);
     }
   }
 
@@ -114,6 +120,17 @@ test("the credential-free recorded provider executes the same canonical guided r
   assert.equal(run.events.some((event) => event.type === "local_fault_loop.authority.decided" && event.payload.execution_scope === "local_memory_only"), true);
   assert.equal(run.events.some((event) => event.type === "local_fault_loop.repair.executed" && event.payload.bounded === true), true);
   assert.equal(run.events.find((event) => event.type === "local_fault_loop.verification.completed")?.payload.passed, true);
+});
+
+test("the browser contract accepts the canonical Kafka local-fault-loop projection and rejects an unknown case", async () => {
+  const ledger = new Ledger(join(mkdtempSync(join(tmpdir(), "flowpulse-local-fault-loop-kafka-browser-")), "ledger.db"));
+  const loop = new LocalFaultLoop({ ledger, modelAdapter: localCodexAdapter() });
+  const kafka = await loop.run({ caseId: "kafka-consumer-pause", round: 1 });
+  assert.equal(agentLoopProjection(kafka, { runId: kafka.run_id })?.case_id, "kafka-consumer-pause");
+  assert.equal(agentLoopProjection({ ...kafka, case_id: "unknown-production-fault" }, { runId: kafka.run_id }), null);
+  const droppedParent = structuredClone(kafka);
+  delete droppedParent.events.find((event) => event.type === "local_fault_loop.repair.executed").parent_id;
+  assert.equal(agentLoopProjection(droppedParent, { runId: kafka.run_id }), null);
 });
 
 test("asynchronous start reserves immediately and records an unavailable provider as terminal failure", async () => {
@@ -273,6 +290,13 @@ test("failed verification rolls back, re-investigates once, and stops after two 
   assert.equal(recovered.events.filter((event) => event.type === "local_fault_loop.repair.rolled_back").length, 1);
   assert.equal(recovered.events.filter((event) => event.type === "local_fault_loop.role.response").length, 6);
   assert.deepEqual(recovered.events.filter((event) => event.type === "local_fault_loop.verification.completed").map((event) => event.payload.passed), [false, true]);
+  const retryAuthorities = recovered.events.filter((event) => event.type === "local_fault_loop.authority.decided" && event.payload.outcome === "auto_execute_pre_authorized");
+  const retryRepairs = recovered.events.filter((event) => event.type === "local_fault_loop.repair.executed");
+  assert.equal(retryAuthorities.length, 2);
+  assert.equal(retryRepairs.every((event) => retryAuthorities.some((authority) => authority.id === event.parent_id)), true);
+  assert.equal(incidentWorkflowEvidence(recovered.events).verificationPassed, true);
+  assert.equal(incidentWorkflowEvidence(recovered.events).verificationFailed, false);
+  assert.equal(canonicalIncidentWorkspaceStage(recovered), "verify");
 
   const stopped = await loop.run({ caseId: "kafka-consumer-pause", round: 1 });
   assert.equal(stopped.state, "needs_human");
