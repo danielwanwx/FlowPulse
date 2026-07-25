@@ -243,6 +243,38 @@ function sourceTruth(value) {
   };
 }
 
+test("a fresh credential-free server starts a pinned canonical guided replay", async (context) => {
+  const root = mkdtempSync(join(tmpdir(), "flowpulse-guided-replay-"));
+  const port = await freshPort();
+  const child = spawn(process.execPath, ["src/server.mjs"], {
+    cwd: new URL("..", import.meta.url),
+    env: { ...process.env, PORT: String(port), FLOWPULSE_DB: join(root, "ledger.db"), FLOWPULSE_AGENT_PROVIDER: "recorded", NODE_ENV: "test", OPENAI_API_KEY: "" },
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  context.after(() => stop(child));
+  await waitForHealth(child, port);
+
+  const initial = await getJson(port, "/api/state");
+  assert.equal(initial.status, 200);
+  assert.equal(initial.body.workspace_projection, null);
+  const started = await postJson(port, "/api/demo/agent-loop/run", { case_id: "checkout-payment-config", round: 1, idempotency_key: "fresh-guided-replay-001" });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  assert.match(started.body.run_id, /^local-loop-/);
+
+  let completed = await getJson(port, `/api/demo/agent-loop?run_id=${encodeURIComponent(started.body.run_id)}`);
+  for (let attempt = 0; completed.body.state === "running" && attempt < 40; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    completed = await getJson(port, `/api/demo/agent-loop?run_id=${encodeURIComponent(started.body.run_id)}`);
+  }
+  assert.equal(completed.status, 200);
+  assert.equal(completed.body.state, "recovered");
+  assert.equal(completed.body.provider.provider_kind, "recorded");
+  const pinned = await getJson(port, `/api/state?run_id=${encodeURIComponent(started.body.run_id)}`);
+  assert.equal(pinned.status, 200);
+  assertCanonicalLoopBrowserState(pinned.body, started.body);
+  assert.equal(pinned.body.workspace_projection?.topology?.verification?.passed, true);
+});
+
 test("a restarted server terminalizes an expired reservation without replaying model or repair side effects", async (context) => {
   const root = mkdtempSync(join(tmpdir(), "flowpulse-interactive-restart-"));
   const db = join(root, "ledger.db");

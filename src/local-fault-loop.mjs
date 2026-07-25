@@ -467,9 +467,13 @@ export class LocalFaultLoop {
 
   async #callRole(session, role, definition, evidence, message, parentId) {
     const capability = await this.modelAdapter.preflight();
-    if (capability?.provider_kind !== "codex-local" || capability?.availability !== "available") {
-      this.#append(session, "local_fault_loop.failed", "runtime", { state: "failed", reason: "local_codex_provider_unavailable" }, [], parentId);
-      throw new LocalFaultLoopError("local_codex_provider_unavailable");
+    // The credential-free judge path is a recorded, backend-executed replay;
+    // it follows the same fixture, ledger, authority, repair, and independent
+    // verification contracts as the local Codex rehearsal. It is not a
+    // browser-side success simulation.
+    if (!["codex-local", "recorded"].includes(capability?.provider_kind) || capability?.availability !== "available") {
+      this.#append(session, "local_fault_loop.failed", "runtime", { state: "failed", reason: "local_fault_loop_provider_unavailable" }, [], parentId);
+      throw new LocalFaultLoopError("local_fault_loop_provider_unavailable");
     }
     const context = providerContext({ session, role, definition, evidence, message, negative: session.negative });
     const working = this.#append(session, "local_fault_loop.role.working", role, {
@@ -874,10 +878,11 @@ function toolResultCount(tool, evidence) {
 }
 
 function safeProvider(value) {
+  const recorded = value.provider_kind === "recorded";
   return {
-    provider_kind: value.provider_kind === "codex-local" ? "codex-local" : "unavailable",
-    truth_label: typeof value.truth_label === "string" ? value.truth_label : "LOCAL CODEX",
-    model_label: typeof value.model_label === "string" ? value.model_label : "Codex CLI"
+    provider_kind: value.provider_kind === "codex-local" ? "codex-local" : recorded ? "recorded" : "unavailable",
+    truth_label: typeof value.truth_label === "string" ? value.truth_label : recorded ? "RECORDED/DEMO" : "LOCAL CODEX",
+    model_label: typeof value.model_label === "string" ? value.model_label : recorded ? "recorded-agent-team-v1" : "Codex CLI"
   };
 }
 

@@ -57,7 +57,7 @@ npm ci
 npm run judge
 ```
 
-`npm run judge` runs the automated suite and starts the local server. Open [http://127.0.0.1:4310](http://127.0.0.1:4310), select **Incident**, and follow the staged workspace from **Investigate** through **Verify**. The replay is a captured Astronomy Shop incident: a checkout change makes payment unreachable; the evaluator rejects an unsupported Kafka-root-cause claim; the bounded checkout recovery is then evaluated through the owner-gate and verification projections.
+`npm run judge` runs the automated suite and starts the local server. On a fresh database, open [http://127.0.0.1:4310](http://127.0.0.1:4310), select **Incident**, then choose **Run guided replay**. That creates and pins one backend-owned canonical run before the persistent workspace follows it through **Investigate → Decide → Execute → Verify**. The credential-free replay is recorded on the append-only ledger and uses the same bounded fixture, authority, repair, and independent verification contracts as the local rehearsal; it is not a browser-side success mock. The captured Astronomy Shop case shows a checkout change making payment unreachable, an evaluator rejecting an unsupported Kafka-root-cause claim, and a bounded checkout recovery evaluated through the owner-gate and verification projections.
 
 For development, use separate commands:
 

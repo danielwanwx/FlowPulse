@@ -331,19 +331,48 @@ test("Incident derives its current stage from canonical evidence and never treat
   const needsHuman = {
     state: "needs_human",
     topology: { verification: { passed: false } },
-    events: [{ type: "local_fault_loop.authority.decided", payload: { outcome: "needs_human", execution_scope: "none" } }]
+    events: [{ type: "local_fault_loop.authority.decided", actor: "runtime", payload: { stage: "approve-or-auto", outcome: "needs_human", execution_scope: "none" } }]
+  };
+  const needsHumanWithForgedScope = {
+    state: "needs_human",
+    topology: { verification: { passed: false } },
+    events: [{ type: "local_fault_loop.authority.decided", actor: "runtime", payload: { stage: "approve-or-auto", outcome: "needs_human", execution_scope: "local_memory_only" } }]
+  };
+  const approvedWithoutScope = {
+    state: "running",
+    topology: { verification: { passed: false } },
+    events: [{ type: "local_fault_loop.authority.decided", actor: "runtime", payload: { stage: "approve-or-auto", outcome: "auto_execute_pre_authorized", execution_scope: "none" } }]
   };
   const approved = {
     state: "running",
     topology: { verification: { passed: false } },
-    events: [{ type: "local_fault_loop.authority.decided", payload: { outcome: "auto_execute_pre_authorized", execution_scope: "local_memory_only" } }]
+    events: [{ type: "local_fault_loop.authority.decided", actor: "runtime", payload: { stage: "approve-or-auto", outcome: "auto_execute_pre_authorized", execution_scope: "local_memory_only" } }]
   };
+  const postExecutionNeedsHuman = {
+    state: "needs_human",
+    topology: { verification: { passed: false } },
+    events: [
+      approved.events[0],
+      { type: "local_fault_loop.repair.executed", actor: "remediation", payload: { stage: "repair", repair: "restore_checkout_payment_endpoint", target: "checkout", attempt: 1, bounded: true, execution_scope: "local_memory_only", rollback_available: true, result: "applied" } },
+      { type: "local_fault_loop.verification.completed", actor: "verifier", payload: { passed: false } },
+      { type: "local_fault_loop.stopped", actor: "runtime", payload: { state: "needs_human", halt_reason: "independent_verification_failed" } }
+    ]
+  };
+  const malformedRepair = [{ type: "local_fault_loop.repair.executed", actor: "remediation", payload: { stage: "repair", bounded: true, execution_scope: "local_memory_only", result: "applied" } }];
+  const repairWithoutAuthority = [{ type: "local_fault_loop.repair.executed", actor: "remediation", payload: { stage: "repair", repair: "restore_checkout_payment_endpoint", target: "checkout", attempt: 1, bounded: true, execution_scope: "local_memory_only", rollback_available: true, result: "applied" } }];
 
   assert.equal(canonicalIncidentWorkspaceStage(recovered), "verify");
   assert.equal(hasAuthoritativeIncidentExecution(needsHuman.events), false);
   assert.equal(canonicalIncidentWorkspaceStage(needsHuman), "investigate");
+  assert.equal(hasAuthoritativeIncidentExecution(needsHumanWithForgedScope.events), false);
+  assert.equal(canonicalIncidentWorkspaceStage(needsHumanWithForgedScope), "investigate");
+  assert.equal(hasAuthoritativeIncidentExecution(approvedWithoutScope.events), false);
+  assert.equal(canonicalIncidentWorkspaceStage(approvedWithoutScope), "investigate");
   assert.equal(hasAuthoritativeIncidentExecution(approved.events), true);
   assert.equal(canonicalIncidentWorkspaceStage(approved), "execute");
+  assert.equal(canonicalIncidentWorkspaceStage(postExecutionNeedsHuman), "verify");
+  assert.equal(hasAuthoritativeIncidentExecution(malformedRepair), false);
+  assert.equal(hasAuthoritativeIncidentExecution(repairWithoutAuthority), false);
   assert.match(twinStateSource, /function incidentFocusSignal\(id, metric\) \{\n  if \(!metric \|\| !validCanonicalMetric\(metric, false\)\) return null;/);
 });
 
@@ -1580,15 +1609,25 @@ test("Incident hydration pins the restored run, reports a stale stream, and reta
   const hydrateSource = appJs.slice(appJs.indexOf("async function hydrateSharedRun"), appJs.indexOf("function appendLoopTimelineItem"));
   const railSource = appJs.slice(appJs.indexOf("function renderIncidentStageRail"), appJs.indexOf("function renderCanonicalTopologyPending"));
   const headerSource = appJs.slice(appJs.indexOf("function renderHeader"), appJs.indexOf("function toggleTheme"));
+  const approvalSource = appJs.slice(appJs.indexOf("function renderApproval"), appJs.indexOf("function renderDrawer"));
+  const streamSource = appJs.slice(appJs.indexOf("function connectSharedRunStream"), appJs.indexOf("function appendLoopTimelineItem"));
   assert.match(bootstrap, /let selectedRunId = readRequestedRunId\(\);[\s\S]*?if \(selectedRunId === null && sharedRun\?\.run_id\) bindCanonicalRunSelection\(sharedRun\);/);
   assert.match(appJs, /if \(selectedRunId === null\) bindCanonicalRunSelection\(loop\);/);
   assert.match(appJs, /state = await request\(browserStatePath\(\)\);[\s\S]*?state\?\.run_id !== selectedRunId/);
   assert.match(hydrateSource, /if \(!runId \|\| selectedRunId !== runId\) return;/);
   assert.match(hydrateSource, /agent-loop\?run_id=\$\{encodeURIComponent\(runId\)\}/);
   assert.match(hydrateSource, /new EventSource\(`\/api\/demo\/agent-loop\/events\?run_id=\$\{encodeURIComponent\(runId\)\}/);
+  assert.match(hydrateSource, /scheduleSharedRunReconnect\(\{ error: error\.message/);
+  assert.match(streamSource, /scheduleSharedRunReconnect\(\{ error: "Shared run stream is incompatible\." \}\)/);
+  assert.match(appJs, /function scheduleSharedRunReconnect\([\s\S]*?void hydrateSharedRun\(\);/);
   assert.match(headerSource, /shared-run-connection/);
   assert.match(headerSource, /Live incident updates are stale; retrying/);
   assert.match(indexHtml, /id="shared-run-connection"[^>]+role="status"/);
+  assert.match(approvalSource, /connectionVisible = \["reconnecting", "stale"\]\.includes\(sharedRun\?\.stream_state\)/);
+  assert.match(approvalSource, /incident-strip"\]\.hidden = !connectionVisible/);
+  assert.match(appJs, /function resetIncidentStageForRun\(runId\)[\s\S]*?incidentStageFollowsAuthority = true/);
+  assert.match(appJs, /bindCanonicalRunSelection\(loop\)[\s\S]*?resetIncidentStageForRun\(runId\)/);
+  assert.match(appJs, /data-start-guided-replay/);
   assert.match(railSource, /focusedStage = null/);
   assert.match(railSource, /focus\(\{ preventScroll: true \}\)/);
   assert.match(stylesCss, /\.causal-note\.note-deploy \{ left: clamp\(140px, 14%, calc\(100% - 140px\)\);/);

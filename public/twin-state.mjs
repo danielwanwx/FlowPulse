@@ -621,23 +621,67 @@ export function sharedRunReadModel(loop, { throughSequence = null } = {}) {
   };
 }
 
+function authorizedIncidentScope(payload) {
+  const scope = payload?.execution_scope;
+  return typeof scope === "string" && safeAgentTeamText(scope, 120) && scope !== "none" ? scope : null;
+}
+
+function incidentExecutionEvidence(events) {
+  const authorizedScopes = new Set();
+  let authorityGranted = false;
+  let repairExecuted = false;
+  let verificationFailed = false;
+  let verificationPassed = false;
+  let haltReason = "";
+  if (!Array.isArray(events)) return { authorityGranted, repairExecuted, verificationFailed, verificationPassed, haltReason };
+
+  for (const event of events) {
+    if (!plainRecord(event) || !plainRecord(event.payload)) continue;
+    const payload = event.payload;
+    if (event.type === "local_fault_loop.authority.decided"
+      && event.actor === "runtime"
+      && payload.stage === "approve-or-auto"
+      && AUTHORIZED_INCIDENT_EXECUTION_OUTCOMES.has(payload.outcome)) {
+      const scope = authorizedIncidentScope(payload);
+      if (scope) {
+        authorizedScopes.add(scope);
+        authorityGranted = true;
+      }
+      continue;
+    }
+    if (event.type === "local_fault_loop.repair.executed"
+      && event.actor === "remediation"
+      && payload.stage === "repair"
+      && payload.bounded === true
+      && payload.rollback_available === true
+      && safeAgentTeamText(payload.repair, 160)
+      && safeAgentTeamText(payload.target, 160)
+      && Number.isSafeInteger(payload.attempt) && payload.attempt >= 1 && payload.attempt <= 3
+      && payload.result === "applied"
+      && authorizedScopes.has(authorizedIncidentScope(payload))) {
+      repairExecuted = true;
+      continue;
+    }
+    if (event.type === "local_fault_loop.verification.completed" && typeof payload.passed === "boolean") {
+      verificationPassed ||= payload.passed;
+      verificationFailed ||= !payload.passed;
+      continue;
+    }
+    if (["local_fault_loop.stopped", "local_fault_loop.failed"].includes(event.type)) {
+      const reason = payload.halt_reason || payload.reason;
+      if (safeAgentTeamText(reason, 160)) haltReason = reason;
+    }
+  }
+  return { authorityGranted, repairExecuted, verificationFailed, verificationPassed, haltReason };
+}
+
 // The Incident stage is a presentation of the current server projection, not
-// a browser-side workflow transition. A recorded authority event only opens
-// Execute when it actually grants a bounded execution scope; an evidence-gap
-// decision must remain blocked even though it has the same event type.
+// a browser-side workflow transition. Execute requires either a recorded
+// bounded authority grant or a structurally valid repair that follows one;
+// a free-form repair.executed row can never unlock it.
 export function hasAuthoritativeIncidentExecution(events) {
-  if (!Array.isArray(events)) return false;
-  return events.some((event) => {
-    if (!plainRecord(event)) return false;
-    if (event.type === "local_fault_loop.repair.executed") return true;
-    if (event.type !== "local_fault_loop.authority.decided" || !plainRecord(event.payload)) return false;
-    const outcome = event.payload.outcome;
-    const scope = event.payload.execution_scope;
-    return AUTHORIZED_INCIDENT_EXECUTION_OUTCOMES.has(outcome)
-      && typeof scope === "string"
-      && scope.trim() !== ""
-      && scope !== "none";
-  });
+  const evidence = incidentExecutionEvidence(events);
+  return evidence.authorityGranted || evidence.repairExecuted;
 }
 
 // This derives the authoritative current stage from the canonical loop
@@ -647,9 +691,14 @@ export function canonicalIncidentWorkspaceStage(shared) {
   const state = shared?.state;
   const topology = plainRecord(shared?.topology) ? shared.topology : null;
   const events = Array.isArray(shared?.events) ? shared.events : [];
-  if (state === "recovered" || topology?.verification?.passed === true) return "verify";
+  const evidence = incidentExecutionEvidence(events);
+  if (state === "recovered" || topology?.verification?.passed === true || evidence.verificationPassed) return "verify";
+  // A terminal human stop does not erase the authoritative point at which the
+  // loop halted. This keeps a failed independent verification in Verify and a
+  // post-repair halt in Execute instead of sending both back to Investigate.
+  if (evidence.verificationFailed || /verif(?:y|ication)/i.test(evidence.haltReason)) return "verify";
+  if (evidence.authorityGranted || evidence.repairExecuted) return "execute";
   if (state === "needs_human" || state === "failed") return "investigate";
-  if (hasAuthoritativeIncidentExecution(events)) return "execute";
   if (events.some((event) => event?.type === "local_fault_loop.plan.proposed") || shared?.workspace_actions?.open_recovery_console?.available === true) return "decide";
   return "investigate";
 }
@@ -1080,7 +1129,7 @@ function validAgentTeamProvider(value) {
 
 function validAgentTeamLoopProvider(value) {
   return plainRecord(value) && sameKeys(value, ["provider_kind", "truth_label", "model_label"])
-    && ["codex-local", "unavailable"].includes(value.provider_kind) && safeAgentTeamText(value.truth_label, 80) && safeAgentTeamText(value.model_label, 120);
+    && ["codex-local", "recorded", "unavailable"].includes(value.provider_kind) && safeAgentTeamText(value.truth_label, 80) && safeAgentTeamText(value.model_label, 120);
 }
 
 function validAgentTeamMessage(value) {

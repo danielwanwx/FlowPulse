@@ -123,6 +123,7 @@ let mode = "architecture";
 let incidentStage = "investigate";
 let authoritativeIncidentStage = "investigate";
 let incidentStageFollowsAuthority = true;
+let incidentStageRunId = null;
 let renderedMode = null;
 let renderedCanvasKey = null;
 let cursor = 0;
@@ -290,6 +291,7 @@ function bindCanonicalWorkspace(value) {
     return;
   }
   if (selectedRunId === null) bindCanonicalRunSelection(loop);
+  resetIncidentStageForRun(loop.run_id);
   sharedRun = {
     run_id: loop.run_id,
     incident_id: loop.incident_id,
@@ -335,6 +337,7 @@ function bindCanonicalRunSelection(loop) {
   // next hydration/SSE refresh. This prevents a refresh from selecting a
   // different loop that happened to start in another tab.
   selectedRunId = runId;
+  resetIncidentStageForRun(runId);
   history.replaceState({ ...(history.state || {}), flowpulse_run_id: runId }, "", `${next.pathname}${next.search}${next.hash}`);
 }
 
@@ -409,9 +412,31 @@ async function hydrateSharedRun() {
     ensureSelectedLiveComponentDetail();
   } catch (error) {
     if (sharedRun?.run_id !== runId || selectedRunId !== runId) return;
-    sharedRun = { ...sharedRun, stream_state: "stale", error: error.message || "Shared run is unavailable." };
-    render();
+    scheduleSharedRunReconnect({ error: error.message || "Shared run is unavailable." });
   }
+}
+
+function scheduleSharedRunReconnect({ error = null } = {}) {
+  const runId = sharedRun?.run_id;
+  if (!runId || selectedRunId !== runId || sharedRunTerminal() || sharedRunReconnectTimer) return;
+  agentLoopEventSource?.close();
+  agentLoopEventSource = null;
+  sharedRunReconnectAttempts += 1;
+  const delay = Math.min(8_000, 750 * (2 ** Math.min(sharedRunReconnectAttempts - 1, 3)));
+  sharedRun = {
+    ...sharedRun,
+    stream_state: sharedRunReconnectAttempts >= 2 ? "stale" : "reconnecting",
+    error
+  };
+  render();
+  sharedRunReconnectTimer = setTimeout(() => {
+    sharedRunReconnectTimer = null;
+    if (sharedRun?.run_id !== runId || selectedRunId !== runId || sharedRunTerminal()) return;
+    // Refresh the immutable projection before reopening SSE. Both a rejected
+    // hydration and an incompatible stream frame travel through this same
+    // bounded retry path, so the operator never sees a fake retrying state.
+    void hydrateSharedRun();
+  }, delay);
 }
 
 function connectSharedRunStream() {
@@ -460,8 +485,7 @@ function connectSharedRunStream() {
     } catch {
       stream.close();
       if (sharedRun?.run_id !== runId) return;
-      sharedRun = { ...sharedRun, stream_state: "stale", error: "Shared run stream is incompatible." };
-      render();
+      scheduleSharedRunReconnect({ error: "Shared run stream is incompatible." });
     }
   });
   stream.addEventListener("local-fault-loop-state", () => {
@@ -471,19 +495,9 @@ function connectSharedRunStream() {
   });
   stream.onerror = () => {
     if (agentLoopEventSource !== stream || sharedRun?.run_id !== runId) return;
-    if (sharedRunTerminal() || sharedRunReconnectTimer) return;
+    if (sharedRunTerminal()) return;
     stream.close();
-    sharedRunReconnectAttempts += 1;
-    sharedRun = {
-      ...sharedRun,
-      stream_state: sharedRunReconnectAttempts >= 2 ? "stale" : "reconnecting",
-      error: null
-    };
-    render();
-    sharedRunReconnectTimer = setTimeout(() => {
-      sharedRunReconnectTimer = null;
-      connectSharedRunStream();
-    }, 750);
+    scheduleSharedRunReconnect();
   };
 }
 
@@ -523,11 +537,19 @@ function incidentStageEvidence(shared) {
     decide: has("local_fault_loop.plan.proposed") || shared?.workspace_actions?.open_recovery_console?.available === true,
     execute: hasAuthoritativeIncidentExecution(events),
     verify: shared?.topology?.verification?.passed === true && shared?.topology?.snapshots?.verified != null
+      || events.some((event) => event.type === "local_fault_loop.verification.completed" && typeof event.payload?.passed === "boolean")
   };
+}
+
+function resetIncidentStageForRun(runId) {
+  if (!runId || incidentStageRunId === runId) return;
+  incidentStageRunId = runId;
+  incidentStageFollowsAuthority = true;
 }
 
 function synchronizeCanonicalIncidentStage(shared, { force = false } = {}) {
   if (!shared) return;
+  resetIncidentStageForRun(shared.run_id);
   authoritativeIncidentStage = canonicalIncidentWorkspaceStage(shared);
   if (force || incidentStageFollowsAuthority) {
     incidentStage = authoritativeIncidentStage;
@@ -951,12 +973,18 @@ function renderIncidentStageRail(focusedStage = null) {
 }
 
 function renderCanonicalTopologyPending(message = "Waiting for the backend-owned canonical topology projection.") {
+  const incident = isIncidentWorkspace();
   const diagnose = mode === "replay";
-  const title = diagnose ? "Diagnose needs an active incident" : "This workspace is not ready yet";
-  const guidance = diagnose
-    ? "Start or select an incident in Live, then return when the server has projected the matching evidence."
-    : message;
-  els["canvas-layers"].innerHTML = `<div class="source-empty canonical-workspace-pending"><i class="ph ph-circle-notch" aria-hidden="true"></i><strong>${title}</strong><span>${escapeHtml(guidance)}</span></div>`;
+  const title = incident ? "Start a guided incident replay" : diagnose ? "Diagnose needs an active incident" : "This workspace is not ready yet";
+  const guidance = incident
+    ? "Create a backend-owned canonical run, then follow its recorded evidence through the staged workspace."
+    : diagnose
+      ? "Start or select an incident in Live, then return when the server has projected the matching evidence."
+      : message;
+  const start = incident && !sharedRun?.run_id
+    ? `<button type="button" class="button approve" data-start-guided-replay data-testid="start-guided-incident-replay" ${agentTeam.starting ? "disabled" : ""}>${agentTeam.starting ? "Starting replay…" : "Run guided replay"}</button>`
+    : "";
+  els["canvas-layers"].innerHTML = `<div class="source-empty canonical-workspace-pending"><i class="ph ph-circle-notch" aria-hidden="true"></i><strong>${title}</strong><span>${escapeHtml(guidance)}</span>${start}</div>`;
   els["compare-handle"].hidden = true;
   els["compare-canvas-range"].hidden = true;
   setAnnotations([]);
@@ -1801,18 +1829,27 @@ function nextTimelineRequirement(index) {
 
 function renderApproval() {
   const shared = sharedRunModelAtCursor();
+  const connectionVisible = ["reconnecting", "stale"].includes(sharedRun?.stream_state);
   if (shared) {
     const visible = shared.state === "needs_human";
     els["approval-banner"].hidden = !visible;
-    els["incident-strip"].hidden = true;
+    els["incident-strip"].hidden = !connectionVisible;
+    els["incident-strip"].classList.toggle("is-connection-status", connectionVisible);
     els["approval-copy"].textContent = visible ? "Evidence is insufficient. No repair or comparison was executed." : "Repair authority remains bounded to the isolated fixture event stream.";
     els["recovery-status-button"].textContent = shared.workspace_actions.open_recovery_console.available ? "View recovery status" : "Recovery awaiting evidence";
+    return;
+  }
+  if (connectionVisible) {
+    els["approval-banner"].hidden = true;
+    els["incident-strip"].hidden = false;
+    els["incident-strip"].classList.add("is-connection-status");
     return;
   }
   const visible = state.waiting_for_approval && (mode === "live" || (mode === "replay" && cursor >= 5));
   const activeIncident = state.mode === "development" && activeIncidentState(state.events);
   els["approval-banner"].hidden = !visible;
   els["incident-strip"].hidden = visible || mode !== "live" || !activeIncident;
+  els["incident-strip"].classList.remove("is-connection-status");
   els["approval-copy"].textContent = state.mode === "development" ? "Recovery requires a server-recorded owner decision." : "Rollback authority remains bounded to checkout:2.18.0.";
   els["recovery-status-button"].textContent = "View recovery status";
   els["recovery-status-button"].dataset.testid = "recovery-status";
@@ -3007,6 +3044,10 @@ function selectionEntities() {
 }
 
 function handleCanvasSelection(event) {
+  if (event.target.closest("[data-start-guided-replay]")) {
+    void runAgentTeamDemo();
+    return;
+  }
   const recoveryRole = event.target.closest("[data-recovery-role]");
   if (recoveryRole) {
     recoverySelectedRole = recoveryRole.dataset.recoveryRole;

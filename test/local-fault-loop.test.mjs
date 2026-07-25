@@ -81,21 +81,39 @@ test("three isolated reversible fault cases complete three evidence-grounded rou
   ]);
 });
 
-test("a missing local Codex provider fails the loop without recorded fallback or repair", async () => {
+test("an unavailable provider fails the loop before a bounded repair", async () => {
   const ledger = new Ledger(join(mkdtempSync(join(tmpdir(), "flowpulse-local-fault-loop-failure-")), "ledger.db"));
   const loop = new LocalFaultLoop({
     ledger,
     modelAdapter: {
-      async preflight() { return { provider_kind: "recorded", availability: "available", truth_label: "RECORDED/DEMO", model_label: "recorded", failure_reason: null }; },
+      async preflight() { return { provider_kind: "codex-local", availability: "unavailable", truth_label: "LOCAL CODEX", model_label: "Codex CLI", failure_reason: "codex_preflight_failed" }; },
       async respond() { throw new Error("must not run"); }
     }
   });
 
-  await assert.rejects(() => loop.run({ caseId: "checkout-payment-config", round: 1 }), (error) => error instanceof LocalFaultLoopError && error.code === "local_codex_provider_unavailable");
+  await assert.rejects(() => loop.run({ caseId: "checkout-payment-config", round: 1 }), (error) => error instanceof LocalFaultLoopError && error.code === "local_fault_loop_provider_unavailable");
   const runId = ledger.query("SELECT run_id FROM events WHERE type='local_fault_loop.run.started' LIMIT 1;")[0].run_id;
   const events = ledger.list(runId);
-  assert.equal(events.some((event) => event.type === "local_fault_loop.failed" && event.payload.reason === "local_codex_provider_unavailable"), true);
+  assert.equal(events.some((event) => event.type === "local_fault_loop.failed" && event.payload.reason === "local_fault_loop_provider_unavailable"), true);
   assert.equal(events.some((event) => event.type === "local_fault_loop.repair.executed"), false);
+});
+
+test("the credential-free recorded provider executes the same canonical guided replay contract", async () => {
+  const ledger = new Ledger(join(mkdtempSync(join(tmpdir(), "flowpulse-local-fault-loop-recorded-")), "ledger.db"));
+  const loop = new LocalFaultLoop({
+    ledger,
+    modelAdapter: {
+      async preflight() { return { provider_kind: "recorded", availability: "available", truth_label: "RECORDED/DEMO", model_label: "recorded-agent-team-v1", failure_reason: null }; },
+      async respond({ role }) { return { answer: `${role} recorded bounded replay response.`, recommended_handoff: null }; }
+    }
+  });
+
+  const run = await loop.run({ caseId: "checkout-payment-config", round: 1 });
+  assert.equal(run.state, "recovered");
+  assert.equal(run.role_responses.every((response) => response.provider.provider_kind === "recorded"), true);
+  assert.equal(run.events.some((event) => event.type === "local_fault_loop.authority.decided" && event.payload.execution_scope === "local_memory_only"), true);
+  assert.equal(run.events.some((event) => event.type === "local_fault_loop.repair.executed" && event.payload.bounded === true), true);
+  assert.equal(run.events.find((event) => event.type === "local_fault_loop.verification.completed")?.payload.passed, true);
 });
 
 test("asynchronous start reserves immediately and records an unavailable provider as terminal failure", async () => {
