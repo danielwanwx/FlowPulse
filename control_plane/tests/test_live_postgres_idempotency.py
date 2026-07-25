@@ -75,6 +75,41 @@ class LivePostgresIdempotencyTests(unittest.TestCase):
                 await repository.close()
         asyncio.run(run())
 
+    def test_knowledge_trigger_atomically_supersedes_one_active_revision(self):
+        async def run():
+            repository = PostgresCaseRepository(self.dsn)
+            await repository.connect()
+            try:
+                suffix = uuid4().hex
+                tenant = "tenant-kb-{}".format(suffix)
+                document = "runbook-{}".format(suffix)
+                first = "kb-first-{}".format(suffix)
+                second = "kb-second-{}".format(suffix)
+
+                async def operation(connection):
+                    await connection.execute(
+                        """INSERT INTO knowledge_revisions
+                           (knowledge_revision_id, tenant_id, document_id, revision, supersedes_revision_id, status, payload)
+                           VALUES ($1,$2,$3,1,NULL,'ACTIVE','{}'::jsonb)""",
+                        first, tenant, document,
+                    )
+                    await connection.execute(
+                        """INSERT INTO knowledge_revisions
+                           (knowledge_revision_id, tenant_id, document_id, revision, supersedes_revision_id, status, payload)
+                           VALUES ($1,$2,$3,2,$4,'ACTIVE','{}'::jsonb)""",
+                        second, tenant, document, first,
+                    )
+                    statuses = await connection.fetch(
+                        "SELECT knowledge_revision_id, status FROM knowledge_revisions WHERE document_id=$1 ORDER BY revision",
+                        document,
+                    )
+                    return [(row["knowledge_revision_id"], row["status"]) for row in statuses]
+
+                self.assertEqual([(first, "SUPERSEDED"), (second, "ACTIVE")], await repository._tenant(tenant, operation))
+            finally:
+                await repository.close()
+        asyncio.run(run())
+
 
 if __name__ == "__main__":
     unittest.main()

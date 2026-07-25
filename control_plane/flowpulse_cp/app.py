@@ -7,6 +7,7 @@ from typing import Any, Optional, Protocol
 from fastapi import Depends, FastAPI, HTTPException, Request
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from .authorization import AuthorizationPort, HmacAuthorizationAuthority
 from .models import (
     AuthContext,
     DryRunRequest,
@@ -76,6 +77,7 @@ def _repository(request: Request) -> Any:
 def create_app(
     repository: Optional[Any] = None,
     temporal_starter: Optional[TemporalStartPort] = None,
+    authorization: Optional[AuthorizationPort] = None,
     allow_local_test_auth: bool = False,
     postgres_dsn: Optional[str] = None,
 ) -> FastAPI:
@@ -98,6 +100,7 @@ def create_app(
     if allow_local_test_auth:
         app.add_middleware(LocalTestAuthMiddleware)
     temporal_starter = temporal_starter or TemporalUnavailableStarter()
+    authorization = authorization or HmacAuthorizationAuthority("flowpulse-auth-test-only")
 
     @app.get("/healthz")
     async def healthz(request: Request) -> dict:
@@ -136,7 +139,8 @@ def create_app(
             raise HTTPException(status_code=404, detail="case_not_found")
         try:
             return await temporal_starter.submit_owner_command(case, OwnerGateCommand(
-                case_id=case.case_id, tenant_id=case.tenant_id, actor=actor, proposal=proposal,
+                case_id=case.case_id, tenant_id=case.tenant_id,
+                auth_assertion=authorization.issue(actor, case, proposal.proposal_id), proposal=proposal,
             ))
         except (PolicyViolation, RuntimeError) as error:
             raise HTTPException(status_code=409, detail=str(error))
@@ -156,7 +160,8 @@ def create_app(
             if case is None:
                 raise PolicyViolation("unknown_case")
             return await temporal_starter.submit_owner_command(case, OwnerGateCommand(
-                case_id=case.case_id, tenant_id=case.tenant_id, actor=actor, proposal_id=proposal_id,
+                case_id=case.case_id, tenant_id=case.tenant_id,
+                auth_assertion=authorization.issue(actor, case, proposal_id), proposal_id=proposal_id,
                 approval=approval, current_witness=body.current_witness,
             ))
         except PolicyViolation as error:

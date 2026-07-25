@@ -12,6 +12,12 @@ class Settings:
     object_store_bucket: str
     object_store_access_key: str
     object_store_secret_key: str
+    source_read_endpoint: str
+    source_read_bucket: str
+    source_read_prefix: str
+    source_read_access_key: str
+    source_read_secret_key: str
+    auth_assertion_signing_secret: str
     temporal_task_queue: str
 
     @classmethod
@@ -23,5 +29,11 @@ class Settings:
             object_store_bucket=os.environ.get("FLOWPULSE_OBJECT_STORE_BUCKET", "flowpulse-evidence"),
             object_store_access_key=os.environ.get("FLOWPULSE_OBJECT_STORE_ACCESS_KEY", "flowpulse-local"),
             object_store_secret_key=os.environ.get("FLOWPULSE_OBJECT_STORE_SECRET_KEY", "flowpulse-local-only"),
+            source_read_endpoint=os.environ.get("FLOWPULSE_SOURCE_READ_ENDPOINT", "http://minio:9000"),
+            source_read_bucket=os.environ.get("FLOWPULSE_SOURCE_READ_BUCKET", "flowpulse-sources"),
+            source_read_prefix=os.environ.get("FLOWPULSE_SOURCE_READ_PREFIX", "controlled"),
+            source_read_access_key=os.environ.get("FLOWPULSE_SOURCE_READ_ACCESS_KEY", "flowpulse-source-reader-local"),
+            source_read_secret_key=os.environ.get("FLOWPULSE_SOURCE_READ_SECRET_KEY", "flowpulse-source-reader-local-only"),
+            auth_assertion_signing_secret=os.environ.get("FLOWPULSE_AUTH_ASSERTION_SECRET", "flowpulse-auth-local-only"),
             temporal_task_queue=os.environ.get("FLOWPULSE_TEMPORAL_TASK_QUEUE", "flowpulse-diagnosis-p0"),
         )

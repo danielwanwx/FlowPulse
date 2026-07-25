@@ -22,16 +22,28 @@ class S3GetPort(Protocol):
 
 
 class S3SourceReadback(EvidenceReadbackPort):
-    """Re-reads a source envelope through a separate S3 adapter/credential port."""
+    """Re-read a fixed, case-derived source location with read-only credentials."""
 
-    def __init__(self, client: S3GetPort) -> None:
+    def __init__(self, client: S3GetPort, bucket: str, prefix: str) -> None:
         self.client = client
+        self.bucket = bucket
+        self.prefix = prefix.strip("/")
+
+    def expected_key(self, evidence: EvidenceEnvelope) -> str:
+        return "{}/{}/cases/{}/revisions/{}/evidence/{}/{}.json".format(
+            self.prefix, evidence.tenant_id, evidence.case_id, evidence.case_revision,
+            evidence.evidence_id, evidence.source_version,
+        )
 
     def readback(self, evidence: EvidenceEnvelope) -> EvidenceEnvelope:
         parsed = urlparse(evidence.source_uri)
-        if parsed.scheme != "s3" or not parsed.netloc or not parsed.path.lstrip("/"):
+        if (
+            parsed.scheme != "s3"
+            or parsed.netloc != self.bucket
+            or parsed.path.lstrip("/") != self.expected_key(evidence)
+        ):
             raise PolicyViolation("source_readback_adapter_binding_missing")
-        response = self.client.get_object(Bucket=parsed.netloc, Key=parsed.path.lstrip("/"))
+        response = self.client.get_object(Bucket=self.bucket, Key=self.expected_key(evidence))
         return EvidenceEnvelope.parse_obj(json.loads(response["Body"].read().decode("utf-8")))
 
 

@@ -71,9 +71,24 @@ CREATE TABLE knowledge_revisions (
   UNIQUE (tenant_id, document_id, revision), UNIQUE (tenant_id, knowledge_revision_id),
   FOREIGN KEY (tenant_id, supersedes_revision_id) REFERENCES knowledge_revisions (tenant_id, knowledge_revision_id)
 );
-CREATE OR REPLACE FUNCTION knowledge_supersession_is_monotonic() RETURNS trigger AS $$
+CREATE OR REPLACE FUNCTION knowledge_supersession_is_monotonic() RETURNS trigger
+SECURITY DEFINER SET search_path = public AS $$
 DECLARE prior_document TEXT; prior_revision INTEGER; prior_status TEXT; latest_revision INTEGER;
 BEGIN
+  IF TG_OP = 'UPDATE' THEN
+    -- Only the trigger may supersede the formerly active revision.  This
+    -- avoids applying INSERT-only supersession checks to that UPDATE.
+    IF OLD.status = 'ACTIVE' AND NEW.status = 'SUPERSEDED'
+       AND NEW.tenant_id = OLD.tenant_id AND NEW.document_id = OLD.document_id
+       AND NEW.revision = OLD.revision AND NEW.supersedes_revision_id IS NOT DISTINCT FROM OLD.supersedes_revision_id THEN
+      RETURN NEW;
+    END IF;
+    RAISE EXCEPTION 'knowledge_revision_rows_are_immutable';
+  END IF;
+
+  IF NEW.status <> 'ACTIVE' THEN
+    RAISE EXCEPTION 'knowledge_new_revision_must_be_active';
+  END IF;
   SELECT max(revision) INTO latest_revision
     FROM knowledge_revisions WHERE tenant_id = NEW.tenant_id AND document_id = NEW.document_id;
   IF NEW.supersedes_revision_id IS NOT NULL THEN
@@ -83,6 +98,8 @@ BEGIN
        OR prior_status <> 'ACTIVE' OR prior_revision <> latest_revision THEN
       RAISE EXCEPTION 'knowledge_supersession_requires_same_document_and_increasing_revision';
     END IF;
+    UPDATE knowledge_revisions SET status = 'SUPERSEDED'
+      WHERE tenant_id = NEW.tenant_id AND knowledge_revision_id = NEW.supersedes_revision_id AND status = 'ACTIVE';
   ELSIF latest_revision IS NOT NULL THEN
     RAISE EXCEPTION 'knowledge_supersession_target_required';
   END IF;
@@ -91,6 +108,8 @@ END;
 $$ LANGUAGE plpgsql;
 CREATE TRIGGER knowledge_supersession_guard BEFORE INSERT OR UPDATE ON knowledge_revisions
   FOR EACH ROW EXECUTE FUNCTION knowledge_supersession_is_monotonic();
+CREATE UNIQUE INDEX knowledge_one_active_revision_per_document
+  ON knowledge_revisions (tenant_id, document_id) WHERE status = 'ACTIVE';
 CREATE TABLE remediation_proposals (
   proposal_id TEXT PRIMARY KEY, case_id TEXT NOT NULL, tenant_id TEXT NOT NULL, case_revision INTEGER NOT NULL,
   repair_contract_hash CHAR(64) NOT NULL, payload JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now(),

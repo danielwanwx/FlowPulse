@@ -9,6 +9,7 @@ import asyncpg
 
 from .models import (
     ActivityOutcome,
+    AuthContext,
     CaseState,
     ClaimRecord,
     CoverageEntry,
@@ -27,7 +28,6 @@ from .policy import (
     repair_contract_hash,
     validate_claim_evidence,
     validate_evidence_admission,
-    validate_owner_gate,
 )
 
 
@@ -236,7 +236,9 @@ class PostgresCaseRepository:
         """
         raise PolicyViolation("owner_approval_must_be_recorded_by_owner_gate")
 
-    async def record_owner_gate(self, packet: TemporalActivityPacket, outcome: ActivityOutcome) -> ActivityOutcome:
+    async def record_owner_gate(
+        self, packet: TemporalActivityPacket, outcome: ActivityOutcome, authenticated: Optional[AuthContext],
+    ) -> ActivityOutcome:
         """Persist candidate, accepted approval, action receipt, and state atomically.
 
         A body that claims APPROVED is only a candidate until this Temporal
@@ -260,17 +262,9 @@ class PostgresCaseRepository:
             elif approval is None:
                 validated = False
                 rejection = "owner_approval_required"
-            else:
-                try:
-                    validate_owner_gate(
-                        approval=approval, proposal=proposal, current_case_revision=case.case_revision,
-                        current_witness=packet.current_witness, now=datetime.now(timezone.utc),
-                        authenticated_subject=packet.actor_subject_id, authenticated_roles=packet.actor_roles,
-                        action_allowlist=(),
-                    )
-                except PolicyViolation as error:
-                    validated = False
-                    rejection = str(error)
+            elif authenticated is None:
+                validated = False
+                rejection = "trusted_owner_authorization_unavailable"
 
             if proposal is not None:
                 await connection.execute(
@@ -304,7 +298,7 @@ class PostgresCaseRepository:
                     reason="p0_non_executing_dry_run_only",
                 )
                 await self._record_dry_run(connection, receipt)
-                state = CaseState.AWAITING_OWNER
+                state = CaseState.APPROVED
                 reason_codes: List[str] = []
             elif approval is None:
                 state = CaseState.AWAITING_OWNER

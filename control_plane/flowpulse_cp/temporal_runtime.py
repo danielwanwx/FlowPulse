@@ -11,6 +11,8 @@ from temporalio.client import Client
 from temporalio.worker import Worker
 
 from .activities import ControlActivityDispatcher, build_temporal_activities
+from .authorization import AuthorizationPort, HmacAuthorizationAuthority
+from .evidence_acquisition import CurrentEvidenceAcquisitionPort, S3CurrentEvidenceAcquirer
 from .integrity import (
     DeterministicCritic,
     EvidenceGateway,
@@ -26,6 +28,7 @@ from .models import (
     CoverageEntry,
     CoverageStatus,
     EvidenceAuthority,
+    EvidenceAcquisitionResult,
     EvidenceEnvelope,
     FreshnessStatus,
     IncidentCase,
@@ -121,18 +124,27 @@ class TemporalStarter:
 class DomainActivityEngine:
     """Runs the same deterministic domain gates used by tests inside activities."""
 
-    def __init__(self, source_readback: EvidenceReadbackPort) -> None:
+    def __init__(
+        self, source_readback: EvidenceReadbackPort, authorization: AuthorizationPort,
+        evidence_acquirer: Optional[CurrentEvidenceAcquisitionPort] = None,
+    ) -> None:
         self.source_readback = source_readback
+        self.authorization = authorization
+        self.evidence_acquirer = evidence_acquirer
 
-    def _repository(self, packet: TemporalActivityPacket) -> InMemoryCaseRepository:
+    def _case(self, packet: TemporalActivityPacket) -> IncidentCase:
         now = datetime.now(timezone.utc)
-        repository = InMemoryCaseRepository()
-        repository.put_case(IncidentCase(
+        return IncidentCase(
             case_id=packet.case_id, tenant_id=packet.tenant_id, case_revision=packet.case_revision,
             workflow_id=packet.workflow_id, workflow_run_id=packet.workflow_run_id,
             severity=packet.severity, environment=packet.environment, affected_entities=packet.affected_entities,
             created_at=now, updated_at=now,
-        ))
+        )
+
+    def _repository(self, packet: TemporalActivityPacket) -> InMemoryCaseRepository:
+        now = datetime.now(timezone.utc)
+        repository = InMemoryCaseRepository()
+        repository.put_case(self._case(packet))
         gateway = EvidenceGateway(repository, packet.actor_subject_id)
         for item in packet.evidence:
             gateway.admit(item)
@@ -144,6 +156,23 @@ class DomainActivityEngine:
 
     def execute(self, packet: TemporalActivityPacket) -> ActivityOutcome:
         try:
+            if packet.stage == "acquire_current_evidence":
+                if self.evidence_acquirer is None:
+                    raise PolicyViolation("controlled_current_evidence_port_unconfigured")
+                acquired = self.evidence_acquirer.acquire(self._case(packet), packet.actor_subject_id)
+                repository = InMemoryCaseRepository()
+                repository.put_case(self._case(packet))
+                gateway = EvidenceGateway(repository, packet.actor_subject_id)
+                for evidence in acquired.evidence:
+                    gateway.admit(evidence)
+                for claim in acquired.claims:
+                    gateway.admit_claim(claim)
+                for entry in acquired.coverage:
+                    repository.put_coverage(entry)
+                return ActivityOutcome(
+                    decision=VerificationDecision.PASS, identity="evidence-acquisition:p0:controlled-port",
+                    acquisition=acquired,
+                )
             repository = self._repository(packet)
             if packet.stage in {"primary_investigator", "specialist"}:
                 role = "primary" if packet.stage == "primary_investigator" else packet.specialist_role
@@ -188,14 +217,21 @@ class DomainActivityEngine:
                         decision=VerificationDecision.AMBIGUOUS, state=CaseState.AWAITING_OWNER,
                         identity="owner-gate:p0:exact", reason_codes=["owner_approval_required"],
                     )
+                if packet.auth_assertion is None:
+                    raise PolicyViolation("owner_auth_assertion_required")
+                authenticated = self.authorization.resolve(
+                    packet.auth_assertion, self._case(packet), packet.proposal.proposal_id,
+                )
+                if packet.approval.actor_id != authenticated.subject_id:
+                    raise PolicyViolation("approval_actor_not_authenticated_subject")
                 validate_owner_gate(
                     approval=packet.approval, proposal=packet.proposal,
                     current_case_revision=packet.case_revision, current_witness=packet.current_witness,
-                    now=datetime.now(timezone.utc), authenticated_subject=packet.actor_subject_id,
-                    authenticated_roles=packet.actor_roles, action_allowlist=(),
+                    now=datetime.now(timezone.utc), authenticated_subject=authenticated.subject_id,
+                    authenticated_roles=authenticated.roles, action_allowlist=(),
                 )
                 return ActivityOutcome(
-                    decision=VerificationDecision.PASS, state=CaseState.AWAITING_OWNER,
+                    decision=VerificationDecision.PASS, state=CaseState.APPROVED,
                     identity="owner-gate:p0:exact",
                 )
             return ActivityOutcome(decision=VerificationDecision.PASS, identity="{}:p0:domain".format(packet.stage))
@@ -210,10 +246,12 @@ class DomainActivityEngine:
 class PostgresActivityDispatcher(ControlActivityDispatcher):
     def __init__(
         self, repository: PostgresCaseRepository, artifacts: S3ObjectStore, source_readback: EvidenceReadbackPort,
+        authorization: AuthorizationPort, evidence_acquirer: Optional[CurrentEvidenceAcquisitionPort] = None,
     ) -> None:
         self.repository = repository
         self.artifacts = artifacts
-        self.engine = DomainActivityEngine(source_readback)
+        self.authorization = authorization
+        self.engine = DomainActivityEngine(source_readback, authorization, evidence_acquirer)
 
     async def _persist_domain(self, packet: TemporalActivityPacket) -> None:
         now = datetime.now(timezone.utc)
@@ -244,13 +282,25 @@ class PostgresActivityDispatcher(ControlActivityDispatcher):
         packet = TemporalActivityPacket.parse_obj(packet_data)
         if packet.stage != stage.removesuffix("_activity"):
             raise PolicyViolation("temporal_activity_stage_mismatch")
-        await self._persist_domain(packet)
         outcome = self.engine.execute(packet)
+        persisted_packet = packet
+        if outcome.acquisition is not None:
+            persisted_packet = packet.copy(update={
+                "evidence": outcome.acquisition.evidence,
+                "claims": outcome.acquisition.claims,
+                "coverage": outcome.acquisition.coverage,
+            })
+        await self._persist_domain(persisted_packet)
         if packet.stage == "owner_gate":
-            outcome = await self.repository.record_owner_gate(packet, outcome)
+            authenticated = None
+            if outcome.decision == VerificationDecision.PASS and packet.auth_assertion is not None and packet.proposal is not None:
+                authenticated = self.authorization.resolve(
+                    packet.auth_assertion, self.engine._case(packet), packet.proposal.proposal_id,
+                )
+            outcome = await self.repository.record_owner_gate(packet, outcome, authenticated)
         elif outcome.state is not None:
             await self.repository.project_case_state(packet, outcome.state, outcome.reason_codes)
-        encoded = packet.json(sort_keys=True).encode("utf-8")
+        encoded = persisted_packet.json(sort_keys=True).encode("utf-8")
         artifact_key = self.artifacts.put(packet.tenant_id, encoded)
         if self.artifacts.get(packet.tenant_id, artifact_key) != encoded:
             raise PolicyViolation("object_store_readback_mismatch")
@@ -275,23 +325,32 @@ def _s3_store(endpoint: str, bucket: str, access_key: str, secret_key: str) -> S
 
 async def run_worker(
     address: str, task_queue: str, postgres_dsn: str, object_endpoint: str, object_bucket: str,
-    object_access_key: str, object_secret_key: str, local_deterministic_evidence: bool = False,
+    object_access_key: str, object_secret_key: str, source_endpoint: str, source_bucket: str, source_prefix: str,
+    source_access_key: str, source_secret_key: str, auth_assertion_signing_secret: str,
+    local_deterministic_evidence: bool = False,
 ) -> None:
     client = await Client.connect(address)
     repository = PostgresCaseRepository(postgres_dsn)
     await repository.connect()
     artifacts = _s3_store(object_endpoint, object_bucket, object_access_key, object_secret_key)
+    authorization = HmacAuthorizationAuthority(auth_assertion_signing_secret)
+    source_client = boto3.client(
+        "s3", endpoint_url=source_endpoint, aws_access_key_id=source_access_key,
+        aws_secret_access_key=source_secret_key, region_name="us-east-1",
+    )
     source_readback = (
         LocalDeterministicSourceReadback()
         if local_deterministic_evidence
-        else S3SourceReadback(boto3.client(
-            "s3", endpoint_url=object_endpoint, aws_access_key_id=object_access_key,
-            aws_secret_access_key=object_secret_key, region_name="us-east-1",
-        ))
+        else S3SourceReadback(source_client, source_bucket, source_prefix)
+    )
+    evidence_acquirer = None if local_deterministic_evidence else S3CurrentEvidenceAcquirer(
+        source_client, source_bucket, source_prefix,
     )
     async with Worker(
         client, task_queue=task_queue, workflows=[DiagnosisTemporalWorkflow],
-        activities=build_temporal_activities(PostgresActivityDispatcher(repository, artifacts, source_readback)),
+        activities=build_temporal_activities(PostgresActivityDispatcher(
+            repository, artifacts, source_readback, authorization, evidence_acquirer,
+        )),
     ):
         try:
             await asyncio.Future()

@@ -61,11 +61,20 @@ the exact owner role, TTL, contract hash, ordered target scope, and proposal /
 approval witness equality in the same Postgres transaction that writes a
 verified approval candidate, accepted approval, and non-executing receipt.
 
-The production verifier reads `s3://` source bindings through the independent
-`S3SourceReadback` port. The local Compose profile explicitly selects a
+The production verifier reads only fixed `s3://<configured-source-bucket>/...`
+case-derived keys through an independent read-only `S3SourceReadback` port;
+it never reuses the raw-artifact writer client. A production
+`S3CurrentEvidenceAcquirer` reads a similarly case-bound controlled source
+manifest before critic evaluation, admitting only its typed current-evidence
+bundle. The local Compose profile explicitly selects a
 deterministic `local://current/...` adapter for offline integration tests;
 neither workflow intake nor activity packets accept caller-provided readback
 evidence.
+
+Temporal owner commands carry a short-lived HMAC-signed authorization
+assertion minted only by the trusted HTTP auth boundary. The Owner Gate worker
+resolves that assertion against its configured authorization authority; roles
+inside a direct Temporal payload are not trusted.
 
 The migration is mounted into the local Postgres initializer. A deployment
 migration runner must apply the equivalent migration before any worker connects.

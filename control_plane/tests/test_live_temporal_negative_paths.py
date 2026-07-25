@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from temporalio.client import Client
 
+from flowpulse_cp.authorization import HmacAuthorizationAuthority
 from flowpulse_cp.models import (
     ApprovalDecision, AuthContext, IncidentCase, OwnerApproval, OwnerGateCommand,
     RemediationProposal, TemporalCaseDescriptor, TemporalCaseRequest,
@@ -25,6 +26,7 @@ from flowpulse_cp.temporal_workflow import DiagnosisTemporalWorkflow
 class LiveTemporalNegativePathTests(unittest.TestCase):
     address = os.environ.get("FLOWPULSE_TEMPORAL_ADDRESS", "127.0.0.1:7233")
     queue = os.environ.get("FLOWPULSE_TEMPORAL_TASK_QUEUE", "flowpulse-diagnosis-p0")
+    authority = HmacAuthorizationAuthority(os.environ.get("FLOWPULSE_AUTH_ASSERTION_SECRET", "flowpulse-auth-local-only"))
 
     def request(self, *, coverage=True, readable=True):
         now = datetime.now(timezone.utc)
@@ -93,26 +95,129 @@ class LiveTemporalNegativePathTests(unittest.TestCase):
                 DiagnosisTemporalWorkflow.run, seed.dict(), id=seed.case.workflow_id, task_queue=self.queue,
             )
             actor = seed.actor
+            current_case = IncidentCase(
+                case_id=seed.case.case_id, tenant_id=seed.case.tenant_id, case_revision=seed.case.case_revision,
+                workflow_id=seed.case.workflow_id, workflow_run_id=handle.result_run_id,
+                severity=seed.case.severity, environment=seed.case.environment,
+                affected_entities=seed.case.affected_entities, created_at=now, updated_at=now,
+            )
             # The workflow rejects commands before its durable owner wait, so
             # retry the command just as an HTTP caller would after projection.
             for _ in range(40):
                 receipt = await handle.execute_update(DiagnosisTemporalWorkflow.submit_owner_command, OwnerGateCommand(
-                    case_id=seed.case.case_id, tenant_id=seed.case.tenant_id, actor=actor, proposal=proposal,
+                    case_id=seed.case.case_id, tenant_id=seed.case.tenant_id,
+                    auth_assertion=self.authority.issue(actor, current_case, proposal.proposal_id), proposal=proposal,
                 ).dict())
                 if receipt["accepted"]:
                     break
-                if "owner_gate_not_ready" not in receipt["phase"]:
+                if not any(marker in receipt["phase"] for marker in ("workflow_not_initialized", "owner_gate_not_ready")):
                     self.fail("unexpected rejected owner command: {}".format(receipt))
                 await asyncio.sleep(0.1)
             else:
                 self.fail("workflow never reached durable owner wait")
             await handle.execute_update(DiagnosisTemporalWorkflow.submit_owner_command, OwnerGateCommand(
-                case_id=seed.case.case_id, tenant_id=seed.case.tenant_id, actor=actor,
+                case_id=seed.case.case_id, tenant_id=seed.case.tenant_id,
+                auth_assertion=self.authority.issue(actor, current_case, proposal.proposal_id),
                 proposal_id=proposal.proposal_id, approval=approval, current_witness={"deploy": "d1"},
             ).dict())
             return await handle.result()
 
         self.assertEqual("BLOCKED", asyncio.run(run())["state"])
+
+    def test_direct_temporal_client_cannot_forge_owner_roles(self):
+        seed = self.request()
+        now = datetime.now(timezone.utc)
+        proposal = RemediationProposal(
+            proposal_id="proposal-forged-{}".format(uuid4().hex), case_id=seed.case.case_id,
+            case_revision=1, tenant_id=seed.case.tenant_id, revision=1, action_type="dry-run",
+            exact_targets=["checkout"], exact_change={"template_id": "toggle", "parameters": {"enabled": "false"}},
+            canary_scope={"maximum_targets": 1, "environment": "prod"}, preconditions={},
+            supporting_claim_ids=[seed.claims[0].claim_id], success_criteria=["slo"],
+            rollback={"template_id": "toggle", "parameters": {"enabled": "true"}},
+            idempotency_key="forged-{}".format(uuid4().hex), expires_at=now + timedelta(minutes=5),
+        )
+        approval = OwnerApproval(
+            approval_id="approval-forged-{}".format(uuid4().hex), case_id=proposal.case_id, case_revision=1,
+            tenant_id=proposal.tenant_id, proposal_id=proposal.proposal_id, proposal_revision=1,
+            repair_contract_hash=repair_contract_hash(proposal), actor_id="attacker", execution_targets=["checkout"],
+            maximum_targets=1, precondition_witness={}, decision=ApprovalDecision.APPROVED,
+            decided_at=now, expires_at=now + timedelta(minutes=5),
+        )
+
+        async def run():
+            client = await Client.connect(self.address)
+            handle = await client.start_workflow(
+                DiagnosisTemporalWorkflow.run, seed.dict(), id=seed.case.workflow_id, task_queue=self.queue,
+            )
+            current_case = IncidentCase(
+                case_id=seed.case.case_id, tenant_id=seed.case.tenant_id, case_revision=1,
+                workflow_id=seed.case.workflow_id, workflow_run_id=handle.result_run_id, severity="SEV2",
+                environment="prod", affected_entities=["checkout"], created_at=now, updated_at=now,
+            )
+            valid = self.authority.issue(seed.actor, current_case, proposal.proposal_id)
+            for _ in range(40):
+                receipt = await handle.execute_update(DiagnosisTemporalWorkflow.submit_owner_command, OwnerGateCommand(
+                    case_id=current_case.case_id, tenant_id=current_case.tenant_id, auth_assertion=valid, proposal=proposal,
+                ).dict())
+                if receipt["accepted"]:
+                    break
+                await asyncio.sleep(0.05)
+            else:
+                self.fail("workflow never reached durable owner wait")
+            forged_actor = AuthContext(tenant_id=current_case.tenant_id, subject_id="attacker", roles=["owner"])
+            forged = HmacAuthorizationAuthority("attacker-secret").issue(
+                forged_actor, current_case, proposal.proposal_id,
+            )
+            await handle.execute_update(DiagnosisTemporalWorkflow.submit_owner_command, OwnerGateCommand(
+                case_id=current_case.case_id, tenant_id=current_case.tenant_id, auth_assertion=forged,
+                proposal_id=proposal.proposal_id, approval=approval, current_witness={},
+            ).dict())
+            return await handle.result()
+
+        self.assertEqual("BLOCKED", asyncio.run(run())["state"])
+
+    def test_update_before_first_workflow_task_is_race_safe_under_load(self):
+        async def one(index):
+            seed = self.request()
+            client = await Client.connect(self.address)
+            handle = await client.start_workflow(
+                DiagnosisTemporalWorkflow.run, seed.dict(), id=seed.case.workflow_id, task_queue=self.queue,
+            )
+            now = datetime.now(timezone.utc)
+            current_case = IncidentCase(
+                case_id=seed.case.case_id, tenant_id=seed.case.tenant_id, case_revision=1,
+                workflow_id=seed.case.workflow_id, workflow_run_id=handle.result_run_id, severity="SEV2",
+                environment="prod", affected_entities=["checkout"], created_at=now, updated_at=now,
+            )
+            proposal = RemediationProposal(
+                proposal_id="proposal-race-{}".format(index), case_id=current_case.case_id, case_revision=1,
+                tenant_id=current_case.tenant_id, revision=1, action_type="dry-run", exact_targets=["checkout"],
+                exact_change={"template_id": "toggle", "parameters": {"enabled": "false"}},
+                canary_scope={"maximum_targets": 1, "environment": "prod"}, preconditions={},
+                supporting_claim_ids=[seed.claims[0].claim_id], success_criteria=["slo"],
+                rollback={"template_id": "toggle", "parameters": {"enabled": "true"}},
+                idempotency_key="race-{}".format(index), expires_at=now + timedelta(minutes=5),
+            )
+            command = OwnerGateCommand(
+                case_id=current_case.case_id, tenant_id=current_case.tenant_id,
+                auth_assertion=self.authority.issue(seed.actor, current_case, proposal.proposal_id), proposal=proposal,
+            )
+            # Deliberately submit without waiting for the first workflow task.
+            receipt = await handle.execute_update(DiagnosisTemporalWorkflow.submit_owner_command, command.dict())
+            for _ in range(320):
+                if receipt["accepted"]:
+                    return receipt
+                self.assertTrue(any(marker in receipt["phase"] for marker in ("workflow_not_initialized", "owner_gate_not_ready")), receipt)
+                await asyncio.sleep(0.025)
+                receipt = await handle.execute_update(DiagnosisTemporalWorkflow.submit_owner_command, command.dict())
+            self.fail("race workflow never reached a safe owner wait")
+
+        async def stress():
+            return await asyncio.gather(*[one(index) for index in range(12)])
+
+        receipts = asyncio.run(stress())
+        self.assertEqual(12, len(receipts))
+        self.assertTrue(all(item["accepted"] for item in receipts))
 
 
 if __name__ == "__main__":

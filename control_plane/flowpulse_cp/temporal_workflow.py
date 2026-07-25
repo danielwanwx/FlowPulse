@@ -15,7 +15,7 @@ from .models import (
     TemporalCaseRequest,
     VerificationDecision,
 )
-from .policy import PolicyViolation, require_authenticated_owner
+from .policy import PolicyViolation
 
 
 def temporal_available() -> bool:
@@ -26,6 +26,24 @@ def temporal_available() -> bool:
 class DiagnosisTemporalWorkflow:
     """Temporal owns the wait/resume boundary for Owner Gate commands."""
 
+    def __init__(self) -> None:
+        """Initialize every update-visible field before the first workflow task.
+
+        Temporal may deliver an update concurrently with initial activation.
+        Updates therefore see a deterministic rejected receipt until ``run``
+        has atomically installed its case context, never an AttributeError.
+        """
+        self._initialized = False
+        self._case_id = None
+        self._tenant_id = None
+        self._workflow_run_id = None
+        self._proposal = None
+        self._approval = None
+        self._current_witness = {}
+        self._owner_assertion = None
+        self._owner_wait_ready = False
+        self._command_count = 0
+
     @workflow.run
     async def run(self, request_data: Dict[str, Any]) -> Dict[str, Any]:
         request = TemporalCaseRequest.parse_obj(request_data)
@@ -35,9 +53,10 @@ class DiagnosisTemporalWorkflow:
         self._proposal = None
         self._approval = None
         self._current_witness = {}
-        self._owner_actor = None
+        self._owner_assertion = None
         self._owner_wait_ready = False
         self._command_count = 0
+        self._initialized = True
         base = {
             "case_id": request.case.case_id,
             "case_revision": request.case.case_revision,
@@ -57,21 +76,28 @@ class DiagnosisTemporalWorkflow:
 
         async def activity(
             stage: str, specialist_role: str = None, proposal=None, approval=None,
-            witness=None, owner_actor=None,
+            witness=None, auth_assertion=None,
         ) -> ActivityOutcome:
             nonlocal sequence
             sequence += 1
-            actor = owner_actor or request.actor
             packet = TemporalActivityPacket(
                 stage=stage, specialist_role=specialist_role, sequence=sequence,
                 proposal=proposal, approval=approval, current_witness=witness or {},
-                actor_subject_id=actor.subject_id, actor_roles=actor.roles,
-                **{key: value for key, value in base.items() if key not in {"actor_subject_id", "actor_roles"}},
+                auth_assertion=auth_assertion,
+                **base,
             )
             result = await workflow.execute_activity(
                 "{}_activity".format(stage), packet.dict(), start_to_close_timeout=timedelta(minutes=2),
             )
             return ActivityOutcome.parse_obj(result)
+
+        if not base["evidence"]:
+            acquisition = await activity("acquire_current_evidence")
+            if acquisition.decision != VerificationDecision.PASS or acquisition.acquisition is None:
+                return {"state": CaseState.NEEDS_HUMAN.value, "acquisition": acquisition.dict()}
+            base["evidence"] = acquisition.acquisition.evidence
+            base["claims"] = acquisition.acquisition.claims
+            base["coverage"] = acquisition.acquisition.coverage
 
         await activity("route_case")
         await activity("retrieve_knowledge")
@@ -90,7 +116,7 @@ class DiagnosisTemporalWorkflow:
         await workflow.wait_condition(lambda: self._approval is not None)
         owner = await activity(
             "owner_gate", proposal=self._proposal, approval=self._approval,
-            witness=self._current_witness, owner_actor=self._owner_actor,
+            witness=self._current_witness, auth_assertion=self._owner_assertion,
         )
         return {
             "state": (owner.state or CaseState.BLOCKED).value,
@@ -109,6 +135,8 @@ class DiagnosisTemporalWorkflow:
         """
         try:
             command = OwnerGateCommand.parse_obj(command_data)
+            if not self._initialized:
+                raise PolicyViolation("workflow_not_initialized")
             if command.case_id != self._case_id or command.tenant_id != self._tenant_id:
                 raise PolicyViolation("owner_command_case_or_tenant_mismatch")
             if not self._owner_wait_ready:
@@ -120,9 +148,6 @@ class DiagnosisTemporalWorkflow:
                 proposal = command.proposal
             expected_proposal_id = proposal.proposal_id if proposal is not None else None
             if command.approval is not None:
-                if command.approval.actor_id != command.actor.subject_id:
-                    raise PolicyViolation("approval_actor_not_authenticated_subject")
-                require_authenticated_owner(command.actor.subject_id, command.actor.roles)
                 if expected_proposal_id is None or command.approval.proposal_id != expected_proposal_id:
                     raise PolicyViolation("owner_command_unknown_or_mismatched_proposal")
                 if command.proposal_id not in {None, expected_proposal_id}:
@@ -135,14 +160,17 @@ class DiagnosisTemporalWorkflow:
             if command.approval is not None:
                 self._approval = command.approval
                 self._current_witness = command.current_witness
-                self._owner_actor = command.actor
+                self._owner_assertion = command.auth_assertion
             self._command_count += 1
             return OwnerCommandReceipt(
                 case_id=self._case_id, tenant_id=self._tenant_id, workflow_run_id=self._workflow_run_id,
                 phase="approval_submitted" if command.approval is not None else "proposal_submitted",
             ).dict()
         except (PolicyViolation, ValidationError) as error:
+            case_id = self._case_id or (command_data.get("case_id") if isinstance(command_data, dict) else None) or "uninitialized"
+            tenant_id = self._tenant_id or (command_data.get("tenant_id") if isinstance(command_data, dict) else None) or "uninitialized"
+            run_id = self._workflow_run_id or "uninitialized"
             return OwnerCommandReceipt(
-                case_id=self._case_id, tenant_id=self._tenant_id, workflow_run_id=self._workflow_run_id,
+                case_id=case_id, tenant_id=tenant_id, workflow_run_id=run_id,
                 accepted=False, phase="rejected:" + str(error),
             ).dict()

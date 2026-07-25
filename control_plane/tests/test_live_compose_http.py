@@ -116,6 +116,12 @@ class LiveComposeHttpTests(unittest.TestCase):
                 break
             time.sleep(0.1)
         self.assertEqual(("VERIFIED", 1, 1), (candidate, approvals, actions))
+        for _ in range(30):
+            _, projected = self.request("GET", "/v1/cases/" + case["case_id"])
+            if projected["state"] == "APPROVED":
+                break
+            time.sleep(0.1)
+        self.assertEqual("APPROVED", projected["state"])
 
     def test_blocked_approval_is_candidate_only_and_projects_blocked(self):
         now, case = self.intake_and_wait()

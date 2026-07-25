@@ -12,6 +12,7 @@ from pydantic import ValidationError
 
 from flowpulse_cp.actions import DryRunActionService
 from flowpulse_cp.app import create_app, trusted_auth_context
+from flowpulse_cp.authorization import HmacAuthorizationAuthority
 from flowpulse_cp.integrity import EvidenceGateway, FrozenSourceReadback, IndependentEvidenceVerifier
 from flowpulse_cp.knowledge import KnowledgePlane
 from flowpulse_cp.models import (
@@ -192,6 +193,14 @@ class NoShipRegressionTests(unittest.TestCase):
                "readback_evidence": []}
         with self.assertRaises(ValidationError):
             TemporalCaseRequest.parse_obj(raw)
+
+    def test_auth_assertion_rejects_forged_owner_roles(self):
+        trusted = HmacAuthorizationAuthority("trusted-secret")
+        attacker = HmacAuthorizationAuthority("attacker-secret")
+        owner = AuthContext(tenant_id="tenant-a", subject_id="owner-a", roles=["owner"])
+        forged = attacker.issue(owner, case())
+        with self.assertRaisesRegex(PolicyViolation, "signature_invalid"):
+            trusted.resolve(forged, case())
 
     def test_strict_privileged_contract_rejects_coercion_and_unknown_fields(self):
         raw = proposal().dict()

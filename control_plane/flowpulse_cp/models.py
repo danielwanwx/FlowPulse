@@ -382,16 +382,31 @@ class AuthContext(StrictModel):
     roles: List[NonEmpty]
 
 
+class AuthAssertion(StrictModel):
+    """Short-lived authorization proof minted by the trusted HTTP boundary."""
+    assertion_id: NonEmpty
+    tenant_id: NonEmpty
+    case_id: NonEmpty
+    case_revision: PositiveInt
+    workflow_run_id: NonEmpty
+    proposal_id: Optional[NonEmpty] = None
+    subject_id: NonEmpty
+    roles: List[NonEmpty]
+    issued_at: datetime
+    expires_at: datetime
+    signature: Hash
+
+
 class DryRunRequest(StrictModel):
     approval: OwnerApproval
     current_witness: Dict[NonEmpty, NonEmpty]
 
 
 class OwnerGateCommand(StrictModel):
-    """Durable Temporal update input; HTTP supplies the trusted actor itself."""
+    """Durable Temporal update input with a server-minted auth assertion."""
     case_id: NonEmpty
     tenant_id: NonEmpty
-    actor: AuthContext
+    auth_assertion: AuthAssertion
     proposal: Optional[RemediationProposal] = None
     proposal_id: Optional[NonEmpty] = None
     approval: Optional[OwnerApproval] = None
@@ -403,9 +418,11 @@ class OwnerGateCommand(StrictModel):
         approval = values.get("approval")
         case_id = values.get("case_id")
         tenant_id = values.get("tenant_id")
-        actor = values.get("actor")
-        if actor is not None and actor.tenant_id != tenant_id:
-            raise ValueError("owner_command_actor_tenant_mismatch")
+        assertion = values.get("auth_assertion")
+        if assertion is not None and (
+            assertion.tenant_id != tenant_id or assertion.case_id != case_id
+        ):
+            raise ValueError("owner_command_assertion_scope_mismatch")
         for record in (proposal, approval):
             if record is not None and (record.case_id != case_id or record.tenant_id != tenant_id):
                 raise ValueError("owner_command_case_scope_mismatch")
@@ -413,6 +430,8 @@ class OwnerGateCommand(StrictModel):
             raise ValueError("owner_command_proposal_id_mismatch")
         if approval is not None and values.get("proposal_id") not in {None, approval.proposal_id}:
             raise ValueError("owner_command_approval_id_mismatch")
+        if assertion is not None and approval is not None and assertion.proposal_id != approval.proposal_id:
+            raise ValueError("owner_command_assertion_proposal_scope_mismatch")
         if proposal is None and approval is None:
             raise ValueError("owner_command_requires_proposal_or_approval")
         return values
@@ -478,6 +497,7 @@ class TemporalActivityPacket(StrictModel):
     workflow_run_id: NonEmpty
     actor_subject_id: NonEmpty
     actor_roles: List[NonEmpty] = Field(default_factory=list)
+    auth_assertion: Optional[AuthAssertion] = None
     severity: NonEmpty
     environment: NonEmpty
     affected_entities: List[NonEmpty] = Field(min_items=1)
@@ -500,6 +520,17 @@ class ActivityOutcome(StrictModel):
     reason_codes: List[NonEmpty] = Field(default_factory=list)
     critic: Optional[CriticDecision] = None
     verification: Optional[VerificationReport] = None
+    acquisition: Optional["EvidenceAcquisitionResult"] = None
+
+
+class EvidenceAcquisitionResult(StrictModel):
+    """Controlled current-evidence bundle emitted by an acquisition adapter."""
+    evidence: List[EvidenceEnvelope] = Field(min_items=1)
+    claims: List[ClaimRecord] = Field(min_items=1)
+    coverage: List[CoverageEntry] = Field(min_items=1)
+
+
+ActivityOutcome.update_forward_refs()
 
 
 class EvaluationMetrics(StrictModel):

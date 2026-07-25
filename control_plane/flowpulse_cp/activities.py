@@ -58,6 +58,7 @@ def temporal_activity_surface() -> List[str]:
     """Names registered with a production Temporal worker (kept data-only for tests)."""
     return [
         "route_case_activity",
+        "acquire_current_evidence_activity",
         "retrieve_knowledge_activity",
         "primary_investigator_activity",
         "specialist_activity",

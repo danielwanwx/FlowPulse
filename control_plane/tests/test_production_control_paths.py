@@ -9,11 +9,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from pydantic import ValidationError
 
 from flowpulse_cp.integrity import EvidenceGateway, FrozenSourceReadback, REQUIRED_COVERAGE
+from flowpulse_cp.authorization import HmacAuthorizationAuthority
+from flowpulse_cp.evidence_acquisition import S3CurrentEvidenceAcquirer
 from flowpulse_cp.knowledge import KnowledgePlane
 from flowpulse_cp.models import (
     ApprovalDecision, ClaimRecord, CoverageEntry, CoverageStatus, EvidenceAuthority, EvidenceEnvelope,
     FreshnessStatus, IncidentCase, KnowledgeRevision, OwnerApproval, ProofScope, RemediationProposal,
-    SourceKind, TemporalActivityPacket, VerificationDecision, EvaluationMetrics,
+    SourceKind, TemporalActivityPacket, VerificationDecision, EvaluationMetrics, EvidenceAcquisitionResult,
 )
 from flowpulse_cp.object_store import S3ObjectStore
 from flowpulse_cp.policy import PolicyViolation, repair_contract_hash, validate_owner_gate
@@ -24,6 +26,7 @@ from flowpulse_cp.source_readback import S3SourceReadback
 
 
 NOW = datetime.now(timezone.utc)
+AUTHORITY = HmacAuthorizationAuthority("test-auth-secret")
 
 
 def digest(value):
@@ -92,6 +95,16 @@ class SourceS3:
         return {"Body": type("Body", (), {"read": lambda _self: self.envelope.json().encode("utf-8")})()}
 
 
+class SourceManifestS3:
+    def __init__(self, payload):
+        self.payload = payload
+        self.calls = []
+
+    def get_object(self, *, Bucket, Key):
+        self.calls.append((Bucket, Key))
+        return {"Body": type("Body", (), {"read": lambda _self: self.payload.encode("utf-8")})()}
+
+
 class ProductionControlPathTests(unittest.TestCase):
     def packet(self, stage, *, readback=None, proposal_record=None, approval_record=None, witness=None, coverage=None):
         evidence = current()
@@ -143,7 +156,7 @@ class ProductionControlPathTests(unittest.TestCase):
             validate_owner_gate(approval(bypass), bypass, 1, {"deploy": "d1"}, NOW, "owner-a", ("owner",))
 
     def test_domain_activity_controls_negative_paths(self):
-        engine = DomainActivityEngine(FrozenSourceReadback([]))
+        engine = DomainActivityEngine(FrozenSourceReadback([]), AUTHORITY)
         critic = engine.execute(self.packet("critic", coverage=[]))
         self.assertNotEqual(VerificationDecision.PASS, critic.decision)
         verifier = engine.execute(self.packet("independent_verify"))
@@ -154,9 +167,11 @@ class ProductionControlPathTests(unittest.TestCase):
         self.assertEqual("BLOCKED", owner.state.value)
 
     def test_production_verifier_reads_source_adapter_not_activity_input(self):
-        source = current().copy(update={"source_uri": "s3://telemetry/current.json"})
+        source = current().copy(update={
+            "source_uri": "s3://telemetry/controlled/tenant-a/cases/case-controls/revisions/1/evidence/ev-current/v1.json"
+        })
         adapter = SourceS3(source)
-        result = DomainActivityEngine(S3SourceReadback(adapter)).execute(self.packet(
+        result = DomainActivityEngine(S3SourceReadback(adapter, "telemetry", "controlled"), AUTHORITY).execute(self.packet(
             "independent_verify"
         ).copy(update={"evidence": [source], "claims": [
             ClaimRecord(
@@ -165,7 +180,43 @@ class ProductionControlPathTests(unittest.TestCase):
             )
         ]}))
         self.assertEqual(VerificationDecision.PASS, result.decision)
-        self.assertEqual([("telemetry", "current.json")], adapter.calls)
+        self.assertEqual([("telemetry", "controlled/tenant-a/cases/case-controls/revisions/1/evidence/ev-current/v1.json")], adapter.calls)
+
+    def test_production_s3_readback_rejects_unbound_bucket_or_key(self):
+        source = current().copy(update={"source_uri": "s3://attacker/arbitrary.json"})
+        with self.assertRaisesRegex(PolicyViolation, "adapter_binding_missing"):
+            S3SourceReadback(SourceS3(source), "telemetry", "controlled").readback(source)
+
+    def test_controlled_production_evidence_acquisition_enters_current_proof_and_critic(self):
+        evidence = current().copy(update={
+            "source_uri": "s3://telemetry/controlled/tenant-a/cases/case-controls/revisions/1/evidence/ev-current/v1.json"
+        })
+        claim = ClaimRecord(
+            claim_id="claim-controls", case_id="case-controls", case_revision=1, tenant_id="tenant-a",
+            claim_type="root", statement="controlled current evidence", evidence_ids=[evidence.evidence_id], created_by="primary",
+        )
+        result = EvidenceAcquisitionResult(
+            evidence=[evidence], claims=[claim], coverage=[
+                CoverageEntry(case_id="case-controls", tenant_id="tenant-a", field=field, status=CoverageStatus.FILLED)
+                for field in REQUIRED_COVERAGE
+            ],
+        )
+        manifest = SourceManifestS3(result.json())
+        acquirer = S3CurrentEvidenceAcquirer(manifest, "telemetry", "controlled")
+        engine = DomainActivityEngine(
+            S3SourceReadback(SourceS3(evidence), "telemetry", "controlled"), AUTHORITY, acquirer,
+        )
+        acquired = engine.execute(self.packet("acquire_current_evidence").copy(update={
+            "evidence": [], "claims": [], "coverage": [],
+        }))
+        self.assertEqual(VerificationDecision.PASS, acquired.decision)
+        self.assertEqual(result, acquired.acquisition)
+        critic = engine.execute(self.packet("critic").copy(update={
+            "evidence": acquired.acquisition.evidence, "claims": acquired.acquisition.claims,
+            "coverage": acquired.acquisition.coverage,
+        }))
+        self.assertEqual(VerificationDecision.PASS, critic.decision)
+        self.assertEqual([("telemetry", "controlled/tenant-a/cases/case-controls/revisions/1/current-evidence.json")], manifest.calls)
 
     def test_knowledge_supersession_requires_same_document_and_increasing_revision(self):
         first = KnowledgeRevision(
