@@ -56,6 +56,10 @@ const IMPACT_SEQUENCE = { checkout: 0, payment: 1, kafka: 2, accounting: 3, frau
 const NODE_BY_ID = new Map(TWIN_NODES.map((node) => [node.id, node]));
 const EDGE_BY_ID = new Map(TWIN_EDGES.map((edge) => [edge.id, edge]));
 const LIVE_WORLD = Object.freeze({ width: 1480, height: 680, minScale: .6, maxScale: 1.6, step: .1 });
+// Recovery renders the same canonical positions as Live in a compact canvas.
+// Keep SVG endpoint geometry aligned with the actual recovery cards so a
+// reduced workspace never clips ports or leaves paths visibly short.
+const RECOVERY_LIVE_NODE = Object.freeze({ width: 126, height: 44 });
 const COMPONENT_CAPABILITIES = Object.freeze({
   "load-generator": "Traffic simulation",
   "frontend-web": "Customer web experience",
@@ -156,7 +160,10 @@ window.addEventListener("popstate", () => {
   void refresh();
 });
 
-for (const button of document.querySelectorAll("[data-mode]")) button.addEventListener("click", () => setMode(button.dataset.mode));
+// The app shell itself records the active mode for styling. Bind navigation only
+// to actual controls so a tab click cannot bubble back into the shell and reset
+// the selected workspace to its initial `architecture` data attribute.
+for (const button of document.querySelectorAll("button.mode-button[data-mode]")) button.addEventListener("click", () => setMode(button.dataset.mode));
 for (const button of document.querySelectorAll("[data-nav-tab]")) button.addEventListener("click", () => handleNavigation(button.dataset.navTab));
 for (const button of document.querySelectorAll("[data-focus-entity]")) button.addEventListener("click", () => openDrawer({ type: "node", id: button.dataset.focusEntity }, "overview"));
 els["retry-button"].addEventListener("click", refresh);
@@ -507,7 +514,7 @@ function renderHeader() {
   els["timeline-dock"].hidden = !["replay", "agents", "compare"].includes(mode);
   els["live-button"].hidden = !state.live_available;
   renderThemeToggle();
-  for (const button of document.querySelectorAll("[data-mode]")) {
+  for (const button of document.querySelectorAll("button.mode-button[data-mode]")) {
     const active = button.dataset.mode === mode;
     button.classList.toggle("is-active", active);
     button.setAttribute("aria-pressed", String(active));
@@ -723,7 +730,12 @@ function renderCanonicalCompareCanvas(shared) {
 }
 
 function renderCanonicalTopologyPending(message = "Waiting for the backend-owned canonical topology projection.") {
-  els["canvas-layers"].innerHTML = `<div class="source-empty"><i class="ph ph-spinner-gap" aria-hidden="true"></i><strong>Canonical topology binding</strong><span>${escapeHtml(message)}</span></div>`;
+  const diagnose = mode === "replay";
+  const title = diagnose ? "Diagnose needs an active incident" : "This workspace is not ready yet";
+  const guidance = diagnose
+    ? "Start or select an incident in Live, then return when the server has projected the matching evidence."
+    : message;
+  els["canvas-layers"].innerHTML = `<div class="source-empty canonical-workspace-pending"><i class="ph ph-circle-notch" aria-hidden="true"></i><strong>${title}</strong><span>${escapeHtml(guidance)}</span></div>`;
   els["compare-handle"].hidden = true;
   els["compare-canvas-range"].hidden = true;
   setAnnotations([]);
@@ -1268,8 +1280,8 @@ function canonicalRecoveryTopologyMarkup(topology) {
     const path = liveEdgePath(positions.get(edge.from), positions.get(edge.to), {
       canvasWidth: LIVE_WORLD.width,
       canvasHeight: LIVE_WORLD.height,
-      nodeWidth: 180,
-      nodeHeight: 60,
+      nodeWidth: RECOVERY_LIVE_NODE.width,
+      nodeHeight: RECOVERY_LIVE_NODE.height,
       lane: visualEdge.order
     });
     return fixedLiveEdgeMarkup(visualEdge, path, positions.get(edge.from)?.label || edge.from, positions.get(edge.to)?.label || edge.to);
@@ -1492,8 +1504,9 @@ function sharedEventLabel(event) {
   if (event.type === "local_fault_loop.tool.completed") return `${payload.role || event.actor} received bounded evidence`;
   if (event.type === "agent_team.tool.requested") return `${event.actor} requested ${payload.tool || "tool"}`;
   if (event.type === "agent_team.tool.result.recorded") return `${event.actor} received ${payload.result_count || 0} result${payload.result_count === 1 ? "" : "s"}`;
+  if (event.type === "agent_team.response.working") return "Agent investigation is in progress";
   if (event.type === "agent_team.response.created") return `${payload.responding_agent || event.actor} answered`;
-  return event.type.replace("local_fault_loop.", "").replaceAll(".", " ");
+  return event.type.replace(/^(local_fault_loop|agent_team)\./, "").replaceAll(".", " ");
 }
 
 function seekSharedEvent(index) {
@@ -1890,13 +1903,20 @@ function workspaceSummaryModel(report) {
     const accepted = [...events].reverse().find((event) => event.type === "local_fault_loop.hypothesis.accepted");
     const plan = [...events].reverse().find((event) => event.type === "local_fault_loop.plan.proposed");
     const verification = [...events].reverse().find((event) => event.type === "local_fault_loop.verification.completed");
-    if (mode === "replay") return {
+    if (mode === "replay") {
+      const recoveryVerified = shared.state === "recovered" || verification?.payload?.passed === true;
+      return {
       title: "Diagnosis Summary",
-      status: accepted ? "Causal evidence is under evaluator review" : "Roles are collecting bounded evidence",
-      tone: accepted ? "observed" : "active",
+      status: recoveryVerified
+        ? "Causal diagnosis accepted; recovery is verified"
+        : shared.state === "needs_human"
+          ? "Evidence requires human review before recovery"
+          : accepted ? "Causal evidence is under evaluator review" : "Roles are collecting bounded evidence",
+      tone: recoveryVerified ? "verified" : shared.state === "needs_human" ? "warning" : accepted ? "observed" : "active",
       facts: compact([["Current stage", humanStageLabel(shared.stage)], ["Causal hypothesis", accepted?.payload?.claim || "Not yet established"], ["Evidence", `${shared.citations.length} cited records`]]),
       actions: [{ label: "Ask Investigator", role: "investigator" }, { label: "Ask Observer", role: "observer" }, { label: "View cited evidence", kind: "evidence" }]
-    };
+      };
+    }
     if (mode === "agents") return {
       title: "Recovery Status",
       status: plan ? "Recovery proposal is projected from this run" : "Recovery proposal unavailable",

@@ -125,7 +125,7 @@ test("Diagnose accepts the same canonical identities when the independent projec
   assert.deepEqual(focus.affected_edge_ids, overlay.map(({ id }) => id));
 });
 
-test("strict loop parsing accepts a recorded same-role advisory without inventing a cross-role handoff", async () => {
+test("strict loop parsing accepts a same-role advisory without inventing an ownership handoff", async () => {
   const ledger = new Ledger(join(mkdtempSync(join(tmpdir(), "flowpulse-canonical-advisory-")), "ledger.db"));
   const loop = new LocalFaultLoop({
     ledger,
@@ -142,6 +142,18 @@ test("strict loop parsing accepts a recorded same-role advisory without inventin
   assert.equal(run.events.some((event) => event.type === "local_fault_loop.handoff.recorded" && event.actor === "orchestrator" && event.payload?.ownership === "model_recommended"), false);
   assert.equal(agentLoopProjection(run, { runId: run.run_id })?.run_id, run.run_id);
   assert.equal(sharedRunReadModel(run)?.topology.run_id, run.run_id);
+});
+
+test("strict loop parsing rejects a recorded ownership handoff that keeps the same role", async () => {
+  const ledger = new Ledger(join(mkdtempSync(join(tmpdir(), "flowpulse-canonical-ownership-handoff-")), "ledger.db"));
+  const loop = new LocalFaultLoop({ ledger, modelAdapter: localCodexAdapter() });
+  const run = await loop.run({ caseId: "checkout-payment-config", round: 1 });
+  const forged = structuredClone(run);
+  const handoff = forged.events.find((event) => event.type === "local_fault_loop.handoff.recorded");
+
+  assert.ok(handoff, "the deterministic loop must include a recorded ownership handoff");
+  handoff.payload.to = handoff.payload.from;
+  assert.equal(agentLoopProjection(forged, { runId: run.run_id }), null);
 });
 
 test("recovery workflow follows recorded agent handoffs and never invents a Commander", () => {

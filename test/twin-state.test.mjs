@@ -703,6 +703,15 @@ test("Stage C Live layout keeps the backend layer ordering with room for later p
   assert.match(stylesCss, /\.is-live-source \.live-count-9\.live-index-8 \{ top: 93\.75%; \}/);
 });
 
+test("Recovery compact canvas keeps canonical cards and endpoints inside its reserved workspace", () => {
+  const recoverySource = appJs.slice(appJs.indexOf("function canonicalRecoveryTopologyMarkup"), appJs.indexOf("function renderTwinLayer"));
+  assert.match(appJs, /const RECOVERY_LIVE_NODE = Object\.freeze\(\{ width: 126, height: 44 \}\)/);
+  assert.match(recoverySource, /nodeWidth: RECOVERY_LIVE_NODE\.width/);
+  assert.match(recoverySource, /nodeHeight: RECOVERY_LIVE_NODE\.height/);
+  assert.match(stylesCss, /\.recovery-topology-map \.live-column-0 \{ left: 12%; \}/);
+  assert.match(stylesCss, /\.recovery-topology-map \.live-column-4 \{ left: 90%; \}/);
+});
+
 test("canonical Diagnose and Compare keep a bounded pan and zoom canvas at constrained viewports", () => {
   assert.equal(isCanvasNavigationMode("live"), true);
   assert.equal(isCanvasNavigationMode("replay"), true);
@@ -744,6 +753,12 @@ test("pending canonical canvases clear every ready identity and test selector", 
   assert.match(clearSource, /delete els\["twin-canvas"\]\.dataset\[key\]/);
   assert.match(clearSource, /setAttribute\("data-testid", "canonical-topology-pending"\)/);
   assert.doesNotMatch(clearSource, /diagnose-canvas|compare-canvas|recovery-canvas/);
+});
+
+test("workspace navigation binds only mode buttons so app-shell state cannot reset a clicked tab", () => {
+  assert.equal([...appJs.matchAll(/document\.querySelectorAll\("button\.mode-button\[data-mode\]"\)/g)].length, 2);
+  assert.doesNotMatch(appJs, /for \(const button of document\.querySelectorAll\("\[data-mode\]"\)\) button\.addEventListener\("click", \(\) => setMode/);
+  assert.match(appJs, /const diagnose = mode === "replay";[\s\S]+?Diagnose needs an active incident[\s\S]+?Start or select an incident in Live/s);
 });
 
 test("live topology normalizes endpoints and explains true telemetry islands", () => {
@@ -1464,11 +1479,20 @@ test("Live Inspector owns the existing rail and preserves the running canvas whi
 });
 
 test("timeline renders only recorded milestones and labels the next evidence requirement", () => {
+  const sharedTimelineSource = appJs.slice(appJs.indexOf("function sharedEventLabel"), appJs.indexOf("function seekSharedEvent"));
   assert.match(appJs, /const visible = stages\.slice\(0, available \+ 1\)/);
   assert.match(appJs, /function nextTimelineRequirement\(index\)/);
   assert.match(appJs, /awaiting recovery verification/);
+  assert.match(sharedTimelineSource, /agent_team\.response\.working[\s\S]*?Agent investigation is in progress/);
   assert.match(stylesCss, /\.timeline-next/);
   assert.match(stylesCss, /--stage-count/);
+});
+
+test("terminal Diagnosis Summary copy follows the current canonical recovery state", () => {
+  const summarySource = appJs.slice(appJs.indexOf("function workspaceSummaryModel"), appJs.indexOf("function recoveryGateLabel"));
+  assert.match(summarySource, /const recoveryVerified = shared\.state === "recovered" \|\| verification\?\.payload\?\.passed === true/);
+  assert.match(summarySource, /recoveryVerified[\s\S]*?Causal diagnosis accepted; recovery is verified/);
+  assert.match(summarySource, /humanStageLabel\(shared\.stage\)/);
 });
 
 test("P0.6 makes Diagnose, Recovery, and Compare canvas-first without technical node chrome", () => {

@@ -1011,11 +1011,11 @@ function validAgentTeamLoopRoleResponse(value) {
     && Number.isSafeInteger(value.answer_bytes) && value.answer_bytes >= 1 && value.answer_bytes <= 1_200
     && Number.isSafeInteger(value.duration_ms) && value.duration_ms >= 0 && value.duration_ms <= 120_000
     // LocalFaultLoop stores the bounded provider recommendation in both
-    // compatibility fields. Neither field itself transfers ownership: only a
-    // separate local_fault_loop.handoff.recorded ledger event does that, and
-    // that event is emitted only for a different target role.
-    && (value.handoff === null || validAgentTeamLoopHandoff(value.handoff, value.role))
-    && (value.recommended_handoff === null || validAgentTeamLoopHandoff(value.recommended_handoff, value.role))
+    // compatibility fields. An advisory may recommend the same role; neither
+    // field transfers ownership. Ownership transfers only through the separate
+    // ledger event below, which must name a different target role.
+    && (value.handoff === null || validAgentTeamLoopAdvisory(value.handoff, value.role))
+    && (value.recommended_handoff === null || validAgentTeamLoopAdvisory(value.recommended_handoff, value.role))
     && validAgentTeamRefs(value.citations, 12) && validAgentTeamLoopTools(value.tools);
 }
 
@@ -1023,7 +1023,8 @@ function validAgentTeamLoopEvent(value) {
   return plainRecord(value) && sameKeys(value, ["id", "sequence", "recorded_at", "type", "actor", "evidence_refs", "payload", "topology", "contextual_workspaces"])
     && safeAgentTeamId(value.id) && Number.isSafeInteger(value.sequence) && value.sequence >= 1 && validTopologyTimestamp(value.recorded_at)
     && safeAgentTeamText(value.type, 120) && safeAgentTeamText(value.actor, 80) && validAgentTeamRefs(value.evidence_refs, 64)
-    && plainRecord(value.payload) && validAgentTeamWorkspacesForEvent(value.contextual_workspaces);
+    && plainRecord(value.payload) && validAgentTeamWorkspacesForEvent(value.contextual_workspaces)
+    && (value.type !== "local_fault_loop.handoff.recorded" || validAgentTeamLoopOwnershipHandoff(value));
 }
 
 function validAgentTeamWorkspacesForEvent(value) {
@@ -1037,10 +1038,19 @@ function validAgentTeamLoopFinal(value, state) {
     && safeAgentTeamText(value.type, 120) && plainRecord(value.payload);
 }
 
-function validAgentTeamLoopHandoff(value, from) {
+function validAgentTeamLoopAdvisory(value, from) {
   return plainRecord(value) && sameKeys(value, ["to", "reason"])
     && AGENT_TEAM_CONVERSATIONAL_ROLES.has(from) && AGENT_TEAM_CONVERSATIONAL_ROLES.has(value.to)
     && safeAgentTeamText(value.reason, 200);
+}
+
+function validAgentTeamLoopOwnershipHandoff(event) {
+  const payload = event.payload;
+  return plainRecord(payload) && sameKeys(payload, ["from", "to", "reason", "ownership"])
+    && AGENT_TEAM_CONVERSATIONAL_ROLES.has(payload.from) && AGENT_TEAM_CONVERSATIONAL_ROLES.has(payload.to)
+    && payload.from !== payload.to && safeAgentTeamText(payload.reason, 200)
+    && ["runtime_deterministic", "model_recommended"].includes(payload.ownership)
+    && (payload.ownership === "runtime_deterministic" ? event.actor === "runtime" : event.actor === payload.from);
 }
 
 function validAgentTeamLoopTools(value) {

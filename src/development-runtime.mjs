@@ -108,14 +108,23 @@ export class DevelopmentRuntime {
         classification: "insufficient_evidence",
         explanation: `The pre-approval Diagnosis Gate is incomplete: ${gate.missing.join(", ") || "frozen snapshot required"}.`
       }, gate.required_records.map((item) => item.id));
-      throw new Error("Fresh checkout/payment Diagnosis Gate evidence is not available yet");
+      throw new InsufficientEvidenceError("Fresh checkout/payment Diagnosis Gate evidence is not available yet", {
+        stage: "evidence_snapshot",
+        validator_id: "checkout_payment_diagnosis_gate",
+        reason_code: "diagnosis_gate_incomplete",
+        missing_evidence_classes: gate.missing
+      });
     }
     if (evidenceSource && !changeEvidence) {
       this.runtime.append(runId, "outcome.classified", "evaluator", {
         classification: "insufficient_evidence",
         explanation: "The frozen development snapshot is missing the exact applied versioned change record."
       }, gate.required_records.map((item) => item.id));
-      throw new Error("Frozen development change evidence is missing or mismatched");
+      throw new InsufficientEvidenceError("Frozen development change evidence is missing or mismatched", {
+        stage: "evidence_snapshot",
+        validator_id: "checkout_payment_diagnosis_gate",
+        reason_code: "versioned_change_missing"
+      });
     }
     const refs = [...new Set([changeEvidence.id, ...gate.required_records.map((item) => item.id)])];
     this.runtime.append(runId, "evidence.queried", "investigator", {
