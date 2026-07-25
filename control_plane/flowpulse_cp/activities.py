@@ -25,7 +25,7 @@ class OpenAIResponsesPort(Protocol):
 class ControlActivityDispatcher(Protocol):
     """Adapter seam for Temporal activities and all external systems."""
 
-    def dispatch(self, stage: str, packet: Dict[str, Any]) -> Dict[str, Any]:
+    async def dispatch(self, stage: str, packet: Dict[str, Any]) -> Dict[str, Any]:
         """Perform one typed activity and return a schema-validated record reference/result."""
 
 
@@ -78,7 +78,7 @@ def build_temporal_activities(dispatcher: ControlActivityDispatcher) -> List[Any
     def definition(name: str):
         @activity.defn(name=name)
         async def run(packet: Dict[str, Any]) -> Dict[str, Any]:
-            return dispatcher.dispatch(name, packet)
+            return await dispatcher.dispatch(name, packet)
         return run
 
     return [definition(name) for name in temporal_activity_surface()]

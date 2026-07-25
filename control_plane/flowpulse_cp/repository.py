@@ -21,6 +21,7 @@ from .models import (
     InvestigatorAssignment,
     OwnerApproval,
     RemediationProposal,
+    VerificationReport,
 )
 from .policy import PolicyViolation
 
@@ -48,6 +49,7 @@ class InMemoryCaseRepository:
         self.assignments: Dict[str, InvestigatorAssignment] = {}
         self.proposals: Dict[str, RemediationProposal] = {}
         self.approvals: Dict[str, OwnerApproval] = {}
+        self.verifications: Dict[str, VerificationReport] = {}
 
     def append_event(self, event: DomainEvent) -> None:
         case = self.cases.get(event.case_id)
@@ -57,19 +59,34 @@ class InMemoryCaseRepository:
 
     def put_case(self, case: IncidentCase) -> None:
         existing = self.cases.get(case.case_id)
-        if existing and existing.tenant_id != case.tenant_id:
-            raise PolicyViolation("case_id_tenant_collision")
+        if existing is not None:
+            if existing.tenant_id != case.tenant_id:
+                raise PolicyViolation("case_id_tenant_collision")
+            if existing != case:
+                raise PolicyViolation("case_record_immutable")
+            return
         self.cases[case.case_id] = case
 
     def replace_case_from_workflow(self, case: IncidentCase, event: DomainEvent) -> None:
         """Only the Temporal activity result path may update this read model."""
         if event.case_id != case.case_id or event.tenant_id != case.tenant_id:
             raise PolicyViolation("workflow_event_case_mismatch")
-        self.put_case(case)
+        existing = self.cases.get(case.case_id)
+        if existing is not None and existing.case_revision != case.case_revision:
+            raise PolicyViolation("workflow_case_revision_mismatch")
+        self.cases[case.case_id] = case
         self.events.append(event)
 
     def evidence_for_case(self, case_id: str) -> List[EvidenceEnvelope]:
         return [item for item in self.evidence.values() if item.case_id == case_id]
+
+    def get_case(self, tenant_id: str, case_id: str) -> Optional[IncidentCase]:
+        case = self.cases.get(case_id)
+        return case if case and case.tenant_id == tenant_id else None
+
+    def get_proposal(self, tenant_id: str, proposal_id: str) -> Optional[RemediationProposal]:
+        proposal = self.proposals.get(proposal_id)
+        return proposal if proposal and proposal.tenant_id == tenant_id else None
 
     def put_evidence(self, evidence: EvidenceEnvelope) -> None:
         case = self.cases.get(evidence.case_id)
@@ -86,12 +103,18 @@ class InMemoryCaseRepository:
         case = self.cases.get(claim.case_id)
         if case is None or case.tenant_id != claim.tenant_id:
             raise PolicyViolation("claim_case_tenant_mismatch")
+        existing = self.claims.get(claim.claim_id)
+        if existing is not None and existing != claim:
+            raise PolicyViolation("claim_record_immutable")
         self.claims[claim.claim_id] = claim
 
     def put_conflict(self, conflict: ConflictRecord) -> None:
         case = self.cases.get(conflict.case_id)
         if case is None or case.tenant_id != conflict.tenant_id:
             raise PolicyViolation("conflict_case_tenant_mismatch")
+        existing = self.conflicts.get(conflict.conflict_id)
+        if existing is not None and existing != conflict:
+            raise PolicyViolation("conflict_record_immutable")
         self.conflicts[conflict.conflict_id] = conflict
 
     def put_coverage(self, entry: CoverageEntry) -> None:
@@ -113,19 +136,37 @@ class InMemoryCaseRepository:
         ]
         if assignment.role != "primary" and len(specialists) >= 4:
             raise PolicyViolation("specialist_cap_exceeded")
+        existing = self.assignments.get(assignment.assignment_id)
+        if existing is not None and existing != assignment:
+            raise PolicyViolation("assignment_record_immutable")
         self.assignments[assignment.assignment_id] = assignment
 
     def put_proposal(self, proposal: RemediationProposal) -> None:
         case = self.cases.get(proposal.case_id)
         if case is None or case.tenant_id != proposal.tenant_id:
             raise PolicyViolation("proposal_case_tenant_mismatch")
+        existing = self.proposals.get(proposal.proposal_id)
+        if existing is not None and existing != proposal:
+            raise PolicyViolation("proposal_record_immutable")
         self.proposals[proposal.proposal_id] = proposal
 
     def put_approval(self, approval: OwnerApproval) -> None:
         case = self.cases.get(approval.case_id)
         if case is None or case.tenant_id != approval.tenant_id:
             raise PolicyViolation("approval_case_tenant_mismatch")
+        existing = self.approvals.get(approval.approval_id)
+        if existing is not None and existing != approval:
+            raise PolicyViolation("approval_record_immutable")
         self.approvals[approval.approval_id] = approval
+
+    def put_verification(self, report: VerificationReport) -> None:
+        case = self.cases.get(report.case_id)
+        if case is None or case.tenant_id != report.tenant_id:
+            raise PolicyViolation("verification_case_tenant_mismatch")
+        existing = self.verifications.get(report.verification_id)
+        if existing is not None and existing != report:
+            raise PolicyViolation("verification_record_immutable")
+        self.verifications[report.verification_id] = report
 
 
 class LocalArtifactStore:

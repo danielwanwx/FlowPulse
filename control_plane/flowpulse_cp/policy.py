@@ -34,12 +34,12 @@ def repair_contract_hash(proposal: RemediationProposal) -> str:
         "revision": proposal.revision,
         "action_type": proposal.action_type,
         "exact_targets": proposal.exact_targets,
-        "exact_change": proposal.exact_change,
-        "canary_scope": proposal.canary_scope,
+        "exact_change": proposal.exact_change.dict(),
+        "canary_scope": proposal.canary_scope.dict(),
         "preconditions": proposal.preconditions,
         "supporting_claim_ids": proposal.supporting_claim_ids,
         "success_criteria": proposal.success_criteria,
-        "rollback": proposal.rollback,
+        "rollback": proposal.rollback.dict(),
         "idempotency_key": proposal.idempotency_key,
         "expires_at": proposal.expires_at.isoformat(),
     }
@@ -87,6 +87,8 @@ def validate_owner_gate(
         raise PolicyViolation("approval_target_scope_mismatch")
     if len(proposal.exact_targets) > approval.maximum_targets:
         raise PolicyViolation("approval_maximum_targets_exceeded")
+    if proposal.preconditions != current_witness:
+        raise PolicyViolation("proposal_preconditions_changed")
     if approval.precondition_witness != current_witness:
         raise PolicyViolation("precondition_witness_changed")
     if action_allowlist and proposal.action_type not in set(action_allowlist):

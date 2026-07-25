@@ -177,9 +177,11 @@ class ControlPlaneTests(unittest.TestCase):
     def test_exact_owner_gate_ttl_precondition_and_idempotent_dry_run(self):
         proposal = RemediationProposal(
             proposal_id="proposal-1", case_id="case-1", case_revision=1, tenant_id="tenant-a", revision=1,
-            action_type="dry-run-template", exact_targets=["checkout"], exact_change={"would_change": "flag"},
+            action_type="dry-run-template", exact_targets=["checkout"],
+            exact_change={"template_id": "flag-change", "parameters": {"would_change": "flag"}},
+            canary_scope={"maximum_targets": 1, "environment": "prod"},
             preconditions={"deploy": "d1"}, supporting_claim_ids=["claim-current"],
-            success_criteria=["slo recovers"], rollback={"would_rollback": True}, idempotency_key="idem-1",
+            success_criteria=["slo recovers"], rollback={"template_id": "flag-rollback", "parameters": {}}, idempotency_key="idem-1",
             expires_at=NOW + timedelta(minutes=5),
         )
         self.repo.put_proposal(proposal)
@@ -195,7 +197,7 @@ class ControlPlaneTests(unittest.TestCase):
         second = actions.dry_run("proposal-1", approval, {"deploy": "d1"}, NOW)
         self.assertFalse(first.external_write_performed)
         self.assertEqual(first, second)
-        with self.assertRaisesRegex(PolicyViolation, "precondition_witness_changed"):
+        with self.assertRaisesRegex(PolicyViolation, "proposal_preconditions_changed"):
             actions.dry_run("proposal-1", approval, {"deploy": "d2"}, NOW)
         expired = approval.copy(update={"expires_at": NOW - timedelta(seconds=1)})
         with self.assertRaisesRegex(PolicyViolation, "approval_or_proposal_expired"):

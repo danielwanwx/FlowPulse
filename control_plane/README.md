@@ -4,29 +4,44 @@ This service is a new, isolated control-plane kernel. The existing Node app rema
 
 ## Local deterministic check
 
-The focused suite needs only the already available Python runtime plus FastAPI and Pydantic:
+Install the declared local development dependencies, then run the deterministic suite:
 
 ```bash
-PYTHONPYCACHEPREFIX=/tmp/flowpulse-pycache PYTHONPATH=control_plane \
-  python3 -m unittest discover -s control_plane/tests -v
-PYTHONPYCACHEPREFIX=/tmp/flowpulse-pycache python3 -m compileall -q control_plane/flowpulse_cp
+cd control_plane
+python3 -m venv .venv
+.venv/bin/pip install -e '.[dev]'
+PYTHONPYCACHEPREFIX=/tmp/flowpulse-pycache .venv/bin/python -m unittest discover -s tests -v
+PYTHONPYCACHEPREFIX=/tmp/flowpulse-pycache .venv/bin/python -m compileall -q flowpulse_cp
 ```
 
 The suite uses a deterministic fake Temporal adapter and frozen source readback. It makes no model, production, or external write call.
 
 ## Service and integration wiring
 
-Install the declared dependencies, then run the API:
+The local Compose path starts the API (`0.0.0.0:8090`), Temporal, a Temporal
+worker, Postgres, and MinIO. The worker registers `flowpulse.diagnosis.v1` and
+all seven activity definitions; its Postgres adapter persists append-only
+activity/verification records, while the local content-addressed artifact store
+persists the typed activity packet. Compose's non-owner application role uses
+`FORCE RLS` tenant policies.
 
 ```bash
 cd control_plane
-python3 -m pip install -e .
-python3 -m flowpulse_cp.main
+docker compose up --build
 ```
 
-`POST /v1/cases` accepts only strict intake contracts. The `POST /v1/proposals/{proposal_id}/dry-run` path validates exact owner approval, TTL, contract hash, target scope, and precondition witness, then returns a non-executing idempotent receipt.
+For a Compose-only smoke test, the deliberately local test-auth adapter accepts
+`x-flowpulse-test-tenant` and `x-flowpulse-test-subject`; production must
+inject `request.state.flowpulse_auth` from trusted authentication middleware.
+`POST /v1/cases` calls `Client.start_workflow`; it does not fall back to an
+in-memory workflow. The `POST /v1/proposals/{proposal_id}/dry-run` path
+validates exact owner approval, TTL, contract hash, target scope, proposal and
+approval witness equality, then returns a non-executing idempotent receipt.
 
-`docker compose up --build` starts local API, Temporal, Postgres, and MinIO wiring. Apply `migrations/001_control_plane.sql` with a deployment migration runner before connecting a worker. The Compose file carries local-only defaults and must not be treated as production credentials or a production deployment recipe.
+The migration is mounted into the local Postgres initializer. A deployment
+migration runner must apply the equivalent migration before any worker connects.
+The Compose values are local-only and must not be treated as production
+credentials or a production deployment recipe.
 
 ## Authority boundary
 

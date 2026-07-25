@@ -1,51 +1,53 @@
-"""Production Temporal workflow definition.
-
-This import is isolated so deterministic tests do not require Temporal to be
-installed. Temporal remains the only production progression authority; every
-nondeterministic provider and database write is an activity.
-"""
+"""The sole durable workflow definition for FlowPulse P0."""
 
 from datetime import timedelta
 from typing import Any, Dict
 
+from temporalio import workflow
+
+from .models import TemporalActivityPacket, TemporalCaseRequest
+
 
 def temporal_available() -> bool:
-    try:
-        import temporalio  # noqa: F401
-    except ImportError:
-        return False
     return True
 
 
-def build_workflow_definition() -> Any:
-    """Build lazily to keep a missing local Temporal SDK an explicit blocker."""
-    from temporalio import workflow
+@workflow.defn(name="flowpulse.diagnosis.v1")
+class DiagnosisTemporalWorkflow:
+    """Deterministic orchestration only; all I/O runs as Temporal activities."""
 
-    @workflow.defn(name="flowpulse.diagnosis.v1")
-    class DiagnosisTemporalWorkflow:
-        @workflow.run
-        async def run(self, request: Dict[str, Any]) -> Dict[str, Any]:
-            # Workflow code is deterministic orchestration only. Activities
-            # return immutable record references and never own next-state logic.
-            route = await workflow.execute_activity(
-                "route_case_activity", request, start_to_close_timeout=timedelta(seconds=30)
-            )
-            knowledge = await workflow.execute_activity(
-                "retrieve_knowledge_activity", route, start_to_close_timeout=timedelta(seconds=30)
-            )
-            investigation = await workflow.execute_activity(
-                "primary_investigator_activity", knowledge, start_to_close_timeout=timedelta(minutes=2)
-            )
-            critic = await workflow.execute_activity(
-                "critic_activity", investigation, start_to_close_timeout=timedelta(seconds=30)
-            )
-            if critic["decision"] != "PASS":
-                return {"state": "NEEDS_HUMAN", "critic": critic}
-            verification = await workflow.execute_activity(
-                "independent_verify_activity", investigation, start_to_close_timeout=timedelta(minutes=2)
-            )
-            if verification["decision"] != "PASS":
-                return {"state": "ABSTAINED", "verification": verification}
-            return {"state": "AWAITING_OWNER", "verification": verification}
+    @workflow.run
+    async def run(self, request_data: Dict[str, Any]) -> Dict[str, Any]:
+        request = TemporalCaseRequest.parse_obj(request_data)
+        base = {
+            "case_id": request.case.case_id,
+            "case_revision": request.case.case_revision,
+            "tenant_id": request.case.tenant_id,
+            "workflow_run_id": request.case.workflow_run_id,
+            "actor_subject_id": request.actor.subject_id,
+            "severity": request.case.severity,
+            "environment": request.case.environment,
+            "affected_entities": request.case.affected_entities,
+        }
 
-    return DiagnosisTemporalWorkflow
+        async def activity(stage: str, specialist_role: str = None) -> Dict[str, Any]:
+            packet = TemporalActivityPacket(stage=stage, specialist_role=specialist_role, **base)
+            return await workflow.execute_activity(
+                "{}_activity".format(stage),
+                packet.dict(),
+                start_to_close_timeout=timedelta(minutes=2),
+            )
+
+        await activity("route_case")
+        await activity("retrieve_knowledge")
+        await activity("primary_investigator")
+        for role in request.specialist_roles[:4]:
+            await activity("specialist", role)
+        critic = await activity("critic")
+        if critic["decision"] != "PASS":
+            return {"state": "NEEDS_HUMAN", "critic": critic}
+        verification = await activity("independent_verify")
+        if verification["decision"] != "PASS":
+            return {"state": "ABSTAINED", "verification": verification}
+        owner = await activity("owner_gate")
+        return {"state": owner["state"], "verification": verification, "owner_gate": owner}

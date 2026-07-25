@@ -13,6 +13,9 @@ from .models import (
     CoverageStatus,
     CriticDecision,
     EvidenceEnvelope,
+    EvidenceAuthority,
+    FreshnessStatus,
+    SourceKind,
     ProofScope,
     VerificationDecision,
     VerificationReport,
@@ -47,10 +50,24 @@ class EvidenceGateway:
     def admit(self, evidence: EvidenceEnvelope) -> EvidenceEnvelope:
         if not evidence.source_uri or not evidence.source_anchor or not evidence.schema_binding:
             raise PolicyViolation("evidence_locator_or_schema_binding_missing")
-        if evidence.proof_scope == ProofScope.REFERENCE_ONLY and evidence.source_kind.value != "KNOWLEDGE":
+        if evidence.source_kind == SourceKind.KNOWLEDGE and evidence.proof_scope != ProofScope.REFERENCE_ONLY:
+            raise PolicyViolation("knowledge_evidence_must_be_reference_only")
+        if evidence.proof_scope == ProofScope.REFERENCE_ONLY and evidence.source_kind != SourceKind.KNOWLEDGE:
             # P0 only uses reference-only for Knowledge Plane documents. Other
             # adapters must classify their own content explicitly.
             raise PolicyViolation("reference_only_scope_requires_knowledge_source")
+        for parent_id in evidence.parent_evidence_ids:
+            if parent_id == evidence.evidence_id:
+                raise PolicyViolation("evidence_parent_self_reference")
+            parent = self.repository.evidence.get(parent_id)
+            if parent is None:
+                raise PolicyViolation("unknown_parent_evidence")
+            if (
+                parent.tenant_id != evidence.tenant_id
+                or parent.case_id != evidence.case_id
+                or parent.case_revision != evidence.case_revision
+            ):
+                raise PolicyViolation("cross_tenant_or_cross_case_parent_evidence")
         self.repository.put_evidence(evidence)
         return evidence
 
@@ -103,19 +120,39 @@ class IndependentEvidenceVerifier:
     def __init__(self, readback: EvidenceReadbackPort) -> None:
         self.readback = readback
 
-    def verify(self, repository: InMemoryCaseRepository, case_id: str, run_context_id: str) -> VerificationReport:
+    def verify(
+        self,
+        repository: InMemoryCaseRepository,
+        case_id: str,
+        run_context_id: str,
+        critic_identity: str = DeterministicCritic.identity,
+    ) -> VerificationReport:
         case = repository.cases[case_id]
         verified: List[str] = []
         failed: List[str] = []
         fresh_ids: List[str] = []
         for claim in [item for item in repository.claims.values() if item.case_id == case_id]:
             try:
+                if claim.created_by == self.identity or claim.created_by == critic_identity or self.identity == critic_identity:
+                    raise PolicyViolation("verifier_identity_not_independent")
                 cited = [repository.evidence[item_id] for item_id in claim.evidence_ids]
                 validate_claim_evidence(claim, cited)
                 for evidence in cited:
                     reread = self.readback.readback(evidence)
-                    if reread.tenant_id != case.tenant_id or reread.source_uri != evidence.source_uri:
-                        raise PolicyViolation("readback_source_or_tenant_mismatch")
+                    if reread.tenant_id != case.tenant_id or reread.case_id != evidence.case_id:
+                        raise PolicyViolation("readback_case_or_tenant_mismatch")
+                    if reread.case_revision != evidence.case_revision:
+                        raise PolicyViolation("readback_case_revision_mismatch")
+                    if reread.source_uri != evidence.source_uri or reread.source_anchor != evidence.source_anchor:
+                        raise PolicyViolation("readback_locator_mismatch")
+                    if reread.source_version != evidence.source_version:
+                        raise PolicyViolation("readback_source_version_mismatch")
+                    if reread.proof_scope != evidence.proof_scope:
+                        raise PolicyViolation("readback_proof_scope_mismatch")
+                    if reread.authority != evidence.authority or reread.freshness != evidence.freshness:
+                        raise PolicyViolation("readback_authority_or_freshness_mismatch")
+                    if reread.independence_key != evidence.independence_key:
+                        raise PolicyViolation("readback_independence_key_mismatch")
                     if reread.content_hash != evidence.content_hash:
                         raise PolicyViolation("readback_content_hash_mismatch")
                     fresh_ids.append(reread.evidence_id)
@@ -131,7 +168,7 @@ class IndependentEvidenceVerifier:
         else:
             decision = VerificationDecision.PASS
             reasons = []
-        return VerificationReport(
+        report = VerificationReport(
             verification_id="verify-{}-{}".format(case_id, run_context_id),
             case_id=case_id,
             tenant_id=case.tenant_id,
@@ -143,6 +180,8 @@ class IndependentEvidenceVerifier:
             decision=decision,
             reason_codes=reasons,
         )
+        repository.put_verification(report)
+        return report
 
 
 class FrozenSourceReadback:

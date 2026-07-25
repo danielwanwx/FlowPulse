@@ -9,3 +9,10 @@ outputs/*
 *.sqlite
 *.sqlite3
 *.db
+
+control_plane/.venv/
+control_plane/.temporal-history/
+__pycache__/
+*.pyc
+control_plane/build/
+control_plane/*.egg-info/

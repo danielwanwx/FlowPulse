@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field, StrictBool, StrictInt, StrictStr, conint, constr, root_validator, validator
+from pydantic import BaseModel, Field, StrictBool, StrictInt, StrictStr, confloat, conint, constr, root_validator, validator
 
 
 class StrictModel(BaseModel):
@@ -15,8 +15,11 @@ class StrictModel(BaseModel):
         use_enum_values = False
 
 
-NonEmpty = constr(min_length=1)
-Hash = constr(regex=r"^[a-f0-9]{64}$")
+NonEmpty = constr(strict=True, min_length=1)
+Hash = constr(strict=True, regex=r"^[a-f0-9]{64}$")
+PositiveInt = conint(strict=True, ge=1)
+NonNegativeInt = conint(strict=True, ge=0)
+UnitIntervalFloat = confloat(strict=True, ge=0.0, le=1.0)
 
 
 class CaseState(str, Enum):
@@ -112,10 +115,10 @@ class KnowledgeStatus(str, Enum):
 
 class TraceContext(StrictModel):
     case_id: NonEmpty
-    case_revision: conint(ge=1)
+    case_revision: PositiveInt
     workflow_run_id: NonEmpty
     stage: NonEmpty
-    attempt: conint(ge=1) = 1
+    attempt: PositiveInt = 1
     record_id: Optional[StrictStr] = None
 
 
@@ -134,7 +137,7 @@ class IncidentIntake(StrictModel):
 class IncidentCase(StrictModel):
     case_id: NonEmpty
     tenant_id: NonEmpty
-    case_revision: conint(ge=1) = 1
+    case_revision: PositiveInt = 1
     workflow_id: NonEmpty
     workflow_run_id: NonEmpty
     state: CaseState = CaseState.RECEIVED
@@ -150,7 +153,7 @@ class IncidentCase(StrictModel):
 class EvidenceEnvelope(StrictModel):
     evidence_id: NonEmpty
     case_id: NonEmpty
-    case_revision: conint(ge=1)
+    case_revision: PositiveInt
     tenant_id: NonEmpty
     acl_subjects: List[NonEmpty] = Field(default_factory=list)
     source_kind: SourceKind
@@ -169,8 +172,10 @@ class EvidenceEnvelope(StrictModel):
     parent_evidence_ids: List[NonEmpty] = Field(default_factory=list)
     adapter_version: NonEmpty = "p0"
 
-    @root_validator
+    @root_validator(allow_reuse=True)
     def current_evidence_must_not_be_stale(cls, values: Dict[str, Any]) -> Dict[str, Any]:
+        if values.get("source_kind") == SourceKind.KNOWLEDGE and values.get("proof_scope") != ProofScope.REFERENCE_ONLY:
+            raise ValueError("knowledge_evidence_must_be_reference_only")
         if values.get("proof_scope") == ProofScope.CURRENT_OBSERVATION and values.get("freshness") == FreshnessStatus.STALE:
             raise ValueError("stale evidence cannot be current-incident proof")
         return values
@@ -179,7 +184,7 @@ class EvidenceEnvelope(StrictModel):
 class ClaimRecord(StrictModel):
     claim_id: NonEmpty
     case_id: NonEmpty
-    case_revision: conint(ge=1)
+    case_revision: PositiveInt
     tenant_id: NonEmpty
     claim_type: NonEmpty
     statement: NonEmpty
@@ -225,14 +230,14 @@ class ConflictRecord(StrictModel):
 class InvestigatorAssignment(StrictModel):
     assignment_id: NonEmpty
     case_id: NonEmpty
-    case_revision: conint(ge=1)
+    case_revision: PositiveInt
     tenant_id: NonEmpty
     role: NonEmpty
     question: NonEmpty
     allowed_tools: List[NonEmpty]
     allowed_entities: List[NonEmpty]
-    assignment_revision: conint(ge=1) = 1
-    max_tool_calls: conint(ge=0) = 2
+    assignment_revision: PositiveInt = 1
+    max_tool_calls: NonNegativeInt = 2
     dispatched_at: datetime
 
 
@@ -244,20 +249,35 @@ class RouteDecision(StrictModel):
     fanout_suppressed_reason: Optional[StrictStr] = None
 
 
+class PrivilegedChange(StrictModel):
+    template_id: NonEmpty
+    parameters: Dict[NonEmpty, NonEmpty] = Field(default_factory=dict)
+
+
+class CanaryScope(StrictModel):
+    maximum_targets: PositiveInt = 1
+    environment: NonEmpty
+
+
+class RollbackContract(StrictModel):
+    template_id: NonEmpty
+    parameters: Dict[NonEmpty, NonEmpty] = Field(default_factory=dict)
+
+
 class RemediationProposal(StrictModel):
     proposal_id: NonEmpty
     case_id: NonEmpty
-    case_revision: conint(ge=1)
+    case_revision: PositiveInt
     tenant_id: NonEmpty
-    revision: conint(ge=1)
+    revision: PositiveInt
     action_type: NonEmpty
     exact_targets: List[NonEmpty] = Field(min_items=1)
-    exact_change: Dict[str, Any]
-    canary_scope: Dict[str, Any] = Field(default_factory=dict)
-    preconditions: Dict[str, NonEmpty] = Field(default_factory=dict)
+    exact_change: PrivilegedChange
+    canary_scope: CanaryScope
+    preconditions: Dict[NonEmpty, NonEmpty] = Field(default_factory=dict)
     supporting_claim_ids: List[NonEmpty] = Field(min_items=1)
     success_criteria: List[NonEmpty] = Field(min_items=1)
-    rollback: Dict[str, Any]
+    rollback: RollbackContract
     idempotency_key: NonEmpty
     expires_at: datetime
 
@@ -265,15 +285,15 @@ class RemediationProposal(StrictModel):
 class OwnerApproval(StrictModel):
     approval_id: NonEmpty
     case_id: NonEmpty
-    case_revision: conint(ge=1)
+    case_revision: PositiveInt
     tenant_id: NonEmpty
     proposal_id: NonEmpty
-    proposal_revision: conint(ge=1)
+    proposal_revision: PositiveInt
     repair_contract_hash: Hash
     actor_id: NonEmpty
     execution_targets: List[NonEmpty] = Field(min_items=1)
-    maximum_targets: conint(ge=1)
-    precondition_witness: Dict[str, NonEmpty]
+    maximum_targets: PositiveInt
+    precondition_witness: Dict[NonEmpty, NonEmpty]
     decision: ApprovalDecision
     decided_at: datetime
     expires_at: datetime
@@ -296,7 +316,7 @@ class KnowledgeRevision(StrictModel):
     knowledge_revision_id: NonEmpty
     tenant_id: NonEmpty
     document_id: NonEmpty
-    revision: conint(ge=1)
+    revision: PositiveInt
     kind: NonEmpty
     owner: NonEmpty
     allowed_subjects: List[NonEmpty]
@@ -315,7 +335,7 @@ class KnowledgeRevision(StrictModel):
 class KnowledgeCandidate(StrictModel):
     knowledge_revision_id: NonEmpty
     evidence: EvidenceEnvelope
-    retrieval_score: float = Field(ge=0.0, le=1.0)
+    retrieval_score: UnitIntervalFloat
     reason: NonEmpty
 
 
@@ -327,11 +347,57 @@ class CriticDecision(StrictModel):
 
 
 class DryRunReceipt(StrictModel):
+    tenant_id: NonEmpty
+    case_id: NonEmpty
     proposal_id: NonEmpty
+    repair_contract_hash: Hash
     idempotency_key: NonEmpty
     status: NonEmpty = "DRY_RUN_ACCEPTED"
     external_write_performed: StrictBool = False
     reason: NonEmpty
+
+
+class AuthContext(StrictModel):
+    """Set by a trusted upstream auth adapter, never parsed from a request body."""
+    tenant_id: NonEmpty
+    subject_id: NonEmpty
+    roles: List[NonEmpty]
+
+
+class DryRunRequest(StrictModel):
+    approval: OwnerApproval
+    current_witness: Dict[NonEmpty, NonEmpty]
+
+
+class TemporalCaseDescriptor(StrictModel):
+    case_id: NonEmpty
+    tenant_id: NonEmpty
+    case_revision: PositiveInt
+    workflow_run_id: NonEmpty
+    severity: NonEmpty
+    environment: NonEmpty
+    affected_entities: List[NonEmpty] = Field(min_items=1)
+
+
+class TemporalCaseRequest(StrictModel):
+    case: TemporalCaseDescriptor
+    actor: AuthContext
+    evidence_families: NonNegativeInt = 1
+    specialist_roles: List[NonEmpty] = Field(default_factory=list, max_items=4)
+
+
+class TemporalActivityPacket(StrictModel):
+    case_id: NonEmpty
+    case_revision: PositiveInt
+    tenant_id: NonEmpty
+    workflow_run_id: NonEmpty
+    actor_subject_id: NonEmpty
+    severity: NonEmpty
+    environment: NonEmpty
+    affected_entities: List[NonEmpty] = Field(min_items=1)
+    stage: NonEmpty
+    specialist_role: Optional[NonEmpty] = None
+    proposal_id: Optional[NonEmpty] = None
 
 
 class EvaluationMetrics(StrictModel):
@@ -339,9 +405,9 @@ class EvaluationMetrics(StrictModel):
     variant: NonEmpty
     time_to_first_useful_evidence_ms: Optional[StrictInt] = None
     time_to_verified_diagnosis_ms: Optional[StrictInt] = None
-    tool_calls: conint(ge=0) = 0
-    tokens: conint(ge=0) = 0
-    specialist_fanout: conint(ge=0) = 0
+    tool_calls: NonNegativeInt = 0
+    tokens: NonNegativeInt = 0
+    specialist_fanout: NonNegativeInt = 0
     citation_precision: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     false_confident_rca: StrictBool = False
     stale_kb_failure: StrictBool = False
