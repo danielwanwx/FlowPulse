@@ -1,0 +1,25 @@
+[project]
+name = "flowpulse-diagnosis-control-plane"
+version = "0.1.0"
+description = "Temporal-owned, evidence-grounded incident diagnosis control plane"
+requires-python = ">=3.9"
+dependencies = [
+  "fastapi>=0.68,<1",
+  "pydantic>=1.10,<2",
+  "uvicorn[standard]>=0.20,<1",
+  "temporalio>=1.6,<2",
+  "asyncpg>=0.29,<1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7,<9", "httpx>=0.24,<1"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["flowpulse_cp"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
