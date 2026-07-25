@@ -533,6 +533,7 @@ const AGENT_TEAM_PROVIDER_AVAILABILITY = new Set(["available", "unavailable", "p
 const AGENT_TEAM_PAGE_MODES = new Set(["architecture", "live", "diagnose", "recovery", "compare", "manager"]);
 const AGENT_TEAM_MESSAGE_STATES = new Set(["completed", "failed", "needs_human", "working", "routing"]);
 const AGENT_TEAM_LOOP_STATES = new Set(["running", "recovered", "needs_human", "failed"]);
+const AUTHORIZED_INCIDENT_EXECUTION_OUTCOMES = new Set(["auto_execute_pre_authorized", "owner_approved"]);
 
 export function agentTeamProviderProjection(value) {
   return validAgentTeamProvider(value) ? value : null;
@@ -618,6 +619,39 @@ export function sharedRunReadModel(loop, { throughSequence = null } = {}) {
     role_responses: loop.role_responses,
     citations: loop.citations
   };
+}
+
+// The Incident stage is a presentation of the current server projection, not
+// a browser-side workflow transition. A recorded authority event only opens
+// Execute when it actually grants a bounded execution scope; an evidence-gap
+// decision must remain blocked even though it has the same event type.
+export function hasAuthoritativeIncidentExecution(events) {
+  if (!Array.isArray(events)) return false;
+  return events.some((event) => {
+    if (!plainRecord(event)) return false;
+    if (event.type === "local_fault_loop.repair.executed") return true;
+    if (event.type !== "local_fault_loop.authority.decided" || !plainRecord(event.payload)) return false;
+    const outcome = event.payload.outcome;
+    const scope = event.payload.execution_scope;
+    return AUTHORIZED_INCIDENT_EXECUTION_OUTCOMES.has(outcome)
+      && typeof scope === "string"
+      && scope.trim() !== ""
+      && scope !== "none";
+  });
+}
+
+// This derives the authoritative current stage from the canonical loop
+// projection. Historical timeline browsing intentionally uses a separate
+// cursor and must never rewrite this value.
+export function canonicalIncidentWorkspaceStage(shared) {
+  const state = shared?.state;
+  const topology = plainRecord(shared?.topology) ? shared.topology : null;
+  const events = Array.isArray(shared?.events) ? shared.events : [];
+  if (state === "recovered" || topology?.verification?.passed === true) return "verify";
+  if (state === "needs_human" || state === "failed") return "investigate";
+  if (hasAuthoritativeIncidentExecution(events)) return "execute";
+  if (events.some((event) => event?.type === "local_fault_loop.plan.proposed") || shared?.workspace_actions?.open_recovery_console?.available === true) return "decide";
+  return "investigate";
 }
 
 // This is the only browser-facing projection for a canonical local-fault-loop
@@ -857,7 +891,7 @@ function incidentFocusPositions(nodeIds, relations) {
 }
 
 function incidentFocusSignal(id, metric) {
-  if (!validCanonicalMetric(metric, false)) return null;
+  if (!metric || !validCanonicalMetric(metric, false)) return null;
   if (id === "checkout") return { value: `${metric.checkout_error_rate_percent}% errors`, tone: "fault" };
   if (id === "payment") return { value: `${metric.payment_reachability_percent}% reachable`, tone: "warning" };
   if (id === "kafka") return { value: `${metric.kafka_lag.toLocaleString()} lag`, tone: "warning" };

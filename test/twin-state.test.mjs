@@ -16,6 +16,8 @@ import {
   agentLoopStartProjection,
   agentTeamConversationProjection,
   agentTeamProviderProjection,
+  canonicalIncidentWorkspaceStage,
+  hasAuthoritativeIncidentExecution,
   architectureViewTopology,
   componentDetailProjection,
   nodeInvestigationN1Projection,
@@ -48,6 +50,7 @@ import {
 const indexHtml = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
 const appJs = readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
 const stylesCss = readFileSync(new URL("../public/styles.css", import.meta.url), "utf8");
+const twinStateSource = readFileSync(new URL("../public/twin-state.mjs", import.meta.url), "utf8");
 
 test("canonical display never turns observed or missing backend facts into fixed healthy demo data", () => {
   const display = canonicalTwinDisplay({ sourceStates: { checkout: "observed" }, metric: null });
@@ -319,6 +322,31 @@ test("Agent Team browser projections accept only bounded roles, safe answers, tr
   assert.equal(agentLoopStartProjection({ ...loop, contextual_workspaces: { ...loop.contextual_workspaces, repair: "forged" } }), null);
 });
 
+test("Incident derives its current stage from canonical evidence and never treats a human stop as execution authority", () => {
+  const recovered = {
+    state: "recovered",
+    topology: { verification: { passed: true } },
+    events: [{ type: "local_fault_loop.verification.completed", payload: { passed: true } }]
+  };
+  const needsHuman = {
+    state: "needs_human",
+    topology: { verification: { passed: false } },
+    events: [{ type: "local_fault_loop.authority.decided", payload: { outcome: "needs_human", execution_scope: "none" } }]
+  };
+  const approved = {
+    state: "running",
+    topology: { verification: { passed: false } },
+    events: [{ type: "local_fault_loop.authority.decided", payload: { outcome: "auto_execute_pre_authorized", execution_scope: "local_memory_only" } }]
+  };
+
+  assert.equal(canonicalIncidentWorkspaceStage(recovered), "verify");
+  assert.equal(hasAuthoritativeIncidentExecution(needsHuman.events), false);
+  assert.equal(canonicalIncidentWorkspaceStage(needsHuman), "investigate");
+  assert.equal(hasAuthoritativeIncidentExecution(approved.events), true);
+  assert.equal(canonicalIncidentWorkspaceStage(approved), "execute");
+  assert.match(twinStateSource, /function incidentFocusSignal\(id, metric\) \{\n  if \(!metric \|\| !validCanonicalMetric\(metric, false\)\) return null;/);
+});
+
 function componentDetailPayload() {
   const topology = backendArchitectureView();
   const component = topology.architecture.runtime_data.graph.nodes.find(({ id }) => id === "checkout");
@@ -523,7 +551,7 @@ test("the shared header omits nonessential capture, theme, and workspace-menu ch
 });
 
 test("initial rendering does not wait for optional development diagnostics", () => {
-  const refreshSource = appJs.slice(appJs.indexOf("async function refresh()"), appJs.indexOf("function render()"));
+  const refreshSource = appJs.slice(appJs.indexOf("async function refresh({ synchronizeIncidentStage = false } = {})"), appJs.indexOf("function render()"));
   assert.match(refreshSource, /state = await request\(browserStatePath\(\)\);/);
   assert.match(refreshSource, /void refreshDevelopmentStatus\(\);/);
   assert.doesNotMatch(refreshSource, /Promise\.all\(/);
@@ -1040,7 +1068,7 @@ test("Incident is the sole persistent incident workspace and reserves the shared
   assert.match(appJs, /const INCIDENT_STAGES = Object\.freeze\(\[/);
   assert.match(indexHtml, /id="incident-stage-rail"/);
   assert.match(indexHtml, /id="incident-stage-panel"/);
-  assert.match(appJs, /function renderIncidentStageRail\(\)/);
+  assert.match(appJs, /function renderIncidentStageRail\(focusedStage = null\)/);
   assert.match(appJs, /function renderIncidentStagePanel\(shared\)/);
   assert.doesNotMatch(stylesCss, /\.app-shell\[data-mode="compare"\] \.twin-scroll \{ padding-right: 348px; \}/);
   assert.match(stylesCss, /\.app-shell\[data-mode="incident"\] \.canvas-shell \{[\s\S]+?padding-right: calc\(var\(--flowpulse-control-rail-width\) \+ var\(--flowpulse-control-rail-inset-x\) \* 2\);/);
@@ -1540,9 +1568,30 @@ test("P0.6 keeps internal provenance out of primary chrome and makes recovery au
   assert.ok(agentSessionSource.indexOf("const runId") < agentSessionSource.indexOf("const runDetail"), "session identity must exist before collapsed Run details are composed");
   assert.match(agentSessionSource, /const runDetail = \[/);
   assert.match(agentSessionSource, /agentTeamDisclosureMarkup\("run", "Run details", runDetail\)/);
+  assert.doesNotMatch(agentSessionSource, /runId \? `<code>/);
+  assert.doesNotMatch(agentSessionSource, /incidentId \? `<code>/);
   assert.doesNotMatch(liveEventSource, /event\.marker \?/);
   assert.match(railSource, /isUnifiedRailWorkspace\(\)/);
   assert.match(recoverySource, /Owner gate/);
+});
+
+test("Incident hydration pins the restored run, reports a stale stream, and retains stage focus across rerenders", () => {
+  const bootstrap = appJs.slice(appJs.indexOf("let sharedRun = restoreSharedRun()"), appJs.indexOf("window.addEventListener(\"popstate\""));
+  const hydrateSource = appJs.slice(appJs.indexOf("async function hydrateSharedRun"), appJs.indexOf("function appendLoopTimelineItem"));
+  const railSource = appJs.slice(appJs.indexOf("function renderIncidentStageRail"), appJs.indexOf("function renderCanonicalTopologyPending"));
+  const headerSource = appJs.slice(appJs.indexOf("function renderHeader"), appJs.indexOf("function toggleTheme"));
+  assert.match(bootstrap, /let selectedRunId = readRequestedRunId\(\);[\s\S]*?if \(selectedRunId === null && sharedRun\?\.run_id\) bindCanonicalRunSelection\(sharedRun\);/);
+  assert.match(appJs, /if \(selectedRunId === null\) bindCanonicalRunSelection\(loop\);/);
+  assert.match(appJs, /state = await request\(browserStatePath\(\)\);[\s\S]*?state\?\.run_id !== selectedRunId/);
+  assert.match(hydrateSource, /if \(!runId \|\| selectedRunId !== runId\) return;/);
+  assert.match(hydrateSource, /agent-loop\?run_id=\$\{encodeURIComponent\(runId\)\}/);
+  assert.match(hydrateSource, /new EventSource\(`\/api\/demo\/agent-loop\/events\?run_id=\$\{encodeURIComponent\(runId\)\}/);
+  assert.match(headerSource, /shared-run-connection/);
+  assert.match(headerSource, /Live incident updates are stale; retrying/);
+  assert.match(indexHtml, /id="shared-run-connection"[^>]+role="status"/);
+  assert.match(railSource, /focusedStage = null/);
+  assert.match(railSource, /focus\(\{ preventScroll: true \}\)/);
+  assert.match(stylesCss, /\.causal-note\.note-deploy \{ left: clamp\(140px, 14%, calc\(100% - 140px\)\);/);
 });
 
 test("incident workspaces render only the strict server focus projection while Architecture and Live stay complete", () => {

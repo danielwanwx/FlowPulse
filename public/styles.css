@@ -1933,7 +1933,7 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .causal-note.note-role-outcome strong { font-size: 10px; }
 .causal-note.note-role-outcome .note-copy > span { font-size: 8px; }
 .causal-note.note-learning { --note-signal: var(--violet); }
-.causal-note.note-deploy { left: 10%; top: 46px; }
+.causal-note.note-deploy { left: clamp(140px, 14%, calc(100% - 140px)); top: 46px; }
 .causal-note.note-propagation { left: 52%; top: 3%; }
 .causal-note.note-rejected { left: 69%; top: 13%; }
 .causal-note.note-replan { left: 43%; top: 34%; }
@@ -1954,6 +1954,9 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .incident-copy strong, .incident-copy span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .incident-copy strong { font-size: 12px; }
 .incident-copy span { color: var(--muted); font-size: 9px; }
+.incident-copy .shared-run-connection { color: #9a5b12; font-weight: 700; }
+.incident-copy .shared-run-connection::before { content: "●"; margin-right: 4px; font-size: 7px; }
+.incident-copy .shared-run-connection[data-state="stale"] { color: var(--red); }
 .incident-stage { padding-left: 14px; border-left: 1px solid var(--line); }
 .incident-stage strong { overflow: hidden; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 

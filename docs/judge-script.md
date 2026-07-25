@@ -6,7 +6,7 @@ Target time: 2 minutes 20 seconds.
 
 "FlowPulse turns fragmented telemetry into an incident loop that can be challenged, safely repaired, verified, and learned from. The append-only ledger is the runtime authority; every model claim must cite evidence."
 
-On macOS or Linux with Node.js 20+ and `sqlite3`, run `npm test && npm run demo`; no Docker, telemetry collector, or OpenAI credential is needed. The product opens on the current Architecture projection. Point out the **deterministic replay** label, then open **Diagnose**.
+On macOS or Linux with Node.js 20+ and `sqlite3`, run `npm test && npm run demo`; no Docker, telemetry collector, or OpenAI credential is needed. The product opens on the current Architecture projection. Point out the **deterministic replay** label, then open the persistent **Incident** workspace at **Investigate**.
 
 ## False diagnosis (0:20-0:50)
 
@@ -29,9 +29,9 @@ The evaluator now accepts a complete change, mechanism, timing, and propagation 
 
 ## Human gate and recovery (1:20-1:50)
 
-The state machine proposes only a checkout rollback. Click **Recover** to open the Manager. Point out the rejected diagnosis, accepted root cause, evidence IDs, and bounded checkout-only action, then use the separate **Approve bounded checkout recovery** control.
+The state machine proposes only a checkout rollback. In the Incident workspace, move from **Investigate** to **Decide**. Point out the rejected diagnosis, accepted root cause, cited evidence, and bounded checkout-only action; then use the backend-recorded owner approval control.
 
-Point out that approval is an immutable ledger event and precedes repair execution. FlowPulse switches to **Recovery Console**, where the accepted diagnosis, Manager command, safe work queue, and Owner/Executor/Verification/Evolve/Test roles update from the same event stream. The verification projection then shows payment reachability at 99.98%, checkout errors at 0.8%, and Kafka lag draining to 620 without a Kafka repair.
+Point out that approval is an immutable ledger event and precedes repair execution. The same Incident workspace advances to **Execute**, where the accepted diagnosis and bounded recovery update from the same event stream, then to **Verify**, where comparison is available only after independent verification. The verification projection shows payment reachability at 99.98%, checkout errors at 0.8%, and Kafka lag draining to 620 without a Kafka repair.
 
 ## Learning and live mode (1:50-2:20)
 

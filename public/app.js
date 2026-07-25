@@ -16,6 +16,8 @@ import {
   agentLoopProjection,
   agentLoopStartProjection,
   sharedRunReadModel,
+  canonicalIncidentWorkspaceStage,
+  hasAuthoritativeIncidentExecution,
   agentTeamConversationProjection,
   agentTeamProviderProjection,
   canonicalWorkspaceVisual,
@@ -119,6 +121,8 @@ let state;
 let developmentStatus;
 let mode = "architecture";
 let incidentStage = "investigate";
+let authoritativeIncidentStage = "investigate";
+let incidentStageFollowsAuthority = true;
 let renderedMode = null;
 let renderedCanvasKey = null;
 let cursor = 0;
@@ -152,19 +156,21 @@ let agentLoopEventSource;
 let agentTeamRestoreAttempted = false;
 let agentTeam = restoreAgentTeamState();
 let liveInspector = emptyLiveInspector();
-// `run_id` is a deliberate browser contract, not a hint. When present, every
-// state refresh must ask the backend for that exact run rather than whichever
-// loop happened to start most recently in another tab.
-let selectedRunId = readRequestedRunId();
 // This is a connection/cache controller, not a second incident store. Every
 // displayed run fact is a parsed record from /api/demo/agent-loop or its SSE.
 let sharedRun = restoreSharedRun();
+// `run_id` is a deliberate browser contract, not a hint. Restore and pin the
+// prior canonical run before the first state request or hydration so another
+// tab cannot replace it with whichever loop started most recently.
+let selectedRunId = readRequestedRunId();
+if (selectedRunId === null && sharedRun?.run_id) bindCanonicalRunSelection(sharedRun);
 let sharedRunReconnectTimer = null;
+let sharedRunReconnectAttempts = 0;
 let sharedRunFollowing = true;
 
 window.addEventListener("popstate", () => {
   selectedRunId = readRequestedRunId();
-  void refresh();
+  void refresh({ synchronizeIncidentStage: true });
 });
 
 // The app shell itself records the active mode for styling. Bind navigation only
@@ -242,14 +248,16 @@ document.addEventListener("keydown", (event) => {
   }
 });
 
-await refresh();
+await refresh({ synchronizeIncidentStage: true });
 
-async function refresh() {
+async function refresh({ synchronizeIncidentStage = false } = {}) {
   setLoading(true);
   try {
     state = await request(browserStatePath());
+    if (selectedRunId !== null && state?.run_id !== selectedRunId) throw new Error("The requested incident is unavailable.");
     bindCanonicalWorkspace(state.workspace_projection);
     const canonical = sharedRunModel();
+    synchronizeCanonicalIncidentStage(canonical, { force: synchronizeIncidentStage });
     cursor = canonical?.events.length ? canonical.events.length - 1 : availableStage(state.events);
     connectAgentStream();
     hideError();
@@ -270,22 +278,24 @@ async function refresh() {
 function bindCanonicalWorkspace(value) {
   if (value == null) {
     if (selectedRunId !== null) {
-      sharedRun = { run_id: null, incident_id: null, loop: null, last_sequence: 0, error: "The requested run is unavailable." };
+      sharedRun = { run_id: null, incident_id: null, loop: null, last_sequence: 0, stream_state: "stale", error: "The requested run is unavailable." };
       persistSharedRun();
     }
     return;
   }
   const loop = agentLoopProjection(value, { runId: value?.run_id || null });
   if (!loop || (selectedRunId !== null && loop.run_id !== selectedRunId)) {
-    sharedRun = { run_id: null, incident_id: null, loop: null, last_sequence: 0, error: "Canonical workspace projection is incompatible." };
+    sharedRun = { run_id: null, incident_id: null, loop: null, last_sequence: 0, stream_state: "stale", error: "Canonical workspace projection is incompatible." };
     persistSharedRun();
     return;
   }
+  if (selectedRunId === null) bindCanonicalRunSelection(loop);
   sharedRun = {
     run_id: loop.run_id,
     incident_id: loop.incident_id,
     loop,
     last_sequence: loop.events.at(-1)?.sequence || 0,
+    stream_state: "connected",
     error: null
   };
   persistSharedRun();
@@ -295,7 +305,7 @@ function restoreSharedRun() {
   try {
     const value = JSON.parse(sessionStorage.getItem("flowpulse-shared-run") || "null");
     if (!value || typeof value !== "object" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(value.run_id || "") || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(value.incident_id || "")) return null;
-    return { run_id: value.run_id, incident_id: value.incident_id, loop: null, last_sequence: Number.isSafeInteger(value.last_sequence) && value.last_sequence >= 0 ? value.last_sequence : 0, error: null };
+    return { run_id: value.run_id, incident_id: value.incident_id, loop: null, last_sequence: Number.isSafeInteger(value.last_sequence) && value.last_sequence >= 0 ? value.last_sequence : 0, stream_state: "connecting", error: null };
   } catch {
     return null;
   }
@@ -376,12 +386,14 @@ function sharedRunTerminal() {
 }
 
 async function hydrateSharedRun() {
-  if (!sharedRun?.run_id) return;
+  const runId = sharedRun?.run_id;
+  if (!runId || selectedRunId !== runId) return;
   try {
-    const payload = await request(`/api/demo/agent-loop?run_id=${encodeURIComponent(sharedRun.run_id)}`);
-    const loop = agentLoopProjection(payload, { runId: sharedRun.run_id });
+    const payload = await request(`/api/demo/agent-loop?run_id=${encodeURIComponent(runId)}`);
+    if (sharedRun?.run_id !== runId || selectedRunId !== runId) return;
+    const loop = agentLoopProjection(payload, { runId });
     if (!loop || loop.incident_id !== sharedRun.incident_id) throw new Error("Shared run projection is incompatible.");
-    sharedRun = { ...sharedRun, loop, last_sequence: Math.max(sharedRun.last_sequence || 0, loop.events.at(-1)?.sequence || 0), error: null };
+    sharedRun = { ...sharedRun, loop, last_sequence: Math.max(sharedRun.last_sequence || 0, loop.events.at(-1)?.sequence || 0), stream_state: sharedRunTerminal() ? "idle" : "connected", error: null };
     agentTeam = {
       ...agentTeam,
       loop,
@@ -390,12 +402,14 @@ async function hydrateSharedRun() {
     };
     if (!selected && loop.contextual_workspaces.context.selected_component) selected = { type: "node", id: loop.contextual_workspaces.context.selected_component };
     if (sharedRunFollowing) cursor = Math.max(0, loop.events.length - 1);
+    synchronizeCanonicalIncidentStage(sharedRunModel());
     persistSharedRun();
     connectSharedRunStream();
     render();
     ensureSelectedLiveComponentDetail();
   } catch (error) {
-    sharedRun = { ...sharedRun, error: error.message || "Shared run is unavailable." };
+    if (sharedRun?.run_id !== runId || selectedRunId !== runId) return;
+    sharedRun = { ...sharedRun, stream_state: "stale", error: error.message || "Shared run is unavailable." };
     render();
   }
 }
@@ -403,12 +417,22 @@ async function hydrateSharedRun() {
 function connectSharedRunStream() {
   if (!sharedRun?.run_id || !sharedRun?.loop || ["recovered", "needs_human", "failed"].includes(sharedRun.loop.state) || typeof EventSource !== "function") return;
   agentLoopEventSource?.close();
+  const runId = sharedRun.run_id;
+  const incidentId = sharedRun.incident_id;
   const after = sharedRun.last_sequence || 0;
-  agentLoopEventSource = new EventSource(`/api/demo/agent-loop/events?run_id=${encodeURIComponent(sharedRun.run_id)}&after=${after}`);
-  agentLoopEventSource.addEventListener("local-fault-loop", (event) => {
+  const stream = new EventSource(`/api/demo/agent-loop/events?run_id=${encodeURIComponent(runId)}&after=${after}`);
+  agentLoopEventSource = stream;
+  stream.onopen = () => {
+    if (agentLoopEventSource !== stream || sharedRun?.run_id !== runId) return;
+    sharedRunReconnectAttempts = 0;
+    sharedRun = { ...sharedRun, stream_state: "connected", error: null };
+    render();
+  };
+  stream.addEventListener("local-fault-loop", (event) => {
     try {
-      const projection = agentLoopEventProjection(JSON.parse(event.data), { runId: sharedRun.run_id });
-      if (!projection || projection.incident_id !== sharedRun.incident_id) throw new Error("Shared run event is incompatible.");
+      if (agentLoopEventSource !== stream || sharedRun?.run_id !== runId) return;
+      const projection = agentLoopEventProjection(JSON.parse(event.data), { runId });
+      if (!projection || projection.incident_id !== incidentId) throw new Error("Shared run event is incompatible.");
       const incoming = projection.event;
       const events = [...(sharedRun.loop?.events || []), incoming]
         .filter((entry, index, all) => all.findIndex((candidate) => candidate.id === entry.id || candidate.sequence === entry.sequence) === index)
@@ -418,9 +442,11 @@ function connectSharedRunStream() {
         ...sharedRun,
         loop: { ...sharedRun.loop, events, contextual_workspaces: projection.contextual_workspaces, stage: projection.contextual_workspaces.context.timeline.stage },
         last_sequence: Math.max(sharedRun.last_sequence || 0, incoming.sequence),
+        stream_state: "connected",
         error: null
       };
       if (sharedRunFollowing) cursor = Math.max(0, events.length - 1);
+      synchronizeCanonicalIncidentStage(sharedRunModel());
       agentTeam = {
         ...agentTeam,
         loop: { ...sharedRun.loop, contextual_workspaces: projection.contextual_workspaces },
@@ -432,18 +458,28 @@ function connectSharedRunStream() {
       render();
       ensureSelectedLiveComponentDetail();
     } catch {
-      agentLoopEventSource?.close();
-      sharedRun = { ...sharedRun, error: "Shared run stream is incompatible." };
+      stream.close();
+      if (sharedRun?.run_id !== runId) return;
+      sharedRun = { ...sharedRun, stream_state: "stale", error: "Shared run stream is incompatible." };
       render();
     }
   });
-  agentLoopEventSource.addEventListener("local-fault-loop-state", () => {
-    agentLoopEventSource?.close();
+  stream.addEventListener("local-fault-loop-state", () => {
+    if (agentLoopEventSource !== stream || sharedRun?.run_id !== runId) return;
+    stream.close();
     void hydrateSharedRun();
   });
-  agentLoopEventSource.onerror = () => {
+  stream.onerror = () => {
+    if (agentLoopEventSource !== stream || sharedRun?.run_id !== runId) return;
     if (sharedRunTerminal() || sharedRunReconnectTimer) return;
-    agentLoopEventSource?.close();
+    stream.close();
+    sharedRunReconnectAttempts += 1;
+    sharedRun = {
+      ...sharedRun,
+      stream_state: sharedRunReconnectAttempts >= 2 ? "stale" : "reconnecting",
+      error: null
+    };
+    render();
     sharedRunReconnectTimer = setTimeout(() => {
       sharedRunReconnectTimer = null;
       connectSharedRunStream();
@@ -485,9 +521,18 @@ function incidentStageEvidence(shared) {
   return {
     investigate: Boolean(shared?.topology && incidentFocusWorkspace(shared.topology, shared.topology.snapshots?.incident, diagnoseViewTopology(state?.topology_views)).availability === "ready"),
     decide: has("local_fault_loop.plan.proposed") || shared?.workspace_actions?.open_recovery_console?.available === true,
-    execute: has("local_fault_loop.authority.decided") || has("local_fault_loop.repair.executed"),
+    execute: hasAuthoritativeIncidentExecution(events),
     verify: shared?.topology?.verification?.passed === true && shared?.topology?.snapshots?.verified != null
   };
+}
+
+function synchronizeCanonicalIncidentStage(shared, { force = false } = {}) {
+  if (!shared) return;
+  authoritativeIncidentStage = canonicalIncidentWorkspaceStage(shared);
+  if (force || incidentStageFollowsAuthority) {
+    incidentStage = authoritativeIncidentStage;
+    incidentStageFollowsAuthority = true;
+  }
 }
 
 function setIncidentStage(nextStage) {
@@ -499,6 +544,7 @@ function setIncidentStage(nextStage) {
     return;
   }
   incidentStage = nextStage;
+  incidentStageFollowsAuthority = nextStage === authoritativeIncidentStage;
   mode = "incident";
   if (shared && sharedRunFollowing) cursor = Math.max(0, shared.events.length - 1);
   render();
@@ -506,13 +552,14 @@ function setIncidentStage(nextStage) {
 
 function render() {
   if (!state) return;
+  const focusedIncidentStage = document.activeElement?.closest?.("[data-incident-stage]")?.dataset.incidentStage || null;
   const canvasKey = canvasProjectionKey();
   const shouldRenderCanvas = canvasKey !== renderedCanvasKey;
   const previousPositions = shouldRenderCanvas && renderedMode && renderedMode !== mode ? captureCanvasNodePositions() : new Map();
   renderHeader();
   renderMetrics();
   if (shouldRenderCanvas) renderCanvas();
-  renderIncidentStageRail();
+  renderIncidentStageRail(focusedIncidentStage);
   renderTimeline();
   renderApproval();
   renderDevelopmentControl();
@@ -545,6 +592,14 @@ function renderHeader() {
   const canvasTitles = { architecture: "Architecture", live: "Observed runtime", incident: "Incident workspace", replay: "Incident reconstruction", agents: "Developer recovery workspace", compare: "Incident vs verified" };
   els["incident-title"].textContent = shared ? (shared.state === "needs_human" ? "Evidence gap incident" : "Checkout / payment incident") : state.incident.title;
   els["incident-summary"].textContent = shared ? `${shared.events.length} server-recorded updates` : state.incident.summary;
+  const connectionMessage = sharedRun?.stream_state === "reconnecting"
+    ? "Reconnecting to live incident updates"
+    : sharedRun?.stream_state === "stale"
+      ? "Live incident updates are stale; retrying"
+      : "";
+  els["shared-run-connection"].hidden = !connectionMessage;
+  els["shared-run-connection"].textContent = connectionMessage;
+  els["shared-run-connection"].dataset.state = sharedRun?.stream_state || "";
   els.severity.textContent = shared ? (shared.state === "needs_human" ? "Unknown" : "SEV-2") : state.incident.severity;
   els.environment.textContent = shared ? "Incident workspace" : state.incident.environment;
   els["incident-stage"].textContent = shared ? humanStageLabel(shared.stage) : state.stage;
@@ -877,7 +932,7 @@ function renderIncidentStagePanel(shared) {
   panel.innerHTML = `${common}<dl><div><dt>Verification</dt><dd>${escapeHtml(verification?.payload?.passed ? "Passed" : "Pending")}</dd></div><div><dt>Snapshots</dt><dd>${escapeHtml(verification?.payload?.passed ? "Incident and verified" : "Incident only")}</dd></div><div><dt>Evidence</dt><dd>${escapeHtml(`${shared.citations.length} cited records`)}</dd></div></dl><p>${verification?.payload?.passed ? "Drag the divider to compare the incident snapshot with independently verified recovery." : "Compare stays locked until the backend records independent verification."}</p><button type="button" data-agent-team-role="evaluator">Ask Evaluator</button>`;
 }
 
-function renderIncidentStageRail() {
+function renderIncidentStageRail(focusedStage = null) {
   const rail = els["incident-stage-rail"];
   const shared = sharedRunModel();
   rail.hidden = !isIncidentWorkspace();
@@ -889,8 +944,10 @@ function renderIncidentStageRail() {
   rail.innerHTML = INCIDENT_STAGES.map((stage, index) => {
     const active = stage.id === incidentStage;
     const enabled = Boolean(shared && evidence[stage.id]);
-    return `<button type="button" class="incident-stage-button ${active ? "is-active" : ""}" data-incident-stage="${stage.id}" aria-current="${active ? "step" : "false"}" ${enabled ? "" : "disabled"}><span>${index + 1}</span><strong>${escapeHtml(stage.label)}</strong><small>${enabled ? (active ? "Current" : "Recorded") : "Pending"}</small></button>`;
+    const stageStatus = !enabled ? "Pending" : active ? (stage.id === authoritativeIncidentStage ? "Current" : "Viewing") : "Recorded";
+    return `<button type="button" class="incident-stage-button ${active ? "is-active" : ""}" data-incident-stage="${stage.id}" aria-current="${active ? "step" : "false"}" ${enabled ? "" : "disabled"}><span>${index + 1}</span><strong>${escapeHtml(stage.label)}</strong><small>${stageStatus}</small></button>`;
   }).join("");
+  if (INCIDENT_STAGES.some((stage) => stage.id === focusedStage)) rail.querySelector(`[data-incident-stage="${focusedStage}"]`)?.focus({ preventScroll: true });
 }
 
 function renderCanonicalTopologyPending(message = "Waiting for the backend-owned canonical topology projection.") {
@@ -1460,7 +1517,7 @@ function renderSharedRecoveryCanvas(shared) {
   els["compare-handle"].hidden = true;
   els["compare-canvas-range"].hidden = true;
   bindCanonicalCanvasIdentity(recoveryTopology.visual, "recovery-canvas");
-  els["twin-canvas"].setAttribute("aria-label", `Recovery Console for canonical run ${shared.run_id}.`);
+  els["twin-canvas"].setAttribute("aria-label", "Recovery execution workspace.");
   startIncidentFocusSignals();
 }
 
@@ -2267,9 +2324,7 @@ function agentTeamSessionMarkup(controls) {
   const projectionRevision = canonicalProjectionRevision();
   const runDetail = [
     sourceTruthLabel() ? `<p><span>Source</span>${escapeHtml(sourceTruthLabel())}</p>` : "",
-    provider?.truth_label ? `<p><span>Provider</span>${escapeHtml(provider.truth_label)}</p>` : "",
-    runId ? `<code>${escapeHtml(runId)}</code>` : "",
-    incidentId ? `<code>${escapeHtml(incidentId)}</code>` : ""
+    provider?.truth_label ? `<p><span>Provider</span>${escapeHtml(provider.truth_label)}</p>` : ""
   ].join("");
   const canCompose = role !== "ledger" && Boolean(runId && incidentId && projectionRevision);
   return `<section class="architecture-system architecture-flowpulse-system agent-team-session" aria-label="${escapeHtml(title)} session">
@@ -2403,7 +2458,9 @@ async function restoreAgentTeamSession() {
 }
 
 function workspaceLabel() {
-  return ({ architecture: "Architecture", live: "Live", replay: "Diagnose", agents: "Recovery Console", compare: "Compare" })[mode] || "Workspace";
+  return isIncidentWorkspace()
+    ? `Incident · ${INCIDENT_STAGES.find((stage) => stage.id === incidentStage)?.label || "Investigate"}`
+    : ({ architecture: "Architecture", live: "Live", replay: "Diagnose", agents: "Recovery Console", compare: "Compare" })[mode] || "Workspace";
 }
 
 function sourceTruthLabel() {
@@ -2565,7 +2622,7 @@ async function runAgentTeamDemo() {
     const loop = agentLoopStartProjection(payload);
     if (!loop) throw new Error("Demo loop response is incompatible with the safe browser contract.");
     bindCanonicalRunSelection(loop);
-    sharedRun = { run_id: loop.run_id, incident_id: loop.incident_id, loop: null, last_sequence: 0, error: null };
+    sharedRun = { run_id: loop.run_id, incident_id: loop.incident_id, loop: null, last_sequence: 0, stream_state: "connecting", error: null };
     agentTeam = { ...agentTeam, loop, loop_items: [], loop_after: 0, starting: false };
     persistSharedRun();
     await hydrateSharedRun();
@@ -2652,7 +2709,7 @@ function selectionMeta(focus) {
   }
   if (focus.type === "annotation") return { kind: "Causal annotation", title: annotationTitle(focus.id), subtitle: TWIN_STAGES[cursor].label };
   if (focus.type === "stage") return { kind: "Replay stage", title: TWIN_STAGES[cursor].label, subtitle: `Captured incident time ${TWIN_STAGES[cursor].time}` };
-  return { kind: "Incident run", title: state.incident.title, subtitle: `${state.events.length} immutable events in ${state.run_id}` };
+  return { kind: "Incident run", title: state.incident.title, subtitle: `${state.events.length} immutable recorded events` };
 }
 
 function drawerTone(focus) {

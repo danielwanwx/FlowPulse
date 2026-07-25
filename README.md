@@ -13,7 +13,7 @@ Most incident tools show signals. FlowPulse keeps the decision trail that connec
 - **Evidence first.** Metrics, traces, logs, changes, topology, and citations are bounded before an agent can make a claim.
 - **An adversarial evaluator.** A plausible diagnosis can be rejected and replanned when its causal evidence is incomplete.
 - **Explicit authority.** Agents can investigate and propose; the owner gate and an allowlisted adapter control any consequential recovery.
-- **Verified recovery.** A command succeeding is not enough. Fresh evidence and regression checks must establish recovery before Compare presents it as verified.
+- **Verified recovery.** A command succeeding is not enough. Fresh evidence and regression checks must establish recovery before the Incident workspace presents it as verified.
 
 ## Product tour
 
@@ -22,7 +22,7 @@ Most incident tools show signals. FlowPulse keeps the decision trail that connec
 | ![Layered system architecture](docs/assets/architecture-overview.png) | ![Captured incident in the Live topology](docs/assets/live-incident.png) |
 | A stable, line-free view of the observed system and the separate FlowPulse control system. | The canonical topology renders component status, safe details, and captured incident impact. |
 
-From the same canonical run, **Diagnose** narrows the affected path and cites the evidence behind the accepted cause. **Recovery Console** keeps owner approval, bounded execution, and verification visible. **Compare** renders recovery only after the backend records a passed verification. The competition video demonstrates this complete transition rather than presenting unrelated static states.
+From the same canonical run, the persistent **Incident** workspace carries the operator through **Investigate → Decide → Execute → Verify**. It narrows the affected path, keeps owner approval and bounded execution in place, and exposes the verified comparison only after the backend records passed verification. The competition video demonstrates this complete transition rather than presenting unrelated static states.
 
 ## System architecture
 
@@ -39,7 +39,7 @@ advisory Agent Team ──→ evaluator ──→ owner gate
         ↓                                  ↓
 append-only ledger ← verification ← allowlisted recovery
         ↓
-Architecture · Live · Diagnose · Recovery Console · Compare
+Architecture · Live · Incident (Investigate → Decide → Execute → Verify)
 ```
 
 ## Run the judge path
@@ -57,7 +57,7 @@ npm ci
 npm run judge
 ```
 
-`npm run judge` runs the automated suite and starts the local server. Open [http://127.0.0.1:4310](http://127.0.0.1:4310), select **Diagnose**, and run the guided replay. The replay is a captured Astronomy Shop incident: a checkout change makes payment unreachable; the evaluator rejects an unsupported Kafka-root-cause claim; the bounded checkout recovery is then evaluated through the owner-gate and verification projections.
+`npm run judge` runs the automated suite and starts the local server. Open [http://127.0.0.1:4310](http://127.0.0.1:4310), select **Incident**, and follow the staged workspace from **Investigate** through **Verify**. The replay is a captured Astronomy Shop incident: a checkout change makes payment unreachable; the evaluator rejects an unsupported Kafka-root-cause claim; the bounded checkout recovery is then evaluated through the owner-gate and verification projections.
 
 For development, use separate commands:
 
