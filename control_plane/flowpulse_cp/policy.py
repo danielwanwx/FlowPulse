@@ -8,11 +8,13 @@ from typing import Dict, Iterable, Sequence
 from .models import (
     ApprovalDecision,
     ClaimRecord,
+    EvidenceAuthority,
     EvidenceEnvelope,
     FreshnessStatus,
     OwnerApproval,
     ProofScope,
     RemediationProposal,
+    SourceKind,
 )
 
 
@@ -46,19 +48,45 @@ def repair_contract_hash(proposal: RemediationProposal) -> str:
     return hashlib.sha256(canonical_json(contract).encode("utf-8")).hexdigest()
 
 
-def validate_claim_evidence(claim: ClaimRecord, evidence: Sequence[EvidenceEnvelope]) -> None:
+def validate_claim_evidence(
+    claim: ClaimRecord, evidence: Sequence[EvidenceEnvelope], subject_id: str = None
+) -> None:
     by_id = {item.evidence_id: item for item in evidence}
     missing = set(claim.evidence_ids) - set(by_id)
     if missing:
         raise PolicyViolation("unknown_evidence_id:" + ",".join(sorted(missing)))
     cited = [by_id[item_id] for item_id in claim.evidence_ids]
-    if any(item.tenant_id != claim.tenant_id or item.case_id != claim.case_id for item in cited):
-        raise PolicyViolation("cross_tenant_or_cross_case_evidence")
+    if any(
+        item.tenant_id != claim.tenant_id
+        or item.case_id != claim.case_id
+        or item.case_revision != claim.case_revision
+        for item in cited
+    ):
+        raise PolicyViolation("cross_tenant_case_or_revision_evidence")
+    if subject_id is not None and any(subject_id not in item.acl_subjects for item in cited):
+        raise PolicyViolation("evidence_acl_subject_denied")
     if claim.requires_current_proof and not any(
-        item.proof_scope == ProofScope.CURRENT_OBSERVATION and item.freshness != FreshnessStatus.STALE
+        item.proof_scope == ProofScope.CURRENT_OBSERVATION
+        and item.freshness == FreshnessStatus.CURRENT
+        and item.authority in {EvidenceAuthority.T0, EvidenceAuthority.T1}
         for item in cited
     ):
         raise PolicyViolation("current_incident_proof_required")
+
+
+def validate_evidence_admission(evidence: EvidenceEnvelope, subject_id: str = None) -> None:
+    """Repeat current-proof checks at admission, including copy(update) bypasses."""
+    if evidence.source_kind == SourceKind.KNOWLEDGE and evidence.proof_scope != ProofScope.REFERENCE_ONLY:
+        raise PolicyViolation("knowledge_evidence_must_be_reference_only")
+    if evidence.proof_scope == ProofScope.CURRENT_OBSERVATION:
+        if evidence.freshness != FreshnessStatus.CURRENT:
+            raise PolicyViolation("current_incident_proof_requires_current_freshness")
+        if evidence.authority not in {EvidenceAuthority.T0, EvidenceAuthority.T1}:
+            raise PolicyViolation("current_incident_proof_requires_trusted_authority")
+        if not evidence.acl_subjects:
+            raise PolicyViolation("current_incident_proof_requires_subject_acl")
+    if subject_id is not None and subject_id not in evidence.acl_subjects:
+        raise PolicyViolation("evidence_acl_subject_denied")
 
 
 def validate_owner_gate(
@@ -83,8 +111,10 @@ def validate_owner_gate(
         raise PolicyViolation("proposal_revision_mismatch")
     if approval.repair_contract_hash != repair_contract_hash(proposal):
         raise PolicyViolation("repair_contract_hash_mismatch")
-    if set(approval.execution_targets) != set(proposal.exact_targets):
-        raise PolicyViolation("approval_target_scope_mismatch")
+    if approval.execution_targets != proposal.exact_targets:
+        raise PolicyViolation("approval_target_sequence_mismatch")
+    if len(proposal.exact_targets) > proposal.canary_scope.maximum_targets:
+        raise PolicyViolation("proposal_canary_maximum_targets_exceeded")
     if len(proposal.exact_targets) > approval.maximum_targets:
         raise PolicyViolation("approval_maximum_targets_exceeded")
     if proposal.preconditions != current_witness:

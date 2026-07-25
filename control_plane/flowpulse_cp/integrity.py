@@ -20,7 +20,7 @@ from .models import (
     VerificationDecision,
     VerificationReport,
 )
-from .policy import PolicyViolation, validate_claim_evidence
+from .policy import PolicyViolation, validate_claim_evidence, validate_evidence_admission
 from .repository import InMemoryCaseRepository
 
 
@@ -44,14 +44,14 @@ class EvidenceReadbackPort(Protocol):
 
 
 class EvidenceGateway:
-    def __init__(self, repository: InMemoryCaseRepository) -> None:
+    def __init__(self, repository: InMemoryCaseRepository, subject_id: str = None) -> None:
         self.repository = repository
+        self.subject_id = subject_id
 
     def admit(self, evidence: EvidenceEnvelope) -> EvidenceEnvelope:
+        validate_evidence_admission(evidence, self.subject_id)
         if not evidence.source_uri or not evidence.source_anchor or not evidence.schema_binding:
             raise PolicyViolation("evidence_locator_or_schema_binding_missing")
-        if evidence.source_kind == SourceKind.KNOWLEDGE and evidence.proof_scope != ProofScope.REFERENCE_ONLY:
-            raise PolicyViolation("knowledge_evidence_must_be_reference_only")
         if evidence.proof_scope == ProofScope.REFERENCE_ONLY and evidence.source_kind != SourceKind.KNOWLEDGE:
             # P0 only uses reference-only for Knowledge Plane documents. Other
             # adapters must classify their own content explicitly.
@@ -72,7 +72,10 @@ class EvidenceGateway:
         return evidence
 
     def admit_claim(self, claim: ClaimRecord) -> ClaimRecord:
-        validate_claim_evidence(claim, self.repository.evidence_for_case(claim.case_id))
+        case = self.repository.cases.get(claim.case_id)
+        if case is None or case.case_revision != claim.case_revision:
+            raise PolicyViolation("claim_case_revision_mismatch")
+        validate_claim_evidence(claim, self.repository.evidence_for_case(claim.case_id), self.subject_id)
         self.repository.put_claim(claim)
         return claim
 
@@ -126,6 +129,7 @@ class IndependentEvidenceVerifier:
         case_id: str,
         run_context_id: str,
         critic_identity: str = DeterministicCritic.identity,
+        subject_id: str = None,
     ) -> VerificationReport:
         case = repository.cases[case_id]
         verified: List[str] = []
@@ -133,7 +137,13 @@ class IndependentEvidenceVerifier:
         fresh_ids: List[str] = []
         for claim in [item for item in repository.claims.values() if item.case_id == case_id]:
             try:
-                if claim.created_by == self.identity or claim.created_by == critic_identity or self.identity == critic_identity:
+                if (
+                    claim.created_by == self.identity
+                    or claim.created_by == critic_identity
+                    or claim.created_by.startswith("verifier:")
+                    or claim.created_by.startswith("critic:")
+                    or self.identity == critic_identity
+                ):
                     raise PolicyViolation("verifier_identity_not_independent")
                 cited = [repository.evidence[item_id] for item_id in claim.evidence_ids]
                 validate_claim_evidence(claim, cited)
@@ -143,6 +153,8 @@ class IndependentEvidenceVerifier:
                         raise PolicyViolation("readback_case_or_tenant_mismatch")
                     if reread.case_revision != evidence.case_revision:
                         raise PolicyViolation("readback_case_revision_mismatch")
+                    if subject_id is not None and subject_id not in reread.acl_subjects:
+                        raise PolicyViolation("readback_acl_subject_denied")
                     if reread.source_uri != evidence.source_uri or reread.source_anchor != evidence.source_anchor:
                         raise PolicyViolation("readback_locator_mismatch")
                     if reread.source_version != evidence.source_version:
@@ -171,6 +183,7 @@ class IndependentEvidenceVerifier:
         report = VerificationReport(
             verification_id="verify-{}-{}".format(case_id, run_context_id),
             case_id=case_id,
+            case_revision=case.case_revision,
             tenant_id=case.tenant_id,
             verifier_identity=self.identity,
             run_context_id=run_context_id,

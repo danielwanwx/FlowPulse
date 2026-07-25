@@ -142,6 +142,10 @@ class KnowledgePlane:
             previous = self._revisions.get(revision.supersedes_revision_id)
             if previous is None or previous.tenant_id != revision.tenant_id:
                 raise PolicyViolation("knowledge_supersession_target_invalid")
+            if previous.document_id != revision.document_id:
+                raise PolicyViolation("knowledge_supersession_document_mismatch")
+            if revision.revision <= previous.revision:
+                raise PolicyViolation("knowledge_supersession_revision_not_increasing")
             if previous.status != KnowledgeStatus.ACTIVE:
                 raise PolicyViolation("knowledge_supersession_target_not_active")
             self._revisions[previous.knowledge_revision_id] = previous.copy(

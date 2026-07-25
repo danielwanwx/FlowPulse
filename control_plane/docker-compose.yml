@@ -7,12 +7,16 @@ services:
       FLOWPULSE_TEMPORAL_ADDRESS: temporal:7233
       FLOWPULSE_POSTGRES_DSN: postgresql://flowpulse_cp_app:flowpulse-cp-local-only@postgres:5432/flowpulse
       FLOWPULSE_OBJECT_STORE_ENDPOINT: http://minio:9000
+      FLOWPULSE_OBJECT_STORE_BUCKET: flowpulse-evidence
+      FLOWPULSE_OBJECT_STORE_ACCESS_KEY: flowpulse-local
+      FLOWPULSE_OBJECT_STORE_SECRET_KEY: flowpulse-local-only
       FLOWPULSE_TEMPORAL_TASK_QUEUE: flowpulse-diagnosis-p0
       FLOWPULSE_LOCAL_TEST_AUTH: "1"
+      FLOWPULSE_LOCAL_DETERMINISTIC_EVIDENCE: "1"
     depends_on:
       postgres: {condition: service_healthy}
       temporal: {condition: service_healthy}
-      minio: {condition: service_started}
+      minio: {condition: service_healthy}
   worker:
     build: .
     command: python -m flowpulse_cp.worker
@@ -20,6 +24,7 @@ services:
     depends_on:
       postgres: {condition: service_healthy}
       temporal: {condition: service_healthy}
+      minio: {condition: service_healthy}
   postgres:
     image: postgres:16-alpine
     environment:
@@ -28,12 +33,14 @@ services:
       POSTGRES_DB: flowpulse
     volumes:
       - ./migrations:/docker-entrypoint-initdb.d:ro
+      - postgres_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U flowpulse -d flowpulse"]
       interval: 2s
       timeout: 3s
       retries: 20
-    ports: ["5432:5432"]
+    # Avoid the developer machine's conventional local Postgres listener.
+    ports: ["5433:5432"]
   temporal:
     image: temporalio/auto-setup:1.25.2
     environment:
@@ -56,4 +63,15 @@ services:
     environment:
       MINIO_ROOT_USER: flowpulse-local
       MINIO_ROOT_PASSWORD: flowpulse-local-only
+    volumes:
+      - minio_data:/data
     ports: ["9000:9000", "9001:9001"]
+    healthcheck:
+      test: ["CMD-SHELL", "mc ready local >/dev/null 2>&1"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  minio_data:
+  postgres_data:

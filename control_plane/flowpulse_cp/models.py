@@ -176,8 +176,13 @@ class EvidenceEnvelope(StrictModel):
     def current_evidence_must_not_be_stale(cls, values: Dict[str, Any]) -> Dict[str, Any]:
         if values.get("source_kind") == SourceKind.KNOWLEDGE and values.get("proof_scope") != ProofScope.REFERENCE_ONLY:
             raise ValueError("knowledge_evidence_must_be_reference_only")
-        if values.get("proof_scope") == ProofScope.CURRENT_OBSERVATION and values.get("freshness") == FreshnessStatus.STALE:
-            raise ValueError("stale evidence cannot be current-incident proof")
+        if values.get("proof_scope") == ProofScope.CURRENT_OBSERVATION:
+            if values.get("freshness") != FreshnessStatus.CURRENT:
+                raise ValueError("current_incident_proof_requires_current_freshness")
+            if values.get("authority") not in {EvidenceAuthority.T0, EvidenceAuthority.T1}:
+                raise ValueError("current_incident_proof_requires_trusted_authority")
+            if not values.get("acl_subjects"):
+                raise ValueError("current_incident_proof_requires_subject_acl")
         return values
 
 
@@ -281,6 +286,12 @@ class RemediationProposal(StrictModel):
     idempotency_key: NonEmpty
     expires_at: datetime
 
+    @validator("exact_targets", allow_reuse=True)
+    def exact_targets_are_ordered_and_unique(cls, value: List[str]) -> List[str]:
+        if len(value) != len(set(value)):
+            raise ValueError("proposal_targets_must_be_unique")
+        return value
+
 
 class OwnerApproval(StrictModel):
     approval_id: NonEmpty
@@ -298,10 +309,17 @@ class OwnerApproval(StrictModel):
     decided_at: datetime
     expires_at: datetime
 
+    @validator("execution_targets", allow_reuse=True)
+    def approval_targets_are_ordered_and_unique(cls, value: List[str]) -> List[str]:
+        if len(value) != len(set(value)):
+            raise ValueError("approval_targets_must_be_unique")
+        return value
+
 
 class VerificationReport(StrictModel):
     verification_id: NonEmpty
     case_id: NonEmpty
+    case_revision: PositiveInt
     tenant_id: NonEmpty
     verifier_identity: NonEmpty
     run_context_id: NonEmpty
@@ -373,6 +391,7 @@ class TemporalCaseDescriptor(StrictModel):
     case_id: NonEmpty
     tenant_id: NonEmpty
     case_revision: PositiveInt
+    workflow_id: NonEmpty
     workflow_run_id: NonEmpty
     severity: NonEmpty
     environment: NonEmpty
@@ -384,12 +403,48 @@ class TemporalCaseRequest(StrictModel):
     actor: AuthContext
     evidence_families: NonNegativeInt = 1
     specialist_roles: List[NonEmpty] = Field(default_factory=list, max_items=4)
+    evidence: List[EvidenceEnvelope] = Field(default_factory=list)
+    readback_evidence: List[EvidenceEnvelope] = Field(default_factory=list)
+    claims: List[ClaimRecord] = Field(default_factory=list)
+    coverage: List[CoverageEntry] = Field(default_factory=list)
+    proposal: Optional[RemediationProposal] = None
+    approval: Optional[OwnerApproval] = None
+    current_witness: Dict[NonEmpty, NonEmpty] = Field(default_factory=dict)
+
+    @root_validator(allow_reuse=True)
+    def records_are_case_scoped(cls, values: Dict[str, Any]) -> Dict[str, Any]:
+        case = values.get("case")
+        actor = values.get("actor")
+        if case is None or actor is None:
+            return values
+        for evidence in values.get("evidence", []) + values.get("readback_evidence", []):
+            if (evidence.tenant_id, evidence.case_id, evidence.case_revision) != (
+                case.tenant_id, case.case_id, case.case_revision
+            ):
+                raise ValueError("temporal_evidence_case_scope_mismatch")
+            if evidence.proof_scope == ProofScope.CURRENT_OBSERVATION and actor.subject_id not in evidence.acl_subjects:
+                raise ValueError("temporal_evidence_acl_mismatch")
+        for claim in values.get("claims", []):
+            if (claim.tenant_id, claim.case_id, claim.case_revision) != (
+                case.tenant_id, case.case_id, case.case_revision
+            ):
+                raise ValueError("temporal_claim_case_scope_mismatch")
+        for coverage in values.get("coverage", []):
+            if (coverage.tenant_id, coverage.case_id) != (case.tenant_id, case.case_id):
+                raise ValueError("temporal_coverage_case_scope_mismatch")
+        for record in (values.get("proposal"), values.get("approval")):
+            if record is not None and (record.tenant_id, record.case_id, record.case_revision) != (
+                case.tenant_id, case.case_id, case.case_revision
+            ):
+                raise ValueError("temporal_owner_record_case_scope_mismatch")
+        return values
 
 
 class TemporalActivityPacket(StrictModel):
     case_id: NonEmpty
     case_revision: PositiveInt
     tenant_id: NonEmpty
+    workflow_id: NonEmpty
     workflow_run_id: NonEmpty
     actor_subject_id: NonEmpty
     severity: NonEmpty
@@ -398,6 +453,23 @@ class TemporalActivityPacket(StrictModel):
     stage: NonEmpty
     specialist_role: Optional[NonEmpty] = None
     proposal_id: Optional[NonEmpty] = None
+    sequence: PositiveInt
+    evidence: List[EvidenceEnvelope] = Field(default_factory=list)
+    readback_evidence: List[EvidenceEnvelope] = Field(default_factory=list)
+    claims: List[ClaimRecord] = Field(default_factory=list)
+    coverage: List[CoverageEntry] = Field(default_factory=list)
+    proposal: Optional[RemediationProposal] = None
+    approval: Optional[OwnerApproval] = None
+    current_witness: Dict[NonEmpty, NonEmpty] = Field(default_factory=dict)
+
+
+class ActivityOutcome(StrictModel):
+    decision: VerificationDecision
+    state: Optional[CaseState] = None
+    identity: NonEmpty
+    reason_codes: List[NonEmpty] = Field(default_factory=list)
+    critic: Optional[CriticDecision] = None
+    verification: Optional[VerificationReport] = None
 
 
 class EvaluationMetrics(StrictModel):
@@ -408,7 +480,7 @@ class EvaluationMetrics(StrictModel):
     tool_calls: NonNegativeInt = 0
     tokens: NonNegativeInt = 0
     specialist_fanout: NonNegativeInt = 0
-    citation_precision: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    citation_precision: Optional[UnitIntervalFloat] = None
     false_confident_rca: StrictBool = False
     stale_kb_failure: StrictBool = False
     abstained: StrictBool = False

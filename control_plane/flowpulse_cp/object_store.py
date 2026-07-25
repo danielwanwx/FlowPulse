@@ -27,7 +27,12 @@ class S3ObjectStore:
         self.client.put_object(Bucket=self.bucket, Key=key, Body=content, Metadata={"sha256": digest})
         return key
 
-    def get(self, tenant_id: str, key: str) -> object:
+    def get(self, tenant_id: str, key: str) -> bytes:
         if not key.startswith(tenant_id + "/"):
             raise PolicyViolation("cross_tenant_artifact_access")
-        return self.client.get_object(Bucket=self.bucket, Key=key)
+        response = self.client.get_object(Bucket=self.bucket, Key=key)
+        content = response["Body"].read()
+        digest = key.rsplit("/", 1)[-1]
+        if sha256(content).hexdigest() != digest:
+            raise PolicyViolation("artifact_content_hash_mismatch")
+        return content

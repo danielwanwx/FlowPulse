@@ -21,14 +21,31 @@ The suite uses a deterministic fake Temporal adapter and frozen source readback.
 The local Compose path starts the API (`0.0.0.0:8090`), Temporal, a Temporal
 worker, Postgres, and MinIO. The worker registers `flowpulse.diagnosis.v1` and
 all seven activity definitions; its Postgres adapter persists append-only
-activity/verification records, while the local content-addressed artifact store
-persists the typed activity packet. Compose's non-owner application role uses
-`FORCE RLS` tenant policies.
+activity/verification records, while the MinIO/S3 content-addressed artifact
+store persists the typed activity packet under a tenant prefix. Compose's
+non-owner application role uses `FORCE RLS` tenant and evidence-subject ACL
+policies.
 
 ```bash
 cd control_plane
-docker compose up --build
+docker compose down --volumes
+docker compose up --build -d
+FLOWPULSE_LIVE_TEMPORAL=1 .venv/bin/python -m unittest \
+  discover -s tests -p 'test_live_temporal_negative_paths.py' -v
+FLOWPULSE_LIVE_COMPOSE=1 .venv/bin/python -m unittest \
+  discover -s tests -p 'test_live_compose_http.py' -v
+FLOWPULSE_LIVE_POSTGRES=1 .venv/bin/python -m unittest \
+  discover -s tests -p 'test_live_postgres_idempotency.py' -v
 ```
+
+The opt-in live suite starts three workflows through the registered worker and
+asserts that critic failure stops before verification, verifier failure stops
+before Owner Gate, and an Owner Gate witness mismatch returns `BLOCKED`. It
+leaves the stack available for API replay; stop it later with `docker compose
+down --volumes`.
+
+Postgres is published on `127.0.0.1:5433` to avoid colliding with a developer's
+local Postgres. Service-to-service connections continue to use `postgres:5432`.
 
 For a Compose-only smoke test, the deliberately local test-auth adapter accepts
 `x-flowpulse-test-tenant` and `x-flowpulse-test-subject`; production must

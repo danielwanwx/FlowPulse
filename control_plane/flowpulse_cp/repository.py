@@ -101,7 +101,7 @@ class InMemoryCaseRepository:
 
     def put_claim(self, claim: ClaimRecord) -> None:
         case = self.cases.get(claim.case_id)
-        if case is None or case.tenant_id != claim.tenant_id:
+        if case is None or case.tenant_id != claim.tenant_id or case.case_revision != claim.case_revision:
             raise PolicyViolation("claim_case_tenant_mismatch")
         existing = self.claims.get(claim.claim_id)
         if existing is not None and existing != claim:
