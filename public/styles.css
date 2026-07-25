@@ -4190,6 +4190,7 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .app-shell[data-mode="replay"] .canvas-toolbar > div:first-child { display: block; }
 .app-shell[data-mode="replay"] .metric-cluster { width: auto; justify-self: end; }
 .app-shell[data-mode="replay"] .zoom-controls:not([hidden]),
+.app-shell[data-mode="incident"] .zoom-controls:not([hidden]),
 .app-shell[data-mode="compare"] .zoom-controls:not([hidden]) {
   display: flex;
   justify-self: end;
@@ -4380,4 +4381,118 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 }
 @media (prefers-reduced-transparency: reduce) {
   .incident-focus-workspace .incident-focus-node { background: #ffffff; }
+}
+
+/* Incident is one persistent workspace: stages share the same bounded canvas,
+   right-side Team rail, and compact timeline rather than remounting old pages. */
+.app-shell[data-mode="incident"] .canvas-shell {
+  min-width: 0;
+  padding-right: calc(var(--flowpulse-control-rail-width) + var(--flowpulse-control-rail-inset-x) * 2);
+}
+.app-shell[data-mode="incident"] .twin-canvas { min-width: 0; width: 100%; }
+.app-shell[data-mode="incident"] .plane-guides { display: none; }
+.app-shell[data-mode="incident"] .canvas-toolbar {
+  grid-template-columns: minmax(0, 1fr) auto;
+  min-height: 48px;
+  padding: 0 18px;
+}
+.app-shell[data-mode="incident"] .metric-cluster { width: auto; justify-self: end; }
+.app-shell[data-mode="incident"] #timeline-dock {
+  height: 72px;
+  min-height: 72px;
+  grid-template-areas: "main current";
+  grid-template-columns: minmax(0, 1fr) max-content;
+  padding: 7px 14px;
+}
+.app-shell[data-mode="incident"] #timeline-dock .transport { display: none; }
+
+.incident-stage-rail {
+  position: absolute;
+  z-index: 14;
+  top: 14px;
+  left: 18px;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  width: min(450px, calc(100% - var(--flowpulse-control-rail-width) - var(--flowpulse-control-rail-inset-x) * 2 - 36px));
+  overflow: hidden;
+  border: 1px solid rgba(118, 139, 158, .34);
+  border-radius: 12px;
+  background: rgba(247, 250, 252, .88);
+  box-shadow: 0 8px 22px rgba(52, 73, 94, .08);
+  backdrop-filter: blur(14px) saturate(112%);
+  -webkit-backdrop-filter: blur(14px) saturate(112%);
+}
+.incident-stage-button {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 17px minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  column-gap: 5px;
+  padding: 8px 9px;
+  border: 0;
+  border-right: 1px solid rgba(118, 139, 158, .2);
+  color: #607084;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+.incident-stage-button:last-child { border-right: 0; }
+.incident-stage-button > span {
+  grid-row: 1 / span 2;
+  display: grid;
+  width: 17px;
+  height: 17px;
+  place-items: center;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  font-family: var(--mono);
+  font-size: 8px;
+  font-weight: 700;
+}
+.incident-stage-button strong { overflow: hidden; color: #334155; font-size: 10px; font-weight: 700; line-height: 1.1; text-overflow: ellipsis; white-space: nowrap; }
+.incident-stage-button small { overflow: hidden; margin-top: 1px; color: #8290a0; font-size: 8px; line-height: 1.1; text-overflow: ellipsis; white-space: nowrap; }
+.incident-stage-button:not(:disabled):hover { color: var(--blue); background: rgba(255, 255, 255, .7); }
+.incident-stage-button.is-active { color: var(--blue); background: rgba(224, 241, 255, .72); }
+.incident-stage-button.is-active strong { color: #164f7d; }
+.incident-stage-button:disabled { cursor: not-allowed; opacity: .52; }
+.incident-stage-button:focus-visible { position: relative; z-index: 1; outline: 2px solid var(--blue); outline-offset: -2px; }
+
+.incident-stage-panel {
+  position: absolute;
+  z-index: 8;
+  top: 60px;
+  left: 18px;
+  width: min(300px, calc(100% - 36px));
+  padding: 12px 13px;
+  border: 1px solid rgba(118, 139, 158, .34);
+  border-radius: 14px;
+  color: #415267;
+  background: rgba(248, 251, 253, .9);
+  box-shadow: 0 10px 25px rgba(52, 73, 94, .1);
+  backdrop-filter: blur(16px) saturate(112%);
+  -webkit-backdrop-filter: blur(16px) saturate(112%);
+}
+.incident-stage-panel header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.incident-stage-panel header span { color: #66778a; font-size: 10px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+.incident-stage-panel header strong { color: #1f3348; font-size: 11px; font-weight: 700; }
+.incident-stage-panel p { margin: 8px 0 0; color: #5d6c7d; font-size: 10px; line-height: 1.4; }
+.incident-stage-panel dl { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; margin: 9px 0 0; }
+.incident-stage-panel dl div { min-width: 0; }
+.incident-stage-panel dt { color: #8090a1; font-size: 8px; font-weight: 650; letter-spacing: .03em; text-transform: uppercase; }
+.incident-stage-panel dd { margin: 2px 0 0; overflow: hidden; color: #31455b; font-size: 9px; font-weight: 650; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
+.incident-stage-panel button { margin-top: 10px; padding: 5px 7px; border: 1px solid rgba(73, 124, 163, .42); border-radius: 7px; color: #185785; background: rgba(232, 244, 252, .8); font-size: 9px; font-weight: 700; cursor: pointer; }
+.incident-stage-panel button:hover { background: #e6f4fd; }
+.incident-stage-panel button:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+
+@media (max-width: 900px) {
+  .app-shell[data-mode="incident"] .canvas-shell { padding-right: 0; }
+  .incident-stage-rail { top: 12px; left: 12px; width: calc(100% - 24px); }
+  .incident-stage-panel { top: 58px; left: 12px; width: min(300px, calc(100% - 24px)); }
+}
+
+@media (max-width: 560px) {
+  .incident-stage-button { grid-template-columns: 1fr; justify-items: center; padding: 7px 3px; text-align: center; }
+  .incident-stage-button > span { grid-row: auto; }
+  .incident-stage-button small { display: none; }
+  .incident-stage-panel { left: 12px; width: auto; }
 }

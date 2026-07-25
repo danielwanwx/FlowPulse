@@ -9,11 +9,11 @@ export const TWIN_STAGES = [
   { id: "learn", label: "Learn", time: "16:07" }
 ];
 
-// Live, Diagnose (internal replay), and Compare all expose the same bounded
-// canonical canvas. Keep the viewport rule here so a narrow screen cannot
-// silently make the canonical incident graph unreachable on one workspace.
+// Live, Incident, Diagnose (internal replay), and Compare all expose the same
+// bounded canonical canvas. Keep the viewport rule here so a narrow screen
+// cannot silently make the canonical incident graph unreachable on one workspace.
 export function isCanvasNavigationMode(mode) {
-  return ["live", "replay", "compare"].includes(mode);
+  return ["live", "incident", "replay", "compare"].includes(mode);
 }
 
 // A canvas gesture has one owner. Compare reserves its visible divider for

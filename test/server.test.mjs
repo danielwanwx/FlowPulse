@@ -684,7 +684,8 @@ test("judge API serves state and advances the replay", async (context) => {
   const html = await fetch(`http://127.0.0.1:${port}/`).then((response) => response.text());
   assert.match(html, /FlowPulse/);
   assert.match(html, /Run guided replay/);
-  assert.match(html, /Recovery Console/);
+  assert.match(html, /data-mode="incident">Incident/);
+  assert.doesNotMatch(html, /Recovery Console/);
 
   const module = await fetch(`http://127.0.0.1:${port}/twin-state.mjs`);
   assert.equal(module.status, 200);

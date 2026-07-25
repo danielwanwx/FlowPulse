@@ -59,9 +59,7 @@
           <div class="mode-switch" aria-label="Digital twin mode">
             <button class="mode-button is-active" type="button" data-mode="architecture">Architecture</button>
             <button class="mode-button" type="button" data-mode="live">Live</button>
-            <button class="mode-button" type="button" data-mode="replay">Diagnose</button>
-            <button class="mode-button" type="button" data-mode="agents">Recovery Console</button>
-            <button class="mode-button" type="button" data-mode="compare">Compare</button>
+            <button class="mode-button" type="button" data-mode="incident">Incident</button>
           </div>
 
           <div class="mission-actions">
@@ -114,6 +112,8 @@
               </details>
             </div>
 
+            <nav id="incident-stage-rail" class="incident-stage-rail" aria-label="Incident workflow" hidden></nav>
+
             <div id="twin-scroll" class="twin-scroll">
               <div id="twin-canvas" class="twin-canvas" role="region" aria-label="Astronomy Shop incident system canvas" tabindex="0">
                 <div id="canvas-loading" class="canvas-loading" role="status">
@@ -124,6 +124,7 @@
                   <span class="plane-guide control-guide"><strong>FlowPulse control plane</strong><small>Change, evaluation, and evidence</small></span>
                 </div>
                 <div id="canvas-layers" class="canvas-layers"></div>
+                <section id="incident-stage-panel" class="incident-stage-panel" aria-live="polite" hidden></section>
                 <div id="compare-handle" class="compare-handle" aria-hidden="true" hidden><i></i><span></span></div>
                 <input id="compare-canvas-range" class="compare-canvas-range" type="range" min="0" max="100" value="50" step="1" aria-label="Drag to compare incident and verified recovery" hidden>
                 <div id="annotation-layer" class="annotation-layer" aria-live="polite"></div>

@@ -487,6 +487,7 @@ test("active demo topology preserves the bounded causal evidence order and rende
   assert.equal(live.incident_overlay.status, "active");
   assert.deepEqual(live.incident_overlay.node_ids, ["accounting", "checkout", "fraud-detection", "frontend", "kafka", "payment"]);
   assert.equal(diagnose.overlay.status, "available");
+  assert.equal(diagnose.projection_revision, active.projection_revision);
   assert.deepEqual(diagnose.overlay.node_ids, ["accounting", "checkout", "fraud-detection", "frontend", "kafka", "payment"]);
   assert.deepEqual(diagnose.overlay.edges.map(({ id }) => id), ["checkout->kafka", "checkout->payment", "frontend->checkout", "kafka->accounting", "kafka->fraud-detection"]);
   assert.deepEqual(active.demo.frames[3].evidence_refs, ["ev-metric-kafka-lag", "ev-log-consumer-delay"]);
@@ -506,7 +507,8 @@ test("light and pure-black themes have a persisted accessible toggle", () => {
 test("the product opens on architecture and keeps advanced actions in an accessible menu", () => {
   assert.match(indexHtml, /id="app-shell"[^>]+data-mode="architecture"/);
   assert.match(indexHtml, /data-mode="architecture">Architecture</);
-  assert.match(indexHtml, /data-mode="replay">Diagnose</);
+  assert.match(indexHtml, /data-mode="incident">Incident</);
+  assert.doesNotMatch(indexHtml, /Recovery Console|data-mode="replay">Diagnose|data-mode="compare">Compare/);
   assert.match(indexHtml, /id="workspace-menu"[^>]*class="workspace-menu"/);
   assert.match(indexHtml, /id="live-button"[^>]*>Run GPT-5\.6</);
   assert.match(indexHtml, /id="details-button"[^>]*>Inspect run</);
@@ -711,8 +713,9 @@ test("Recovery compact canvas keeps canonical cards and endpoints inside its res
   assert.match(stylesCss, /\.recovery-topology-map \.incident-focus-workspace \.incident-focus-node/);
 });
 
-test("canonical Diagnose and Compare keep a bounded pan and zoom canvas at constrained viewports", () => {
+test("canonical Incident, Diagnose, and Compare keep a bounded pan and zoom canvas at constrained viewports", () => {
   assert.equal(isCanvasNavigationMode("live"), true);
+  assert.equal(isCanvasNavigationMode("incident"), true);
   assert.equal(isCanvasNavigationMode("replay"), true);
   assert.equal(isCanvasNavigationMode("compare"), true);
   assert.equal(isCanvasNavigationMode("agents"), false);
@@ -744,7 +747,7 @@ test("canonical Diagnose and Compare keep a bounded pan and zoom canvas at const
   assert.match(appJs, /els\["zoom-controls"\]\.hidden = !isCanvasNavigationMode\(mode\);/);
   assert.match(appJs, /if \(!isCanvasNavigationMode\(mode\)\) return;/);
   assert.match(appJs, /if \(!liveView\.initialized \|\| renderedMode !== mode\) resetLiveView\(\);/);
-  assert.match(stylesCss, /\.app-shell\[data-mode="replay"\] \.zoom-controls:not\(\[hidden\]\),[\s\S]+?\.app-shell\[data-mode="compare"\] \.zoom-controls:not\(\[hidden\]\)/);
+  assert.match(stylesCss, /\.app-shell\[data-mode="replay"\] \.zoom-controls:not\(\[hidden\]\),[\s\S]+?\.app-shell\[data-mode="incident"\] \.zoom-controls:not\(\[hidden\]\),[\s\S]+?\.app-shell\[data-mode="compare"\] \.zoom-controls:not\(\[hidden\]\)/);
 });
 
 test("pending canonical canvases clear every ready identity and test selector", () => {
@@ -757,7 +760,9 @@ test("pending canonical canvases clear every ready identity and test selector", 
 test("workspace navigation binds only mode buttons so app-shell state cannot reset a clicked tab", () => {
   assert.equal([...appJs.matchAll(/document\.querySelectorAll\("button\.mode-button\[data-mode\]"\)/g)].length, 2);
   assert.doesNotMatch(appJs, /for \(const button of document\.querySelectorAll\("\[data-mode\]"\)\) button\.addEventListener\("click", \(\) => setMode/);
-  assert.match(appJs, /const diagnose = mode === "replay";[\s\S]+?Diagnose needs an active incident[\s\S]+?Start or select an incident in Live/s);
+  assert.match(appJs, /const label = isIncidentWorkspace\(\) \? "Incident workspace"/);
+  assert.match(appJs, /function setIncidentStage\(nextStage\)/);
+  assert.match(appJs, /data-incident-stage/);
   const modeSource = appJs.slice(appJs.indexOf("function setMode"), appJs.indexOf("function configureCanvasWorld"));
   assert.match(modeSource, /const serverFocusReady = nextMode === "replay"[\s\S]+?incidentFocusWorkspace\(/);
   assert.match(modeSource, /shared\.workspace_actions\?\.\[requiredAction\]\?\.available !== true && !serverFocusReady/);
@@ -941,9 +946,9 @@ test("Agent Team rail is session-driven, retains Live selection, and never uses 
   assert.match(railSource, /Evidence Ledger is read-only/);
   assert.match(railSource, /from\)} → \$\{escapeHtml\(message\.to\)/);
   assert.match(railSource, /data-agent-team-workspace="\$\{id\}"/);
-  assert.match(railSource, /view_diagnosis: "replay"/);
-  assert.match(railSource, /open_recovery_console: "agents"/);
-  assert.match(railSource, /compare_recovery: "compare"/);
+  assert.match(railSource, /view_diagnosis: "investigate"/);
+  assert.match(railSource, /open_recovery_console: "decide"/);
+  assert.match(railSource, /compare_recovery: "verify"/);
   assert.match(sessionSource, /\/api\/agent-control\/provider/);
   assert.match(sessionSource, /\/api\/agent-control\/conversation\?run_id=/);
   assert.match(sessionSource, /\/api\/agent-control\/events\?run_id=/);
@@ -1017,27 +1022,29 @@ test("Unified Context Rail replaces legacy commander and duplicated control surf
   assert.doesNotMatch(appJs, /\/api\/agent-control\/message/);
   assert.doesNotMatch(appJs, /data-recovery-action/);
   assert.doesNotMatch(appJs, /data-collaborator-id/);
-  assert.match(stylesCss, /\.app-shell\[data-mode="replay"\] \.plane-guides,[\s\S]+?\.app-shell\[data-mode="compare"\] \.plane-guides \{ display: none; \}/);
+  assert.match(stylesCss, /\.app-shell\[data-mode="incident"\] \.plane-guides \{ display: none; \}/);
   assert.equal(AGENT_COLLABORATORS.length, 6);
 });
 
-test("F3A.1 keeps primary workspace identity explicit and reserves the Compare rail exactly once", () => {
+test("Incident is the sole persistent incident workspace and reserves the shared rail once", () => {
   const primaryModes = [...indexHtml.matchAll(/<button class="mode-button[^>]*data-mode="([^"]+)"[^>]*>([^<]+)<\/button>/g)]
     .map(([, id, label]) => ({ id, label: label.trim() }));
   assert.deepEqual(primaryModes, [
     { id: "architecture", label: "Architecture" },
     { id: "live", label: "Live" },
-    { id: "replay", label: "Diagnose" },
-    { id: "agents", label: "Recovery Console" },
-    { id: "compare", label: "Compare" }
+    { id: "incident", label: "Incident" }
   ]);
 
   const modeSource = appJs.slice(appJs.indexOf("function setMode"), appJs.indexOf("function configureCanvasWorld"));
   assert.match(modeSource, /mode = nextMode;[\s\S]+?render\(\);/);
-  assert.match(appJs, /if \(mode === "agents"\) return \{[\s\S]+?title: "Recovery Status"/);
+  assert.match(appJs, /const INCIDENT_STAGES = Object\.freeze\(\[/);
+  assert.match(indexHtml, /id="incident-stage-rail"/);
+  assert.match(indexHtml, /id="incident-stage-panel"/);
+  assert.match(appJs, /function renderIncidentStageRail\(\)/);
+  assert.match(appJs, /function renderIncidentStagePanel\(shared\)/);
   assert.doesNotMatch(stylesCss, /\.app-shell\[data-mode="compare"\] \.twin-scroll \{ padding-right: 348px; \}/);
-  assert.match(stylesCss, /\.app-shell\[data-mode="compare"\] \.canvas-shell \{ padding-right: calc\(var\(--flowpulse-control-rail-width\) \+ var\(--flowpulse-control-rail-inset-x\) \* 2\); \}/);
-  assert.match(stylesCss, /\.app-shell\[data-mode="compare"\] \.twin-canvas \{ min-width: 0; width: 100%; \}/);
+  assert.match(stylesCss, /\.app-shell\[data-mode="incident"\] \.canvas-shell \{[\s\S]+?padding-right: calc\(var\(--flowpulse-control-rail-width\) \+ var\(--flowpulse-control-rail-inset-x\) \* 2\);/);
+  assert.match(stylesCss, /\.app-shell\[data-mode="incident"\] \.twin-canvas \{ min-width: 0; width: 100%; \}/);
 });
 
 test("F3A.1 keeps one rounded frosted rail silhouette for every workspace and rail state", () => {
@@ -1170,6 +1177,7 @@ test("Compare pointer sequence gives a blank canvas to pan and its divider to co
   assert.equal(down({ isInteractive: true }), null);
   assert.match(appJs, /claimCanvasPointer\(event, "pan"\)/);
   assert.match(appJs, /claimCanvasPointer\(event, "compare-divider"\)/);
+  assert.match(appJs, /mode: isIncidentCompareStage\(\) \? "compare" : mode/);
 });
 
 test("Compare keeps its split canvas while Unified Context Rail owns the verification summary", () => {
@@ -1204,7 +1212,7 @@ test("compare labels legacy previews separately while canonical workspaces requi
   assert.doesNotMatch(setModeSource, /nextMode === "compare"/);
   assert.match(appJs, /function canonicalTopologyLayerMarkup/);
   assert.match(appJs, /Compare remains locked until this run records passed independent verification/);
-  assert.match(appJs, /const canonicalWorkspacePending = \["replay", "agents", "compare"\]\.includes\(mode\) && !shared/);
+  assert.match(appJs, /const canonicalWorkspacePending = \(isIncidentWorkspace\(\) \|\| \["replay", "agents", "compare"\]\.includes\(mode\)\) && !shared/);
   assert.match(appJs, /Workspace loading/);
   assert.match(stylesCss, /\.capture-label\.source-preview::before \{ background: var\(--amber\); \}/);
 });
@@ -1343,7 +1351,7 @@ test("Live pulse ordering remains deterministic across the complete backend runt
   assert.match(renderSourceCanvasSource, /fixed-live-edge-map/);
   assert.match(renderSourceCanvasSource, /liveEdgePath\(positions\.get\(edge\.from\), positions\.get\(edge\.to\)/);
   assert.doesNotMatch(renderSourceCanvasSource, /class="pulse-flow/);
-  assert.match(appJs, /classList\.toggle\("is-live-source", mode === "live" \|\| mode === "replay" \|\| mode === "compare"\)/);
+  assert.match(appJs, /classList\.toggle\("is-live-source", mode === "live" \|\| isIncidentWorkspace\(\) \|\| mode === "replay" \|\| mode === "compare"\)/);
   assert.match(appJs, /function startLiveSignalLoop\(/);
   assert.match(appJs, /const concurrentPulseCount = Math\.min\(3, groups\.length\);/);
   assert.match(appJs, /groups\.slice\(0, concurrentPulseCount\)\.forEach\(/);
@@ -1533,7 +1541,7 @@ test("P0.6 keeps internal provenance out of primary chrome and makes recovery au
   assert.match(agentSessionSource, /const runDetail = \[/);
   assert.match(agentSessionSource, /agentTeamDisclosureMarkup\("run", "Run details", runDetail\)/);
   assert.doesNotMatch(liveEventSource, /event\.marker \?/);
-  assert.match(railSource, /\["replay", "agents", "compare"\]\.includes\(mode\)/);
+  assert.match(railSource, /isUnifiedRailWorkspace\(\)/);
   assert.match(recoverySource, /Owner gate/);
 });
 
@@ -1549,6 +1557,15 @@ test("incident workspaces render only the strict server focus projection while A
   assert.match(stylesCss, /\.incident-focus-workspace \.incident-focus-node/);
   assert.match(stylesCss, /@keyframes incident-focus-path-enter/);
   assert.doesNotMatch(diagnosisSource, /failure observed/i);
+});
+
+test("incident stage panels turn recorded repair facts into readable operator evidence", () => {
+  const stagePanelSource = appJs.slice(appJs.indexOf("function incidentActionLabel"), appJs.indexOf("function renderIncidentStageRail"));
+  assert.match(stagePanelSource, /value\.replaceAll\("_", " "\)/);
+  assert.match(stagePanelSource, /plan\?\.payload\?\.repair/);
+  assert.match(stagePanelSource, /repair\.payload\?\.repair/);
+  assert.match(stagePanelSource, /repair \? "Repair completed"/);
+  assert.doesNotMatch(stagePanelSource, /restore_checkout_payment_endpoint/);
 });
 
 test("incident focus settles every server-projected node before the review gate and isolates recovery detail", () => {

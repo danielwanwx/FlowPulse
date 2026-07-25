@@ -56,6 +56,12 @@ const IMPACT_SEQUENCE = { checkout: 0, payment: 1, kafka: 2, accounting: 3, frau
 const NODE_BY_ID = new Map(TWIN_NODES.map((node) => [node.id, node]));
 const EDGE_BY_ID = new Map(TWIN_EDGES.map((edge) => [edge.id, edge]));
 const LIVE_WORLD = Object.freeze({ width: 1480, height: 680, minScale: .6, maxScale: 1.6, step: .1 });
+const INCIDENT_STAGES = Object.freeze([
+  { id: "investigate", label: "Investigate", pageMode: "diagnose" },
+  { id: "decide", label: "Decide", pageMode: "recovery" },
+  { id: "execute", label: "Execute", pageMode: "recovery" },
+  { id: "verify", label: "Verify", pageMode: "compare" }
+]);
 // Recovery renders the same canonical positions as Live in a compact canvas.
 // Keep SVG endpoint geometry aligned with the actual recovery cards so a
 // reduced workspace never clips ports or leaves paths visibly short.
@@ -112,6 +118,7 @@ const COMPONENT_EXPLANATIONS = Object.freeze({
 let state;
 let developmentStatus;
 let mode = "architecture";
+let incidentStage = "investigate";
 let renderedMode = null;
 let renderedCanvasKey = null;
 let cursor = 0;
@@ -166,13 +173,23 @@ window.addEventListener("popstate", () => {
 for (const button of document.querySelectorAll("button.mode-button[data-mode]")) button.addEventListener("click", () => setMode(button.dataset.mode));
 for (const button of document.querySelectorAll("[data-nav-tab]")) button.addEventListener("click", () => handleNavigation(button.dataset.navTab));
 for (const button of document.querySelectorAll("[data-focus-entity]")) button.addEventListener("click", () => openDrawer({ type: "node", id: button.dataset.focusEntity }, "overview"));
+els["incident-stage-rail"].addEventListener("click", (event) => {
+  const stage = event.target.closest("[data-incident-stage]");
+  if (stage && !stage.disabled) setIncidentStage(stage.dataset.incidentStage);
+});
+els["incident-stage-panel"].addEventListener("click", (event) => {
+  const role = event.target.closest("[data-agent-team-role]")?.dataset.agentTeamRole;
+  if (!role) return;
+  const restoreInspector = Boolean(selected?.type === "node" && isRailRuntimeNode(selected.id));
+  void openAgentTeamSession(role, { restoreInspector, inspectorSnapshot: restoreInspector ? captureLiveInspectorSnapshot() : null });
+});
 els["retry-button"].addEventListener("click", refresh);
 els["live-button"].addEventListener("click", () => { closeWorkspaceMenu(); runLive(); });
 els["details-button"].addEventListener("click", () => { closeWorkspaceMenu(); openDrawer({ type: "run", id: state?.run_id }, "evidence"); });
 els["open-incident-button"].addEventListener("click", () => openDrawer({ type: "run", id: state?.run_id }, "agent"));
 // Recovery status is navigation only. Repair authority stays in the
 // server-owned owner gate and cannot be granted by a canvas control.
-els["recovery-status-button"].addEventListener("click", () => setMode("agents"));
+els["recovery-status-button"].addEventListener("click", () => setIncidentStage("decide"));
 els["development-button"].addEventListener("click", handleDevelopmentAction);
 els["drawer-close"].addEventListener("click", closeDrawer);
 els["restart-button"].addEventListener("click", restartReplay);
@@ -450,6 +467,43 @@ async function refreshDevelopmentStatus() {
   updateControls();
 }
 
+function isIncidentWorkspace() {
+  return mode === "incident";
+}
+
+function isIncidentCompareStage() {
+  return isIncidentWorkspace() && incidentStage === "verify";
+}
+
+function incidentAgentPageMode() {
+  return INCIDENT_STAGES.find((stage) => stage.id === incidentStage)?.pageMode || "diagnose";
+}
+
+function incidentStageEvidence(shared) {
+  const events = shared?.events || [];
+  const has = (type) => events.some((event) => event.type === type);
+  return {
+    investigate: Boolean(shared?.topology && incidentFocusWorkspace(shared.topology, shared.topology.snapshots?.incident, diagnoseViewTopology(state?.topology_views)).availability === "ready"),
+    decide: has("local_fault_loop.plan.proposed") || shared?.workspace_actions?.open_recovery_console?.available === true,
+    execute: has("local_fault_loop.authority.decided") || has("local_fault_loop.repair.executed"),
+    verify: shared?.topology?.verification?.passed === true && shared?.topology?.snapshots?.verified != null
+  };
+}
+
+function setIncidentStage(nextStage) {
+  if (!INCIDENT_STAGES.some((stage) => stage.id === nextStage)) return;
+  const shared = sharedRunModel();
+  const evidence = incidentStageEvidence(shared);
+  if (shared && !evidence[nextStage]) {
+    showToast(`${INCIDENT_STAGES.find((stage) => stage.id === nextStage)?.label || "This stage"} is awaiting a server-recorded prerequisite.`);
+    return;
+  }
+  incidentStage = nextStage;
+  mode = "incident";
+  if (shared && sharedRunFollowing) cursor = Math.max(0, shared.events.length - 1);
+  render();
+}
+
 function render() {
   if (!state) return;
   const canvasKey = canvasProjectionKey();
@@ -458,6 +512,7 @@ function render() {
   renderHeader();
   renderMetrics();
   if (shouldRenderCanvas) renderCanvas();
+  renderIncidentStageRail();
   renderTimeline();
   renderApproval();
   renderDevelopmentControl();
@@ -471,7 +526,7 @@ function render() {
 
 function canvasProjectionKey() {
   const shared = sharedRunModel();
-  if (shared && mode !== "architecture") return `${mode}:${shared.run_id}:${shared.timeline.position}:${cursor}`;
+  if (shared && mode !== "architecture") return `${mode}:${incidentStage}:${shared.run_id}:${shared.timeline.position}:${cursor}`;
   if (mode === "architecture") {
     const detail = architectureDetail?.scope === "architecture"
       ? `${architectureDetail.nodeId}:${architectureDetail.loading ? "loading" : architectureDetail.failed ? "unavailable" : architectureDetail.detail?.detail_revision || "compact"}`
@@ -486,8 +541,8 @@ function renderHeader() {
   const shared = sharedRunModel();
   const frame = shared ? null : currentFrame();
   const source = mode === "live" ? liveSource(liveTopologyView()) : sourceState();
-  const titles = { architecture: "Architecture", live: "Runtime activity", replay: "Incident diagnosis", agents: "Recovery Console", compare: "Recovery comparison" };
-  const canvasTitles = { architecture: "Architecture", live: "Observed runtime", replay: "Incident reconstruction", agents: "Developer recovery workspace", compare: "Incident vs verified" };
+  const titles = { architecture: "Architecture", live: "Runtime activity", incident: "Incident workspace", replay: "Incident diagnosis", agents: "Recovery Console", compare: "Recovery comparison" };
+  const canvasTitles = { architecture: "Architecture", live: "Observed runtime", incident: "Incident workspace", replay: "Incident reconstruction", agents: "Developer recovery workspace", compare: "Incident vs verified" };
   els["incident-title"].textContent = shared ? (shared.state === "needs_human" ? "Evidence gap incident" : "Checkout / payment incident") : state.incident.title;
   els["incident-summary"].textContent = shared ? `${shared.events.length} server-recorded updates` : state.incident.summary;
   els.severity.textContent = shared ? (shared.state === "needs_human" ? "Unknown" : "SEV-2") : state.incident.severity;
@@ -497,21 +552,21 @@ function renderHeader() {
   els["canvas-title"].textContent = canvasTitles[mode];
   const architecture = mode === "architecture" ? architectureView() : null;
   const architectureSystems = architecture ? architectureBoundaries(architecture.graph) : null;
-  els.stage.textContent = mode === "architecture" ? architectureSystems ? `${architectureSystems.observed.nodes.length + architectureSystems.flowpulse.nodes.length} components` : "Architecture unavailable" : shared ? humanStageLabel(shared.stage) : mode === "live" ? telemetryStatusLabel(source.status) : mode === "agents" ? humanStageLabel(agentControl().report.stage) : mode === "compare" ? "Incident vs verified" : timelineStages()[cursor].label;
+  els.stage.textContent = mode === "architecture" ? architectureSystems ? `${architectureSystems.observed.nodes.length + architectureSystems.flowpulse.nodes.length} components` : "Architecture unavailable" : isIncidentWorkspace() ? `${INCIDENT_STAGES.find((stage) => stage.id === incidentStage)?.label || "Incident"} · ${shared ? humanStageLabel(shared.stage) : "Awaiting canonical evidence"}` : shared ? humanStageLabel(shared.stage) : mode === "live" ? telemetryStatusLabel(source.status) : mode === "agents" ? humanStageLabel(agentControl().report.stage) : mode === "compare" ? "Incident vs verified" : timelineStages()[cursor].label;
   els["status-text"].textContent = modeStatus();
   els["ledger-state"].textContent = `${canonicalEvents().length} immutable events`;
   els["capture-label"].textContent = captureLabel();
-  const canonicalWorkspacePending = ["replay", "agents", "compare"].includes(mode) && !shared;
-  els["capture-label"].className = `capture-label source-${canonicalWorkspacePending ? "unavailable" : mode === "compare" ? compareProvenance(state.events).tone : source.status}`;
+  const canonicalWorkspacePending = (isIncidentWorkspace() || ["replay", "agents", "compare"].includes(mode)) && !shared;
+  els["capture-label"].className = `capture-label source-${canonicalWorkspacePending ? "unavailable" : isIncidentCompareStage() || mode === "compare" ? compareProvenance(state.events).tone : source.status}`;
   els["zoom-controls"].hidden = !isCanvasNavigationMode(mode);
   updateZoomControls();
-  els["canvas-caption"].textContent = mode === "replay" && shared ? canonicalDiagnosisCaption(shared) : modeCaption(frame);
+  els["canvas-caption"].textContent = isIncidentWorkspace() && shared ? `${INCIDENT_STAGES.find((stage) => stage.id === incidentStage)?.label || "Incident"} · ${canonicalDiagnosisCaption(shared)}` : mode === "replay" && shared ? canonicalDiagnosisCaption(shared) : modeCaption(frame);
   els["app-shell"].dataset.mode = mode;
-  els["app-shell"].dataset.workspaceMode = mode === "replay" ? "diagnose" : mode;
+  els["app-shell"].dataset.workspaceMode = isIncidentWorkspace() ? `incident-${incidentStage}` : mode === "replay" ? "diagnose" : mode;
   // Expose the product-facing workspace name without changing the internal
   // replay state used by the deterministic timeline and existing CSS.
-  els["app-shell"].mode = mode === "replay" ? "diagnose" : mode;
-  els["timeline-dock"].hidden = !["replay", "agents", "compare"].includes(mode);
+  els["app-shell"].mode = isIncidentWorkspace() ? "incident" : mode === "replay" ? "diagnose" : mode;
+  els["timeline-dock"].hidden = !(isIncidentWorkspace() || ["replay", "agents", "compare"].includes(mode));
   els["live-button"].hidden = !state.live_available;
   renderThemeToggle();
   for (const button of document.querySelectorAll("button.mode-button[data-mode]")) {
@@ -600,7 +655,7 @@ function renderMetrics() {
   els["metric-checkout-label"].textContent = "Checkout errors";
   els["metric-payment-label"].textContent = "Payment";
   els["metric-kafka-label"].textContent = "Kafka lag";
-  if (["replay", "agents", "compare"].includes(mode)) {
+  if (isIncidentWorkspace() || ["replay", "agents", "compare"].includes(mode)) {
     setMetric("checkout", "Unavailable", "Awaiting canonical evidence");
     setMetric("payment", "Unavailable", "Awaiting canonical evidence");
     setMetric("kafka", "Unavailable", "Awaiting canonical evidence");
@@ -614,13 +669,15 @@ function renderSharedRunMetrics(shared) {
   els["metric-checkout-label"].textContent = "Checkout errors";
   els["metric-payment-label"].textContent = "Payment reachable";
   els["metric-kafka-label"].textContent = "Kafka lag";
-  const snapshot = mode === "replay" ? shared.topology.snapshots.incident : shared.topology.current;
+  const snapshot = isIncidentWorkspace() && ["investigate", "decide"].includes(incidentStage)
+    ? shared.topology.snapshots.incident
+    : shared.topology.current;
   const current = canonicalWorkspaceVisual(shared.topology, snapshot);
   if (current.availability !== "ready") {
     for (const [name, metric] of Object.entries(current.metrics)) setMetric(name, metric.value, metric.note);
     return;
   }
-  if (mode === "compare") {
+  if (isIncidentCompareStage() || mode === "compare") {
     const incident = canonicalWorkspaceVisual(shared.topology, shared.topology.snapshots.incident);
     const verified = canonicalWorkspaceVisual(shared.topology, shared.topology.snapshots.verified);
     if (incident.availability !== "ready" || verified.availability !== "ready" || shared.topology.verification.passed !== true) {
@@ -644,14 +701,18 @@ function setMetric(name, value, note) {
 
 function renderCanvas() {
   stopLiveSignalLoop();
+  if (!isIncidentWorkspace()) {
+    els["incident-stage-panel"].hidden = true;
+    els["incident-stage-panel"].innerHTML = "";
+  }
   const shared = sharedRunModelAtCursor();
-  const canonicalWorkspace = ["replay", "agents", "compare"].includes(mode);
-  els["twin-canvas"].classList.toggle("is-compare-mode", mode === "compare");
+  const canonicalWorkspace = isIncidentWorkspace() || ["replay", "agents", "compare"].includes(mode);
+  els["twin-canvas"].classList.toggle("is-compare-mode", isIncidentCompareStage() || mode === "compare");
   els["twin-canvas"].classList.toggle("is-source-topology", mode === "architecture" || mode === "live" || canonicalWorkspace);
   els["twin-canvas"].classList.toggle("is-architecture-source", mode === "architecture");
-  els["twin-canvas"].classList.toggle("is-live-source", mode === "live" || mode === "replay" || mode === "compare");
-  els["twin-canvas"].classList.toggle("is-agent-source", mode === "agents");
-  configureCanvasWorld(mode === "live" || mode === "replay" || mode === "compare");
+  els["twin-canvas"].classList.toggle("is-live-source", mode === "live" || isIncidentWorkspace() || mode === "replay" || mode === "compare");
+  els["twin-canvas"].classList.toggle("is-agent-source", false);
+  configureCanvasWorld(mode === "live" || isIncidentWorkspace() || mode === "replay" || mode === "compare");
   if (mode === "architecture") {
     renderSourceCanvas("architecture");
     return;
@@ -662,8 +723,12 @@ function renderCanvas() {
     return;
   }
   if (canonicalWorkspace && !shared) {
-    const label = mode === "agents" ? "Recovery Console" : mode === "compare" ? "Compare" : "Diagnose";
+    const label = isIncidentWorkspace() ? "Incident workspace" : mode === "agents" ? "Recovery Console" : mode === "compare" ? "Compare" : "Diagnose";
     renderCanonicalTopologyPending(`${label} is waiting for the backend-owned canonical topology binding.`);
+    return;
+  }
+  if (isIncidentWorkspace()) {
+    renderIncidentWorkspaceCanvas(shared);
     return;
   }
   if (mode === "agents") {
@@ -694,6 +759,39 @@ function renderCanvas() {
   }
   setAnnotations(annotations.slice(-2));
   els["twin-canvas"].setAttribute("aria-label", "Incident diagnosis.");
+  startIncidentFocusSignals();
+}
+
+function renderIncidentWorkspaceCanvas(shared) {
+  const topology = shared.topology;
+  const snapshot = ["investigate", "decide"].includes(incidentStage) ? topology.snapshots.incident : topology.current;
+  if (incidentStage === "verify") {
+    renderCanonicalCompareCanvas(shared);
+    renderIncidentStagePanel(shared);
+    return;
+  }
+  const workspace = incidentFocusLayerMarkup(topology, snapshot, {
+    layerName: "current",
+    workspace: incidentStage === "investigate" ? "diagnose" : "recovery",
+    pulse: incidentStage === "investigate" || incidentStage === "execute"
+  });
+  if (workspace.visual.availability !== "ready") {
+    renderIncidentStagePanel(shared);
+    renderCanonicalTopologyPending("Incident is waiting for a matching server-projected causal path.");
+    return;
+  }
+  els["canvas-layers"].innerHTML = workspace.markup;
+  els["compare-handle"].hidden = true;
+  els["compare-canvas-range"].hidden = true;
+  bindCanonicalCanvasIdentity(workspace.visual, "incident-workspace-canvas");
+  const annotations = sharedRunAnnotations(shared).filter((annotation) => annotation.id !== "recovery");
+  if (incidentStage === "investigate" && workspace.visual.change_record) {
+    const labels = workspace.visual.change_record.affected_node_ids.map((id) => workspace.visual.nodes.find((node) => node.id === id)?.label).filter(Boolean);
+    annotations.push({ id: "observed-change", tone: "warning", title: "Observed change", copy: `${labels.join(", ") || "Affected component"} is linked to recorded change evidence.` });
+  }
+  setAnnotations(annotations.slice(-2));
+  els["twin-canvas"].setAttribute("aria-label", `${INCIDENT_STAGES.find((stage) => stage.id === incidentStage)?.label || "Incident"} workspace.`);
+  renderIncidentStagePanel(shared);
   startIncidentFocusSignals();
 }
 
@@ -732,6 +830,67 @@ function renderCanonicalCompareCanvas(shared) {
   els["compare-canvas-range"].setAttribute("aria-label", "Compare incident and verified recovery");
   renderComparePosition();
   startIncidentFocusSignals();
+}
+
+function incidentActionLabel(value, fallback) {
+  const text = typeof value === "string" ? value.replaceAll("_", " ").trim() : "";
+  return text ? `${text.charAt(0).toUpperCase()}${text.slice(1)}` : fallback;
+}
+
+function renderIncidentStagePanel(shared) {
+  const panel = els["incident-stage-panel"];
+  if (!isIncidentWorkspace() || !shared) {
+    panel.hidden = true;
+    panel.innerHTML = "";
+    return;
+  }
+  const events = shared.events || [];
+  const plan = [...events].reverse().find((event) => event.type === "local_fault_loop.plan.proposed");
+  const authority = [...events].reverse().find((event) => event.type === "local_fault_loop.authority.decided");
+  const repair = [...events].reverse().find((event) => event.type === "local_fault_loop.repair.executed");
+  const verification = [...events].reverse().find((event) => event.type === "local_fault_loop.verification.completed");
+  const stage = INCIDENT_STAGES.find((item) => item.id === incidentStage);
+  const common = `<header><span>${escapeHtml(stage?.label || "Incident")}</span><strong>${escapeHtml(humanStageLabel(shared.stage))}</strong></header>`;
+  if (incidentStage === "investigate") {
+    panel.hidden = false;
+    panel.innerHTML = `${common}<p>Follow the highlighted causal path. Ask an agent for evidence or select a service for its current context.</p><button type="button" data-agent-team-role="investigator">Ask Investigator</button>`;
+    return;
+  }
+  if (incidentStage === "decide") {
+    panel.hidden = false;
+    const scope = incidentActionLabel(plan?.payload?.scope || plan?.payload?.action || plan?.payload?.repair, "Plan not recorded");
+    panel.innerHTML = `${common}<dl><div><dt>Scope</dt><dd>${escapeHtml(scope)}</dd></div><div><dt>Risk</dt><dd>${escapeHtml(plan?.payload?.risk || "Not evaluated")}</dd></div><div><dt>Owner gate</dt><dd>${escapeHtml(recoveryGateLabel(events))}</dd></div></dl><p>Approval remains a backend-recorded owner decision.</p><button type="button" data-agent-team-role="orchestrator">Ask Orchestrator</button>`;
+    return;
+  }
+  if (incidentStage === "execute") {
+    const workflow = recoveryWorkflowProjection(events);
+    const active = workflow?.nodes?.find((node) => node.status === "running") || workflow?.nodes?.find((node) => node.id === workflow?.currentId);
+    const workingNow = active?.label || (repair ? "Repair completed" : authority ? "Awaiting execution" : "Awaiting owner decision");
+    panel.hidden = false;
+    const recordedAction = repair
+      ? `${incidentActionLabel(repair.payload?.repair, "Recorded repair")} · ${incidentActionLabel(repair.payload?.result, "Completed")}`
+      : "Agents only report server-recorded work; they do not bypass the gate.";
+    panel.innerHTML = `${common}<dl><div><dt>Execution</dt><dd>${escapeHtml(repair ? "Recorded" : authority ? recoveryGateLabel(events) : "Awaiting owner decision")}</dd></div><div><dt>Working now</dt><dd>${escapeHtml(workingNow)}</dd></div><div><dt>Verification</dt><dd>${escapeHtml(verification?.payload?.passed ? "Passed" : "Pending independent check")}</dd></div></dl><p>${escapeHtml(recordedAction)}</p><button type="button" data-agent-team-role="orchestrator">Ask Orchestrator</button>`;
+    return;
+  }
+  panel.hidden = false;
+  panel.innerHTML = `${common}<dl><div><dt>Verification</dt><dd>${escapeHtml(verification?.payload?.passed ? "Passed" : "Pending")}</dd></div><div><dt>Snapshots</dt><dd>${escapeHtml(verification?.payload?.passed ? "Incident and verified" : "Incident only")}</dd></div><div><dt>Evidence</dt><dd>${escapeHtml(`${shared.citations.length} cited records`)}</dd></div></dl><p>${verification?.payload?.passed ? "Drag the divider to compare the incident snapshot with independently verified recovery." : "Compare stays locked until the backend records independent verification."}</p><button type="button" data-agent-team-role="evaluator">Ask Evaluator</button>`;
+}
+
+function renderIncidentStageRail() {
+  const rail = els["incident-stage-rail"];
+  const shared = sharedRunModel();
+  rail.hidden = !isIncidentWorkspace();
+  if (!isIncidentWorkspace()) {
+    rail.innerHTML = "";
+    return;
+  }
+  const evidence = incidentStageEvidence(shared);
+  rail.innerHTML = INCIDENT_STAGES.map((stage, index) => {
+    const active = stage.id === incidentStage;
+    const enabled = Boolean(shared && evidence[stage.id]);
+    return `<button type="button" class="incident-stage-button ${active ? "is-active" : ""}" data-incident-stage="${stage.id}" aria-current="${active ? "step" : "false"}" ${enabled ? "" : "disabled"}><span>${index + 1}</span><strong>${escapeHtml(stage.label)}</strong><small>${enabled ? (active ? "Current" : "Recorded") : "Pending"}</small></button>`;
+  }).join("");
 }
 
 function renderCanonicalTopologyPending(message = "Waiting for the backend-owned canonical topology projection.") {
@@ -1392,7 +1551,7 @@ function setAnnotations(annotations) {
 }
 
 function renderComparePosition() {
-  if (mode !== "compare") return;
+  if (!(mode === "compare" || isIncidentCompareStage())) return;
   comparePercent = Math.max(0, Math.min(100, Number(comparePercent) || 0));
   els["twin-canvas"].style.setProperty("--compare-percent", `${comparePercent}%`);
   els["compare-value"].textContent = `${Math.round(comparePercent)}% incident`;
@@ -1496,7 +1655,7 @@ function renderTimeline() {
     const currentIndex = Math.max(0, Math.min(cursor, Math.max(0, events.length - 1)));
     const markers = sharedTimelineMarkers(events);
     const recoveryTypes = new Set(["local_fault_loop.plan.proposed", "local_fault_loop.authority.decided", "local_fault_loop.repair.executed", "local_fault_loop.verification.completed", "local_fault_loop.recovered"]);
-    const compactMarkers = mode === "agents"
+    const compactMarkers = isIncidentWorkspace() && ["decide", "execute", "verify"].includes(incidentStage)
       ? markers.filter((marker) => recoveryTypes.has(marker.event.type)).slice(-5)
       : markers.filter((marker) => Math.abs(marker.index - currentIndex) <= 1);
     els["stage-track"].style.setProperty("--stage-count", String(Math.max(1, compactMarkers.length)));
@@ -1509,8 +1668,9 @@ function renderTimeline() {
     els["timeline-time"].textContent = event ? formatTime(event.recorded_at) : "Awaiting event";
     els["timeline-title"].textContent = event ? sharedEventLabel(event) : "Awaiting canonical event";
     els["timeline-copy"].textContent = event ? "View history" : "Awaiting event history";
-    els["compare-control"].hidden = mode !== "compare";
-    els["timeline-current"].hidden = mode === "compare";
+    const compareStage = isIncidentCompareStage() || mode === "compare";
+    els["compare-control"].hidden = !compareStage || shared.topology?.verification?.passed !== true;
+    els["timeline-current"].hidden = compareStage;
     return;
   }
   const available = availableStage(state.events);
@@ -1630,7 +1790,7 @@ function controlSystemNodes() {
 }
 
 function isUnifiedRailWorkspace(candidate = mode) {
-  return ["replay", "agents", "compare"].includes(candidate);
+  return candidate === "incident" || ["replay", "agents", "compare"].includes(candidate);
 }
 
 function railRuntimeNodes() {
@@ -1647,13 +1807,16 @@ function isSelectionValidForMode(selection, destination) {
   if (!selection) return true;
   if (selection.type !== "node") return false;
   if (destination === "architecture") return false;
-  if (["live", "replay", "agents", "compare"].includes(destination)) return isRailRuntimeNode(selection.id);
+  if (["live", "incident", "replay", "agents", "compare"].includes(destination)) return isRailRuntimeNode(selection.id);
   return false;
 }
 
 function renderOperationsTeamRail() {
   const rail = els["operations-team-rail"];
   const controls = controlSystemNodes();
+  const activeInput = document.activeElement?.matches?.("textarea[data-agent-team-input]") ? document.activeElement : null;
+  const selectionStart = activeInput?.selectionStart;
+  const selectionEnd = activeInput?.selectionEnd;
   const inspectorOpen = (mode === "live" || isUnifiedRailWorkspace()) && selected?.type === "node" && isRailRuntimeNode(selected.id) && agentTeam.panel === "home";
   const workspaceEvidenceOpen = isUnifiedRailWorkspace() && Boolean(selected) && agentTeam.panel === "home" && !inspectorOpen;
   rail.hidden = !controls.length;
@@ -1667,10 +1830,15 @@ function renderOperationsTeamRail() {
       ? workspaceEvidenceRailMarkup()
       : agentTeam.panel === "session"
         ? agentTeamSessionMarkup(controls)
-        : ["replay", "agents", "compare"].includes(mode)
+        : isUnifiedRailWorkspace()
           ? workspaceSummaryRailMarkup()
           : agentTeamHomeMarkup(controls);
   bindOperationsTeamRailControls(rail);
+  if (activeInput && agentTeam.panel === "session" && !agentTeam.sending) {
+    const replacement = rail.querySelector("textarea[data-agent-team-input]");
+    replacement?.focus();
+    if (replacement && Number.isInteger(selectionStart) && Number.isInteger(selectionEnd)) replacement.setSelectionRange(selectionStart, selectionEnd);
+  }
   restoreLiveInspectorSnapshot();
 }
 
@@ -1767,13 +1935,13 @@ function handleOperationsTeamRail(event) {
   }
   const workspace = event.target.closest("[data-agent-team-workspace]");
   if (workspace && !workspace.disabled) {
-    const modeByAction = {
-      view_diagnosis: "replay",
-      open_recovery_console: "agents",
-      compare_recovery: "compare"
+    const stageByAction = {
+      view_diagnosis: "investigate",
+      open_recovery_console: "decide",
+      compare_recovery: "verify"
     };
-    const nextMode = modeByAction[workspace.dataset.agentTeamWorkspace];
-    if (nextMode) setMode(nextMode);
+    const nextStage = stageByAction[workspace.dataset.agentTeamWorkspace];
+    if (nextStage) setIncidentStage(nextStage);
     return;
   }
   if (event.target.closest("[data-agent-team-simulate]")) void runAgentTeamDemo();
@@ -2370,7 +2538,7 @@ async function sendAgentTeamMessage(value) {
         conversation_id: agentTeam.conversation_id,
         idempotency_key: idempotencyKey,
         requested_agent: agentTeam.role,
-        page_mode: ({ architecture: "architecture", live: "live", replay: "diagnose", agents: "recovery", compare: "compare" })[mode] || "architecture",
+        page_mode: ({ architecture: "architecture", live: "live", replay: "diagnose", agents: "recovery", compare: "compare", incident: incidentAgentPageMode() })[mode] || "architecture",
         selected_component: selectedComponent,
         message
       })
@@ -2925,7 +3093,7 @@ function setMode(nextMode) {
     showToast(`This workspace is unavailable until ${shared.workspace_actions?.[requiredAction]?.prerequisites?.filter((item) => !item.satisfied).map((item) => item.id.replaceAll("_", " ")).join(" and ") || "its server prerequisites are recorded"}.`);
     return;
   }
-  if (["replay", "agents", "compare"].includes(nextMode)) {
+  if (["incident", "replay", "agents", "compare"].includes(nextMode)) {
     // Workspace navigation returns to the approved summary rail. A chat
     // session is available only after the user explicitly opens an agent.
     selected = null;
@@ -3042,7 +3210,7 @@ function endLivePan(event) {
 function transitionCanvasPointer(event, phase) {
   return canvasPointerTransition({
     current: canvasPointer,
-    mode,
+    mode: isIncidentCompareStage() ? "compare" : mode,
     phase,
     pointerId: event.pointerId,
     button: event.button,
