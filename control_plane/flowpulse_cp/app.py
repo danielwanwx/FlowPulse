@@ -2,15 +2,21 @@
 
 import inspect
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
 from typing import Any, Optional, Protocol
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from .actions import DryRunActionService
-from .models import AuthContext, DryRunReceipt, DryRunRequest, IncidentCase, IncidentIntake, RemediationProposal
-from .policy import PolicyViolation, repair_contract_hash, validate_owner_gate
+from .models import (
+    AuthContext,
+    DryRunRequest,
+    IncidentCase,
+    IncidentIntake,
+    OwnerCommandReceipt,
+    OwnerGateCommand,
+    RemediationProposal,
+)
+from .policy import PolicyViolation, require_authenticated_owner
 from .postgres import PostgresCaseRepository
 
 
@@ -18,10 +24,16 @@ class TemporalStartPort(Protocol):
     async def start_case(self, intake: IncidentIntake, actor: AuthContext) -> IncidentCase:
         ...
 
+    async def submit_owner_command(self, case: IncidentCase, command: OwnerGateCommand) -> OwnerCommandReceipt:
+        ...
+
 
 class TemporalUnavailableStarter:
     async def start_case(self, intake: IncidentIntake, actor: AuthContext) -> IncidentCase:
         raise RuntimeError("temporal_start_unavailable")
+
+    async def submit_owner_command(self, case: IncidentCase, command: OwnerGateCommand) -> OwnerCommandReceipt:
+        raise RuntimeError("temporal_update_unavailable")
 
 
 class LocalTestAuthMiddleware(BaseHTTPMiddleware):
@@ -30,8 +42,10 @@ class LocalTestAuthMiddleware(BaseHTTPMiddleware):
         tenant = request.headers.get("x-flowpulse-test-tenant")
         subject = request.headers.get("x-flowpulse-test-subject")
         if tenant and subject:
+            supplied_roles = request.headers.get("x-flowpulse-test-roles", "local-test-owner")
+            roles = [role.strip() for role in supplied_roles.split(",") if role.strip()]
             request.state.flowpulse_auth = AuthContext(
-                tenant_id=tenant, subject_id=subject, roles=["local-test-owner"]
+                tenant_id=tenant, subject_id=subject, roles=roles
             )
         return await call_next(request)
 
@@ -61,7 +75,6 @@ def _repository(request: Request) -> Any:
 
 def create_app(
     repository: Optional[Any] = None,
-    dry_runs: Optional[DryRunActionService] = None,
     temporal_starter: Optional[TemporalStartPort] = None,
     allow_local_test_auth: bool = False,
     postgres_dsn: Optional[str] = None,
@@ -112,49 +125,44 @@ def create_app(
             raise HTTPException(status_code=404, detail="case_not_found")
         return case
 
-    @app.post("/v1/proposals", response_model=RemediationProposal, status_code=202)
+    @app.post("/v1/proposals", response_model=OwnerCommandReceipt, status_code=202)
     async def record_proposal(
         proposal: RemediationProposal, request: Request, actor: AuthContext = Depends(trusted_auth_context),
-    ) -> RemediationProposal:
+    ) -> OwnerCommandReceipt:
         tenant_match(proposal.tenant_id, actor)
         repository = _repository(request)
-        if await _resolve(repository.get_case(actor.tenant_id, proposal.case_id)) is None:
+        case = await _resolve(repository.get_case(actor.tenant_id, proposal.case_id))
+        if case is None:
             raise HTTPException(status_code=404, detail="case_not_found")
         try:
-            await _resolve(repository.put_proposal(proposal))
-        except PolicyViolation as error:
+            return await temporal_starter.submit_owner_command(case, OwnerGateCommand(
+                case_id=case.case_id, tenant_id=case.tenant_id, actor=actor, proposal=proposal,
+            ))
+        except (PolicyViolation, RuntimeError) as error:
             raise HTTPException(status_code=409, detail=str(error))
-        return proposal
 
-    @app.post("/v1/proposals/{proposal_id}/dry-run", response_model=DryRunReceipt)
+    @app.post("/v1/proposals/{proposal_id}/dry-run", response_model=OwnerCommandReceipt, status_code=202)
     async def dry_run(
         proposal_id: str, body: DryRunRequest, request: Request, actor: AuthContext = Depends(trusted_auth_context),
-    ) -> DryRunReceipt:
+    ) -> OwnerCommandReceipt:
         repository = _repository(request)
-        proposal = await _resolve(repository.get_proposal(actor.tenant_id, proposal_id))
-        if proposal is None:
-            raise HTTPException(status_code=404, detail="proposal_not_found")
         tenant_match(body.approval.tenant_id, actor)
         approval = body.approval.copy(update={"tenant_id": actor.tenant_id, "actor_id": actor.subject_id})
         try:
-            case = await _resolve(repository.get_case(actor.tenant_id, proposal.case_id))
+            require_authenticated_owner(actor.subject_id, actor.roles)
+            if approval.proposal_id != proposal_id:
+                raise PolicyViolation("path_proposal_id_mismatch")
+            case = await _resolve(repository.get_case(actor.tenant_id, approval.case_id))
             if case is None:
                 raise PolicyViolation("unknown_case")
-            validate_owner_gate(
-                approval=approval, proposal=proposal, current_case_revision=case.case_revision,
-                current_witness=body.current_witness, now=datetime.now(timezone.utc), action_allowlist=(),
-            )
-            receipt = DryRunReceipt(
-                tenant_id=proposal.tenant_id, case_id=proposal.case_id, proposal_id=proposal.proposal_id,
-                repair_contract_hash=repair_contract_hash(proposal), idempotency_key=proposal.idempotency_key,
-                reason="p0_non_executing_dry_run_only",
-            )
-            if isinstance(repository, PostgresCaseRepository):
-                await repository.put_approval(approval)
-                return await repository.record_dry_run(receipt)
-            service = dry_runs or DryRunActionService(repository)
-            return service.dry_run(proposal_id, approval, body.current_witness, datetime.now(timezone.utc))
+            return await temporal_starter.submit_owner_command(case, OwnerGateCommand(
+                case_id=case.case_id, tenant_id=case.tenant_id, actor=actor, proposal_id=proposal_id,
+                approval=approval, current_witness=body.current_witness,
+            ))
         except PolicyViolation as error:
+            status = 403 if str(error) == "owner_role_required" else 409
+            raise HTTPException(status_code=status, detail=str(error))
+        except RuntimeError as error:
             raise HTTPException(status_code=409, detail=str(error))
 
     return app

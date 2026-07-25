@@ -22,6 +22,8 @@ class DryRunActionService:
         approval: OwnerApproval,
         current_witness: Dict[str, str],
         now: datetime,
+        authenticated_subject: str,
+        authenticated_roles: Tuple[str, ...],
     ) -> DryRunReceipt:
         # Keep the service itself tenant scoped too; callers must not be able
         # to turn a guessed proposal id into a cross-tenant dry-run.
@@ -37,6 +39,8 @@ class DryRunActionService:
             current_case_revision=case.case_revision,
             current_witness=current_witness,
             now=now,
+            authenticated_subject=authenticated_subject,
+            authenticated_roles=authenticated_roles,
             # An explicit deny-all: P0 can only return a simulated receipt.
             action_allowlist=(),
         )

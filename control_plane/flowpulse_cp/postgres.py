@@ -8,6 +8,8 @@ from uuid import NAMESPACE_URL, uuid5
 import asyncpg
 
 from .models import (
+    ActivityOutcome,
+    CaseState,
     ClaimRecord,
     CoverageEntry,
     DryRunReceipt,
@@ -17,9 +19,16 @@ from .models import (
     OwnerApproval,
     RemediationProposal,
     TemporalActivityPacket,
+    VerificationDecision,
     VerificationReport,
 )
-from .policy import PolicyViolation, repair_contract_hash, validate_claim_evidence, validate_evidence_admission
+from .policy import (
+    PolicyViolation,
+    repair_contract_hash,
+    validate_claim_evidence,
+    validate_evidence_admission,
+    validate_owner_gate,
+)
 
 
 T = TypeVar("T")
@@ -84,12 +93,41 @@ class PostgresCaseRepository:
                 INSERT INTO incident_cases
                   (case_id, tenant_id, case_revision, workflow_id, workflow_run_id, state, payload, created_at, updated_at)
                 VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9)
-                ON CONFLICT (case_id) DO NOTHING
+                ON CONFLICT (case_id) DO UPDATE SET
+                  workflow_id=EXCLUDED.workflow_id,
+                  workflow_run_id=EXCLUDED.workflow_run_id,
+                  updated_at=GREATEST(incident_cases.updated_at, EXCLUDED.updated_at)
                 """,
                 case.case_id, case.tenant_id, case.case_revision, case.workflow_id, case.workflow_run_id,
                 case.state.value, _payload(case), case.created_at, case.updated_at,
             )
         await self._tenant(case.tenant_id, operation)
+
+    async def project_case_state(
+        self, packet: TemporalActivityPacket, state: CaseState, reason_codes: List[str] = None,
+    ) -> IncidentCase:
+        """Update only the Temporal-derived query projection for this exact run."""
+        async def operation(connection: asyncpg.Connection) -> IncidentCase:
+            row = await connection.fetchrow(
+                "SELECT payload, workflow_run_id FROM incident_cases WHERE tenant_id=$1 AND case_id=$2 FOR UPDATE",
+                packet.tenant_id, packet.case_id,
+            )
+            if row is None or row["workflow_run_id"] != packet.workflow_run_id:
+                raise PolicyViolation("projection_case_or_workflow_run_mismatch")
+            current = IncidentCase.parse_obj(_decode(row["payload"]))
+            updated = current.copy(update={
+                "state": state,
+                "updated_at": datetime.now(timezone.utc),
+                "blocker_code": (reason_codes or [None])[0],
+            })
+            await connection.execute(
+                """UPDATE incident_cases SET state=$3, payload=$4::jsonb, updated_at=$5
+                   WHERE tenant_id=$1 AND case_id=$2 AND workflow_run_id=$6""",
+                packet.tenant_id, packet.case_id, updated.state.value, _payload(updated),
+                updated.updated_at, packet.workflow_run_id,
+            )
+            return updated
+        return await self._tenant(packet.tenant_id, operation)
 
     async def put_evidence(self, evidence: EvidenceEnvelope, subject_id: str) -> None:
         validate_evidence_admission(evidence, subject_id)
@@ -191,15 +229,106 @@ class PostgresCaseRepository:
         await self._tenant(proposal.tenant_id, operation)
 
     async def put_approval(self, approval: OwnerApproval) -> None:
-        async def operation(connection: asyncpg.Connection) -> None:
-            await connection.execute(
-                """INSERT INTO owner_approvals
-                   (approval_id, case_id, tenant_id, proposal_id, case_revision, repair_contract_hash, expires_at, payload)
-                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb) ON CONFLICT (approval_id) DO NOTHING""",
-                approval.approval_id, approval.case_id, approval.tenant_id, approval.proposal_id,
-                approval.case_revision, approval.repair_contract_hash, approval.expires_at, _payload(approval),
+        """Prevent an API/controller from bypassing the Temporal Owner Gate.
+
+        Accepted approval rows are emitted only by ``record_owner_gate`` in
+        the same transaction as the verified decision and dry-run receipt.
+        """
+        raise PolicyViolation("owner_approval_must_be_recorded_by_owner_gate")
+
+    async def record_owner_gate(self, packet: TemporalActivityPacket, outcome: ActivityOutcome) -> ActivityOutcome:
+        """Persist candidate, accepted approval, action receipt, and state atomically.
+
+        A body that claims APPROVED is only a candidate until this Temporal
+        activity revalidates owner identity, exact contract, TTL, and witness.
+        """
+        async def operation(connection: asyncpg.Connection) -> ActivityOutcome:
+            row = await connection.fetchrow(
+                "SELECT payload, workflow_run_id FROM incident_cases WHERE tenant_id=$1 AND case_id=$2 FOR UPDATE",
+                packet.tenant_id, packet.case_id,
             )
-        await self._tenant(approval.tenant_id, operation)
+            if row is None or row["workflow_run_id"] != packet.workflow_run_id:
+                raise PolicyViolation("owner_gate_case_or_workflow_run_mismatch")
+            case = IncidentCase.parse_obj(_decode(row["payload"]))
+            proposal = packet.proposal
+            approval = packet.approval
+            validated = outcome.decision == VerificationDecision.PASS
+            rejection = None
+            if proposal is None:
+                validated = False
+                rejection = "proposal_required"
+            elif approval is None:
+                validated = False
+                rejection = "owner_approval_required"
+            else:
+                try:
+                    validate_owner_gate(
+                        approval=approval, proposal=proposal, current_case_revision=case.case_revision,
+                        current_witness=packet.current_witness, now=datetime.now(timezone.utc),
+                        authenticated_subject=packet.actor_subject_id, authenticated_roles=packet.actor_roles,
+                        action_allowlist=(),
+                    )
+                except PolicyViolation as error:
+                    validated = False
+                    rejection = str(error)
+
+            if proposal is not None:
+                await connection.execute(
+                    """INSERT INTO remediation_proposals
+                       (proposal_id, case_id, tenant_id, case_revision, repair_contract_hash, payload)
+                       VALUES ($1,$2,$3,$4,$5,$6::jsonb) ON CONFLICT (proposal_id) DO NOTHING""",
+                    proposal.proposal_id, proposal.case_id, proposal.tenant_id, proposal.case_revision,
+                    repair_contract_hash(proposal), _payload(proposal),
+                )
+            if approval is not None:
+                await connection.execute(
+                    """INSERT INTO owner_approval_candidates
+                       (candidate_id, approval_id, case_id, tenant_id, workflow_run_id, status, payload)
+                       VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb) ON CONFLICT (candidate_id) DO NOTHING""",
+                    "candidate-{}-{}".format(packet.workflow_run_id, approval.approval_id), approval.approval_id,
+                    approval.case_id, approval.tenant_id, packet.workflow_run_id,
+                    "VERIFIED" if validated else "REJECTED", _payload(approval),
+                )
+
+            if validated and proposal is not None and approval is not None:
+                await connection.execute(
+                    """INSERT INTO owner_approvals
+                       (approval_id, case_id, tenant_id, proposal_id, case_revision, repair_contract_hash, expires_at, payload)
+                       VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb) ON CONFLICT (approval_id) DO NOTHING""",
+                    approval.approval_id, approval.case_id, approval.tenant_id, approval.proposal_id,
+                    approval.case_revision, approval.repair_contract_hash, approval.expires_at, _payload(approval),
+                )
+                receipt = DryRunReceipt(
+                    tenant_id=proposal.tenant_id, case_id=proposal.case_id, proposal_id=proposal.proposal_id,
+                    repair_contract_hash=repair_contract_hash(proposal), idempotency_key=proposal.idempotency_key,
+                    reason="p0_non_executing_dry_run_only",
+                )
+                await self._record_dry_run(connection, receipt)
+                state = CaseState.AWAITING_OWNER
+                reason_codes: List[str] = []
+            elif approval is None:
+                state = CaseState.AWAITING_OWNER
+                reason_codes = [rejection or "owner_approval_required"]
+            else:
+                state = CaseState.BLOCKED
+                reason_codes = [rejection or "owner_gate_rejected"]
+
+            updated = case.copy(update={
+                "state": state, "updated_at": datetime.now(timezone.utc),
+                "blocker_code": reason_codes[0] if reason_codes else None,
+            })
+            await connection.execute(
+                """UPDATE incident_cases SET state=$3, payload=$4::jsonb, updated_at=$5
+                   WHERE tenant_id=$1 AND case_id=$2 AND workflow_run_id=$6""",
+                packet.tenant_id, packet.case_id, state.value, _payload(updated), updated.updated_at,
+                packet.workflow_run_id,
+            )
+            return outcome.copy(update={
+                "decision": outcome.decision if validated else VerificationDecision.FAIL,
+                "state": state,
+                "reason_codes": reason_codes or outcome.reason_codes,
+            })
+        return await self._tenant(packet.tenant_id, operation)
 
     async def append_activity_event(
         self, packet: TemporalActivityPacket, activity_id: str, result: Dict[str, Any], raw_artifact_key: str
@@ -228,9 +357,8 @@ class PostgresCaseRepository:
             )
         await self._tenant(packet.tenant_id, operation)
 
-    async def record_dry_run(self, receipt: DryRunReceipt) -> DryRunReceipt:
-        async def operation(connection: asyncpg.Connection) -> DryRunReceipt:
-            inserted = await connection.fetchrow(
+    async def _record_dry_run(self, connection: asyncpg.Connection, receipt: DryRunReceipt) -> DryRunReceipt:
+        inserted = await connection.fetchrow(
                 """INSERT INTO action_executions
                    (execution_id, case_id, tenant_id, proposal_id, repair_contract_hash, idempotency_key, result, payload)
                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb)
@@ -239,19 +367,23 @@ class PostgresCaseRepository:
                 "dry-run-{}".format(receipt.idempotency_key), receipt.case_id, receipt.tenant_id,
                 receipt.proposal_id, receipt.repair_contract_hash, receipt.idempotency_key,
                 receipt.status, _payload(receipt),
-            )
-            if inserted is not None:
-                return DryRunReceipt.parse_obj(_decode(inserted["payload"]))
-            # RLS deliberately hides a conflicting tenant's receipt. That must
-            # still fail closed rather than turn a global unique violation into
-            # a 500 or let an idempotency key be rebound.
-            existing = await connection.fetchrow(
-                "SELECT payload FROM action_executions WHERE idempotency_key=$1", receipt.idempotency_key
-            )
-            if existing is None:
-                raise PolicyViolation("idempotency_key_reuse_across_tenant_case_proposal_or_contract")
-            prior = DryRunReceipt.parse_obj(_decode(existing["payload"]))
-            if prior != receipt:
-                raise PolicyViolation("idempotency_key_reuse_across_tenant_case_proposal_or_contract")
-            return prior
+        )
+        if inserted is not None:
+            return DryRunReceipt.parse_obj(_decode(inserted["payload"]))
+        # RLS deliberately hides a conflicting tenant's receipt. That must
+        # still fail closed rather than turn a global unique violation into
+        # a 500 or let an idempotency key be rebound.
+        existing = await connection.fetchrow(
+            "SELECT payload FROM action_executions WHERE idempotency_key=$1", receipt.idempotency_key
+        )
+        if existing is None:
+            raise PolicyViolation("idempotency_key_reuse_across_tenant_case_proposal_or_contract")
+        prior = DryRunReceipt.parse_obj(_decode(existing["payload"]))
+        if prior != receipt:
+            raise PolicyViolation("idempotency_key_reuse_across_tenant_case_proposal_or_contract")
+        return prior
+
+    async def record_dry_run(self, receipt: DryRunReceipt) -> DryRunReceipt:
+        async def operation(connection: asyncpg.Connection) -> DryRunReceipt:
+            return await self._record_dry_run(connection, receipt)
         return await self._tenant(receipt.tenant_id, operation)

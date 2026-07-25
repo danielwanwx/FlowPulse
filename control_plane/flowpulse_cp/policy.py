@@ -22,6 +22,14 @@ class PolicyViolation(ValueError):
     """A caller crossed a FlowPulse truth, tenant, or authority boundary."""
 
 
+def require_authenticated_owner(subject_id: str, roles: Iterable[str]) -> None:
+    """Authorize the trusted command principal, never a body-provided owner."""
+    if not subject_id:
+        raise PolicyViolation("authenticated_subject_required")
+    if not set(roles).intersection({"owner", "local-test-owner"}):
+        raise PolicyViolation("owner_role_required")
+
+
 def canonical_json(value: Dict) -> str:
     """Stable JSON contract hash input (P0's RFC-8785-compatible subset)."""
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
@@ -95,10 +103,15 @@ def validate_owner_gate(
     current_case_revision: int,
     current_witness: Dict[str, str],
     now: datetime,
+    authenticated_subject: str,
+    authenticated_roles: Iterable[str],
     action_allowlist: Iterable[str] = (),
 ) -> None:
     """Fail closed before a dry-run or a future P1 executor can act."""
     now = now.astimezone(timezone.utc)
+    if approval.actor_id != authenticated_subject:
+        raise PolicyViolation("approval_actor_not_authenticated_subject")
+    require_authenticated_owner(authenticated_subject, authenticated_roles)
     if approval.decision != ApprovalDecision.APPROVED:
         raise PolicyViolation("approval_not_approved")
     if approval.expires_at.astimezone(timezone.utc) <= now or proposal.expires_at.astimezone(timezone.utc) <= now:

@@ -387,6 +387,45 @@ class DryRunRequest(StrictModel):
     current_witness: Dict[NonEmpty, NonEmpty]
 
 
+class OwnerGateCommand(StrictModel):
+    """Durable Temporal update input; HTTP supplies the trusted actor itself."""
+    case_id: NonEmpty
+    tenant_id: NonEmpty
+    actor: AuthContext
+    proposal: Optional[RemediationProposal] = None
+    proposal_id: Optional[NonEmpty] = None
+    approval: Optional[OwnerApproval] = None
+    current_witness: Dict[NonEmpty, NonEmpty] = Field(default_factory=dict)
+
+    @root_validator(allow_reuse=True)
+    def command_is_case_scoped(cls, values: Dict[str, Any]) -> Dict[str, Any]:
+        proposal = values.get("proposal")
+        approval = values.get("approval")
+        case_id = values.get("case_id")
+        tenant_id = values.get("tenant_id")
+        actor = values.get("actor")
+        if actor is not None and actor.tenant_id != tenant_id:
+            raise ValueError("owner_command_actor_tenant_mismatch")
+        for record in (proposal, approval):
+            if record is not None and (record.case_id != case_id or record.tenant_id != tenant_id):
+                raise ValueError("owner_command_case_scope_mismatch")
+        if proposal is not None and values.get("proposal_id") not in {None, proposal.proposal_id}:
+            raise ValueError("owner_command_proposal_id_mismatch")
+        if approval is not None and values.get("proposal_id") not in {None, approval.proposal_id}:
+            raise ValueError("owner_command_approval_id_mismatch")
+        if proposal is None and approval is None:
+            raise ValueError("owner_command_requires_proposal_or_approval")
+        return values
+
+
+class OwnerCommandReceipt(StrictModel):
+    case_id: NonEmpty
+    tenant_id: NonEmpty
+    workflow_run_id: NonEmpty
+    accepted: StrictBool = True
+    phase: NonEmpty
+
+
 class TemporalCaseDescriptor(StrictModel):
     case_id: NonEmpty
     tenant_id: NonEmpty
@@ -404,12 +443,8 @@ class TemporalCaseRequest(StrictModel):
     evidence_families: NonNegativeInt = 1
     specialist_roles: List[NonEmpty] = Field(default_factory=list, max_items=4)
     evidence: List[EvidenceEnvelope] = Field(default_factory=list)
-    readback_evidence: List[EvidenceEnvelope] = Field(default_factory=list)
     claims: List[ClaimRecord] = Field(default_factory=list)
     coverage: List[CoverageEntry] = Field(default_factory=list)
-    proposal: Optional[RemediationProposal] = None
-    approval: Optional[OwnerApproval] = None
-    current_witness: Dict[NonEmpty, NonEmpty] = Field(default_factory=dict)
 
     @root_validator(allow_reuse=True)
     def records_are_case_scoped(cls, values: Dict[str, Any]) -> Dict[str, Any]:
@@ -417,7 +452,7 @@ class TemporalCaseRequest(StrictModel):
         actor = values.get("actor")
         if case is None or actor is None:
             return values
-        for evidence in values.get("evidence", []) + values.get("readback_evidence", []):
+        for evidence in values.get("evidence", []):
             if (evidence.tenant_id, evidence.case_id, evidence.case_revision) != (
                 case.tenant_id, case.case_id, case.case_revision
             ):
@@ -432,11 +467,6 @@ class TemporalCaseRequest(StrictModel):
         for coverage in values.get("coverage", []):
             if (coverage.tenant_id, coverage.case_id) != (case.tenant_id, case.case_id):
                 raise ValueError("temporal_coverage_case_scope_mismatch")
-        for record in (values.get("proposal"), values.get("approval")):
-            if record is not None and (record.tenant_id, record.case_id, record.case_revision) != (
-                case.tenant_id, case.case_id, case.case_revision
-            ):
-                raise ValueError("temporal_owner_record_case_scope_mismatch")
         return values
 
 
@@ -447,6 +477,7 @@ class TemporalActivityPacket(StrictModel):
     workflow_id: NonEmpty
     workflow_run_id: NonEmpty
     actor_subject_id: NonEmpty
+    actor_roles: List[NonEmpty] = Field(default_factory=list)
     severity: NonEmpty
     environment: NonEmpty
     affected_entities: List[NonEmpty] = Field(min_items=1)
@@ -455,7 +486,6 @@ class TemporalActivityPacket(StrictModel):
     proposal_id: Optional[NonEmpty] = None
     sequence: PositiveInt
     evidence: List[EvidenceEnvelope] = Field(default_factory=list)
-    readback_evidence: List[EvidenceEnvelope] = Field(default_factory=list)
     claims: List[ClaimRecord] = Field(default_factory=list)
     coverage: List[CoverageEntry] = Field(default_factory=list)
     proposal: Optional[RemediationProposal] = None

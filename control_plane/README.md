@@ -38,11 +38,14 @@ FLOWPULSE_LIVE_POSTGRES=1 .venv/bin/python -m unittest \
   discover -s tests -p 'test_live_postgres_idempotency.py' -v
 ```
 
-The opt-in live suite starts three workflows through the registered worker and
+The opt-in live suite starts workflows through the registered worker and
 asserts that critic failure stops before verification, verifier failure stops
-before Owner Gate, and an Owner Gate witness mismatch returns `BLOCKED`. It
-leaves the stack available for API replay; stop it later with `docker compose
-down --volumes`.
+before Owner Gate, and an Owner Gate witness mismatch returns `BLOCKED`. The
+Compose API suite further proves the durable sequence `HTTP command → Temporal
+update → AWAITING_OWNER projection → resume`, records rejected approvals only
+as candidates, and rejects a tenant subject lacking the owner role. It leaves
+the stack available for API replay; stop it later with `docker compose down
+--volumes`.
 
 Postgres is published on `127.0.0.1:5433` to avoid colliding with a developer's
 local Postgres. Service-to-service connections continue to use `postgres:5432`.
@@ -51,9 +54,18 @@ For a Compose-only smoke test, the deliberately local test-auth adapter accepts
 `x-flowpulse-test-tenant` and `x-flowpulse-test-subject`; production must
 inject `request.state.flowpulse_auth` from trusted authentication middleware.
 `POST /v1/cases` calls `Client.start_workflow`; it does not fall back to an
-in-memory workflow. The `POST /v1/proposals/{proposal_id}/dry-run` path
-validates exact owner approval, TTL, contract hash, target scope, proposal and
-approval witness equality, then returns a non-executing idempotent receipt.
+in-memory workflow. Proposal and dry-run endpoints only submit typed Temporal
+updates using the trusted auth subject; they never validate an Owner Gate or
+write approval/action rows directly. The worker's Owner Gate activity validates
+the exact owner role, TTL, contract hash, ordered target scope, and proposal /
+approval witness equality in the same Postgres transaction that writes a
+verified approval candidate, accepted approval, and non-executing receipt.
+
+The production verifier reads `s3://` source bindings through the independent
+`S3SourceReadback` port. The local Compose profile explicitly selects a
+deterministic `local://current/...` adapter for offline integration tests;
+neither workflow intake nor activity packets accept caller-provided readback
+evidence.
 
 The migration is mounted into the local Postgres initializer. A deployment
 migration runner must apply the equivalent migration before any worker connects.

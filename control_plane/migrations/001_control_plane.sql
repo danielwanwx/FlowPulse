@@ -72,14 +72,19 @@ CREATE TABLE knowledge_revisions (
   FOREIGN KEY (tenant_id, supersedes_revision_id) REFERENCES knowledge_revisions (tenant_id, knowledge_revision_id)
 );
 CREATE OR REPLACE FUNCTION knowledge_supersession_is_monotonic() RETURNS trigger AS $$
-DECLARE prior_document TEXT; prior_revision INTEGER;
+DECLARE prior_document TEXT; prior_revision INTEGER; prior_status TEXT; latest_revision INTEGER;
 BEGIN
+  SELECT max(revision) INTO latest_revision
+    FROM knowledge_revisions WHERE tenant_id = NEW.tenant_id AND document_id = NEW.document_id;
   IF NEW.supersedes_revision_id IS NOT NULL THEN
-    SELECT document_id, revision INTO prior_document, prior_revision
+    SELECT document_id, revision, status INTO prior_document, prior_revision, prior_status
       FROM knowledge_revisions WHERE tenant_id = NEW.tenant_id AND knowledge_revision_id = NEW.supersedes_revision_id;
-    IF prior_document IS NULL OR prior_document <> NEW.document_id OR NEW.revision <= prior_revision THEN
+    IF prior_document IS NULL OR prior_document <> NEW.document_id OR NEW.revision <= prior_revision
+       OR prior_status <> 'ACTIVE' OR prior_revision <> latest_revision THEN
       RAISE EXCEPTION 'knowledge_supersession_requires_same_document_and_increasing_revision';
     END IF;
+  ELSIF latest_revision IS NOT NULL THEN
+    RAISE EXCEPTION 'knowledge_supersession_target_required';
   END IF;
   RETURN NEW;
 END;
@@ -96,6 +101,12 @@ CREATE TABLE owner_approvals (
   case_revision INTEGER NOT NULL, repair_contract_hash CHAR(64) NOT NULL,
   expires_at TIMESTAMPTZ NOT NULL, payload JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   FOREIGN KEY (tenant_id, case_id, case_revision) REFERENCES incident_cases (tenant_id, case_id, case_revision)
+);
+CREATE TABLE owner_approval_candidates (
+  candidate_id TEXT PRIMARY KEY, approval_id TEXT NOT NULL, case_id TEXT NOT NULL, tenant_id TEXT NOT NULL,
+  workflow_run_id TEXT NOT NULL, status TEXT NOT NULL CHECK (status IN ('VERIFIED','REJECTED')),
+  payload JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  FOREIGN KEY (tenant_id, case_id) REFERENCES incident_cases (tenant_id, case_id)
 );
 CREATE TABLE verification_reports (
   verification_id TEXT PRIMARY KEY, case_id TEXT NOT NULL, tenant_id TEXT NOT NULL, case_revision INTEGER NOT NULL,
@@ -123,7 +134,7 @@ BEGIN
   FOREACH table_name IN ARRAY ARRAY[
     'incident_cases','case_events','evidence_envelopes','claim_records','claim_evidence_links','hypothesis_records',
     'coverage_entries','conflict_records','investigator_assignments','tool_calls','knowledge_revisions','remediation_proposals',
-    'owner_approvals','verification_reports','action_executions'
+    'owner_approvals','owner_approval_candidates','verification_reports','action_executions'
   ] LOOP
     EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', table_name);
     EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', table_name);
@@ -157,3 +168,4 @@ BEGIN
 END $$;
 GRANT USAGE ON SCHEMA public TO flowpulse_cp_app;
 GRANT SELECT, INSERT ON ALL TABLES IN SCHEMA public TO flowpulse_cp_app;
+GRANT UPDATE ON incident_cases TO flowpulse_cp_app;

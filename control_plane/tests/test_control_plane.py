@@ -193,15 +193,15 @@ class ControlPlaneTests(unittest.TestCase):
             decided_at=NOW, expires_at=NOW + timedelta(minutes=2),
         )
         actions = DryRunActionService(self.repo)
-        first = actions.dry_run("proposal-1", approval, {"deploy": "d1"}, NOW)
-        second = actions.dry_run("proposal-1", approval, {"deploy": "d1"}, NOW)
+        first = actions.dry_run("proposal-1", approval, {"deploy": "d1"}, NOW, "owner-a", ("owner",))
+        second = actions.dry_run("proposal-1", approval, {"deploy": "d1"}, NOW, "owner-a", ("owner",))
         self.assertFalse(first.external_write_performed)
         self.assertEqual(first, second)
         with self.assertRaisesRegex(PolicyViolation, "proposal_preconditions_changed"):
-            actions.dry_run("proposal-1", approval, {"deploy": "d2"}, NOW)
+            actions.dry_run("proposal-1", approval, {"deploy": "d2"}, NOW, "owner-a", ("owner",))
         expired = approval.copy(update={"expires_at": NOW - timedelta(seconds=1)})
         with self.assertRaisesRegex(PolicyViolation, "approval_or_proposal_expired"):
-            actions.dry_run("proposal-1", expired, {"deploy": "d1"}, NOW)
+            actions.dry_run("proposal-1", expired, {"deploy": "d1"}, NOW, "owner-a", ("owner",))
 
     def test_knowledge_plane_filters_acl_tenant_and_supersession(self):
         revision = KnowledgeRevision(

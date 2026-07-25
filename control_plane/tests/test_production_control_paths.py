@@ -8,7 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from pydantic import ValidationError
 
-from flowpulse_cp.integrity import EvidenceGateway, REQUIRED_COVERAGE
+from flowpulse_cp.integrity import EvidenceGateway, FrozenSourceReadback, REQUIRED_COVERAGE
 from flowpulse_cp.knowledge import KnowledgePlane
 from flowpulse_cp.models import (
     ApprovalDecision, ClaimRecord, CoverageEntry, CoverageStatus, EvidenceAuthority, EvidenceEnvelope,
@@ -20,6 +20,7 @@ from flowpulse_cp.policy import PolicyViolation, repair_contract_hash, validate_
 from flowpulse_cp.postgres import activity_event_identity
 from flowpulse_cp.repository import InMemoryCaseRepository
 from flowpulse_cp.temporal_runtime import DomainActivityEngine
+from flowpulse_cp.source_readback import S3SourceReadback
 
 
 NOW = datetime.now(timezone.utc)
@@ -81,6 +82,16 @@ class FakeS3:
         return {"Body": type("Body", (), {"read": lambda _self: item["Body"]})()}
 
 
+class SourceS3:
+    def __init__(self, envelope):
+        self.envelope = envelope
+        self.calls = []
+
+    def get_object(self, *, Bucket, Key):
+        self.calls.append((Bucket, Key))
+        return {"Body": type("Body", (), {"read": lambda _self: self.envelope.json().encode("utf-8")})()}
+
+
 class ProductionControlPathTests(unittest.TestCase):
     def packet(self, stage, *, readback=None, proposal_record=None, approval_record=None, witness=None, coverage=None):
         evidence = current()
@@ -90,8 +101,8 @@ class ProductionControlPathTests(unittest.TestCase):
         )
         return TemporalActivityPacket(
             case_id="case-controls", case_revision=1, tenant_id="tenant-a", workflow_id="wf-real", workflow_run_id="run-real",
-            actor_subject_id="owner-a", severity="SEV2", environment="prod", affected_entities=["checkout"],
-            stage=stage, sequence=1, evidence=[evidence], readback_evidence=readback if readback is not None else [evidence],
+            actor_subject_id="owner-a", actor_roles=["owner"], severity="SEV2", environment="prod", affected_entities=["checkout"],
+            stage=stage, sequence=1, evidence=[evidence],
             claims=[claim], coverage=coverage if coverage is not None else [
                 CoverageEntry(case_id="case-controls", tenant_id="tenant-a", field=field, status=CoverageStatus.FILLED)
                 for field in REQUIRED_COVERAGE
@@ -126,21 +137,35 @@ class ProductionControlPathTests(unittest.TestCase):
     def test_owner_gate_requires_exact_order_and_canary_cap(self):
         two_targets = proposal(["checkout-a", "checkout-b"], maximum_targets=2)
         with self.assertRaisesRegex(PolicyViolation, "target_sequence"):
-            validate_owner_gate(approval(two_targets, ["checkout-b", "checkout-a"]), two_targets, 1, {"deploy": "d1"}, NOW)
+            validate_owner_gate(approval(two_targets, ["checkout-b", "checkout-a"]), two_targets, 1, {"deploy": "d1"}, NOW, "owner-a", ("owner",))
         bypass = proposal(["checkout-a", "checkout-b"], maximum_targets=1)
         with self.assertRaisesRegex(PolicyViolation, "canary_maximum"):
-            validate_owner_gate(approval(bypass), bypass, 1, {"deploy": "d1"}, NOW)
+            validate_owner_gate(approval(bypass), bypass, 1, {"deploy": "d1"}, NOW, "owner-a", ("owner",))
 
     def test_domain_activity_controls_negative_paths(self):
-        engine = DomainActivityEngine()
+        engine = DomainActivityEngine(FrozenSourceReadback([]))
         critic = engine.execute(self.packet("critic", coverage=[]))
         self.assertNotEqual(VerificationDecision.PASS, critic.decision)
-        verifier = engine.execute(self.packet("independent_verify", readback=[]))
+        verifier = engine.execute(self.packet("independent_verify"))
         self.assertEqual(VerificationDecision.FAIL, verifier.decision)
         item = proposal()
         owner = engine.execute(self.packet("owner_gate", proposal_record=item, approval_record=approval(item, witness={"deploy": "changed"}), witness={"deploy": "d1"}))
         self.assertEqual(VerificationDecision.FAIL, owner.decision)
         self.assertEqual("BLOCKED", owner.state.value)
+
+    def test_production_verifier_reads_source_adapter_not_activity_input(self):
+        source = current().copy(update={"source_uri": "s3://telemetry/current.json"})
+        adapter = SourceS3(source)
+        result = DomainActivityEngine(S3SourceReadback(adapter)).execute(self.packet(
+            "independent_verify"
+        ).copy(update={"evidence": [source], "claims": [
+            ClaimRecord(
+                claim_id="claim-controls", case_id="case-controls", case_revision=1, tenant_id="tenant-a",
+                claim_type="root", statement="current observation", evidence_ids=[source.evidence_id], created_by="primary",
+            )
+        ]}))
+        self.assertEqual(VerificationDecision.PASS, result.decision)
+        self.assertEqual([("telemetry", "current.json")], adapter.calls)
 
     def test_knowledge_supersession_requires_same_document_and_increasing_revision(self):
         first = KnowledgeRevision(

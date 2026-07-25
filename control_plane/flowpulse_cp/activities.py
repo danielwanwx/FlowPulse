@@ -63,6 +63,7 @@ def temporal_activity_surface() -> List[str]:
         "specialist_activity",
         "critic_activity",
         "independent_verify_activity",
+        "owner_wait_activity",
         "owner_gate_activity",
     ]
 

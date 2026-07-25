@@ -17,8 +17,9 @@ from flowpulse_cp.knowledge import KnowledgePlane
 from flowpulse_cp.models import (
     ApprovalDecision, AuthContext, ClaimRecord, EvidenceAuthority, EvidenceEnvelope,
     FreshnessStatus, IncidentCase, IncidentIntake, KnowledgeRevision, OwnerApproval,
-    PrivilegedChange, ProofScope, RemediationProposal, SourceKind,
+    PrivilegedChange, ProofScope, RemediationProposal, SourceKind, OwnerCommandReceipt,
     TemporalActivityPacket,
+    TemporalCaseDescriptor, TemporalCaseRequest,
 )
 from flowpulse_cp.policy import PolicyViolation, repair_contract_hash
 from flowpulse_cp.repository import InMemoryCaseRepository
@@ -82,6 +83,13 @@ class FakeStarter:
             affected_entities=intake.affected_entities, created_at=NOW, updated_at=NOW,
         )
 
+    async def submit_owner_command(self, case, command):
+        self.calls.append((case, command))
+        return OwnerCommandReceipt(
+            case_id=case.case_id, tenant_id=case.tenant_id, workflow_run_id=case.workflow_run_id,
+            phase="approval_submitted" if command.approval else "proposal_submitted",
+        )
+
 
 class NoShipRegressionTests(unittest.TestCase):
     def setUp(self):
@@ -124,12 +132,12 @@ class NoShipRegressionTests(unittest.TestCase):
         self.repo.put_proposal(first)
         actions = DryRunActionService(self.repo)
         with self.assertRaisesRegex(PolicyViolation, "proposal_preconditions_changed"):
-            actions.dry_run(first.proposal_id, approval(first), {"deploy": "d2"}, NOW)
-        actions.dry_run(first.proposal_id, approval(first), {"deploy": "d1"}, NOW)
+            actions.dry_run(first.proposal_id, approval(first), {"deploy": "d2"}, NOW, "untrusted-body-owner", ("owner",))
+        actions.dry_run(first.proposal_id, approval(first), {"deploy": "d1"}, NOW, "untrusted-body-owner", ("owner",))
         second = proposal("proposal-2", idempotency_key="idem-1")
         self.repo.put_proposal(second)
         with self.assertRaisesRegex(PolicyViolation, "idempotency_key_reuse"):
-            actions.dry_run(second.proposal_id, approval(second), {"deploy": "d1"}, NOW)
+            actions.dry_run(second.proposal_id, approval(second), {"deploy": "d1"}, NOW, "untrusted-body-owner", ("owner",))
 
     def test_knowledge_hash_age_and_latest_wins(self):
         old = KnowledgeRevision(
@@ -137,12 +145,12 @@ class NoShipRegressionTests(unittest.TestCase):
             kind="runbook", owner="owner", allowed_subjects=["subject-a"], entities=["checkout"], environment="prod",
             effective_at=NOW - timedelta(days=2), anchor="s:1", content="old", content_hash=digest("old"), independence_key="origin",
         )
-        latest = old.copy(update={"knowledge_revision_id": "kb-new", "revision": 2, "content": "new", "content_hash": digest("new")})
+        latest = old.copy(update={"knowledge_revision_id": "kb-new", "revision": 2, "content": "new", "content_hash": digest("new"), "supersedes_revision_id": "kb-old"})
         plane = KnowledgePlane([old, latest])
         candidates = plane.retrieve("tenant-a", "subject-a", "case-1", 1, "prod", ["checkout"], "runbook", NOW)
         self.assertEqual(["kb-new"], [item.knowledge_revision_id for item in candidates])
-        duplicate = latest.copy(update={"knowledge_revision_id": "kb-new-duplicate"})
-        deduplicated = KnowledgePlane([latest, duplicate])
+        duplicate = old.copy(update={"knowledge_revision_id": "kb-old-duplicate"})
+        deduplicated = KnowledgePlane([old, duplicate])
         active = [
             revision for revision in deduplicated._revisions.values()
             if revision.document_id == "runbook" and revision.status.value == "ACTIVE"
@@ -151,6 +159,39 @@ class NoShipRegressionTests(unittest.TestCase):
         bad = old.copy(update={"knowledge_revision_id": "kb-bad", "content_hash": digest("wrong")})
         with self.assertRaisesRegex(PolicyViolation, "knowledge_content_hash_mismatch"):
             KnowledgePlane([bad])
+
+    def test_knowledge_constructor_cannot_bypass_supersession_validation(self):
+        first = KnowledgeRevision(
+            knowledge_revision_id="kb-first", tenant_id="tenant-a", document_id="runbook", revision=1,
+            kind="runbook", owner="owner", allowed_subjects=["subject-a"], entities=["checkout"], environment="prod",
+            effective_at=NOW, anchor="s:1", content="first", content_hash=digest("first"), independence_key="origin",
+        )
+        other = first.copy(update={
+            "knowledge_revision_id": "kb-other", "document_id": "other", "content": "other",
+            "content_hash": digest("other"),
+        })
+        cross_document = first.copy(update={
+            "knowledge_revision_id": "kb-cross", "document_id": "different", "revision": 2,
+            "content": "cross", "content_hash": digest("cross"), "supersedes_revision_id": "kb-first",
+        })
+        with self.assertRaisesRegex(PolicyViolation, "document_mismatch"):
+            KnowledgePlane([first, cross_document])
+        backwards = first.copy(update={
+            "knowledge_revision_id": "kb-backwards", "content": "back", "content_hash": digest("back"),
+        })
+        with self.assertRaisesRegex(PolicyViolation, "revision_not_increasing"):
+            KnowledgePlane([first, backwards])
+        self.assertEqual("kb-other", KnowledgePlane([other])._revisions["kb-other"].knowledge_revision_id)
+
+    def test_temporal_intake_rejects_caller_readback_and_owner_payload(self):
+        descriptor = TemporalCaseDescriptor(
+            case_id="case-1", tenant_id="tenant-a", case_revision=1, workflow_id="wf", workflow_run_id="pending",
+            severity="SEV2", environment="prod", affected_entities=["checkout"],
+        )
+        raw = {"case": descriptor.dict(), "actor": {"tenant_id": "tenant-a", "subject_id": "subject-a", "roles": ["owner"]},
+               "readback_evidence": []}
+        with self.assertRaises(ValidationError):
+            TemporalCaseRequest.parse_obj(raw)
 
     def test_strict_privileged_contract_rejects_coercion_and_unknown_fields(self):
         raw = proposal().dict()
@@ -177,7 +218,7 @@ class NoShipRegressionTests(unittest.TestCase):
         item = proposal()
         self.repo.put_proposal(item)
         starter = FakeStarter()
-        app = create_app(self.repo, DryRunActionService(self.repo), starter)
+        app = create_app(self.repo, temporal_starter=starter)
         app.dependency_overrides[trusted_auth_context] = lambda: AuthContext(
             tenant_id="tenant-a", subject_id="owner-a", roles=["owner"]
         )
@@ -194,11 +235,11 @@ class NoShipRegressionTests(unittest.TestCase):
             "/v1/proposals/proposal-1/dry-run",
             json={"approval": json.loads(approval(item).json()), "current_witness": {"deploy": "d1"}},
         )
-        self.assertEqual(200, response.status_code, response.text)
-        self.assertFalse(response.json()["external_write_performed"])
+        self.assertEqual(202, response.status_code, response.text)
+        self.assertEqual("approval_submitted", response.json()["phase"])
 
     def test_http_rejects_missing_or_mismatched_trusted_tenant(self):
-        app = create_app(self.repo, DryRunActionService(self.repo), FakeStarter(), allow_local_test_auth=True)
+        app = create_app(self.repo, temporal_starter=FakeStarter(), allow_local_test_auth=True)
         client = TestClient(app)
         intake = {
             "tenant_id": "tenant-b", "external_incident_id": "http-forged", "title": "test", "severity": "SEV2",
@@ -211,6 +252,22 @@ class NoShipRegressionTests(unittest.TestCase):
             headers={"x-flowpulse-test-tenant": "tenant-a", "x-flowpulse-test-subject": "owner-a"},
         )
         self.assertEqual(403, response.status_code, response.text)
+
+    def test_http_rejects_tenant_subject_without_owner_role(self):
+        item = proposal()
+        starter = FakeStarter()
+        app = create_app(self.repo, temporal_starter=starter, allow_local_test_auth=True)
+        client = TestClient(app)
+        response = client.post(
+            "/v1/proposals/{}/dry-run".format(item.proposal_id),
+            json={"approval": json.loads(approval(item).json()), "current_witness": {"deploy": "d1"}},
+            headers={
+                "x-flowpulse-test-tenant": "tenant-a", "x-flowpulse-test-subject": "viewer-a",
+                "x-flowpulse-test-roles": "viewer",
+            },
+        )
+        self.assertEqual(403, response.status_code, response.text)
+        self.assertEqual([], starter.calls)
 
 
 if __name__ == "__main__":
