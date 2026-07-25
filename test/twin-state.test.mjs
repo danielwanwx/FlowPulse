@@ -19,6 +19,7 @@ import {
   canonicalIncidentWorkspaceStage,
   hasAuthoritativeIncidentExecution,
   incidentWorkflowEvidence,
+  incidentVerificationProjection,
   sharedRunReconnectDelay,
   architectureViewTopology,
   componentDetailProjection,
@@ -378,6 +379,11 @@ test("Incident accepts only the backend authority and verifier chain for its cur
   const attackerVerifier = { state: "running", topology: { verification: { passed: false } }, events: [plan, authority, repair, verification(true, "attacker")] };
   const verifierBeforeRepair = { state: "running", topology: { verification: { passed: false } }, events: [plan, authority, verification(false)] };
   const forgedVerifierParent = { state: "running", topology: { verification: { passed: false } }, events: [plan, authority, repair, verification(true, "verifier", "evt-forged-repair")] };
+  const forgedPassedAfterFailure = {
+    state: "needs_human",
+    topology: { verification: { passed: true }, snapshots: { verified: {} } },
+    events: [...postExecutionNeedsHuman.events, verification(true, "attacker", repair.id)]
+  };
 
   assert.equal(canonicalIncidentWorkspaceStage(recovered), "verify");
   assert.equal(hasAuthoritativeIncidentExecution(needsHuman.events), false);
@@ -397,7 +403,9 @@ test("Incident accepts only the backend authority and verifier chain for its cur
   assert.equal(canonicalIncidentWorkspaceStage(forgedVerifierParent), "execute");
   assert.equal(hasAuthoritativeIncidentExecution(malformedRepair), false);
   assert.equal(hasAuthoritativeIncidentExecution(repairWithoutAuthority), false);
-  assert.deepEqual([1, 2, 3, 4].map(sharedRunReconnectDelay), [750, 1500, 3000, 6000]);
+  assert.equal(incidentVerificationProjection({ ...recovered, topology: { verification: { passed: true }, snapshots: { verified: {} } } }).passed, true);
+  assert.deepEqual(incidentVerificationProjection(forgedPassedAfterFailure), { attempted: true, passed: false, failed: true });
+  assert.deepEqual([1, 2, 3, 4].map(sharedRunReconnectDelay), [750, 1500, 3000, 3000]);
   assert.match(twinStateSource, /function incidentFocusSignal\(id, metric\) \{\n  if \(!metric \|\| !validCanonicalMetric\(metric, false\)\) return null;/);
 });
 
@@ -1021,7 +1029,7 @@ test("Agent Team rail is session-driven, retains Live selection, and never uses 
   assert.match(appJs, /function canonicalRecoveryTopologyMarkup/);
   assert.match(appJs, /data-node-ids=/);
   assert.match(appJs, /data-edge-ids=/);
-  assert.match(appJs, /data-testid="\$\{verification\.payload\.passed \? "verification-passed"/);
+  assert.match(appJs, /data-testid="\$\{verificationProjection\.passed \? "verification-passed"/);
   assert.match(readFileSync(new URL("../public/vendor/phosphor/flowpulse-icons.css", import.meta.url), "utf8"), /\.ph-arrow-left::before/);
   assert.match(railSource, /role !== "ledger"/);
   assert.match(railSource, /data-agent-team-composer/);
@@ -1583,7 +1591,7 @@ test("timeline renders only recorded milestones and labels the next evidence req
 
 test("terminal Diagnosis Summary copy follows the current canonical recovery state", () => {
   const summarySource = appJs.slice(appJs.indexOf("function workspaceSummaryModel"), appJs.indexOf("function recoveryGateLabel"));
-  assert.match(summarySource, /const recoveryVerified = shared\.state === "recovered" \|\| verification\?\.payload\?\.passed === true/);
+  assert.match(summarySource, /const verification = incidentVerificationProjection\(shared\);[\s\S]*?const recoveryVerified = verification\.passed/);
   assert.match(summarySource, /recoveryVerified[\s\S]*?Causal diagnosis accepted; recovery is verified/);
   assert.match(summarySource, /humanStageLabel\(shared\.stage\)/);
 });
@@ -1637,6 +1645,8 @@ test("Incident hydration pins the restored run, reports a stale stream, and reta
   const headerSource = appJs.slice(appJs.indexOf("function renderHeader"), appJs.indexOf("function toggleTheme"));
   const approvalSource = appJs.slice(appJs.indexOf("function renderApproval"), appJs.indexOf("function renderDrawer"));
   const connectionSource = appJs.slice(appJs.indexOf("function renderSharedRunConnectionStatus"), appJs.indexOf("function toggleTheme"));
+  const sharedRecoverySource = appJs.slice(appJs.indexOf("function renderSharedRecoveryCanvas"), appJs.indexOf("function canonicalRecoveryTopologyMarkup"));
+  const sharedSummarySource = appJs.slice(appJs.indexOf("function workspaceSummaryModel"), appJs.indexOf("function recoveryGateLabel"));
   const streamSource = appJs.slice(appJs.indexOf("function connectSharedRunStream"), appJs.indexOf("function appendLoopTimelineItem"));
   const reconnectSource = appJs.slice(appJs.indexOf("function scheduleSharedRunReconnect"), appJs.indexOf("function connectSharedRunStream"));
   const streamOpenSource = streamSource.slice(streamSource.indexOf("stream.onopen"), streamSource.indexOf("stream.addEventListener(\"local-fault-loop\""));
@@ -1653,31 +1663,43 @@ test("Incident hydration pins the restored run, reports a stale stream, and reta
   assert.doesNotMatch(reconnectSource, /sharedRunTerminal\(\)/);
   assert.match(refreshSource, /Canonical incident refresh is unavailable\./);
   assert.match(hydrateSource, /if \(!sharedRunReconnectRequiresSchemaFrame\) sharedRunReconnectAttempts = 0;/);
+  assert.match(hydrateSource, /const topologyNeedsRefresh = sharedRunTopologyNeedsRefresh\(loop\);/);
+  assert.match(hydrateSource, /stream_state: sharedRunTransportState\(loop\)/);
+  assert.match(hydrateSource, /if \(topologyNeedsRefresh\) void refresh\(\{ synchronizeIncidentStage: true \}\);/);
   assert.doesNotMatch(streamOpenSource, /sharedRunReconnectAttempts = 0/);
   assert.match(streamSource, /topology: projection\.topology \|\| sharedRun\.loop\.topology/);
   assert.match(streamSource, /needsAuthoritativeBrowserProjection[\s\S]*?void refresh\(\{ synchronizeIncidentStage: true \}\)/);
   assert.match(streamSource, /sharedRunReconnectAttempts = 0;[\s\S]*?stream_state: "connected"/);
   assert.match(streamSource, /sharedRunReconnectRequiresSchemaFrame = false;/);
   assert.match(streamSource, /sharedRunReconnectRequiresSchemaFrame = true;[\s\S]*?scheduleSharedRunReconnect\(\{ error: "Shared run stream is incompatible\." \}\)/);
-  assert.match(appJs, /const verified = workflow\.verificationPassed && topology\.verification\.passed === true && topology\.snapshots\.verified !== null;/);
+  assert.match(appJs, /const verification = incidentVerificationProjection\(shared\);/);
+  assert.match(appJs, /const verified = verification\.passed;/);
   assert.match(appJs, /Verification failed after a recorded repair\./);
   assert.match(headerSource, /shared-run-connection/);
   assert.match(headerSource, /Repair executed; verification failed/);
   assert.match(connectionSource, /Live incident updates are stale; retrying/);
   assert.match(connectionSource, /els\["incident-strip"\]\.hidden = false/);
   assert.match(connectionSource, /els\["incident-strip"\]\.classList\.add\("is-connection-status"\)/);
-  assert.match(reconnectSource, /if \(!state && !sharedRunModel\(\)\) return;/);
+  assert.doesNotMatch(reconnectSource, /if \(!state && !sharedRunModel\(\)\) return;/);
+  assert.match(reconnectSource, /sharedRunReconnectTimer = setTimeout\([\s\S]*?if \(state \|\| sharedRunModel\(\)\) render\(\);/);
   assert.match(indexHtml, /id="shared-run-connection"[^>]+role="status"/);
   assert.match(approvalSource, /connectionVisible = \["reconnecting", "stale"\]\.includes\(sharedRun\?\.stream_state\)/);
   assert.match(approvalSource, /incident-strip"\]\.hidden = !connectionVisible/);
   assert.match(approvalSource, /Repair was executed, but independent verification failed/);
-  assert.match(appJs, /workflow\.verificationFailed \? "Failed" : "Awaiting independent check"/);
+  assert.match(appJs, /verification\.passed \? "Passed" : verification\.failed \? "Failed" : "Awaiting independent check"/);
   assert.match(appJs, /function resetIncidentStageForRun\(runId\)[\s\S]*?incidentStageFollowsAuthority = true/);
   assert.match(appJs, /function cancelSharedRunReconnect\([\s\S]*?clearTimeout\(sharedRunReconnectTimer\)/);
   assert.match(appJs, /if \(selectedRunId !== runId\) cancelSharedRunReconnect\(\);/);
   assert.match(appJs, /bindCanonicalRunSelection\(loop\)[\s\S]*?resetIncidentStageForRun\(runId\)/);
   assert.match(appJs, /data-start-guided-replay/);
   assert.match(headerSource, /Recovery verification incident/);
+  const stagePanelSource = appJs.slice(appJs.indexOf("function renderIncidentStagePanel"), appJs.indexOf("function renderIncidentStageRail"));
+  assert.match(stagePanelSource, /const verification = incidentVerificationProjection\(shared\);/);
+  assert.doesNotMatch(stagePanelSource, /verification\?\.payload\?\.passed/);
+  assert.match(sharedRecoverySource, /const verificationProjection = incidentVerificationProjection\(shared\);/);
+  assert.doesNotMatch(sharedRecoverySource, /verification\.payload\.passed/);
+  assert.match(sharedSummarySource, /const verification = incidentVerificationProjection\(shared\);/);
+  assert.doesNotMatch(sharedSummarySource, /verification\?\.payload\?\.passed/);
   assert.match(railSource, /focusedStage = null/);
   assert.match(railSource, /focus\(\{ preventScroll: true \}\)/);
   assert.match(stylesCss, /\.causal-note\.note-deploy \{ left: clamp\(140px, 14%, calc\(100% - 140px\)\);/);

@@ -747,6 +747,22 @@ export function hasAuthoritativeIncidentExecution(events) {
   return evidence.authorityGranted || evidence.repairExecuted;
 }
 
+// The UI may only describe recovery verification through this projection.
+// Event payloads alone are not enough: the verifier chain and the canonical
+// topology snapshot must agree before a run is presented as passed.
+export function incidentVerificationProjection(shared) {
+  const evidence = incidentWorkflowEvidence(shared?.events);
+  const topology = plainRecord(shared?.topology) ? shared.topology : null;
+  const passed = evidence.verificationPassed
+    && topology?.verification?.passed === true
+    && topology?.snapshots?.verified != null;
+  return {
+    attempted: evidence.verificationAttempted,
+    passed,
+    failed: !passed && evidence.verificationFailed
+  };
+}
+
 // This derives the authoritative current stage from the canonical loop
 // projection. Historical timeline browsing intentionally uses a separate
 // cursor and must never rewrite this value.
@@ -768,7 +784,7 @@ export function canonicalIncidentWorkspaceStage(shared) {
 
 export function sharedRunReconnectDelay(attempt) {
   const boundedAttempt = Number.isSafeInteger(attempt) && attempt > 0 ? attempt : 1;
-  return Math.min(8_000, 750 * (2 ** Math.min(boundedAttempt - 1, 3)));
+  return Math.min(3_000, 750 * (2 ** Math.min(boundedAttempt - 1, 2)));
 }
 
 // This is the only browser-facing projection for a canonical local-fault-loop

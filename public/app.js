@@ -18,6 +18,7 @@ import {
   sharedRunReadModel,
   canonicalIncidentWorkspaceStage,
   incidentWorkflowEvidence,
+  incidentVerificationProjection,
   sharedRunReconnectDelay,
   agentTeamConversationProjection,
   agentTeamProviderProjection,
@@ -169,6 +170,7 @@ if (selectedRunId === null && sharedRun?.run_id) bindCanonicalRunSelection(share
 let sharedRunReconnectTimer = null;
 let sharedRunReconnectAttempts = 0;
 let sharedRunReconnectRequiresSchemaFrame = false;
+let sharedRunTopologyRefreshKey = null;
 let sharedRunFollowing = true;
 
 window.addEventListener("popstate", () => {
@@ -309,7 +311,7 @@ function bindCanonicalWorkspace(value) {
     incident_id: loop.incident_id,
     loop,
     last_sequence: loop.events.at(-1)?.sequence || 0,
-    stream_state: "connected",
+    stream_state: sharedRunTransportState(loop),
     error: null
   };
   persistSharedRun();
@@ -401,6 +403,27 @@ function sharedRunTerminal() {
   return ["recovered", "needs_human", "failed"].includes(sharedRunModel()?.state);
 }
 
+function sharedRunTransportState(loop) {
+  if (["recovered", "needs_human", "failed"].includes(loop?.state)) return "idle";
+  return sharedRunReconnectAttempts >= 2 ? "stale" : "reconnecting";
+}
+
+function sharedRunTopologyNeedsRefresh(loop) {
+  const topology = loop?.topology;
+  const needsRefresh = !topology
+    || state?.run_id !== loop?.run_id
+    || state?.topology_views?.run_id !== loop?.run_id
+    || state?.topology_views?.projection_revision !== topology.projection_revision;
+  if (!needsRefresh) {
+    sharedRunTopologyRefreshKey = null;
+    return false;
+  }
+  const key = `${loop?.run_id || "unknown"}:${topology?.projection_revision || "missing"}:${state?.topology_views?.projection_revision || "missing"}`;
+  if (sharedRunTopologyRefreshKey === key) return false;
+  sharedRunTopologyRefreshKey = key;
+  return true;
+}
+
 async function hydrateSharedRun() {
   const runId = sharedRun?.run_id;
   if (!runId || selectedRunId !== runId) return;
@@ -413,7 +436,8 @@ async function hydrateSharedRun() {
     // When the retry was caused by a malformed SSE envelope, keep the
     // backoff until a valid frame proves the transport schema is usable.
     if (!sharedRunReconnectRequiresSchemaFrame) sharedRunReconnectAttempts = 0;
-    sharedRun = { ...sharedRun, loop, last_sequence: Math.max(sharedRun.last_sequence || 0, loop.events.at(-1)?.sequence || 0), stream_state: ["recovered", "needs_human", "failed"].includes(loop.state) ? "idle" : "connected", error: null };
+    const topologyNeedsRefresh = sharedRunTopologyNeedsRefresh(loop);
+    sharedRun = { ...sharedRun, loop, last_sequence: Math.max(sharedRun.last_sequence || 0, loop.events.at(-1)?.sequence || 0), stream_state: sharedRunTransportState(loop), error: null };
     agentTeam = {
       ...agentTeam,
       loop,
@@ -427,6 +451,10 @@ async function hydrateSharedRun() {
     connectSharedRunStream();
     render();
     ensureSelectedLiveComponentDetail();
+    // A guided replay may finish before EventSource connects. Its full loop
+    // projection is useful, but the Incident canvas also needs the matching
+    // pinned /api/state topology view before it can render the graph.
+    if (topologyNeedsRefresh) void refresh({ synchronizeIncidentStage: true });
   } catch (error) {
     if (sharedRun?.run_id !== runId || selectedRunId !== runId) return;
     scheduleSharedRunReconnect({ error: error.message || "Shared run is unavailable." });
@@ -438,6 +466,7 @@ function cancelSharedRunReconnect() {
   sharedRunReconnectTimer = null;
   sharedRunReconnectAttempts = 0;
   sharedRunReconnectRequiresSchemaFrame = false;
+  sharedRunTopologyRefreshKey = null;
   agentLoopEventSource?.close();
   agentLoopEventSource = null;
 }
@@ -455,8 +484,6 @@ function scheduleSharedRunReconnect({ error = null } = {}) {
     error
   };
   renderSharedRunConnectionStatus();
-  if (!state && !sharedRunModel()) return;
-  render();
   sharedRunReconnectTimer = setTimeout(() => {
     sharedRunReconnectTimer = null;
     if (sharedRun?.run_id !== runId || selectedRunId !== runId) return;
@@ -465,6 +492,7 @@ function scheduleSharedRunReconnect({ error = null } = {}) {
     // bounded retry path, so the operator never sees a fake retrying state.
     void hydrateSharedRun();
   }, delay);
+  if (state || sharedRunModel()) render();
 }
 
 function connectSharedRunStream() {
@@ -817,11 +845,11 @@ function renderSharedRunMetrics(shared) {
     return;
   }
   if (isIncidentCompareStage() || mode === "compare") {
-    const workflow = incidentWorkflowEvidence(shared.events);
+    const verification = incidentVerificationProjection(shared);
     const incident = canonicalWorkspaceVisual(shared.topology, shared.topology.snapshots.incident);
     const verified = canonicalWorkspaceVisual(shared.topology, shared.topology.snapshots.verified);
-    if (incident.availability !== "ready" || verified.availability !== "ready" || shared.topology.verification.passed !== true || !workflow.verificationPassed) {
-      const verificationNote = workflow.verificationFailed ? "Independent verification failed" : "Verification pending";
+    if (incident.availability !== "ready" || verified.availability !== "ready" || !verification.passed) {
+      const verificationNote = verification.failed ? "Independent verification failed" : "Verification pending";
       setMetric("checkout", "Unavailable", verificationNote);
       setMetric("payment", "Unavailable", verificationNote);
       setMetric("kafka", "Unavailable", verificationNote);
@@ -944,8 +972,8 @@ function canonicalDiagnosisCaption(shared) {
 
 function renderCanonicalCompareCanvas(shared) {
   const topology = shared.topology;
-  const workflow = incidentWorkflowEvidence(shared.events);
-  const verified = workflow.verificationPassed && topology.verification.passed === true && topology.snapshots.verified !== null;
+  const verification = incidentVerificationProjection(shared);
+  const verified = verification.passed;
   const incident = incidentFocusLayerMarkup(topology, topology.snapshots.incident, { layerName: "before", workspace: "compare", pulse: true });
   bindCanonicalCanvasIdentity(incident.visual, "compare-canvas", verified ? "verified" : "verification_pending");
   if (incident.visual.availability !== "ready") {
@@ -956,8 +984,8 @@ function renderCanonicalCompareCanvas(shared) {
     els["canvas-layers"].innerHTML = incidentFocusLayerMarkup(topology, topology.snapshots.incident, { layerName: "current", workspace: "compare", pulse: false }).markup;
     els["compare-handle"].hidden = true;
     els["compare-canvas-range"].hidden = true;
-    setAnnotations([{ id: "recovery", tone: "warning", title: workflow.verificationFailed ? "Verification failed" : "Verification pending", copy: workflow.verificationFailed ? "A repair was executed, but independent verification failed. Review the recorded evidence before another action." : "Compare remains locked until this run records passed independent verification." }]);
-    els["twin-canvas"].setAttribute("aria-label", workflow.verificationFailed ? "Verification failed after a recorded repair." : "Verification is pending for the recorded repair.");
+    setAnnotations([{ id: "recovery", tone: "warning", title: verification.failed ? "Verification failed" : "Verification pending", copy: verification.failed ? "A repair was executed, but independent verification failed. Review the recorded evidence before another action." : "Compare remains locked until this run records passed independent verification." }]);
+    els["twin-canvas"].setAttribute("aria-label", verification.failed ? "Verification failed after a recorded repair." : "Verification is pending for the recorded repair.");
     return;
   }
   const recovered = incidentFocusLayerMarkup(topology, topology.snapshots.verified, { layerName: "after", workspace: "compare", pulse: false });
@@ -991,8 +1019,8 @@ function renderIncidentStagePanel(shared) {
   const plan = [...events].reverse().find((event) => event.type === "local_fault_loop.plan.proposed");
   const authority = [...events].reverse().find((event) => event.type === "local_fault_loop.authority.decided");
   const repair = [...events].reverse().find((event) => event.type === "local_fault_loop.repair.executed");
-  const verification = [...events].reverse().find((event) => event.type === "local_fault_loop.verification.completed");
   const workflow = incidentWorkflowEvidence(events);
+  const verification = incidentVerificationProjection(shared);
   const stage = INCIDENT_STAGES.find((item) => item.id === incidentStage);
   const common = `<header><span>${escapeHtml(stage?.label || "Incident")}</span><strong>${escapeHtml(workflow.verificationFailed ? "Verification failed" : humanStageLabel(shared.stage))}</strong></header>`;
   if (incidentStage === "investigate") {
@@ -1014,17 +1042,17 @@ function renderIncidentStagePanel(shared) {
     const recordedAction = repair
       ? `${incidentActionLabel(repair.payload?.repair, "Recorded repair")} · ${incidentActionLabel(repair.payload?.result, "Completed")}`
       : "Agents only report server-recorded work; they do not bypass the gate.";
-    panel.innerHTML = `${common}<dl><div><dt>Execution</dt><dd>${escapeHtml(repair ? "Recorded" : authority ? recoveryGateLabel(events) : "Awaiting owner decision")}</dd></div><div><dt>Working now</dt><dd>${escapeHtml(workingNow)}</dd></div><div><dt>Verification</dt><dd>${escapeHtml(verification?.payload?.passed ? "Passed" : "Pending independent check")}</dd></div></dl><p>${escapeHtml(recordedAction)}</p><button type="button" data-agent-team-role="orchestrator">Ask Orchestrator</button>`;
+    panel.innerHTML = `${common}<dl><div><dt>Execution</dt><dd>${escapeHtml(repair ? "Recorded" : authority ? recoveryGateLabel(events) : "Awaiting owner decision")}</dd></div><div><dt>Working now</dt><dd>${escapeHtml(workingNow)}</dd></div><div><dt>Verification</dt><dd>${escapeHtml(verification.passed ? "Passed" : verification.failed ? "Failed" : "Pending independent check")}</dd></div></dl><p>${escapeHtml(recordedAction)}</p><button type="button" data-agent-team-role="orchestrator">Ask Orchestrator</button>`;
     return;
   }
   panel.hidden = false;
-  const verificationLabel = verification?.payload?.passed ? "Passed" : workflow.verificationFailed ? "Failed" : "Awaiting independent check";
-  const verificationCopy = verification?.payload?.passed
+  const verificationLabel = verification.passed ? "Passed" : verification.failed ? "Failed" : "Awaiting independent check";
+  const verificationCopy = verification.passed
     ? "Drag the divider to compare the incident snapshot with independently verified recovery."
-    : workflow.verificationFailed
+    : verification.failed
       ? "A repair was executed, but independent verification failed. Review the recorded evidence before another action."
       : "Compare stays locked until the backend records independent verification.";
-  panel.innerHTML = `${common}<dl><div><dt>Verification</dt><dd>${escapeHtml(verificationLabel)}</dd></div><div><dt>Snapshots</dt><dd>${escapeHtml(verification?.payload?.passed ? "Incident and verified" : "Incident only")}</dd></div><div><dt>Evidence</dt><dd>${escapeHtml(`${shared.citations.length} cited records`)}</dd></div></dl><p>${escapeHtml(verificationCopy)}</p><button type="button" data-agent-team-role="evaluator">Ask Evaluator</button>`;
+  panel.innerHTML = `${common}<dl><div><dt>Verification</dt><dd>${escapeHtml(verificationLabel)}</dd></div><div><dt>Snapshots</dt><dd>${escapeHtml(verification.passed ? "Incident and verified" : "Incident only")}</dd></div><div><dt>Evidence</dt><dd>${escapeHtml(`${shared.citations.length} cited records`)}</dd></div></dl><p>${escapeHtml(verificationCopy)}</p><button type="button" data-agent-team-role="evaluator">Ask Evaluator</button>`;
 }
 
 function renderIncidentStageRail(focusedStage = null) {
@@ -1583,12 +1611,13 @@ function renderSharedRecoveryCanvas(shared) {
   const authority = stageEvent("local_fault_loop.authority.decided");
   const repair = stageEvent("local_fault_loop.repair.executed");
   const verification = stageEvent("local_fault_loop.verification.completed");
-  const verificationTestId = verification ? ` data-testid="${verification.payload.passed ? "verification-passed" : "verification-failed"}"` : "";
+  const verificationProjection = incidentVerificationProjection(shared);
+  const verificationTestId = verificationProjection.attempted ? ` data-testid="${verificationProjection.passed ? "verification-passed" : "verification-failed"}"` : "";
   const team = recoveryWorkflowProjection(events).nodes;
   const current = team.find((node) => node.status === "active") || team.find((node) => node.status === "blocked") || team.at(-1);
   const selectedRole = team.find((node) => node.id === recoverySelectedRole) || current;
   recoverySelectedRole = selectedRole.id;
-  const detail = recoveryRoleDetail(selectedRole, { events, plan, authority, repair, verification });
+  const detail = recoveryRoleDetail(selectedRole, { events, plan, authority, repair, verification, verificationProjection });
   const recoveryTopology = canonicalRecoveryTopologyMarkup(shared.topology);
   els["canvas-layers"].innerHTML = `<div class="recovery-console-layout" data-shared-run="${escapeHtml(shared.run_id)}" data-projection-revision="${escapeHtml(shared.projection_revision)}">
     <section class="recovery-diagnosis" aria-label="Recovery status">
@@ -1622,7 +1651,7 @@ function renderSharedRecoveryCanvas(shared) {
   startIncidentFocusSignals();
 }
 
-function recoveryRoleDetail(node, { events, plan, authority, repair, verification }) {
+function recoveryRoleDetail(node, { events, plan, authority, repair, verification, verificationProjection }) {
   const roleEvent = node.role ? [...events].reverse().find((event) => event.type === "local_fault_loop.role.response" && event.payload?.role === node.role) : null;
   const evidence = [...new Set((roleEvent?.evidence_refs || (node.id === "recovery" ? [...(plan?.evidence_refs || []), ...(repair?.evidence_refs || [])] : verification?.evidence_refs || [])).filter(Boolean))];
   const plain = (value, fallback) => value ? plainLanguageAgentAnswer(String(value)).slice(0, 220) : fallback;
@@ -1637,8 +1666,8 @@ function recoveryRoleDetail(node, { events, plan, authority, repair, verificatio
   if (node.id === "verifier") return {
     facts: [
       ["Input", repair ? "Bounded repair result" : "Awaiting repair execution"],
-      ["Agent output", verification?.payload?.passed ? "All independent checks passed" : "Verification not complete"],
-      ["Proposed action", verification?.payload?.passed ? "Record recovered state" : "Continue verification"],
+      ["Agent output", verificationProjection.passed ? "All independent checks passed" : "Verification not complete"],
+      ["Proposed action", verificationProjection.passed ? "Record recovered state" : "Continue verification"],
       ["Verification condition", verification?.payload?.recovery_slo?.target || "All projected checks pass"]
     ], evidence, chatRole: null, chatLabel: null
   };
@@ -2297,9 +2326,9 @@ function workspaceSummaryModel(report) {
     const events = shared.events;
     const accepted = [...events].reverse().find((event) => event.type === "local_fault_loop.hypothesis.accepted");
     const plan = [...events].reverse().find((event) => event.type === "local_fault_loop.plan.proposed");
-    const verification = [...events].reverse().find((event) => event.type === "local_fault_loop.verification.completed");
+    const verification = incidentVerificationProjection(shared);
     if (mode === "replay") {
-      const recoveryVerified = shared.state === "recovered" || verification?.payload?.passed === true;
+      const recoveryVerified = verification.passed;
       return {
       title: "Diagnosis Summary",
       status: recoveryVerified
@@ -2315,17 +2344,17 @@ function workspaceSummaryModel(report) {
     if (mode === "agents") return {
       title: "Recovery Status",
       status: plan ? "Recovery proposal is projected from this run" : "Recovery proposal unavailable",
-      tone: verification?.payload?.passed ? "verified" : plan ? "active" : "idle",
-      facts: compact([["Risk", plan?.payload?.risk || "Not projected"], ["Owner gate", recoveryGateLabel(events)], ["Verification", verification?.payload?.passed ? "Passed" : "Not projected"], ["Next permitted action", recoveryNextAction(events)]]),
+      tone: verification.passed ? "verified" : plan ? "active" : "idle",
+      facts: compact([["Risk", plan?.payload?.risk || "Not projected"], ["Owner gate", recoveryGateLabel(events)], ["Verification", verification.passed ? "Passed" : verification.failed ? "Failed" : "Not projected"], ["Next permitted action", recoveryNextAction(events, verification)]]),
       actions: [{ label: "Ask Orchestrator", role: "orchestrator" }, { label: "Ask Evaluator", role: "evaluator" }]
     };
     return {
       title: "Verification Summary",
-      status: shared.state === "recovered" ? "Baseline, incident, and verified samples are server-recorded" : "Compare remains locked until independent verification",
-      tone: shared.state === "recovered" ? "verified" : "standby",
-      available: shared.state === "recovered",
+      status: verification.passed ? "Baseline, incident, and verified samples are server-recorded" : "Compare remains locked until independent verification",
+      tone: verification.passed ? "verified" : "standby",
+      available: verification.passed,
       empty: "Compare is unavailable until the backend records an implemented repair and independent verification.",
-      facts: compact([["Recovery verdict", shared.state === "recovered" ? "Verified" : "Not verified"], ["Verification", verification?.payload?.passed ? "All checks passed" : "Not recorded"], ["Rollback", events.some((event) => event.type === "local_fault_loop.repair.rolled_back") ? "Executed" : "Not needed"], ["Evidence", `${shared.citations.length} cited records`]]),
+      facts: compact([["Recovery verdict", verification.passed ? "Verified" : "Not verified"], ["Verification", verification.passed ? "All checks passed" : verification.failed ? "Failed" : "Not recorded"], ["Rollback", events.some((event) => event.type === "local_fault_loop.repair.rolled_back") ? "Executed" : "Not needed"], ["Evidence", `${shared.citations.length} cited records`]]),
       actions: [{ label: "Ask Evaluator", role: "evaluator" }]
     };
   }
@@ -2381,9 +2410,8 @@ function recoveryGateLabel(events) {
   return String(authority.payload?.outcome || "Recorded").replaceAll("_", " ");
 }
 
-function recoveryNextAction(events) {
-  const verification = [...events].reverse().find((event) => event.type === "local_fault_loop.verification.completed");
-  if (verification?.payload?.passed) return "Review verified recovery";
+function recoveryNextAction(events, verification = incidentVerificationProjection({ events })) {
+  if (verification.passed) return "Review verified recovery";
   const authority = [...events].reverse().find((event) => event.type === "local_fault_loop.authority.decided");
   if (authority?.payload?.outcome === "needs_human") return "Owner decision outside this workspace";
   if (events.some((event) => event.type === "local_fault_loop.repair.executed")) return "Wait for independent verification";
