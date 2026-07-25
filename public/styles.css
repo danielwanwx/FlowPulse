@@ -3831,7 +3831,19 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .app-shell[data-mode="compare"] .plane-guides { display: none; }
 .app-shell[data-mode="agents"] .recovery-console-layout { grid-template-columns: minmax(760px, 2.65fr) minmax(280px, .72fr); }
 .app-shell[data-mode="agents"] .recovery-topology-panel { grid-column: 1; grid-row: 2; }
-.app-shell[data-mode="agents"] .recovery-collaboration-panel { grid-column: 2; grid-row: 2; border-right: 0; overflow: auto; }
+.app-shell[data-mode="agents"] .recovery-collaboration-panel {
+  grid-column: 2;
+  grid-row: 2;
+  border-right: 0;
+  overflow: hidden;
+  isolation: isolate;
+}
+.app-shell[data-mode="agents"] .recovery-collaboration-panel .recovery-execution-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
+.app-shell[data-mode="agents"] .recovery-collaboration-panel .recovery-workflow-nodes {
+  display: none;
+}
 .app-shell[data-mode="agents"] .recovery-workflow-facts > header small { display: none; }
 .app-shell[data-mode="agents"] .recovery-collaboration-panel .recovery-workflow-nodes { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; padding: 8px; }
 .app-shell[data-mode="agents"] .recovery-collaboration-panel .recovery-workflow-node { gap: 5px; padding: 6px; }
@@ -3880,10 +3892,20 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .recovery-workflow-node small { overflow: hidden; color: var(--architecture-muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .app-shell[data-mode="agents"] .recovery-console-layout { grid-template-columns: minmax(760px, 2.65fr) minmax(280px, .72fr); grid-template-rows: 66px minmax(0, 1fr); }
 .app-shell[data-mode="agents"] .recovery-graph-panel { border-right: 0; }
-.recovery-execution-grid { min-height: 0; flex: 1; display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(290px, .8fr); }
+.recovery-execution-grid {
+  position: relative;
+  isolation: isolate;
+  min-height: 0;
+  overflow: hidden;
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(290px, .8fr);
+}
 .app-shell[data-mode="agents"] .recovery-workflow-nodes {
   position: relative;
+  z-index: 1;
   min-height: 0;
+  overflow: hidden;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   grid-template-rows: repeat(2, minmax(92px, 1fr));
   align-items: center;
@@ -3902,7 +3924,7 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .app-shell[data-mode="agents"] .recovery-workflow-node.is-complete { box-shadow: inset 3px 0 0 var(--green); }
 .app-shell[data-mode="agents"] .recovery-workflow-node.is-active { box-shadow: inset 3px 0 0 var(--blue); }
 .app-shell[data-mode="agents"] .recovery-workflow-node.is-blocked { box-shadow: inset 3px 0 0 var(--red); }
-.recovery-handoff { position: absolute; z-index: 0; display: grid; place-items: center; width: 32px; color: #9aa5ae; font-size: 14px; }
+.recovery-handoff { display: none; }
 .recovery-handoff:nth-of-type(1) { left: 31%; top: 25%; }
 .recovery-handoff:nth-of-type(2) { left: 64%; top: 25%; }
 .recovery-handoff:nth-of-type(3) { left: 82%; top: 49%; transform: rotate(90deg); }
@@ -3910,14 +3932,17 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .recovery-handoff:nth-of-type(5) { left: 64%; top: 74%; }
 .recovery-handoff.is-active { color: var(--blue); }
 .recovery-step-detail {
+  position: relative;
+  z-index: 2;
   min-width: 0;
   min-height: 0;
+  overflow: auto;
   display: flex;
   flex-direction: column;
   gap: 12px;
   padding: 18px;
   border-left: 1px solid var(--line-strong);
-  background: rgba(255, 255, 255, .72);
+  background: rgba(255, 255, 255, .86);
 }
 .recovery-step-detail > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .recovery-step-detail > header span { display: block; color: var(--faint); font-family: var(--mono); font-size: 8px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
@@ -4262,7 +4287,7 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
   background: rgba(255, 255, 255, .86);
   box-shadow: none;
   opacity: 0;
-  animation: incident-focus-node-enter .54s cubic-bezier(.22,.78,.28,1) both;
+  animation: incident-focus-node-enter .42s cubic-bezier(.22,.78,.28,1) both;
 }
 .incident-focus-workspace .incident-focus-node.incident-focus-x-14 { left: 14% !important; }
 .incident-focus-workspace .incident-focus-node.incident-focus-x-38 { left: 38% !important; }
@@ -4271,11 +4296,12 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .incident-focus-workspace .incident-focus-node.incident-focus-y-30 { top: 30% !important; }
 .incident-focus-workspace .incident-focus-node.incident-focus-y-50 { top: 50% !important; }
 .incident-focus-workspace .incident-focus-node.incident-focus-y-70 { top: 70% !important; }
-.incident-focus-workspace .incident-focus-node:nth-of-type(2) { animation-delay: .055s; }
-.incident-focus-workspace .incident-focus-node:nth-of-type(3) { animation-delay: .11s; }
-.incident-focus-workspace .incident-focus-node:nth-of-type(4) { animation-delay: .165s; }
-.incident-focus-workspace .incident-focus-node:nth-of-type(5) { animation-delay: .22s; }
-.incident-focus-workspace .incident-focus-node:nth-of-type(6) { animation-delay: .275s; }
+.incident-focus-workspace .incident-focus-node.incident-focus-enter-0 { animation-delay: 0s; }
+.incident-focus-workspace .incident-focus-node.incident-focus-enter-1 { animation-delay: .035s; }
+.incident-focus-workspace .incident-focus-node.incident-focus-enter-2 { animation-delay: .07s; }
+.incident-focus-workspace .incident-focus-node.incident-focus-enter-3 { animation-delay: .105s; }
+.incident-focus-workspace .incident-focus-node.incident-focus-enter-4 { animation-delay: .14s; }
+.incident-focus-workspace .incident-focus-node.incident-focus-enter-5 { animation-delay: .18s; }
 .incident-focus-workspace .incident-focus-node:hover,
 .incident-focus-workspace .incident-focus-node.is-selected {
   transform: translate(-50%, -50%) translateY(-2px);

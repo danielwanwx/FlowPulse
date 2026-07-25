@@ -1551,6 +1551,24 @@ test("incident workspaces render only the strict server focus projection while A
   assert.doesNotMatch(diagnosisSource, /failure observed/i);
 });
 
+test("incident focus settles every server-projected node before the review gate and isolates recovery detail", () => {
+  const focusSource = appJs.slice(appJs.indexOf("function incidentFocusLayerMarkup"), appJs.indexOf("function startIncidentFocusSignals"));
+  const nodeSource = appJs.slice(appJs.indexOf("function sourceNodeMarkup"), appJs.indexOf("function incidentFocusStatusLabel"));
+  assert.match(focusSource, /focus\.nodes\.map\(\(node, transitionIndex\)/);
+  assert.match(focusSource, /transitionIndex/);
+  assert.match(appJs, /startLiveSignalLoop\(\{ nodeFeedback: false \}\)/);
+  assert.match(nodeSource, /incident-focus-enter-\$\{transitionIndex\}/);
+  assert.match(stylesCss, /animation: incident-focus-node-enter \.42s/);
+  assert.match(stylesCss, /incident-focus-enter-5 \{ animation-delay: \.18s; \}/);
+  assert.doesNotMatch(stylesCss, /incident-focus-node:nth-of-type/);
+  assert.match(stylesCss, /\.recovery-collaboration-panel \{[\s\S]*?overflow: hidden;[\s\S]*?isolation: isolate;/);
+  assert.match(stylesCss, /\.recovery-collaboration-panel \.recovery-execution-grid \{[\s\S]*?grid-template-columns: minmax\(0, 1fr\);/);
+  assert.match(stylesCss, /\.recovery-collaboration-panel \.recovery-workflow-nodes \{[\s\S]*?display: none;/);
+  assert.match(stylesCss, /\.recovery-execution-grid \{[\s\S]*?isolation: isolate;[\s\S]*?overflow: hidden;/);
+  assert.match(stylesCss, /\.recovery-handoff \{ display: none; \}/);
+  assert.match(stylesCss, /\.recovery-step-detail \{[\s\S]*?z-index: 2;[\s\S]*?overflow: auto;/);
+});
+
 test("recovery console keeps workflow facts in the canvas while the Unified Context Rail owns interaction", () => {
   assert.match(stylesCss, /\[data-mode="agents"\] \.metric-cluster, \.app-shell\[data-mode="agents"\] \.legend-menu \{ display: none;/);
   assert.match(appJs, /Projected recovery workflow/);

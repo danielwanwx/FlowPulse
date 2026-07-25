@@ -820,11 +820,12 @@ function incidentFocusLayerMarkup(topology, snapshot, { layerName = "current", w
     order: index,
     routeOrder: index
   }, edge.path, focus.nodes.find((node) => node.id === edge.from)?.label || edge.from, focus.nodes.find((node) => node.id === edge.to)?.label || edge.to)).join("");
-  const nodes = focus.nodes.map((node) => sourceNodeMarkup(node, {
+  const nodes = focus.nodes.map((node, transitionIndex) => sourceNodeMarkup(node, {
     layout: "incident-focus",
     source,
     nodeStates,
-    presentation: "affected"
+    presentation: "affected",
+    transitionIndex
   })).join("");
   const markup = `<div class="twin-layer layer-${escapeHtml(layerName)} canonical-topology-layer incident-focus-workspace incident-focus-${escapeHtml(workspace)}" data-canonical-run-id="${escapeHtml(focus.run_id)}" data-canonical-incident-id="${escapeHtml(focus.incident_id)}" data-projection-revision="${escapeHtml(focus.projection_revision)}" data-node-ids="${escapeHtml(focus.node_ids.join(","))}" data-edge-ids="${escapeHtml(focus.edge_ids.join(","))}" data-focus-node-count="${focus.nodes.length}" data-focus-edge-count="${focus.edges.length}"><svg class="edge-map fixed-live-edge-map" viewBox="0 0 ${LIVE_WORLD.width} ${LIVE_WORLD.height}" preserveAspectRatio="none">${edges}</svg>${nodes}</div>`;
   return { visual: focus, markup };
@@ -833,7 +834,11 @@ function incidentFocusLayerMarkup(topology, snapshot, { layerName = "current", w
 function startIncidentFocusSignals() {
   if (!els["canvas-layers"].querySelector(".incident-focus-workspace [data-live-edge-id]")) return;
   applyIncidentFocusRouteDelays();
-  requestAnimationFrame(() => startLiveSignalLoop());
+  // Focus nodes finish their one bounded entrance independently. Keep the
+  // long-running signal loop on edges only so a packet cannot restart or
+  // override a card's settled visibility during review or selection.
+  clearLiveSignalClasses();
+  requestAnimationFrame(() => startLiveSignalLoop({ nodeFeedback: false }));
 }
 
 function applyIncidentFocusRouteDelays() {
@@ -1022,7 +1027,7 @@ function controlSystemTileMarkup(node, { rail = false } = {}) {
   </button>`;
 }
 
-function sourceNodeMarkup(node, { layout, source, nodeStates, presentation = "standard" }) {
+function sourceNodeMarkup(node, { layout, source, nodeStates, presentation = "standard", transitionIndex = null }) {
   const nodeState = node.connectivity === "unlinked" ? "unlinked" : nodeStates[node.id] || "dormant";
   const nodeStatus = layout === "incident-focus" ? incidentFocusStatusLabel(nodeState) : sourceStatusLabel(nodeState, source.status);
   const ariaStatus = nodeState === "unlinked" ? "Insufficient dependency evidence" : nodeStatus;
@@ -1038,10 +1043,16 @@ function sourceNodeMarkup(node, { layout, source, nodeStates, presentation = "st
   const incidentPositionClass = layout === "incident-focus"
     ? ` incident-focus-x-${Math.round(Number(node.x))} incident-focus-y-${Math.round(Number(node.y))}`
     : "";
+  // The focused workspace is rendered alongside SVG relation groups, so CSS
+  // structural selectors are not a reliable way to stagger node entry. Keep
+  // the bounded order in the server-projected focus array instead.
+  const incidentEntryClass = layout === "incident-focus" && Number.isInteger(transitionIndex)
+    ? ` incident-focus-enter-${transitionIndex}`
+    : "";
   const activeStatus = layout === "incident-focus" || ["impact", "root", "rejected", "warning", "pending", "active", "recording", "verified"].includes(nodeState) ? `<span class="node-status">${escapeHtml(nodeStatus)}</span>` : "";
   const signal = layout === "incident-focus" && node.signal ? `<span class="node-signal is-${escapeHtml(node.signal.tone)}">${escapeHtml(node.signal.value)}</span>` : "";
   const copy = `<span class="node-copy"><strong>${escapeHtml(node.label)}</strong>${activeStatus}${signal}</span>`;
-  return `<button class="twin-node source-node plane-${escapeHtml(node.plane || "runtime")} kind-${escapeHtml(node.kind)} is-${nodeState} presentation-${escapeHtml(presentation)}${livePositionClass}${incidentPositionClass}" type="button" data-node-id="${escapeHtml(node.id)}" data-status="${escapeHtml(nodeState)}" data-transition-key="${escapeHtml(transitionKey(node.id))}" aria-label="${escapeHtml(profile.capability)}, ${escapeHtml(kindLabel(node.kind))}, ${escapeHtml(ariaStatus)}">
+  return `<button class="twin-node source-node plane-${escapeHtml(node.plane || "runtime")} kind-${escapeHtml(node.kind)} is-${nodeState} presentation-${escapeHtml(presentation)}${livePositionClass}${incidentPositionClass}${incidentEntryClass}" type="button" data-node-id="${escapeHtml(node.id)}" data-status="${escapeHtml(nodeState)}" data-transition-key="${escapeHtml(transitionKey(node.id))}" aria-label="${escapeHtml(profile.capability)}, ${escapeHtml(kindLabel(node.kind))}, ${escapeHtml(ariaStatus)}">
     <span class="node-icon" aria-hidden="true"><i class="ph ph-${iconForLive(node)}"></i></span>
     ${copy}
     <span class="node-status-dot" aria-hidden="true"></span>
@@ -1117,7 +1128,7 @@ function scheduleLiveSignalFrame(callback) {
   liveSignalFrames.add(frame);
 }
 
-function startLiveSignalLoop() {
+function startLiveSignalLoop({ nodeFeedback = true } = {}) {
   const groups = [...els["canvas-layers"].querySelectorAll("[data-live-edge-id]")]
     .sort((a, b) => Number(a.dataset.signalOrder) - Number(b.dataset.signalOrder));
   if (!groups.length) return;
@@ -1142,10 +1153,12 @@ function startLiveSignalLoop() {
     if (generation !== liveSignalGeneration) return;
     const from = nodes.get(group.dataset.signalFrom);
     const to = nodes.get(group.dataset.signalTo);
-    from?.classList.add("is-signal-launch");
+    if (nodeFeedback) from?.classList.add("is-signal-launch");
     if (reduced) {
-      from?.classList.remove("is-signal-launch");
-      to?.classList.add("is-signal-arrival");
+      if (nodeFeedback) {
+        from?.classList.remove("is-signal-launch");
+        to?.classList.add("is-signal-arrival");
+      }
       return;
     }
     const path = group.querySelector(".edge-line");
@@ -1178,9 +1191,11 @@ function startLiveSignalLoop() {
       scheduleLiveSignalFrame(() => {
         if (generation !== liveSignalGeneration) return;
         group.classList.remove("is-signal-active");
-        from?.classList.remove("is-signal-launch");
-        to?.classList.add("is-signal-arrival");
-        schedule(() => to?.classList.remove("is-signal-arrival"), 320);
+        if (nodeFeedback) {
+          from?.classList.remove("is-signal-launch");
+          to?.classList.add("is-signal-arrival");
+          schedule(() => to?.classList.remove("is-signal-arrival"), 320);
+        }
         schedule(() => activate(nextGroup(group)), 180);
       });
     };
