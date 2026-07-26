@@ -157,8 +157,14 @@ function normalizeClaimText(source) {
     .replace(/\b([A-Za-z]+)n't\b/g, (match, stem) => contractions[match.toLowerCase()] ?? stem + " not")
     .replace(/\b([A-Za-z]+)'ve\b/g, "$1 have")
     .replace(/\b([A-Za-z]+)'ll\b/g, "$1 will")
+    // Keep contractions as grammatical features. A past participle makes
+    // "we'd shipped" past perfect, while "we'd have shipped" is modal.
+    .replace(/\b([A-Za-z]+)'d\s+(?=(?:shipped|delivered|integrated)\b)/g, "$1 had ")
     .replace(/\b([A-Za-z]+)'d\b/g, "$1 would")
-    .replace(/\b([A-Za-z]+)'s\b/g, "$1 is");
+    // Expand the copular form only when an article follows. Leaving the
+    // remaining possessives intact prevents "Node's lifecycle authority"
+    // from becoming a false Node-is authority claim.
+    .replace(/\b([A-Za-z]+)'s\s+(?=(?:the|a|an)\b)/g, "$1 is ");
 }
 
 function matchingClaimClauses(source, matchesClaim) {
@@ -210,7 +216,11 @@ function controlPlaneDeliveryVerdict(clause) {
   const isObjectRelation = (token) => /^(?:about|for|of|on|regarding|to)$/.test(token);
   const isPredicateAdverb = (token) => token.endsWith("ly") || /^(?:already|now|just)$/.test(token);
   const isDeterminer = (token) => /^(?:a|an|the|this|that|these|those|my|your|his|her|its|our|their|no|neither)$/.test(token);
-  const isModifier = (token) => isDeterminer(token) || isPredicateAdverb(token) || /(?:ing|ed)$/.test(token);
+  const isArtifactModifier = (token) => /^mock(?:ed)?$/.test(token);
+  const isModifier = (token) => isDeterminer(token)
+    || isPredicateAdverb(token)
+    || /^(?:new|production)$/.test(token)
+    || (/(?:ing|ed)$/.test(token) && !isArtifactModifier(token));
   const hasArtifactHead = (tokensToCheck) => tokensToCheck.some((token) => (
     !isModifier(token) && !isObjectRelation(token) && token !== "-" && token !== "/"
   ));
@@ -221,14 +231,55 @@ function controlPlaneDeliveryVerdict(clause) {
     || (token === "no" && predicate[index + 1] === "means")
     || isModal(token)
     || (/^(?:plan|plans|planned|intend|intends|intended|expect|expects|expected)$/.test(token) && predicate[index + 1] === "to")
+    || (token === "scheduled" && predicate[index + 1] === "to")
   ));
+  const deliveryPredicateRecord = ({
+    scope,
+    subject,
+    predicate,
+    action,
+    directObjectHead,
+    objectModifiers = [],
+    objectNegated = false,
+    conditionMarker = null
+  }) => {
+    const auxiliary = predicate.filter((token) => /^(?:am|are|be|been|being|did|do|does|had|has|have|is|was|were)$/.test(token));
+    const modality = predicate.filter(isModal);
+    const negation = predicate.filter((token) => /^(?:not|never|no)$/.test(token));
+    const tense = auxiliary.some((token) => /^(?:did|had|has|have|was|were)$/.test(token))
+      || isCompletedAction(action)
+      ? "factual"
+      : "undetermined";
+    const qualified = isQualified(predicate) || objectNegated;
+    return {
+      scope,
+      subject,
+      auxiliary,
+      aspect: auxiliary.filter((token) => /^(?:had|has|have|been)$/.test(token)),
+      modality,
+      negation,
+      action,
+      directObjectHead,
+      objectModifiers,
+      postVerbalQualifier: objectModifiers,
+      conditionMarker,
+      tense,
+      verdict: subject === "other"
+        ? "absent"
+        : qualified
+          ? "qualified"
+          : (isCompletedAction(action) || predicate.includes("did") || predicate.includes("had"))
+            ? "completed"
+            : "qualified"
+    };
+  };
   const predicateStart = (actionIndex) => {
     for (let index = actionIndex - 1; index >= 0; index -= 1) {
       if (isPredicateSeparator(tokens[index].value)) return index + 1;
     }
     return 0;
   };
-  const bindsIntegrationObject = (actionIndex) => {
+  const integrationObjectTokens = (actionIndex) => {
     const before = [];
     for (let index = actionIndex + 1; index < spanStart; index += 1) {
       const parenthetical = parentheticalFollowing(index);
@@ -238,19 +289,31 @@ function controlPlaneDeliveryVerdict(clause) {
       }
       before.push(tokens[index].value);
     }
+    return before;
+  };
+  const bindsIntegrationObject = (actionIndex) => {
+    const before = integrationObjectTokens(actionIndex);
     if (!isNegativeObject(before) && (before.some((token) => isObjectRelation(token) || token === "-" || token === "/") || hasArtifactHead(before))) return false;
-    const next = tokens[spanEnd]?.value;
-    return !next
-      || isPredicateSeparator(next)
-      || /^(?:after|at|before|by|during|from|in|itself|last|next|that|this|today|tomorrow|which|with|yesterday)$/.test(next)
-      || isPredicateAdverb(next)
-      || isObjectRelation(next);
+    // The integration is the direct object once the action reaches its span.
+    // A following prepositional phrase or time phrase is a qualifier, not a
+    // second object; only a compound whose head is an artifact changes that.
+    const postObject = [];
+    for (let index = spanEnd; index < tokens.length; index += 1) {
+      const token = tokens[index].value;
+      if (isPredicateSeparator(token)) break;
+      postObject.push(token);
+    }
+    const isQualifier = /^(?:about|across|after|as|at|before|by|during|for|from|in|into|on|to|with)$/.test(postObject[0] ?? "");
+    const compoundHead = postObject.at(-1) ?? "";
+    const compoundArtifact = !isQualifier && (postObject[0] === "-"
+      || /^(?:documentation|design|mock|demo|fixture)$/.test(compoundHead));
+    return !compoundArtifact;
   };
   const integrationSubject = () => {
     const subjectPrefix = tokens.slice(predicateStart(spanStart), spanStart).map((token) => token.value);
     const structuralPrefix = subjectPrefix.filter((token) => !/^(?:if|when|once|after|until|provided|that)$/.test(token));
     return {
-      isSubject: !structuralPrefix.some((token) => isObjectRelation(token)) && !hasArtifactHead(structuralPrefix),
+      isSubject: !structuralPrefix.some((token) => isObjectRelation(token) || isArtifactModifier(token)) && !hasArtifactHead(structuralPrefix),
       negated: isNegativeObject(structuralPrefix)
     };
   };
@@ -270,17 +333,28 @@ function controlPlaneDeliveryVerdict(clause) {
     }
     return null;
   };
-  const parentheticalDeliveryVerdict = (contents) => {
+  const parentheticalPredicateRecord = (contents) => {
     const actionIndex = contents.findIndex(isDeliveryAction);
     if (actionIndex < 0) return null;
     const predicate = contents.slice(0, actionIndex);
-    if (isQualified(predicate)) return "qualified";
-    return isCompletedAction(contents[actionIndex]) || predicate.includes("did") ? "completed" : "qualified";
+    const directObject = contents.slice(actionIndex + 1);
+    const artifactSubject = hasArtifactHead(directObject)
+      || (!directObject.length && hasArtifactHead(predicate.filter((token) => !/^(?:after|am|are|be|been|being|if|once|scheduled|to|was|were|when)$/.test(token))));
+    return deliveryPredicateRecord({
+      scope: "parenthetical",
+      subject: artifactSubject ? "other" : "integration",
+      predicate,
+      action: contents[actionIndex],
+      directObjectHead: artifactSubject ? "other" : "integration",
+      objectModifiers: directObject,
+      conditionMarker: predicate.find((token) => /^(?:if|when|once|after|until)$/.test(token)) ?? null
+    });
   };
 
   for (let actionIndex = spanStart - 1; actionIndex >= 0; actionIndex -= 1) {
     const parenthetical = parentheticalPreceding(actionIndex);
-    if (parenthetical && !parentheticalDeliveryVerdict(parenthetical.contents)) {
+    const parentheticalRecord = parenthetical && parentheticalPredicateRecord(parenthetical.contents);
+    if (parenthetical && (!parentheticalRecord || parentheticalRecord.verdict === "absent")) {
       actionIndex = parenthetical.start;
       continue;
     }
@@ -288,10 +362,17 @@ function controlPlaneDeliveryVerdict(clause) {
     if (!isDeliveryAction(tokens[actionIndex].value)) continue;
     if (!bindsIntegrationObject(actionIndex)) continue;
     const predicate = tokens.slice(predicateStart(actionIndex), actionIndex).map((token) => token.value);
-    const object = tokens.slice(actionIndex + 1, spanStart).map((token) => token.value);
-    if (isQualified(predicate) || isNegativeObject(object)) return "qualified";
-    if (isCompletedAction(tokens[actionIndex].value)) return "completed";
-    return predicate.includes("did") ? "completed" : "qualified";
+    const object = integrationObjectTokens(actionIndex);
+    return deliveryPredicateRecord({
+      scope: "main",
+      subject: "actor",
+      predicate,
+      action: tokens[actionIndex].value,
+      directObjectHead: "integration",
+      objectModifiers: object,
+      objectNegated: isNegativeObject(object),
+      conditionMarker: predicate.find((token) => /^(?:if|when|once|after|until)$/.test(token)) ?? null
+    }).verdict;
   }
 
   const subject = integrationSubject();
@@ -300,8 +381,8 @@ function controlPlaneDeliveryVerdict(clause) {
   for (let actionIndex = spanEnd; actionIndex < tokens.length; actionIndex += 1) {
     const parenthetical = parentheticalFollowing(actionIndex);
     if (parenthetical) {
-      const parentheticalVerdict = parentheticalDeliveryVerdict(parenthetical.contents);
-      if (parentheticalVerdict) return parentheticalVerdict;
+      const parentheticalRecord = parentheticalPredicateRecord(parenthetical.contents);
+      if (parentheticalRecord?.verdict === "completed") return "completed";
       passivePredicateStart = parenthetical.end + 1;
       actionIndex = parenthetical.end;
       continue;
@@ -317,8 +398,16 @@ function controlPlaneDeliveryVerdict(clause) {
       || isRhetoricalAmplifier(token)
       || isPredicateAdverb(token)
     ))) return "absent";
-    if (subject.negated || isQualified(predicate)) return "qualified";
-    return isCompletedAction(tokens[actionIndex].value) || predicate.includes("did") ? "completed" : "qualified";
+    return deliveryPredicateRecord({
+      scope: "main",
+      subject: "integration",
+      predicate,
+      action: tokens[actionIndex].value,
+      directObjectHead: "integration",
+      objectModifiers: [],
+      objectNegated: subject.negated,
+      conditionMarker: predicate.find((token) => /^(?:if|when|once|after|until)$/.test(token)) ?? null
+    }).verdict;
   }
   return "absent";
 }
@@ -328,12 +417,14 @@ function findShippedControlPlaneClaims(source) {
     const normalized = normalizeClaimText(clause);
     const integration = controlPlaneSubject.exec(normalized);
     if (!integration) return false;
-    const after = normalized.slice(integration.index + integration[0].length);
     const leadingCondition = normalized.match(/^\s*(if|when|once|after|until|provided\s+that)\b/i)?.[1]?.toLowerCase();
-    const conditional = leadingCondition || /\b(?:if|when|once|until|provided\s+that)\b/i.test(after);
-    const factualPast = /\b(?:was|were|had|did)\b/i.test(after)
-      || /\b(?:yesterday|last\s+\w+)\b/i.test(after);
-    if (conditional === "if" || (conditional && !factualPast)) return false;
+    const after = normalized.slice(integration.index + integration[0].length);
+    const trailingCondition = /\b(?:if|when|once|until|provided\s+that)\b/i.test(after);
+    const leadingFutureCondition = leadingCondition && /\b(?:is|are)\b(?:\s+\w+){0,3}\s+\b(?:shipped|delivered|integrated|live|available)\b/i.test(normalized)
+      && !/\b(?:was|were|has|have|had|did)\b/i.test(normalized);
+    // An if-clause and a present-tense delivery condition are hypothetical.
+    // A completed delivery inside after/when is factual and must still fail.
+    if (leadingCondition === "if" || trailingCondition || leadingFutureCondition) return false;
     return controlPlaneDeliveryVerdict(clause) === "completed";
   });
 }
@@ -551,14 +642,34 @@ test("North Star contradiction detectors evaluate wording and negation at clause
   assertClaimDetected(findShippedControlPlaneClaims, "We shipped the FastAPI/Temporal control plane integration to production.");
   assertClaimDetected(findShippedControlPlaneClaims, "We shipped the FastAPI/Temporal control plane integration last week.");
   assertClaimDetected(findShippedControlPlaneClaims, "We shipped the completed FastAPI/Temporal control plane integration.");
+  assertClaimDetected(findShippedControlPlaneClaims, "We shipped the new FastAPI/Temporal control plane integration.");
+  assertClaimDetected(findShippedControlPlaneClaims, "We shipped the production FastAPI/Temporal control plane integration.");
+  assertClaimDetected(findShippedControlPlaneClaims, "The new FastAPI/Temporal control plane integration was shipped.");
+  assertClaimDetected(findShippedControlPlaneClaims, "The production FastAPI/Temporal control plane integration was shipped.");
   assertClaimDetected(findShippedControlPlaneClaims, "The FastAPI/Temporal control plane integration was shipped to production.");
   assertClaimDetected(findShippedControlPlaneClaims, "The FastAPI/Temporal control plane integration was shipped last week.");
   assertClaimDetected(findShippedControlPlaneClaims, "The FastAPI/Temporal control plane integration was shipped after approval.");
+  assertClaimDetected(findShippedControlPlaneClaims, "We shipped the FastAPI/Temporal control plane integration two days ago.");
+  assertClaimDetected(findShippedControlPlaneClaims, "We shipped the FastAPI/Temporal control plane integration across all tenants.");
+  assertClaimDetected(findShippedControlPlaneClaims, "We shipped the FastAPI/Temporal control plane integration as planned.");
+  assertClaimDetected(findShippedControlPlaneClaims, "The FastAPI/Temporal control plane integration was shipped two days ago.");
+  assertClaimDetected(findShippedControlPlaneClaims, "The FastAPI/Temporal control plane integration was shipped across all tenants.");
+  assertClaimDetected(findShippedControlPlaneClaims, "The FastAPI/Temporal control plane integration was shipped as planned.");
   assertClaimDetected(findShippedControlPlaneClaims, "We shipped, per the approved rollout plan, the FastAPI/Temporal control plane integration.");
   assertClaimDetected(findShippedControlPlaneClaims, "We didn't merely ship the FastAPI/Temporal control plane integration but also verified it.");
   assertClaimDetected(findShippedControlPlaneClaims, "The FastAPI/Temporal control plane integration wasn't merely shipped but also verified.");
   assertClaimDetected(findShippedControlPlaneClaims, "After the FastAPI/Temporal control plane integration was shipped yesterday, we celebrated.");
   assertClaimDetected(findShippedControlPlaneClaims, "The FastAPI/Temporal control plane integration, already shipped, is documented here.");
+  assertClaimDetected(findShippedControlPlaneClaims, "The FastAPI/Temporal control plane integration, not shipped in the demo, is already shipped for real.");
+  assertClaimDetected(findShippedControlPlaneClaims, "We shipped, after not documenting it, the FastAPI/Temporal control plane integration.");
+  assertClaimDetected(findShippedControlPlaneClaims, "The FastAPI/Temporal control plane integration, after not being documented, was shipped.");
+  assertClaimDetected(findShippedControlPlaneClaims, "After we shipped the FastAPI/Temporal control plane integration, we celebrated.");
+  assertClaimDetected(findShippedControlPlaneClaims, "When we shipped the FastAPI/Temporal control plane integration, we retired Node.");
+  assertClaimDetected(findShippedControlPlaneClaims, "After the FastAPI/Temporal control plane integration has already been shipped, we celebrated.");
+  assertClaimDetected(findShippedControlPlaneClaims, "After the FastAPI/Temporal control plane integration was shipped, we celebrated.");
+  assertClaimDetected(findShippedControlPlaneClaims, "When the FastAPI/Temporal control plane integration was shipped, we retired Node.");
+  assertClaimDetected(findShippedControlPlaneClaims, "We'd shipped the FastAPI/Temporal control plane integration before the audit.");
+  assertClaimDetected(findShippedControlPlaneClaims, "We’d shipped the FastAPI/Temporal control plane integration before the audit.");
   assertClaimAllowed(findShippedControlPlaneClaims, "We have not shipped the FastAPI/Temporal control plane integration.");
   assertClaimAllowed(findShippedControlPlaneClaims, "We never shipped the FastAPI/Temporal control plane integration.");
   assertClaimAllowed(findShippedControlPlaneClaims, "We haven't shipped the FastAPI/Temporal control plane integration.");
@@ -572,6 +683,8 @@ test("North Star contradiction detectors evaluate wording and negation at clause
   assertClaimAllowed(findShippedControlPlaneClaims, "We delivered the FastAPI/Temporal control plane integration test fixture.");
   assertClaimAllowed(findShippedControlPlaneClaims, "We delivered documentation describing the FastAPI/Temporal control plane integration.");
   assertClaimAllowed(findShippedControlPlaneClaims, "A mock FastAPI/Temporal control plane integration was shipped.");
+  assertClaimAllowed(findShippedControlPlaneClaims, "We shipped a mocked FastAPI/Temporal control plane integration.");
+  assertClaimAllowed(findShippedControlPlaneClaims, "A mocked FastAPI/Temporal control plane integration was shipped.");
   assertClaimAllowed(findShippedControlPlaneClaims, "We shipped documentation: FastAPI/Temporal control plane integration.");
   assertClaimAllowed(findShippedControlPlaneClaims, "We shipped a mock implementation called the FastAPI/Temporal control plane integration.");
   assertClaimAllowed(findShippedControlPlaneClaims, "We shipped documentation titled FastAPI/Temporal control plane integration.");
@@ -585,6 +698,9 @@ test("North Star contradiction detectors evaluate wording and negation at clause
   assertClaimAllowed(findShippedControlPlaneClaims, "The FastAPI/Temporal control plane integration shouldn't have been shipped.");
   assertClaimAllowed(findShippedControlPlaneClaims, "No FastAPI/Temporal control plane integration was shipped.");
   assertClaimAllowed(findShippedControlPlaneClaims, "If the FastAPI/Temporal control plane integration was shipped, retire Node.");
+  assertClaimAllowed(findShippedControlPlaneClaims, "The FastAPI/Temporal control plane integration, after we shipped documentation, remains future work.");
+  assertClaimAllowed(findShippedControlPlaneClaims, "The FastAPI/Temporal control plane integration, after documentation was shipped, remains future work.");
+  assertClaimAllowed(findShippedControlPlaneClaims, "The FastAPI/Temporal control plane integration, scheduled to be shipped, remains future work.");
   assertClaimAllowed(findShippedControlPlaneClaims, "We’ll have shipped the FastAPI/Temporal control plane integration by Q4.");
   assertClaimAllowed(findShippedControlPlaneClaims, "We'll have shipped the FastAPI/Temporal control plane integration by Q4.");
   assertClaimAllowed(findShippedControlPlaneClaims, "We'd have shipped the FastAPI/Temporal control plane integration by now.");
@@ -608,6 +724,8 @@ test("North Star contradiction detectors evaluate wording and negation at clause
   assertClaimDetected(findNodeLifecycleAuthorityClaims, "Node is the lifecycle authority.");
   assertClaimDetected(findNodeLifecycleAuthorityClaims, "Node’s the lifecycle authority.");
   assertClaimDetected(findNodeLifecycleAuthorityClaims, "Node's the lifecycle authority.");
+  assertClaimAllowed(findNodeLifecycleAuthorityClaims, "Node's lifecycle authority is Temporal.");
+  assertClaimAllowed(findNodeLifecycleAuthorityClaims, "Node’s lifecycle authority is Temporal.");
   assertClaimDetected(findNodeLifecycleAuthorityClaims, "Node is not only the lifecycle authority but also the executor.");
   assertClaimDetected(findNodeLifecycleAuthorityClaims, "Node isn't only the lifecycle authority but also the executor.");
   assertClaimDetected(findNodeLifecycleAuthorityClaims, "Node isn't the only lifecycle authority but also the executor.");
