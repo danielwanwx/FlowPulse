@@ -6,6 +6,14 @@ read-only evidence tools and returns a typed diagnosis. Ordinary code owns the
 ledger, evidence provenance, causal validators, approval boundary, allowlisted
 executor, recovery checks, executed offline backtest, and promotion rule.
 
+## North Star and compatibility status
+
+FlowPulse is a model-agnostic, company-multiplayer agent operating system whose first vertical is Incident. This harness is the checked-in Node **compatibility/demo** implementation; it is not the real FastAPI/Temporal control-plane equivalent and does not grant lifecycle authority.
+
+Temporal is the sole lifecycle authority. In the target architecture, agents propose, backend validators and registered tools act, the Evidence Ledger records current incident proof, and Temporal accepts the next transition. The browser, a model provider, a harness manifest, tracing, SDK guardrails, and a Knowledge Plane item cannot mint an incident state, approval, action, or verification.
+
+Knowledge Plane material supplies bounded priors: it can explain a service, failure mode, or runbook, but cannot establish current incident proof. Current proof requires canonical recorded evidence and its lineage for the selected tenant-scoped incident and run. Gate 1 permits only approved fresh read capabilities within its tenant-scoped, incident-scoped TTL; Gate 2 permits only a dry-run-backed, precondition-checked, owner-approved mutation within its shorter scoped TTL. Neither gate is browser-issued or provider-issued.
+
 ## Memory, skills, protocols, and core
 
 `harness/flowpulse-harness.v1.json` is the immutable binding for the current

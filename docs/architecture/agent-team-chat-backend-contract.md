@@ -1,5 +1,9 @@
 # FlowPulse Agent Team chat backend contract
 
+## Compatibility status
+
+This document describes the legacy Node Agent Team **compatibility/demo** contract. It remains a bounded conversation reference until the real FastAPI/Temporal control-plane equivalent publishes the stable Conversation Manager, durable NodeExplanation, current evidence lineage, NextBestAction, human-gate, action, and event-stream contracts. It does not grant lifecycle authority, incident authority, tenant authorization, approval, action, or verification authority.
+
 ## Scope and ownership
 
 This contract supports the persistent, backend-driven Agent Team sidebar. It adds no browser authority and does not authorize frontend implementation, repair execution, approval, verification, or truth mutation.
@@ -14,6 +18,8 @@ The conversation is an ordered projection of append-only ledger records. The bro
 | Evaluator | `evaluator` | Adversarial causal/evidence-quality check; never owner approval. | `read_cited_hypotheses`, `read_evidence_summaries` |
 
 `ledger` is intentionally not an accepted `requested_agent`. A message about the Evidence Ledger is handed off transparently to Observer (or Evaluator for a verdict/challenge request). The UI owns static icon/name mapping for these four stable role IDs.
+
+Provider truth labels remain independent of authority: `LOCAL CODEX`, `OPENAI API`, and `RECORDED/DEMO` identify a provider path, not an incident lifecycle decision, gate, current-proof claim, or action receipt.
 
 ## N1 Node Investigation extension
 

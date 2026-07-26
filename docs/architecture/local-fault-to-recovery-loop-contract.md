@@ -1,5 +1,9 @@
 # Local fault-to-recovery Agent Loop contract
 
+## Compatibility status
+
+This document describes the legacy Node local-fault-loop **compatibility/demo** simulator. It remains available for deterministic local evaluation until the real FastAPI/Temporal control-plane equivalent is integrated. It does not grant incident authority, lifecycle authority, tenant authorization, production mutation authority, or a substitute for backend current proof.
+
 ## Boundary
 
 This is an isolated, deterministic fixture simulator. It never opens a cloud connection, container control socket, repository working tree, production database, account, or user-machine configuration. Every mutation is an in-memory, reversible fixture repair recorded in the append-only local SQLite ledger.

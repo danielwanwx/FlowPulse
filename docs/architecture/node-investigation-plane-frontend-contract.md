@@ -1,5 +1,9 @@
 # Node Investigation Plane frontend contract
 
+## Compatibility status
+
+This document describes the legacy Node Investigation Plane **compatibility/demo** contract. It remains a bounded read-model reference until the real FastAPI/Temporal control-plane equivalent publishes the versioned Incident, evidence, Conversation Manager, and NodeExplanation contracts. It does not grant lifecycle authority, incident authority, tenant authorization, fresh-read capability, approval, action, or verification authority.
+
 **Backend phase:** N1
 **Read model schema:** `flowpulse.node-investigation.v1`
 **Compatibility:** `GET /api/components/:id` continues to return its existing `flowpulse.component-detail.v1` top-level fields. The additive `node_investigation` field is the versioned N1 projection.

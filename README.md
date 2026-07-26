@@ -1,6 +1,8 @@
 # FlowPulse
 
-**An evidence-grounded incident control loop for distributed systems.**
+**FlowPulse is a model-agnostic, company-multiplayer agent operating system—easy enough for anyone to use, governed enough to act on real systems.**
+
+It is evidence-grounded by design: models and agents can explain, investigate, and propose, but current proof, human approval, and consequential state remain outside browser and model control. **Incident is the first vertical.** Architecture, Live, and Incident are the three product views; Incident keeps the operator in one staged workspace from Investigate through Decide, Execute, and Verify.
 
 FlowPulse turns bounded telemetry and change evidence into one inspectable operator workflow: observe the system, investigate a causal claim, challenge it, enforce the owner gate, execute only an allowlisted recovery, then verify the result. The browser is a read-only projection. The append-only ledger and server-side policy own the consequential state.
 
@@ -14,6 +16,12 @@ Most incident tools show signals. FlowPulse keeps the decision trail that connec
 - **An adversarial evaluator.** A plausible diagnosis can be rejected and replanned when its causal evidence is incomplete.
 - **Explicit authority.** Agents can investigate and propose; the owner gate and an allowlisted adapter control any consequential recovery.
 - **Verified recovery.** A command succeeding is not enough. Fresh evidence and regression checks must establish recovery before the Incident workspace presents it as verified.
+
+## North Star and current integration status
+
+FlowPulse is designed for multiple teams, tenants, models, and registered tools without making any one provider or client the source of truth. The target control plane keeps **Temporal as the sole incident lifecycle authority**: agents propose, backend validators and registered tool adapters act, the Evidence Ledger records, and Temporal accepts lifecycle transitions. The browser is a strict projection client. Current incident proof must come from a canonical projection and recorded evidence lineage; Knowledge Plane material, runbooks, and historical examples are useful bounded priors, never proof for an action, gate, or verification.
+
+The checked-in Node server, deterministic replay, and Agent Team endpoints are **compatibility/demo** surfaces while the real FastAPI/Temporal control-plane equivalents are not yet integrated. They remain explicitly labeled and are not a substitute for production authority, tenant authorization, a real human gate, or a control-plane-backed success state. Provider truth labels remain independent of authority: `LOCAL CODEX`, `OPENAI API`, and `RECORDED/DEMO` identify the provider path rather than a lifecycle decision.
 
 ## Product tour
 
@@ -42,7 +50,7 @@ append-only ledger ← verification ← allowlisted recovery
 Architecture · Live · Incident (Investigate → Decide → Execute → Verify)
 ```
 
-## Run the judge path
+## Run the compatibility/demo judge path
 
 ### Requirements
 
@@ -57,7 +65,7 @@ npm ci
 npm run judge
 ```
 
-`npm run judge` runs the automated suite and starts the local server. On a fresh database, open [http://127.0.0.1:4310](http://127.0.0.1:4310), select **Incident**, then choose **Run guided replay**. That creates and pins one backend-owned canonical run before the persistent workspace follows it through **Investigate → Decide → Execute → Verify**. The credential-free replay is recorded on the append-only ledger and uses the same bounded fixture, authority, repair, and independent verification contracts as the local rehearsal; it is not a browser-side success mock. The captured Astronomy Shop case shows a checkout change making payment unreachable, an evaluator rejecting an unsupported Kafka-root-cause claim, and a bounded checkout recovery evaluated through the owner-gate and verification projections.
+`npm run judge` runs the automated suite and starts the local compatibility/demo server. On a fresh database, open [http://127.0.0.1:4310](http://127.0.0.1:4310), select **Incident**, then choose **Run guided replay**. That creates and pins one Node-owned replay run before the persistent workspace follows it through **Investigate → Decide → Execute → Verify**. The credential-free replay is recorded on the append-only ledger and uses bounded fixture, authority, repair, and independent verification contracts; it is not a browser-side success mock. It is also not the real FastAPI/Temporal control-plane integration or proof of production authority. The captured Astronomy Shop case shows a checkout change making payment unreachable, an evaluator rejecting an unsupported Kafka-root-cause claim, and a bounded checkout recovery evaluated through the owner-gate and verification projections.
 
 For development, use separate commands:
 
@@ -97,13 +105,13 @@ npm run live:stop
 
 The allowed recovery is deliberately narrow: restore the known-good `paymentUnreachable` flag and recreate the local checkout container. No browser control, model output, or observability vendor can bypass the server policy or owner gate.
 
-## Agent Team and GPT-5.6
+## Compatibility Agent Team and GPT-5.6
 
 Codex was the primary engineering environment for FlowPulse: it helped design and implement the ledger-backed workflow, safe projections, frontend workspaces, tests, and browser QA during OpenAI Build Week.
 
 GPT-5.6 is an optional product integration, not runtime authority. In credentialed mode it may query strictly allowlisted tools over a frozen OTLP snapshot, return a structured diagnosis and bounded repair proposal, and have that proposal challenged by an evaluator. The latest paid GPT-5.6 attempt failed closed before evaluator acceptance; it produced no accepted diagnosis, approval, repair, verification, or recovery. The deterministic replay is the reliable judge path.
 
-The default recorded provider needs no credentials. `codex-local` requires an already authenticated local Codex CLI and is always surfaced as local advisory work rather than authority. The safe provider capability is available at `/api/agent-control/provider`.
+The default recorded provider needs no credentials. `codex-local` requires an already authenticated local Codex CLI and is always surfaced as local advisory work rather than authority. The safe provider capability is available at `/api/agent-control/provider`. This legacy Node Agent Team remains a compatibility/demo surface until its real FastAPI/Temporal control-plane equivalent exists; it does not grant incident lifecycle authority.
 
 ## Safety model
 

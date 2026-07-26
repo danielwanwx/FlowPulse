@@ -8,6 +8,12 @@
 
 **Scope:** read-only backend, data-contract, runtime, test, and local-artifact audit. This document does not grant authority to the browser, fixtures, connectors, or models.
 
+## Historical audit and compatibility status
+
+This historical audit records the Node implementation at its audited baseline; it does not describe the approved agent-led Incident workspace as already delivered. The deterministic replay, compatibility browser surface, and legacy Agent Team remain compatibility/demo contracts until real FastAPI/Temporal control-plane equivalents provide the versioned incident projection, durable conversation, NextBestAction, human-gate, action, and event-stream contracts. They do not grant lifecycle authority, current-proof authority, or tenant authorization.
+
+The approved North Star is model-agnostic and company-multiplayer: Incident is the first vertical, while Architecture and Live remain separate views. Temporal is the sole lifecycle authority; the Evidence Ledger records current proof, and Knowledge Plane material remains bounded prior context rather than evidence for a gate, action, or verification.
+
 ## Executive summary
 
 FlowPulse has three materially different backend paths and they must not be presented as one capability:
