@@ -1512,7 +1512,7 @@
             "type": "string"
           },
           "workflow_version": {
-            "default": "flowpulse.incident-workspace.v1",
+            "default": "flowpulse.incident-workspace.v2",
             "minLength": 1,
             "title": "Workflow Version",
             "type": "string"

@@ -28,14 +28,14 @@ NodeExplanation records, evidence bindings, gate records, and later action
 cards. A tenant/case/run/topology mapping may not be rebound to a different
 Temporal run.
 
-## v1 routes and read model
+## v1 HTTP routes and v2 workflow read model
 
 All routes require trusted authenticated tenant/subject context and return only
 tenant-scoped records:
 
 | Route | Contract Core behavior |
 | --- | --- |
-| `POST /v1/incidents` | Starts `flowpulse.incident-workspace.v1`; waits for its initialization activity and returns the durable `IncidentProjection`. |
+| `POST /v1/incidents` | Starts `flowpulse.incident-workspace.v2`; waits for its initialization activity and returns the durable `IncidentProjection`. |
 | `GET /v1/incidents/{case_id}/projection` | Returns the latest Temporal-authoritative projection. |
 | `GET /v1/incidents/{case_id}/components/{component_id}/context` | Returns canonical, recorded context only; `fresh_read_performed=false`. |
 | `POST /v1/incidents/{case_id}/node-explanations` | Submits the typed exactly-once Temporal update. The browser supplies only public identity, canonical component, projection revision, and idempotency key. |
@@ -56,7 +56,7 @@ node_explanation:{tenant_id}:{run_id}:{projection_revision}:{component_id}:{conv
 ```
 
 It is unique for the public run, not a Temporal ID and not a browser-local
-key. The v1 Activity has no provider or fresh-read adapter. It can use only the
+key. The v2 Activity has no provider or fresh-read adapter. It can use only the
 canonical projection and previously recorded evidence references, must label
 its result degraded, and must set both `fresh_read_performed` and
 `fresh_diagnosis_claimed` to `false`. Toast focus and all GET/SSE requests are
@@ -69,9 +69,13 @@ identity, projection revision, component, and canonical command hash. The
 production Temporal update accepts only that assertion envelope and resolves
 the actor through the authorization activity before any Conversation Manager or
 provider call. Empty recorded-evidence lists do not bypass the subject grant.
-The former actor-less update decoder is retained only in the frozen legacy
-workflow used to replay historical v1 histories; it is not registered by the
-production worker.
+The former actor-less update decoder is retained only in the frozen
+`flowpulse.incident-workspace.v1` replay/drain workflow. The production worker
+registers that v1 definition only to replay or drain already-open histories.
+Temporal patch markers reject every new v1 start or node-explanation update
+before it can reach the decoder. The secured
+`flowpulse.incident-workspace.v2` definition is the only workflow type used
+for new API intake and it never claims the v1 type.
 
 ## Frontend transport and contract freeze
 
@@ -93,11 +97,11 @@ for schemas.
 ## Workspace contract freeze
 
 The producer implementation commit is
-`d072031421945f5ec278a7c5c7b9c762de953e30`. The generated bundle is:
+`1d8a51011471e6f372281159501ecfa88b39b4ed`. The generated bundle is:
 
-- `control_plane/openapi/flowpulse-incident-workspace-v1.openapi.json` — SHA-256 `ad8911366e7e508d47a4d258768a052e71b44658d9bf33b474bf3a491ad0c75f`
-- `control_plane/openapi/flowpulse-incident-workspace-v1.examples.json` — SHA-256 `1e7a6094d116cca582a983f333f17a4b298b8d254819abf8ee4c4ab8fa1eb55c`
-- `control_plane/openapi/flowpulse-incident-workspace-v1.freeze.json` — SHA-256 `97df5e09f2a64edf017fd736900353f52029de3dc861a225f5f9351d5c64022f`
+- `control_plane/openapi/flowpulse-incident-workspace-v1.openapi.json` — SHA-256 `0722f00f349d830e47c648e1f4fe82e831e6672b33996e056a555e8ec6b35759`
+- `control_plane/openapi/flowpulse-incident-workspace-v1.examples.json` — SHA-256 `27d4ac4f7f2ff4b610c58d6ea087262d1d3be0afb3d055efcaa4e5c463e91f66`
+- `control_plane/openapi/flowpulse-incident-workspace-v1.freeze.json` — SHA-256 `a8017e450b4c59347dfdc3d073ac7c174260eba128024d23b13dabd68adeda32`
 
 The frontend product branch must record these values verbatim, together with
 the public identity and same-origin process-side authentication boundary,

@@ -35,6 +35,8 @@ class IncidentWorkspaceDocsContractTests(unittest.TestCase):
         )
         for phrase in [
             "flowpulse.incident-workspace.v1",
+            "flowpulse.incident-workspace.v2",
+            "replay/drain",
             "provider_unavailable",
             "/api/control-plane/v1",
             "FLOWPULSE_TEST_OWNER_TOKEN",

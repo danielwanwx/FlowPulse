@@ -157,8 +157,12 @@ credentials or a production deployment recipe.
 
 ## Incident Workspace Contract Core
 
-`flowpulse.incident-workspace.v1` is an additive Temporal workflow for the
-Incident/Live product surface. Its public canonical identity is
+`flowpulse.incident-workspace.v2` is the secured, additive Temporal workflow
+for new Incident/Live intake. The retired
+`flowpulse.incident-workspace.v1` definition is registered only as an
+isolated replay/drain handler: it replays pre-correction histories and rejects
+new starts and node-explanation updates with `workspace_v1_draining`. Its
+public canonical identity is
 `(tenant_id, incident_id, run_id, topology_revision)`. `run_id` is issued by
 the backend and `topology_revision` is a versioned graph identity; neither is a
 Temporal identifier. The immutable binding also records internal `case_id`,
@@ -166,7 +170,7 @@ Temporal identifier. The immutable binding also records internal `case_id`,
 Temporal. Every workspace projection, event, and NodeExplanation carries that
 binding and its relevant projection/evidence/gate/action revisions.
 
-The v1 workflow uses a Conversation Manager only inside its Temporal node
+The v2 workflow uses a Conversation Manager only inside its Temporal node
 explanation activity. Standard mode configures no provider, so
 `POST /v1/incidents` still returns a durable typed `DEGRADED` projection
 (`provider_unavailable`) rather than fabricated model output. A configured
@@ -219,8 +223,8 @@ façade is transport only and never creates authority or success responses.
 
 The generated contract bundle is checked in under `openapi/`. Its freeze
 manifest records producer implementation commit
-`7e2306fcceb8e7bbcc10f92a3c0fceda5110b828`, OpenAPI SHA-256
-`ad8911366e7e508d47a4d258768a052e71b44658d9bf33b474bf3a491ad0c75f`, and safe
-examples SHA-256 `1e7a6094d116cca582a983f333f17a4b298b8d254819abf8ee4c4ab8fa1eb55c`.
+`1d8a51011471e6f372281159501ecfa88b39b4ed`, OpenAPI SHA-256
+`0722f00f349d830e47c648e1f4fe82e831e6672b33996e056a555e8ec6b35759`, and safe
+examples SHA-256 `27d4ac4f7f2ff4b610c58d6ea087262d1d3be0afb3d055efcaa4e5c463e91f66`.
 Frontend product integration is blocked
 until that committed bundle and identity/auth mapping are reviewed together.
