@@ -21,66 +21,85 @@ const northStarDocuments = new Map([
   ["Agent Team", agentTeam]
 ]);
 
-function normalizedClaimFragments(source) {
+function normalizedClaimClauses(source) {
   return source
     .replace(/\s+/g, " ")
     .trim()
-    .split(/(?<=[!?])\s+|(?<=\.)\s+(?=[A-Z#*-])/)
+    .split(/(?<=[.!?;])\s+|,\s+(?=(?:but|however|yet|although|while)\b)|\s+(?=(?:but|however|yet)\b)/i)
+    .map((clause) => clause.replace(/^(?:but|however|yet|although|while)\s+/i, "").trim())
     .filter(Boolean);
 }
 
-function matchingClaimFragments(source, matchesClaim) {
-  return normalizedClaimFragments(source).filter(matchesClaim);
+function matchingClaimClauses(source, matchesClaim) {
+  return normalizedClaimClauses(source).filter(matchesClaim);
 }
 
 const legacyWorkspace = "(?:Diagnose|Recovery(?:\\s+Console)?|Compare)";
 const primaryWorkspaceRole = "(?:(?:top[-\\s]?level|primary|main|persistent)\\s+(?:navigation\\s+)?(?:views?|workspaces?))";
 
+function hasNegatedWorkspaceClaim(clause) {
+  const legacyBeforeNegation = new RegExp(`\\b${legacyWorkspace}\\b[^.;]{0,80}\\b(?:not|never)\\b[^.;]{0,40}\\b${primaryWorkspaceRole}\\b`, "i");
+  const roleBeforeNegation = new RegExp(`\\b${primaryWorkspaceRole}\\b[^.;]{0,80}\\b(?:not|never)\\b[^.;]{0,40}\\b${legacyWorkspace}\\b`, "i");
+  return legacyBeforeNegation.test(clause) || roleBeforeNegation.test(clause);
+}
+
 function findLegacyPrimaryWorkspaceClaims(source) {
   const legacyBeforeRole = new RegExp(`\\b${legacyWorkspace}\\b[^.]{0,240}\\b${primaryWorkspaceRole}\\b`, "i");
   const roleBeforeLegacy = new RegExp(`\\b${primaryWorkspaceRole}\\b[^.]{0,240}\\b${legacyWorkspace}\\b`, "i");
-  return matchingClaimFragments(source, (fragment) => legacyBeforeRole.test(fragment) || roleBeforeLegacy.test(fragment));
+  return matchingClaimClauses(source, (clause) => !hasNegatedWorkspaceClaim(clause)
+    && (legacyBeforeRole.test(clause) || roleBeforeLegacy.test(clause)));
 }
 
 const controlPlaneReference = "(?:FastAPI|Temporal)(?:\\s*\\/\\s*(?:FastAPI|Temporal))?\\s+(?:control[-\\s]?plane|integration|control[-\\s]?plane\\s+equivalents?)";
 const deliveryVerb = "(?:integrated|available|live|shipped|delivered)";
-const deliveryAdverb = "(?:(?:already|now|fully|currently)\\s+)*";
-const deliveryPredicate = `(?:is|are|has|have|was|were)\\s+${deliveryAdverb}${deliveryVerb}`;
-const activeDelivery = `(?:(?:we|the\\s+(?:team|platform|product)|FlowPulse)\\s+)?(?:(?:have|has|had)\\s+)?${deliveryAdverb}(?:ship(?:ped|s)?|deliver(?:ed|s)?|integrat(?:ed|es))`;
-const negatedDelivery = new RegExp(`\\b(?:not|never)\\s+(?:(?:yet|already|now|fully|currently)\\s+)*${deliveryVerb}\\b`, "i");
+const deliveryModifier = "(?:(?:already|now|fully|currently)\\s+)?";
+const deliveryPredicate = `(?:is|are|was|were|has|have|had)\\s+${deliveryModifier}(?:been\\s+)?${deliveryModifier}${deliveryVerb}`;
+const activeDelivery = `(?:(?:we|the\\s+(?:team|platform|product)|FlowPulse)\\s+)?(?:(?:have|has|had)\\s+)?${deliveryModifier}(?:ship(?:ped|s)?|deliver(?:ed|s)?|integrat(?:ed|es))`;
+const negatedDelivery = new RegExp(`\\b(?:not|never)\\s+(?:(?:yet|already|now|fully|currently)\\s+)?(?:been\\s+)?${deliveryVerb}\\b`, "i");
 const deferredControlPlane = new RegExp(`\\buntil\\b[^.]{0,120}\\b${controlPlaneReference}\\b[^.]{0,120}\\b${deliveryPredicate}\\b`, "i");
 
 function findShippedControlPlaneClaims(source) {
   const controlPlaneBeforeDelivery = new RegExp(`\\b${controlPlaneReference}\\b[^.]{0,160}\\b${deliveryPredicate}\\b`, "i");
   const deliveryBeforeControlPlane = new RegExp(`\\b${activeDelivery}\\b[^.]{0,160}\\b${controlPlaneReference}\\b`, "i");
-  return matchingClaimFragments(source, (fragment) => {
-    if (negatedDelivery.test(fragment) || deferredControlPlane.test(fragment)) return false;
-    return controlPlaneBeforeDelivery.test(fragment) || deliveryBeforeControlPlane.test(fragment);
+  return matchingClaimClauses(source, (clause) => {
+    if (negatedDelivery.test(clause) || deferredControlPlane.test(clause)) return false;
+    return controlPlaneBeforeDelivery.test(clause) || deliveryBeforeControlPlane.test(clause);
   });
 }
 
 const nodeCompatibilityPath = "(?:Node(?:\\.js)?|src\\/server\\.mjs|server-side\\s+policy)";
 const lifecycleAuthority = "(?:(?:the\\s+)?(?:sole|only|primary|exclusive)\\s+(?:incident\\s+)?lifecycle\\s+authorit(?:y|ies))";
 const productionAuthority = "(?:(?:the\\s+)?(?:sole|only|primary|exclusive)\\s+)?production\\s+authorit(?:y|ies)(?:\\s+(?:closure|composition\\s+root))?";
-const compatibilityDenial = /\b(?:does\s+not|do\s+not|is\s+not|are\s+not|cannot|can't|never|without|no)\b[^.]{0,120}\b(?:authority|authorities|owns?|governs?|controls?)\b/i;
+
+function hasNegatedNodeAuthorityClaim(clause, authority) {
+  const nodeBeforeNegation = new RegExp(`\\b${nodeCompatibilityPath}\\b[^.;]{0,100}\\b(?:is|are|does|do|can|cannot|serves?\\s+as|owns?)?\\s*(?:not|never|no)\\b[^.;]{0,80}\\b${authority}\\b`, "i");
+  const negationBeforeNode = new RegExp(`\\b(?:not|never|no)\\b[^.;]{0,80}\\b${authority}\\b[^.;]{0,100}\\b${nodeCompatibilityPath}\\b`, "i");
+  return nodeBeforeNegation.test(clause) || negationBeforeNode.test(clause);
+}
+
+function hasNegatedNodeLifecycleOwnership(clause) {
+  const nodeBeforeNegatedOwnership = new RegExp(`\\b${nodeCompatibilityPath}\\b[^.;]{0,80}\\b(?:does\\s+not|do\\s+not|cannot|can't|never)\\s+(?:own|govern|control)s?\\b[^.;]{0,120}\\b(?:the\\s+)?(?:incident\\s+)?lifecycle(?:\\s+transitions?)?\\b`, "i");
+  return nodeBeforeNegatedOwnership.test(clause);
+}
 
 function findNodeLifecycleAuthorityClaims(source) {
   const nodeBeforeAuthority = new RegExp(`\\b${nodeCompatibilityPath}\\b[^.]{0,160}\\b${lifecycleAuthority}\\b`, "i");
   const authorityBeforeNode = new RegExp(`\\b${lifecycleAuthority}\\b[^.]{0,160}\\b${nodeCompatibilityPath}\\b`, "i");
-  const activeNodeOwnership = new RegExp(`\\b${nodeCompatibilityPath}\\b[^.]{0,80}\\b(?:alone|solely|exclusively|now|currently)\\s+(?:owns?|governs?|controls?)\\b[^.]{0,120}\\b(?:incident\\s+)?lifecycle(?:\\s+transitions?)?\\b`, "i");
+  const nodeOwnsLifecycle = new RegExp(`\\b${nodeCompatibilityPath}\\b[^.]{0,80}\\b(?:owns?|governs?|controls?)\\b[^.]{0,120}\\b(?:the\\s+)?(?:incident\\s+)?lifecycle(?:\\s+transitions?)?\\b`, "i");
   const authorityBelongsToNode = new RegExp("\\b(?:incident\\s+)?lifecycle\\s+authorit(?:y|ies)\\b[^.]{0,80}\\b(?:solely|only|exclusively)\\b[^.]{0,80}\\b" + nodeCompatibilityPath + "\\b", "i");
-  return matchingClaimFragments(source, (fragment) => !compatibilityDenial.test(fragment)
-    && (nodeBeforeAuthority.test(fragment)
-      || authorityBeforeNode.test(fragment)
-      || activeNodeOwnership.test(fragment)
-      || authorityBelongsToNode.test(fragment)));
+  return matchingClaimClauses(source, (clause) => !hasNegatedNodeAuthorityClaim(clause, lifecycleAuthority)
+    && !hasNegatedNodeLifecycleOwnership(clause)
+    && (nodeBeforeAuthority.test(clause)
+      || authorityBeforeNode.test(clause)
+      || nodeOwnsLifecycle.test(clause)
+      || authorityBelongsToNode.test(clause)));
 }
 
 function findNodeProductionAuthorityClaims(source) {
   const nodeBeforeAuthority = new RegExp(`\\b${nodeCompatibilityPath}\\b[^.]{0,160}\\b${productionAuthority}\\b`, "i");
   const authorityBeforeNode = new RegExp(`\\b${productionAuthority}\\b[^.]{0,160}\\b${nodeCompatibilityPath}\\b`, "i");
-  return matchingClaimFragments(source, (fragment) => !compatibilityDenial.test(fragment)
-    && (nodeBeforeAuthority.test(fragment) || authorityBeforeNode.test(fragment)));
+  return matchingClaimClauses(source, (clause) => !hasNegatedNodeAuthorityClaim(clause, productionAuthority)
+    && (nodeBeforeAuthority.test(clause) || authorityBeforeNode.test(clause)));
 }
 
 function assertNoDocumentClaims(findClaims, description) {
@@ -88,6 +107,15 @@ function assertNoDocumentClaims(findClaims, description) {
     const matches = findClaims(source);
     assert.deepEqual(matches, [], `${name} must not ${description}: ${matches.join(" | ")}`);
   }
+}
+
+function assertClaimDetected(findClaims, source) {
+  const matches = findClaims(source);
+  assert.equal(matches.length, 1, `expected a contradiction in: ${source}; found: ${matches.join(" | ")}`);
+}
+
+function assertClaimAllowed(findClaims, source) {
+  assert.deepEqual(findClaims(source), [], `expected no contradiction in: ${source}`);
 }
 
 test("North Star documents keep the agent-operating-system direction behind current proof and Temporal authority", () => {
@@ -132,60 +160,31 @@ test("North Star documents reject contradictory workspace, shipped-control-plane
   assert.match(agentTeam, /RECORDED\/DEMO/, "provider labels remain documented");
 });
 
-test("North Star contradiction detectors reject natural language mutations without rejecting qualified compatibility facts", () => {
-  assert.deepEqual(
-    findLegacyPrimaryWorkspaceClaims("The primary workspaces are Diagnose, Recovery Console, and Compare."),
-    ["The primary workspaces are Diagnose, Recovery Console, and Compare."]
-  );
-  assert.deepEqual(
-    findLegacyPrimaryWorkspaceClaims("We still ship Diagnose as a primary workspace."),
-    ["We still ship Diagnose as a primary workspace."]
-  );
-  assert.deepEqual(
-    findLegacyPrimaryWorkspaceClaims("Compare\nremains our main view."),
-    ["Compare remains our main view."]
-  );
-  assert.deepEqual(findLegacyPrimaryWorkspaceClaims("Incident is the unified workspace; Diagnose is a compatibility label."), []);
+test("North Star contradiction detectors evaluate wording and negation at clause scope", () => {
+  assertClaimDetected(findLegacyPrimaryWorkspaceClaims, "The primary workspaces are Diagnose, Recovery Console, and Compare.");
+  assertClaimDetected(findLegacyPrimaryWorkspaceClaims, "We still ship Diagnose as a primary workspace.");
+  assertClaimDetected(findLegacyPrimaryWorkspaceClaims, "Compare\nremains our main view.");
+  assertClaimAllowed(findLegacyPrimaryWorkspaceClaims, "Compare is not a primary workspace.");
+  assertClaimAllowed(findLegacyPrimaryWorkspaceClaims, "Incident is the unified workspace; Diagnose is a compatibility label.");
 
-  assert.deepEqual(
-    findShippedControlPlaneClaims("FastAPI/Temporal control plane integration is already shipped."),
-    ["FastAPI/Temporal control plane integration is already shipped."]
-  );
-  assert.deepEqual(
-    findShippedControlPlaneClaims("The platform team has fully delivered the FastAPI/Temporal control-plane integration."),
-    ["The platform team has fully delivered the FastAPI/Temporal control-plane integration."]
-  );
-  assert.deepEqual(
-    findShippedControlPlaneClaims("FastAPI/Temporal\ncontrol plane integration\nis now live."),
-    ["FastAPI/Temporal control plane integration is now live."]
-  );
-  assert.deepEqual(findShippedControlPlaneClaims("The planned FastAPI/Temporal control-plane integration is not yet available."), []);
-  assert.deepEqual(
-    findShippedControlPlaneClaims("FastAPI/Temporal control plane integration is already shipped, not mocked."),
-    ["FastAPI/Temporal control plane integration is already shipped, not mocked."]
-  );
+  assertClaimDetected(findShippedControlPlaneClaims, "FastAPI/Temporal control plane integration is already shipped.");
+  assertClaimDetected(findShippedControlPlaneClaims, "The platform team has fully delivered the FastAPI/Temporal control-plane integration.");
+  assertClaimDetected(findShippedControlPlaneClaims, "FastAPI/Temporal\ncontrol plane integration\nis now live.");
+  assertClaimDetected(findShippedControlPlaneClaims, "FastAPI is not yet available, but the Temporal control plane integration is already shipped.");
+  assertClaimDetected(findShippedControlPlaneClaims, "FastAPI/Temporal control plane integration has been shipped.");
+  assertClaimDetected(findShippedControlPlaneClaims, "FastAPI/Temporal control plane integration is already shipped, not mocked.");
+  assertClaimAllowed(findShippedControlPlaneClaims, "The planned FastAPI/Temporal control-plane integration is not yet available.");
+  assertClaimAllowed(findShippedControlPlaneClaims, "FastAPI/Temporal control plane integration has not been shipped.");
 
-  assert.deepEqual(
-    findNodeLifecycleAuthorityClaims("The sole lifecycle authority is Node."),
-    ["The sole lifecycle authority is Node."]
-  );
-  assert.deepEqual(
-    findNodeLifecycleAuthorityClaims("Node exclusively governs incident lifecycle transitions."),
-    ["Node exclusively governs incident lifecycle transitions."]
-  );
-  assert.deepEqual(
-    findNodeLifecycleAuthorityClaims("Node\nis now the only lifecycle authority."),
-    ["Node is now the only lifecycle authority."]
-  );
-  assert.deepEqual(
-    findNodeLifecycleAuthorityClaims("The only lifecycle authorities are Node and src/server.mjs."),
-    ["The only lifecycle authorities are Node and src/server.mjs."]
-  );
-  assert.deepEqual(findNodeLifecycleAuthorityClaims("The Node compatibility surface does not grant lifecycle authority."), []);
+  assertClaimDetected(findNodeLifecycleAuthorityClaims, "The sole lifecycle authority is Node.");
+  assertClaimDetected(findNodeLifecycleAuthorityClaims, "Node exclusively governs incident lifecycle transitions.");
+  assertClaimDetected(findNodeLifecycleAuthorityClaims, "Node owns the incident lifecycle transitions.");
+  assertClaimDetected(findNodeLifecycleAuthorityClaims, "Node\nis now the only lifecycle authority.");
+  assertClaimDetected(findNodeLifecycleAuthorityClaims, "The only lifecycle authorities are Node and src/server.mjs.");
+  assertClaimDetected(findNodeLifecycleAuthorityClaims, "The browser does not own lifecycle authority, but Node is the sole lifecycle authority.");
+  assertClaimAllowed(findNodeLifecycleAuthorityClaims, "The Node compatibility surface does not grant lifecycle authority.");
+  assertClaimAllowed(findNodeLifecycleAuthorityClaims, "The Node compatibility surface does not own incident lifecycle transitions.");
 
-  assert.deepEqual(
-    findNodeProductionAuthorityClaims("Production authorities belong solely to Node."),
-    ["Production authorities belong solely to Node."]
-  );
-  assert.deepEqual(findNodeProductionAuthorityClaims("The Node compatibility path is not a production authority."), []);
+  assertClaimDetected(findNodeProductionAuthorityClaims, "Production authorities belong solely to Node.");
+  assertClaimAllowed(findNodeProductionAuthorityClaims, "The Node compatibility path is not a production authority.");
 });
