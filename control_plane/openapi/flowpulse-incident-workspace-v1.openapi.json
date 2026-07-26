@@ -161,6 +161,105 @@
         "title": "ComponentContext",
         "type": "object"
       },
+      "ConversationRole": {
+        "description": "Server-selected roles; provider output never carries one of these values.",
+        "enum": [
+          "CONVERSATION_MANAGER",
+          "EVIDENCE_SPECIALIST",
+          "TOPOLOGY_SPECIALIST"
+        ],
+        "title": "ConversationRole",
+        "type": "string"
+      },
+      "ConversationTrace": {
+        "additionalProperties": false,
+        "description": "Safe durable metadata; raw prompts, credentials, and model payloads stay out.",
+        "properties": {
+          "available_capabilities": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "title": "Available Capabilities",
+            "type": "array"
+          },
+          "context_hash": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Context Hash",
+            "type": "string"
+          },
+          "input_tokens": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Input Tokens",
+            "type": "integer"
+          },
+          "model_id": {
+            "title": "Model Id",
+            "type": "string"
+          },
+          "output_tokens": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Output Tokens",
+            "type": "integer"
+          },
+          "prompt_bundles": {
+            "items": {
+              "$ref": "#/components/schemas/PromptBundle"
+            },
+            "maxItems": 3,
+            "minItems": 1,
+            "title": "Prompt Bundles",
+            "type": "array"
+          },
+          "provider_call_count": {
+            "minimum": 0.0,
+            "title": "Provider Call Count",
+            "type": "integer"
+          },
+          "provider_id": {
+            "minLength": 1,
+            "title": "Provider Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "default": "flowpulse.conversation-trace.v1",
+            "minLength": 1,
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "specialist_roles": {
+            "items": {
+              "$ref": "#/components/schemas/ConversationRole"
+            },
+            "maxItems": 2,
+            "type": "array"
+          },
+          "tool_calls": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Tool Calls",
+            "type": "integer"
+          },
+          "truth_label": {
+            "$ref": "#/components/schemas/ProviderTruthLabel"
+          },
+          "version_bundle": {
+            "$ref": "#/components/schemas/VersionBundle"
+          }
+        },
+        "required": [
+          "truth_label",
+          "provider_id",
+          "version_bundle",
+          "prompt_bundles",
+          "context_hash",
+          "provider_call_count"
+        ],
+        "title": "ConversationTrace",
+        "type": "object"
+      },
       "DryRunRequest": {
         "additionalProperties": false,
         "properties": {
@@ -727,6 +826,9 @@
             "title": "Conversation Schema Version",
             "type": "string"
           },
+          "conversation_trace": {
+            "$ref": "#/components/schemas/ConversationTrace"
+          },
           "created_at": {
             "format": "date-time",
             "title": "Created At",
@@ -796,6 +898,14 @@
             "minLength": 1,
             "title": "Topology Revision",
             "type": "string"
+          },
+          "truth_label": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ProviderTruthLabel"
+              }
+            ],
+            "default": "DEGRADED"
           },
           "workflow_id": {
             "minLength": 1,
@@ -1080,6 +1190,79 @@
         "title": "ProjectionState",
         "type": "string"
       },
+      "PromptBundle": {
+        "additionalProperties": false,
+        "properties": {
+          "layers": {
+            "items": {
+              "$ref": "#/components/schemas/PromptLayer"
+            },
+            "maxItems": 3,
+            "minItems": 2,
+            "title": "Layers",
+            "type": "array"
+          },
+          "prompt_hash": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Prompt Hash",
+            "type": "string"
+          },
+          "role": {
+            "$ref": "#/components/schemas/ConversationRole"
+          },
+          "schema_version": {
+            "default": "flowpulse.prompt-bundle.v1",
+            "minLength": 1,
+            "title": "Schema Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "role",
+          "layers",
+          "prompt_hash"
+        ],
+        "title": "PromptBundle",
+        "type": "object"
+      },
+      "PromptLayer": {
+        "additionalProperties": false,
+        "properties": {
+          "content_hash": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Content Hash",
+            "type": "string"
+          },
+          "layer": {
+            "minLength": 1,
+            "title": "Layer",
+            "type": "string"
+          },
+          "version": {
+            "minLength": 1,
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "layer",
+          "version",
+          "content_hash"
+        ],
+        "title": "PromptLayer",
+        "type": "object"
+      },
+      "ProviderTruthLabel": {
+        "description": "Truth label surfaced with every conversation result, never inferred by a client.",
+        "enum": [
+          "DEGRADED",
+          "TEST_DETERMINISTIC",
+          "DEMO",
+          "LIVE"
+        ],
+        "title": "ProviderTruthLabel",
+        "type": "string"
+      },
       "RemediationProposal": {
         "additionalProperties": false,
         "properties": {
@@ -1241,6 +1424,80 @@
           "type"
         ],
         "title": "ValidationError",
+        "type": "object"
+      },
+      "VersionBundle": {
+        "additionalProperties": false,
+        "description": "Server-owned versions pinned to every completed provider conversation.",
+        "properties": {
+          "capability_registry_version": {
+            "default": "capability-registry.v1",
+            "minLength": 1,
+            "title": "Capability Registry Version",
+            "type": "string"
+          },
+          "card_schema_version": {
+            "default": "next-best-action.not-configured.v1",
+            "minLength": 1,
+            "title": "Card Schema Version",
+            "type": "string"
+          },
+          "context_pack_version": {
+            "default": "conversation-context-pack.v1",
+            "minLength": 1,
+            "title": "Context Pack Version",
+            "type": "string"
+          },
+          "core_policy_version": {
+            "default": "conversation-core-policy.v1",
+            "minLength": 1,
+            "title": "Core Policy Version",
+            "type": "string"
+          },
+          "evidence_schema_version": {
+            "default": "flowpulse.evidence-envelope.v1",
+            "minLength": 1,
+            "title": "Evidence Schema Version",
+            "type": "string"
+          },
+          "model_policy_version": {
+            "default": "provider-policy.v1",
+            "minLength": 1,
+            "title": "Model Policy Version",
+            "type": "string"
+          },
+          "policy_version": {
+            "default": "capability-policy.v1",
+            "minLength": 1,
+            "title": "Policy Version",
+            "type": "string"
+          },
+          "role_prompt_version": {
+            "default": "conversation-role-prompts.v1",
+            "minLength": 1,
+            "title": "Role Prompt Version",
+            "type": "string"
+          },
+          "schema_version": {
+            "default": "flowpulse.version-bundle.v1",
+            "minLength": 1,
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "tool_schema_version": {
+            "default": "capability-tool-schema.v1",
+            "minLength": 1,
+            "title": "Tool Schema Version",
+            "type": "string"
+          },
+          "workflow_version": {
+            "default": "flowpulse.incident-workspace.v1",
+            "minLength": 1,
+            "title": "Workflow Version",
+            "type": "string"
+          }
+        },
+        "title": "VersionBundle",
         "type": "object"
       },
       "WorkspaceIntake": {
@@ -1838,6 +2095,12 @@
       "workflow_run_id"
     ],
     "provider_mode": "typed_degraded_when_unconfigured",
+    "provider_truth_labels": [
+      "DEGRADED",
+      "TEST_DETERMINISTIC",
+      "DEMO",
+      "LIVE"
+    ],
     "public_identity": [
       "tenant_id",
       "incident_id",

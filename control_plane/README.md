@@ -214,6 +214,6 @@ façade is transport only and never creates authority or success responses.
 
 The generated contract bundle is checked in under `openapi/`. Its freeze
 manifest records producer implementation commit
-`9c9f901c12956800cd2cfd7b9f4e2a85535ffb0e` and the reproducible SHA-256 for
+`db6969095682ffecc6566a37f4b1a94fef1261fe` and the reproducible SHA-256 for
 the OpenAPI and safe example artifacts. Frontend product integration is blocked
 until that committed bundle and identity/auth mapping are reviewed together.

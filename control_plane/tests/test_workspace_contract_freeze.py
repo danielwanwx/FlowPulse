@@ -10,7 +10,7 @@ from pathlib import Path
 CONTROL_PLANE = Path(__file__).resolve().parents[1]
 REPO = CONTROL_PLANE.parent
 ARTIFACT_DIR = CONTROL_PLANE / "openapi"
-PRODUCER_SHA = "9c9f901c12956800cd2cfd7b9f4e2a85535ffb0e"
+PRODUCER_SHA = "db6969095682ffecc6566a37f4b1a94fef1261fe"
 
 
 class WorkspaceContractFreezeTests(unittest.TestCase):
@@ -26,6 +26,10 @@ class WorkspaceContractFreezeTests(unittest.TestCase):
         self.assertIn("workflow_run_id", boundary["internal_correlation"])
         self.assertIn("/v1/incidents/{case_id}/node-explanations", openapi["paths"])
         self.assertNotIn("/v1/incidents/{case_id}/actions/{action_id}", openapi["paths"])
+        self.assertEqual(
+            ["DEGRADED", "TEST_DETERMINISTIC", "DEMO", "LIVE"],
+            boundary["provider_truth_labels"],
+        )
         self.assertEqual(
             [{"FlowPulseTrustedBearer": []}],
             openapi["paths"]["/v1/incidents"]["post"]["security"],
