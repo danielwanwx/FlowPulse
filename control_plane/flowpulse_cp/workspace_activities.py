@@ -43,6 +43,7 @@ from .workspace_actions import (
     WorkspaceActionReceipt,
     canonical_evidence_set_hash,
     validate_current_action_card,
+    workspace_permissions_for_roles,
 )
 
 
@@ -89,10 +90,13 @@ class WorkspaceActivityDispatcher:
         self.conversation_manager = conversation_manager
         self.authorization = authorization
         self.capability_registry = capability_registry
+        configure = getattr(repository, "configure_workspace_capability_registry", None)
+        if capability_registry is not None and configure is not None:
+            configure(capability_registry)
 
     @staticmethod
     def _permissions(actor) -> list:
-        return ["incident:read"] if set(actor.roles).intersection({"viewer", "owner", "local-test-owner"}) else []
+        return workspace_permissions_for_roles(actor.roles)
 
     def _action_event(
         self, packet: WorkspaceActionPacket, projection, action: str,
@@ -169,7 +173,10 @@ class WorkspaceActivityDispatcher:
         binding = IncidentRunBinding.parse_obj({
             name: getattr(packet, name) for name in IncidentRunBinding.__fields__
         })
-        result = grant(binding, packet.actor.subject_id)
+        result = grant(
+            binding, packet.actor.subject_id, packet.actor.roles,
+            self._permissions(packet.actor),
+        )
         if hasattr(result, "__await__"):
             await result
 
@@ -254,6 +261,21 @@ class WorkspaceActivityDispatcher:
             from .models import AuthContext
             actor = AuthContext(
                 tenant_id=packet.actor_tenant_id, subject_id=packet.actor_subject_id, roles=packet.actor_roles,
+            )
+            if actor.tenant_id != packet.tenant_id:
+                raise PolicyViolation("workspace_action_actor_tenant_mismatch")
+            # This activity only receives the actor after the workflow's
+            # trusted authorization activity.  Persist that grant before
+            # building a Gate 1 transition so both repository boundaries can
+            # independently derive the lease from durable authority rather
+            # than trusting the action packet.
+            await self.repository.grant_workspace_subject(
+                IncidentRunBinding.parse_obj({
+                    name: getattr(packet, name) for name in IncidentRunBinding.__fields__
+                }),
+                actor.subject_id,
+                actor.roles,
+                self._permissions(actor),
             )
             validate_current_action_card(
                 action, packet.projection, packet.command, self._permissions(actor), datetime.now(timezone.utc),

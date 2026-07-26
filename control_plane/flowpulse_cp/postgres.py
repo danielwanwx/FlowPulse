@@ -44,10 +44,13 @@ from .workspace_actions import (
     ActionInvocationCommand,
     Gate1Lease,
     NextBestAction,
+    WorkspaceSubjectGrant,
     WorkspaceActionCommit,
     WorkspaceActionReceipt,
     validate_authoritative_gate1_read_card,
+    validate_authoritative_gate1_grant_transition,
     validate_consumed_gate1_lease_transition,
+    validate_fresh_read_evidence_admission,
     validate_workspace_action_commit_kind,
 )
 
@@ -113,6 +116,17 @@ class PostgresCaseRepository:
         self.dsn = dsn
         self.pool: Optional[asyncpg.Pool] = None
         self.failure_injector = failure_injector
+        self.workspace_capability_registry = None
+
+    def configure_workspace_capability_registry(self, registry) -> None:
+        """Attach the worker registry used by locked Gate 1 transition checks."""
+        if (
+            self.workspace_capability_registry is not None
+            and self.workspace_capability_registry is not registry
+            and self.workspace_capability_registry.policy_version != registry.policy_version
+        ):
+            raise PolicyViolation("workspace_capability_registry_rebind_forbidden")
+        self.workspace_capability_registry = registry
 
     async def connect(self) -> None:
         self.pool = await asyncpg.create_pool(self.dsn, min_size=1, max_size=4)
@@ -143,6 +157,10 @@ class PostgresCaseRepository:
         result = self.failure_injector(checkpoint)
         if inspect.isawaitable(result):
             await result
+
+    async def _workspace_transition_now(self, connection: asyncpg.Connection) -> datetime:
+        """Return the database transaction clock used by final Gate 1 checks."""
+        return await connection.fetchval("SELECT statement_timestamp()")
 
     async def get_case(self, tenant_id: str, case_id: str) -> Optional[IncidentCase]:
         async def operation(connection: asyncpg.Connection) -> Optional[IncidentCase]:
@@ -216,8 +234,14 @@ class PostgresCaseRepository:
             return _workspace_binding(_decode(row["payload"])) if row else None
         return await self._tenant(tenant_id, operation)
 
-    async def grant_workspace_subject(self, binding: IncidentRunBinding, subject_id: str) -> None:
+    async def grant_workspace_subject(
+        self, binding: IncidentRunBinding, subject_id: str, roles=None, permissions=None,
+    ) -> None:
         """Append the initializer's trusted subject grant independently of evidence ACLs."""
+        grant = WorkspaceSubjectGrant(
+            tenant_id=binding.tenant_id, case_id=binding.case_id, subject_id=subject_id,
+            roles=list(roles or []), permissions=list(permissions or []), created_at=binding.created_at,
+        )
         async def operation(connection: asyncpg.Connection) -> None:
             row = await connection.fetchrow(
                 """SELECT payload FROM incident_run_bindings
@@ -226,10 +250,26 @@ class PostgresCaseRepository:
             )
             if row is None or _workspace_binding(_decode(row["payload"])) != _workspace_binding(binding):
                 raise PolicyViolation("workspace_subject_grant_binding_mismatch")
+            existing = await connection.fetchrow(
+                """SELECT roles, permissions, created_at FROM workspace_subject_grants
+                   WHERE tenant_id=$1 AND case_id=$2 AND subject_id=$3""",
+                binding.tenant_id, binding.case_id, subject_id,
+            )
+            if existing is not None:
+                recorded = WorkspaceSubjectGrant(
+                    tenant_id=binding.tenant_id, case_id=binding.case_id, subject_id=subject_id,
+                    roles=_decode(existing["roles"]), permissions=_decode(existing["permissions"]),
+                    created_at=existing["created_at"],
+                )
+                if recorded != grant:
+                    raise PolicyViolation("workspace_subject_grant_immutable")
+                return
             await connection.execute(
-                """INSERT INTO workspace_subject_grants (tenant_id, case_id, subject_id, created_at)
-                   VALUES ($1,$2,$3,$4) ON CONFLICT (tenant_id, case_id, subject_id) DO NOTHING""",
-                binding.tenant_id, binding.case_id, subject_id, binding.created_at,
+                """INSERT INTO workspace_subject_grants
+                   (tenant_id, case_id, subject_id, roles, permissions, created_at)
+                   VALUES ($1,$2,$3,$4::jsonb,$5::jsonb,$6)""",
+                binding.tenant_id, binding.case_id, subject_id,
+                json.dumps(grant.roles), json.dumps(grant.permissions), binding.created_at,
             )
         await self._tenant(binding.tenant_id, operation, subject_id=subject_id)
 
@@ -242,6 +282,24 @@ class PostgresCaseRepository:
                    )""",
                 tenant_id, case_id, subject_id,
             ))
+        return await self._tenant(tenant_id, operation, subject_id=subject_id)
+
+    async def workspace_subject_grant(
+        self, tenant_id: str, case_id: str, subject_id: str,
+    ) -> Optional[WorkspaceSubjectGrant]:
+        async def operation(connection: asyncpg.Connection) -> Optional[WorkspaceSubjectGrant]:
+            row = await connection.fetchrow(
+                """SELECT roles, permissions, created_at FROM workspace_subject_grants
+                   WHERE tenant_id=$1 AND case_id=$2 AND subject_id=$3""",
+                tenant_id, case_id, subject_id,
+            )
+            if row is None:
+                return None
+            return WorkspaceSubjectGrant(
+                tenant_id=tenant_id, case_id=case_id, subject_id=subject_id,
+                roles=_decode(row["roles"]), permissions=_decode(row["permissions"]),
+                created_at=row["created_at"],
+            )
         return await self._tenant(tenant_id, operation, subject_id=subject_id)
 
     async def put_workspace_projection(self, projection: IncidentProjection) -> IncidentProjection:
@@ -637,6 +695,20 @@ class PostgresCaseRepository:
         )
         if case is None or case["case_revision"] != commit.projection.case_revision:
             raise PolicyViolation("evidence_case_tenant_or_revision_mismatch")
+        immutable_input_evidence = {}
+        for evidence_id in audit.input_evidence_refs:
+            input_row = await connection.fetchrow(
+                """SELECT payload FROM evidence_envelopes
+                   WHERE tenant_id=$1 AND case_id=$2 AND case_revision=$3
+                     AND evidence_id=$4 AND acl_subjects ? $5""",
+                commit.projection.tenant_id, commit.projection.case_id,
+                commit.projection.case_revision, evidence_id, audit.subject_id,
+            )
+            if input_row is not None:
+                immutable_input_evidence[evidence_id] = EvidenceEnvelope.parse_obj(_decode(input_row["payload"]))
+        validate_fresh_read_evidence_admission(
+            result, audit, commit.projection, immutable_input_evidence,
+        )
         for evidence in result.evidence:
             validate_evidence_admission(evidence, audit.subject_id)
             if (
@@ -805,6 +877,24 @@ class PostgresCaseRepository:
             )
             if audit_row is None or CapabilityAuditRecord.parse_obj(_decode(audit_row["payload"])) != audit:
                 raise PolicyViolation("workspace_action_transition_partial")
+            immutable_input_evidence = {}
+            for evidence_id in audit.input_evidence_refs:
+                input_row = await connection.fetchrow(
+                    """SELECT payload FROM evidence_envelopes
+                       WHERE tenant_id=$1 AND case_id=$2 AND case_revision=$3
+                         AND evidence_id=$4 AND acl_subjects ? $5""",
+                    commit.projection.tenant_id, commit.projection.case_id, commit.projection.case_revision,
+                    evidence_id, audit.subject_id,
+                )
+                if input_row is None:
+                    raise PolicyViolation("workspace_action_transition_partial")
+                immutable_input_evidence[evidence_id] = EvidenceEnvelope.parse_obj(_decode(input_row["payload"]))
+            try:
+                validate_fresh_read_evidence_admission(
+                    commit.capability_result, audit, commit.projection, immutable_input_evidence,
+                )
+            except PolicyViolation as error:
+                raise PolicyViolation("workspace_action_transition_partial") from error
             for evidence in commit.capability_result.evidence:
                 row = await connection.fetchrow(
                     "SELECT payload FROM evidence_envelopes WHERE tenant_id=$1 AND evidence_id=$2",
@@ -920,6 +1010,40 @@ class PostgresCaseRepository:
                     or NextBestAction.parse_obj(_decode(stored_action["payload"])) != commit.issued_action
                 ):
                     raise PolicyViolation("workspace_action_issued_card_not_authoritative")
+            if commit.lease is not None and commit.receipt.status == "GATE1_GRANTED":
+                projection_row = await connection.fetchrow(
+                    """SELECT payload FROM incident_projections
+                       WHERE tenant_id=$1 AND run_id=$2 AND topology_revision=$3 AND case_id=$4
+                       ORDER BY projection_revision DESC LIMIT 1""",
+                    binding.tenant_id, binding.run_id, binding.topology_revision, binding.case_id,
+                )
+                stored_card_row = await connection.fetchrow(
+                    """SELECT payload FROM next_best_actions
+                       WHERE tenant_id=$1 AND case_id=$2 AND action_id=$3""",
+                    commit.receipt.tenant_id, commit.receipt.case_id, commit.receipt.action_id,
+                )
+                subject_grant_row = await connection.fetchrow(
+                    """SELECT roles, permissions, created_at FROM workspace_subject_grants
+                       WHERE tenant_id=$1 AND case_id=$2 AND subject_id=$3""",
+                    commit.lease.tenant_id, commit.lease.case_id, commit.lease.subject_id,
+                )
+                if projection_row is None:
+                    raise PolicyViolation("gate1_grant_projection_not_found")
+                subject_grant = None
+                if subject_grant_row is not None:
+                    subject_grant = WorkspaceSubjectGrant(
+                        tenant_id=commit.lease.tenant_id, case_id=commit.lease.case_id,
+                        subject_id=commit.lease.subject_id,
+                        roles=_decode(subject_grant_row["roles"]),
+                        permissions=_decode(subject_grant_row["permissions"]),
+                        created_at=subject_grant_row["created_at"],
+                    )
+                now = await self._workspace_transition_now(connection)
+                validate_authoritative_gate1_grant_transition(
+                    IncidentProjection.parse_obj(_decode(projection_row["payload"])),
+                    NextBestAction.parse_obj(_decode(stored_card_row["payload"])) if stored_card_row else None,
+                    subject_grant, self.workspace_capability_registry, commit, now,
+                )
             if commit.lease is not None and commit.lease.status.value == "CONSUMED":
                 active = await connection.fetchrow(
                     """SELECT payload FROM workspace_gate1_leases
@@ -939,16 +1063,17 @@ class PostgresCaseRepository:
                 )
                 if len(grant_rows) > 1:
                     raise PolicyViolation("gate1_lease_grant_transition_ambiguous")
+                now = await self._workspace_transition_now(connection)
                 read_card = validate_authoritative_gate1_read_card(
                     active_lease,
                     WorkspaceActionCommit.parse_obj(_decode(grant_rows[0]["payload"])) if grant_rows else None,
-                    commit,
+                    commit, now,
                 )
                 validate_consumed_gate1_lease_transition(
                     active_lease, commit.lease, command_fingerprint=commit.command_fingerprint,
                     capability_audit=commit.capability_audit, receipt=commit.receipt,
                     activity_identity=commit.activity_identity, capability_result=commit.capability_result,
-                    read_card=read_card,
+                    read_card=read_card, now=now,
                 )
 
             # This happens before every action projection write but remains in

@@ -111,7 +111,14 @@ class LiveWorkspaceActionAtomicityTests(unittest.TestCase):
                     "projection_revision": 2, "sequence": 2, "gate_revision": 2, "action_revision": 2,
                 })
                 gate_card = NextBestActionGenerator(registry).generate(initial, now)[0]
-                command_hash = sha256((suffix + ":command").encode("utf-8")).hexdigest()
+                idempotency_key = "idem-{}".format(suffix)
+                command_hash = ActionInvocationCommand(
+                    incident_id=binding.incident_id, run_id=binding.run_id,
+                    topology_revision=binding.topology_revision,
+                    projection_revision=gate_card.projection_revision,
+                    action_id=gate_card.action_id, idempotency_key=idempotency_key,
+                ).canonical_hash()
+                activity_identity = "workspace-action:{}:{}".format(binding.workflow_run_id, command_hash)
                 lease = Gate1Lease(
                     **binding.dict(), lease_id="gate1-" + command_hash, lease_revision=1, subject_id="owner-{}".format(suffix),
                     required_permission="incident:read", component_id="checkout", capability=CapabilityName.METRICS.value,
@@ -123,22 +130,22 @@ class LiveWorkspaceActionAtomicityTests(unittest.TestCase):
                     issuance_command_fingerprint=command_hash,
                     issuance_action_id=gate_card.action_id,
                     issuance_card_version=gate_card.card_version,
-                    issuance_idempotency_key="idem-{}".format(suffix),
+                    issuance_idempotency_key=idempotency_key,
                     evidence_set_hash=canonical_evidence_set_hash([]),
                     issued_at=now, expires_at=now + timedelta(minutes=30), status=Gate1LeaseStatus.ACTIVE,
                 )
                 cards = NextBestActionGenerator(registry).generate_after_gate1(updated, lease, now)
                 receipt = WorkspaceActionReceipt(
-                    **binding.dict(), action_id=gate_card.action_id, idempotency_key="idem-{}".format(suffix),
+                    **binding.dict(), action_id=gate_card.action_id, idempotency_key=idempotency_key,
                     status="GATE1_GRANTED", gate1_lease_id=lease.lease_id, reason="test-atomic",
                 )
                 event = IncidentEvent(
                     **binding.dict(), projection_revision=2, sequence=2, event_type="workspace.action.gate1_granted",
                     occurred_at=now, payload={"action_id": receipt.action_id, "idempotency_key": receipt.idempotency_key,
-                    "command_fingerprint": command_hash, "activity_identity": "activity-{}".format(suffix)}, evidence_refs=[],
+                    "command_fingerprint": command_hash, "activity_identity": activity_identity}, evidence_refs=[],
                 )
                 commit = WorkspaceActionCommit(
-                    activity_identity="activity-{}".format(suffix), command_fingerprint=command_hash,
+                    activity_identity=activity_identity, command_fingerprint=command_hash,
                     projection=updated, receipt=receipt, event=event, lease=lease, actions=cards,
                     issued_action=gate_card,
                 )
@@ -148,6 +155,7 @@ class LiveWorkspaceActionAtomicityTests(unittest.TestCase):
                         raise RuntimeError("injected:" + checkpoint)
 
                 repository = PostgresCaseRepository(self.dsn, failure_injector=fail)
+                repository.configure_workspace_capability_registry(registry)
                 await repository.connect()
                 try:
                     await repository.put_case(IncidentCase(
@@ -158,6 +166,9 @@ class LiveWorkspaceActionAtomicityTests(unittest.TestCase):
                     ))
                     await repository.put_workspace_binding(binding)
                     await repository.put_workspace_projection(initial)
+                    await repository.grant_workspace_subject(
+                        binding, lease.subject_id, ["viewer"], ["incident:read"],
+                    )
                     await repository.append_next_best_action(gate_card)
                     with self.subTest(boundary=boundary), self.assertRaisesRegex(RuntimeError, "injected:" + boundary):
                         await repository.commit_workspace_action_transition(commit)
@@ -283,7 +294,12 @@ class LiveWorkspaceActionAtomicityTests(unittest.TestCase):
                 "projection_revision": 2, "sequence": 2, "gate_revision": 2, "action_revision": 2,
             })
             gate_card = NextBestActionGenerator(registry).generate(initial, now)[0]
-            grant_fingerprint = sha256((suffix + ":grant").encode("utf-8")).hexdigest()
+            grant_fingerprint = ActionInvocationCommand(
+                incident_id=binding.incident_id, run_id=binding.run_id,
+                topology_revision=binding.topology_revision,
+                projection_revision=gate_card.projection_revision,
+                action_id=gate_card.action_id, idempotency_key="grant-{}".format(suffix),
+            ).canonical_hash()
             lease = Gate1Lease(
                 **binding.dict(), lease_id="gate1-" + grant_fingerprint, lease_revision=1, subject_id=subject,
                 required_permission="incident:read", component_id="checkout", capability=CapabilityName.METRICS.value,
@@ -302,14 +318,17 @@ class LiveWorkspaceActionAtomicityTests(unittest.TestCase):
                 **binding.dict(), action_id=gate_card.action_id, idempotency_key=lease.issuance_idempotency_key,
                 status="GATE1_GRANTED", gate1_lease_id=lease.lease_id, reason="test-grant",
             )
+            grant_activity_identity = "workspace-action:{}:{}".format(
+                binding.workflow_run_id, grant_fingerprint,
+            )
             grant = WorkspaceActionCommit(
-                activity_identity="grant-{}".format(suffix), command_fingerprint=grant_fingerprint,
+                activity_identity=grant_activity_identity, command_fingerprint=grant_fingerprint,
                 projection=granted_projection, receipt=grant_receipt, lease=lease, actions=[read_card],
                 issued_action=gate_card, event=IncidentEvent(
                     **binding.dict(), projection_revision=2, sequence=2, event_type="workspace.action.gate1_granted",
                     occurred_at=now, payload={
                         "action_id": gate_card.action_id, "idempotency_key": grant_receipt.idempotency_key,
-                        "command_fingerprint": grant_fingerprint, "activity_identity": "grant-{}".format(suffix),
+                        "command_fingerprint": grant_fingerprint, "activity_identity": grant_activity_identity,
                     }, evidence_refs=[],
                 ),
             )
@@ -393,6 +412,7 @@ class LiveWorkspaceActionAtomicityTests(unittest.TestCase):
                 ),
             )
             repository = PostgresCaseRepository(self.dsn)
+            repository.configure_workspace_capability_registry(registry)
             await repository.connect()
             try:
                 await repository.put_case(IncidentCase(
@@ -403,8 +423,21 @@ class LiveWorkspaceActionAtomicityTests(unittest.TestCase):
                 ))
                 await repository.put_workspace_binding(binding)
                 await repository.put_workspace_projection(initial)
-                await repository.grant_workspace_subject(binding, subject)
+                await repository.grant_workspace_subject(binding, subject, ["viewer"], ["incident:read"])
                 await repository.append_next_best_action(gate_card)
+                for field, value in {
+                    "subject_id": "intruder-{}".format(suffix),
+                    "required_permission": "incident:admin",
+                    "component_id": "payments",
+                    "capability_version": "evil.v9",
+                    "precondition_hash": "f" * 64,
+                    "evidence_set_hash": "f" * 64,
+                }.items():
+                    with self.subTest(forged_grant_field=field):
+                        with self.assertRaisesRegex(PolicyViolation, "gate1_grant"):
+                            await repository.commit_workspace_action_transition(grant.copy(update={
+                                "lease": lease.copy(update={field: value}),
+                            }))
                 await repository.commit_workspace_action_transition(grant)
 
                 for field in ("evidence", "claims", "coverage"):
@@ -446,6 +479,47 @@ class LiveWorkspaceActionAtomicityTests(unittest.TestCase):
                             await repository.commit_workspace_action_transition(fresh.copy(update={
                                 "capability_result": result_change,
                             }))
+
+                def rebound(result_change):
+                    evidence_refs = list(audit.input_evidence_refs)
+                    for envelope in result_change.evidence:
+                        if envelope.evidence_id not in evidence_refs:
+                            evidence_refs.append(envelope.evidence_id)
+                    changed_audit = audit.copy(update={
+                        "result_hash": canonical_capability_result_hash(result_change),
+                        "evidence_refs": evidence_refs,
+                    })
+                    changed_audit = changed_audit.copy(update={
+                        "audit_id": deterministic_capability_audit_id(
+                            tenant_id=tenant, run_id=binding.run_id, activity_id=changed_audit.activity_id,
+                            scope=changed_audit.scope, audience=changed_audit.audience,
+                            capability=changed_audit.capability, request_hash=changed_audit.request_hash,
+                        ),
+                    })
+                    return fresh.copy(update={
+                        "capability_result": result_change,
+                        "capability_audit": changed_audit,
+                        "lease": consumed.copy(update={
+                            "consumed_result_hash": changed_audit.result_hash,
+                            "consumed_audit_id": changed_audit.audit_id,
+                        }),
+                    })
+
+                unauthorized = result.copy(update={
+                    "evidence": [evidence.copy(update={"acl_subjects": ["intruder"]})],
+                })
+                with self.assertRaisesRegex(PolicyViolation, "evidence_acl_subject_denied"):
+                    await repository.commit_workspace_action_transition(rebound(unauthorized))
+                cyclic = result.copy(update={
+                    "evidence": [
+                        evidence.copy(update={"evidence_id": "cycle-a-{}".format(suffix), "parent_evidence_ids": ["cycle-b-{}".format(suffix)]}),
+                        evidence.copy(update={"evidence_id": "cycle-b-{}".format(suffix), "parent_evidence_ids": ["cycle-a-{}".format(suffix)]}),
+                    ],
+                    "claims": [result.claims[0].copy(update={"evidence_ids": ["cycle-a-{}".format(suffix)]})],
+                    "coverage": [result.coverage[0].copy(update={"evidence_ids": ["cycle-a-{}".format(suffix)]})],
+                })
+                with self.assertRaisesRegex(PolicyViolation, "fresh_read_(evidence|result)"):
+                    await repository.commit_workspace_action_transition(rebound(cyclic))
 
                 forged_idempotency = "forged-{}".format(suffix)
                 forged_command = ActionInvocationCommand(
@@ -496,6 +570,17 @@ class LiveWorkspaceActionAtomicityTests(unittest.TestCase):
                              (SELECT count(*) FROM workspace_action_transitions WHERE tenant_id=$1 AND case_id=$2) AS transitions""",
                         tenant, binding.case_id,
                     )
+                self.assertEqual((1, 0, 0, 0, 0, 1), tuple(await repository._tenant(tenant, counts, subject_id=subject)))
+                active = await repository.workspace_gate1_lease(tenant, binding.case_id, lease.lease_id)
+                self.assertEqual((Gate1LeaseStatus.ACTIVE, 1), (active.status, active.lease_revision))
+
+                original_clock = repository._workspace_transition_now
+                async def expired_commit_clock(connection):
+                    return lease.expires_at + timedelta(microseconds=1)
+                repository._workspace_transition_now = expired_commit_clock
+                with self.assertRaisesRegex(PolicyViolation, "gate1_(authoritative_read_card|consumed_lease)_expired"):
+                    await repository.commit_workspace_action_transition(fresh)
+                repository._workspace_transition_now = original_clock
                 self.assertEqual((1, 0, 0, 0, 0, 1), tuple(await repository._tenant(tenant, counts, subject_id=subject)))
                 active = await repository.workspace_gate1_lease(tenant, binding.case_id, lease.lease_id)
                 self.assertEqual((Gate1LeaseStatus.ACTIVE, 1), (active.status, active.lease_revision))

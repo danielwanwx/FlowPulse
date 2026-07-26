@@ -90,7 +90,7 @@ class LiveWorkspaceMigrationRunnerTests(unittest.TestCase):
             cwd=ROOT, env=environment, text=True, capture_output=True, timeout=90,
         )
 
-    def test_actual_runner_upgrades_legacy_001_and_crash_recovery_never_records_partial_007(self):
+    def test_actual_runner_upgrades_legacy_001_and_crash_recovery_never_records_partial_009(self):
         async def run():
             database = "flowpulse_runner_{}".format(uuid4().hex)
             target_admin_dsn = self.admin_dsn.rsplit("/", 1)[0] + "/" + database
@@ -119,17 +119,17 @@ class LiveWorkspaceMigrationRunnerTests(unittest.TestCase):
                                 "001_control_plane.sql", "002_authorization_intents.sql",
                                 "003_incident_workspace_projection.sql", "004_workspace_binding_integrity.sql",
                                 "005_workspace_subject_grants.sql", "006_workspace_gate1_actions.sql",
-                                "007_workspace_action_transitions.sql",
+                                "007_workspace_action_transitions.sql", "008_workspace_gate1_authority.sql",
                             ],
                             [row["filename"] for row in rows],
                         )
                     finally:
                         await check.close()
 
-                    # 007 is an established workspace migration.  The
+                    # 008 is an established workspace migration.  The
                     # temporary crash/recovery fixture must be the next
-                    # contiguous migration, not a competing 007 prefix.
-                    crash = copied / "008_runner_crash_recovery.sql"
+                    # contiguous migration, not a competing 008 prefix.
+                    crash = copied / "009_runner_crash_recovery.sql"
                     crash.write_text(
                         "CREATE TABLE runner_crash_marker (id integer PRIMARY KEY);\nSELECT 1 / 0;\n",
                         encoding="utf-8",
@@ -140,7 +140,7 @@ class LiveWorkspaceMigrationRunnerTests(unittest.TestCase):
                     try:
                         self.assertIsNone(await check.fetchval("SELECT to_regclass('public.runner_crash_marker')"))
                         self.assertIsNone(await check.fetchval(
-                            "SELECT checksum_sha256 FROM schema_migrations WHERE filename='008_runner_crash_recovery.sql'"
+                            "SELECT checksum_sha256 FROM schema_migrations WHERE filename='009_runner_crash_recovery.sql'"
                         ))
                     finally:
                         await check.close()
@@ -154,7 +154,7 @@ class LiveWorkspaceMigrationRunnerTests(unittest.TestCase):
                             "SELECT to_regclass('public.runner_crash_marker')::text"
                         ))
                         self.assertIsNotNone(await check.fetchval(
-                            "SELECT checksum_sha256 FROM schema_migrations WHERE filename='008_runner_crash_recovery.sql'"
+                            "SELECT checksum_sha256 FROM schema_migrations WHERE filename='009_runner_crash_recovery.sql'"
                         ))
                     finally:
                         await check.close()
@@ -208,6 +208,23 @@ class LiveWorkspaceMigrationRunnerTests(unittest.TestCase):
                     changed.write_text((MIGRATIONS / changed.name).read_text(encoding="utf-8"), encoding="utf-8")
                     connection = await asyncpg.connect(target_admin_dsn)
                     try:
+                        await connection.execute("DELETE FROM schema_migrations WHERE filename='008_workspace_gate1_authority.sql'")
+                    finally:
+                        await connection.close()
+                    unrecorded_gate_authority = self._runner(database, copied)
+                    self.assertNotEqual(0, unrecorded_gate_authority.returncode)
+                    self.assertIn(
+                        "migration_partial_schema_unrecorded:008_workspace_gate1_authority.sql",
+                        unrecorded_gate_authority.stderr + unrecorded_gate_authority.stdout,
+                    )
+
+                    connection = await asyncpg.connect(target_admin_dsn)
+                    try:
+                        await connection.execute(
+                            "INSERT INTO schema_migrations (filename, checksum_sha256) VALUES ($1,$2)",
+                            "008_workspace_gate1_authority.sql",
+                            hashlib.sha256((MIGRATIONS / "008_workspace_gate1_authority.sql").read_bytes()).hexdigest(),
+                        )
                         await connection.execute("DELETE FROM schema_migrations WHERE filename='003_incident_workspace_projection.sql'")
                     finally:
                         await connection.close()
@@ -314,7 +331,7 @@ class LiveWorkspaceMigrationRunnerTests(unittest.TestCase):
                             "001_control_plane.sql", "002_authorization_intents.sql",
                             "003_incident_workspace_projection.sql", "004_workspace_binding_integrity.sql",
                             "005_workspace_subject_grants.sql", "006_workspace_gate1_actions.sql",
-                            "007_workspace_action_transitions.sql",
+                            "007_workspace_action_transitions.sql", "008_workspace_gate1_authority.sql",
                         ],
                         [row["filename"] for row in rows],
                     )

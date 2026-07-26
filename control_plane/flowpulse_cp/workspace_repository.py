@@ -15,10 +15,13 @@ from .workspace_actions import (
     ActionInvocationCommand,
     Gate1Lease,
     NextBestAction,
+    WorkspaceSubjectGrant,
     WorkspaceActionCommit,
     WorkspaceActionReceipt,
     validate_authoritative_gate1_read_card,
+    validate_authoritative_gate1_grant_transition,
     validate_consumed_gate1_lease_transition,
+    validate_fresh_read_evidence_admission,
     validate_workspace_action_commit_kind,
 )
 
@@ -43,14 +46,16 @@ def _same_binding(left: IncidentRunBinding, right: IncidentRunBinding) -> bool:
 class InMemoryWorkspaceRepository:
     """Deterministic test/query projection; it never advances workflow state."""
 
-    def __init__(self, failure_injector: Optional[Callable[[str], None]] = None) -> None:
+    def __init__(
+        self, failure_injector: Optional[Callable[[str], None]] = None, now: Optional[Callable[[], datetime]] = None,
+    ) -> None:
         self.bindings: Dict[BindingKey, IncidentRunBinding] = {}
         self.projections: Dict[BindingKey, List[IncidentProjection]] = defaultdict(list)
         self.events: Dict[BindingKey, List[IncidentEvent]] = defaultdict(list)
         self.explanations: Dict[str, NodeExplanation] = {}
         self.explanation_by_selection: Dict[str, str] = {}
         self.capability_audits: Dict[object, CapabilityAuditRecord] = {}
-        self.workspace_subject_grants = set()
+        self.workspace_subject_grants: Dict[Tuple[str, str, str], WorkspaceSubjectGrant] = {}
         self.workspace_auth_intents: Dict[str, AuthCommandIntent] = {}
         self.gate1_leases: Dict[Tuple[str, str, str], List[Gate1Lease]] = defaultdict(list)
         self.next_best_actions: Dict[Tuple[str, str, str], NextBestAction] = {}
@@ -63,6 +68,18 @@ class InMemoryWorkspaceRepository:
         # Test-only seam: a checkpoint raises inside the same in-memory
         # transaction simulation and restores every append-only collection.
         self.failure_injector = failure_injector
+        self.workspace_capability_registry = None
+        self._now = now or (lambda: datetime.now(timezone.utc))
+
+    def configure_workspace_capability_registry(self, registry) -> None:
+        """Install the worker's read-only registry for repository-side Gate checks."""
+        if (
+            self.workspace_capability_registry is not None
+            and self.workspace_capability_registry is not registry
+            and self.workspace_capability_registry.policy_version != registry.policy_version
+        ):
+            raise PolicyViolation("workspace_capability_registry_rebind_forbidden")
+        self.workspace_capability_registry = registry
 
     async def put_binding(self, binding: IncidentRunBinding) -> IncidentRunBinding:
         key = _binding_key(binding)
@@ -81,14 +98,29 @@ class InMemoryWorkspaceRepository:
 
     put_workspace_binding = put_binding
 
-    async def grant_workspace_subject(self, binding: IncidentRunBinding, subject_id: str) -> None:
+    async def grant_workspace_subject(
+        self, binding: IncidentRunBinding, subject_id: str, roles=None, permissions=None,
+    ) -> None:
         stored = await self.get_binding(binding.tenant_id, binding.case_id)
         if stored != binding:
             raise PolicyViolation("workspace_subject_grant_binding_mismatch")
-        self.workspace_subject_grants.add((binding.tenant_id, binding.case_id, subject_id))
+        grant = WorkspaceSubjectGrant(
+            tenant_id=binding.tenant_id, case_id=binding.case_id, subject_id=subject_id,
+            roles=list(roles or []), permissions=list(permissions or []), created_at=binding.created_at,
+        )
+        key = (binding.tenant_id, binding.case_id, subject_id)
+        existing = self.workspace_subject_grants.get(key)
+        if existing is not None and existing != grant:
+            raise PolicyViolation("workspace_subject_grant_immutable")
+        self.workspace_subject_grants[key] = grant
 
     async def workspace_subject_authorized(self, tenant_id: str, case_id: str, subject_id: str) -> bool:
         return (tenant_id, case_id, subject_id) in self.workspace_subject_grants
+
+    async def workspace_subject_grant(
+        self, tenant_id: str, case_id: str, subject_id: str,
+    ) -> Optional[WorkspaceSubjectGrant]:
+        return self.workspace_subject_grants.get((tenant_id, case_id, subject_id))
 
     async def get_binding(self, tenant_id: str, case_id: str) -> Optional[IncidentRunBinding]:
         for item in self.bindings.values():
@@ -365,6 +397,17 @@ class InMemoryWorkspaceRepository:
             audit = commit.capability_audit
             if audit is None or self.capability_audits.get(audit.audit_id) != audit:
                 raise PolicyViolation("workspace_action_transition_partial")
+            immutable_input_evidence = {
+                evidence_id: self.workspace_action_evidence[evidence_id]
+                for evidence_id in audit.input_evidence_refs
+                if evidence_id in self.workspace_action_evidence
+            }
+            try:
+                validate_fresh_read_evidence_admission(
+                    commit.capability_result, audit, commit.projection, immutable_input_evidence,
+                )
+            except PolicyViolation as error:
+                raise PolicyViolation("workspace_action_transition_partial") from error
             for evidence in commit.capability_result.evidence:
                 if self.workspace_action_evidence.get(evidence.evidence_id) != evidence:
                     raise PolicyViolation("workspace_action_transition_partial")
@@ -411,6 +454,22 @@ class InMemoryWorkspaceRepository:
                 )
                 if stored_action != commit.issued_action:
                     raise PolicyViolation("workspace_action_issued_card_not_authoritative")
+            if commit.lease is not None and commit.receipt.status == "GATE1_GRANTED":
+                prior_projection = await self.get_projection(
+                    commit.projection.tenant_id, commit.projection.case_id,
+                )
+                stored_card = await self.workspace_next_best_action(
+                    commit.receipt.tenant_id, commit.receipt.case_id, commit.receipt.action_id,
+                )
+                subject_grant = await self.workspace_subject_grant(
+                    commit.lease.tenant_id, commit.lease.case_id, commit.lease.subject_id,
+                )
+                if prior_projection is None:
+                    raise PolicyViolation("gate1_grant_projection_not_found")
+                validate_authoritative_gate1_grant_transition(
+                    prior_projection, stored_card, subject_grant, self.workspace_capability_registry,
+                    commit, self._now(),
+                )
             if commit.lease is not None and commit.lease.status.value == "CONSUMED":
                 active = await self.workspace_gate1_lease(
                     commit.lease.tenant_id, commit.lease.case_id, commit.lease.lease_id,
@@ -420,17 +479,25 @@ class InMemoryWorkspaceRepository:
                 )
                 if active is None:
                     raise PolicyViolation("gate1_lease_not_found")
-                read_card = validate_authoritative_gate1_read_card(active, grant, commit)
+                read_card = validate_authoritative_gate1_read_card(active, grant, commit, self._now())
                 validate_consumed_gate1_lease_transition(
                     active, commit.lease, command_fingerprint=commit.command_fingerprint,
                     capability_audit=commit.capability_audit, receipt=commit.receipt,
                     activity_identity=commit.activity_identity, capability_result=commit.capability_result,
-                    read_card=read_card,
+                    read_card=read_card, now=self._now(),
                 )
             if commit.capability_result is not None:
                 audit = commit.capability_audit
                 if audit is None or _binding_key(audit) != _binding_key(commit.projection):
                     raise PolicyViolation("workspace_action_capability_binding_mismatch")
+                input_evidence = {
+                    evidence_id: self.workspace_action_evidence[evidence_id]
+                    for evidence_id in audit.input_evidence_refs
+                    if evidence_id in self.workspace_action_evidence
+                }
+                validate_fresh_read_evidence_admission(
+                    commit.capability_result, audit, commit.projection, input_evidence,
+                )
                 for evidence in commit.capability_result.evidence:
                     if (
                         evidence.tenant_id, evidence.case_id, evidence.case_revision

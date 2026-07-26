@@ -254,6 +254,15 @@ if ! ledger_has "007_workspace_action_transitions.sql" && \
   echo "migration_partial_schema_unrecorded:007_workspace_action_transitions.sql" >&2
   exit 1
 fi
+if ! ledger_has "008_workspace_gate1_authority.sql" && \
+  [ "$(psql -Atq -c "SELECT EXISTS (
+       SELECT 1 FROM information_schema.columns
+        WHERE table_schema='public' AND table_name='workspace_subject_grants'
+          AND column_name IN ('roles', 'permissions')
+     )")" = "t" ]; then
+  echo "migration_partial_schema_unrecorded:008_workspace_gate1_authority.sql" >&2
+  exit 1
+fi
 
 # Ledger entries must name the exact contiguous source sequence.  This rejects
 # checksum drift, unsupported future versions, and a partially edited ledger.

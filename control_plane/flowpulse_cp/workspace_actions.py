@@ -32,8 +32,21 @@ from .capabilities import (
     canonical_capability_result_hash,
     deterministic_capability_audit_id,
 )
-from .models import AuthAssertion, Hash, NonEmpty, PositiveInt, StrictBool, StrictModel
-from .policy import PolicyViolation
+from .models import (
+    AuthAssertion,
+    ClaimRecord,
+    CoverageEntry,
+    EvidenceAuthority,
+    EvidenceEnvelope,
+    FreshnessStatus,
+    Hash,
+    NonEmpty,
+    PositiveInt,
+    ProofScope,
+    StrictBool,
+    StrictModel,
+)
+from .policy import PolicyViolation, validate_claim_evidence, validate_evidence_admission
 from .workspace_models import IncidentEvent, IncidentProjection, IncidentRunBinding
 
 
@@ -75,6 +88,34 @@ ACTION_TAXONOMY = {
     NextBestActionTaxonomy.APPROVE_PLAN: ("Approve Plan", NextBestActionCta.REQUEST_GATE2),
     NextBestActionTaxonomy.APPLY_FIX: ("Apply Fix", NextBestActionCta.SUBMIT_APPROVED_DRY_RUN),
 }
+
+
+GATE1_LEASE_TTL = timedelta(minutes=30)
+WORKSPACE_READ_ROLES = frozenset({"viewer", "owner", "local-test-owner"})
+
+
+def workspace_permissions_for_roles(roles: List[str]) -> List[str]:
+    """Derive the only P0 workspace read permission from durable roles."""
+    return ["incident:read"] if set(roles).intersection(WORKSPACE_READ_ROLES) else []
+
+
+class WorkspaceSubjectGrant(StrictModel):
+    """Append-only subject capability grant attached to one durable case binding."""
+
+    tenant_id: NonEmpty
+    case_id: NonEmpty
+    subject_id: NonEmpty
+    roles: List[NonEmpty] = Field(default_factory=list, max_items=16)
+    permissions: List[NonEmpty] = Field(default_factory=list, max_items=16)
+    created_at: datetime
+
+    @root_validator(allow_reuse=True)
+    def grant_roles_and_permissions_are_unique(cls, values):
+        for field in ("roles", "permissions"):
+            value = values.get(field, [])
+            if len(value) != len(set(value)):
+                raise ValueError("workspace_subject_grant_{}_must_be_unique".format(field))
+        return values
 
 
 class NextBestAction(IncidentRunBinding):
@@ -541,13 +582,14 @@ def _fresh_read_result_lineage_error(
     claim_ids = [item.claim_id for item in capability_result.claims]
     if len(evidence_ids) != len(set(evidence_ids)) or len(claim_ids) != len(set(claim_ids)):
         return "fresh_read_result_duplicate_identity"
-    authorized_ids = set(capability_audit.input_evidence_refs).union(evidence_ids)
+    authorized_ids = set(capability_audit.input_evidence_refs)
     coverage_keys = set()
     for evidence in capability_result.evidence:
         if evidence.evidence_id in evidence.parent_evidence_ids:
             return "fresh_read_result_lineage_invalid"
         if not set(evidence.parent_evidence_ids).issubset(authorized_ids):
             return "fresh_read_result_lineage_invalid"
+        authorized_ids.add(evidence.evidence_id)
     for claim in capability_result.claims:
         if not set(claim.evidence_ids).issubset(authorized_ids):
             return "fresh_read_result_lineage_invalid"
@@ -557,6 +599,90 @@ def _fresh_read_result_lineage_error(
             return "fresh_read_result_lineage_invalid"
         coverage_keys.add(key)
     return None
+
+
+def validate_fresh_read_evidence_admission(
+    capability_result: CapabilityResult,
+    capability_audit: CapabilityAuditRecord,
+    binding: IncidentRunBinding,
+    immutable_input_evidence: Dict[str, EvidenceEnvelope],
+) -> None:
+    """Validate the full current-proof evidence DAG before either repository mutates.
+
+    Gate 1 admits only current, subject-authorized evidence.  A parent can be
+    an immutable input selected by the authoritative projection or an earlier
+    record in this ordered result.  It may never be a forward reference, a
+    cycle, or an arbitrary row that happens to be in storage.
+    """
+    if (
+        capability_audit.data_class != CapabilityDataClass.CURRENT_INCIDENT
+        or capability_audit.subject_id == ""
+        or _workspace_binding_tuple(capability_audit) != _workspace_binding_tuple(binding)
+    ):
+        raise PolicyViolation("fresh_read_evidence_admission_binding_invalid")
+    input_ids = list(capability_audit.input_evidence_refs)
+    if len(input_ids) != len(set(input_ids)) or set(input_ids) != set(immutable_input_evidence):
+        raise PolicyViolation("fresh_read_evidence_input_set_invalid")
+
+    def validate_scope(evidence: EvidenceEnvelope) -> None:
+        validate_evidence_admission(evidence, capability_audit.subject_id)
+        if (
+            evidence.tenant_id != binding.tenant_id
+            or evidence.case_id != binding.case_id
+            or evidence.case_revision != binding.case_revision
+            or evidence.proof_scope != ProofScope.CURRENT_OBSERVATION
+            or evidence.freshness != FreshnessStatus.CURRENT
+            or evidence.authority not in {EvidenceAuthority.T0, EvidenceAuthority.T1}
+        ):
+            raise PolicyViolation("fresh_read_evidence_scope_or_current_proof_invalid")
+
+    admitted: Dict[str, EvidenceEnvelope] = {}
+    for evidence_id in input_ids:
+        evidence = immutable_input_evidence[evidence_id]
+        if evidence.evidence_id != evidence_id:
+            raise PolicyViolation("fresh_read_evidence_input_identity_invalid")
+        validate_scope(evidence)
+        admitted[evidence_id] = evidence
+
+    output_ids = set()
+    for evidence in capability_result.evidence:
+        if evidence.evidence_id in output_ids or evidence.evidence_id in admitted:
+            raise PolicyViolation("fresh_read_evidence_duplicate_identity")
+        validate_scope(evidence)
+        if evidence.evidence_id in evidence.parent_evidence_ids:
+            raise PolicyViolation("fresh_read_evidence_parent_self_reference")
+        if not set(evidence.parent_evidence_ids).issubset(admitted):
+            raise PolicyViolation("fresh_read_evidence_parent_not_earlier_or_authorized")
+        output_ids.add(evidence.evidence_id)
+        admitted[evidence.evidence_id] = evidence
+
+    claim_ids = set()
+    for claim in capability_result.claims:
+        if claim.claim_id in claim_ids:
+            raise PolicyViolation("fresh_read_claim_duplicate_identity")
+        if (
+            claim.tenant_id != binding.tenant_id
+            or claim.case_id != binding.case_id
+            or claim.case_revision != binding.case_revision
+            or not set(claim.evidence_ids).issubset(admitted)
+        ):
+            raise PolicyViolation("fresh_read_claim_lineage_invalid")
+        validate_claim_evidence(
+            claim, [admitted[evidence_id] for evidence_id in claim.evidence_ids], capability_audit.subject_id,
+        )
+        claim_ids.add(claim.claim_id)
+
+    coverage_keys = set()
+    for coverage in capability_result.coverage:
+        key = (coverage.tenant_id, coverage.case_id, coverage.field, coverage.status.value)
+        if (
+            key in coverage_keys
+            or coverage.tenant_id != binding.tenant_id
+            or coverage.case_id != binding.case_id
+            or not set(coverage.evidence_ids).issubset(admitted)
+        ):
+            raise PolicyViolation("fresh_read_coverage_lineage_invalid")
+        coverage_keys.add(key)
 
 
 def validate_workspace_action_commit_kind(commit: WorkspaceActionCommit) -> None:
@@ -575,7 +701,7 @@ def validate_consumed_gate1_lease_transition(
     active_lease: Gate1Lease, consumed_lease: Gate1Lease, *, command_fingerprint: str,
     capability_audit: CapabilityAuditRecord, receipt: Optional[WorkspaceActionReceipt] = None,
     activity_identity: Optional[str] = None, capability_result: Optional[CapabilityResult] = None,
-    read_card: Optional[NextBestAction] = None,
+    read_card: Optional[NextBestAction] = None, now: Optional[datetime] = None,
 ) -> None:
     """Prove a proposed consumption is the one legal successor of the active lease.
 
@@ -595,6 +721,8 @@ def validate_consumed_gate1_lease_transition(
         or active_lease.consumed_evidence_revision is not None
     ):
         raise PolicyViolation("gate1_consumed_lease_transition_invalid")
+    if now is not None and active_lease.expires_at.astimezone(timezone.utc) <= now.astimezone(timezone.utc):
+        raise PolicyViolation("gate1_consumed_lease_expired")
     try:
         evidence_set_hash = canonical_evidence_set_hash(list(capability_audit.input_evidence_refs))
     except (PolicyViolation, TypeError):
@@ -632,6 +760,7 @@ def validate_consumed_gate1_lease_transition(
 
 def validate_authoritative_gate1_read_card(
     active_lease: Gate1Lease, grant: Optional[WorkspaceActionCommit], commit: WorkspaceActionCommit,
+    now: Optional[datetime] = None,
 ) -> NextBestAction:
     """Bind a consumption to the exact read card durably emitted by its grant."""
     validate_gate1_issuance_binding(active_lease, grant)
@@ -644,6 +773,11 @@ def validate_authoritative_gate1_read_card(
     if len(read_cards) != 1:
         raise PolicyViolation("gate1_authoritative_read_card_missing")
     card = read_cards[0]
+    if now is not None and (
+        active_lease.expires_at.astimezone(timezone.utc) <= now.astimezone(timezone.utc)
+        or card.expires_at.astimezone(timezone.utc) <= now.astimezone(timezone.utc)
+    ):
+        raise PolicyViolation("gate1_authoritative_read_card_expired")
     if (
         _workspace_binding_tuple(card) != _workspace_binding_tuple(active_lease)
         or card.projection_revision != active_lease.projection_revision
@@ -681,6 +815,145 @@ def validate_authoritative_gate1_read_card(
     ):
         raise PolicyViolation("gate1_authoritative_read_card_mismatch")
     return card
+
+
+def validate_authoritative_gate1_grant_transition(
+    prior_projection: IncidentProjection,
+    stored_card: Optional[NextBestAction],
+    subject_grant: Optional[WorkspaceSubjectGrant],
+    capability_registry: Any,
+    commit: WorkspaceActionCommit,
+    now: datetime,
+) -> None:
+    """Derive one Gate 1 lease from the locked projection, card, grant, and registry.
+
+    This intentionally does not trust the transition payload as an authority.
+    Both repositories call it while holding their mapping lock, before an
+    append-only projection, lease, card, receipt, event, or outbox row exists.
+    """
+    lease = commit.lease
+    if (
+        commit.receipt.status != "GATE1_GRANTED"
+        or lease is None
+        or lease.status != Gate1LeaseStatus.ACTIVE
+        or lease.lease_revision != 1
+        or stored_card is None
+        or commit.issued_action != stored_card
+        or capability_registry is None
+    ):
+        raise PolicyViolation("gate1_grant_authority_unavailable_or_invalid")
+    if (
+        subject_grant is None
+        or (subject_grant.tenant_id, subject_grant.case_id, subject_grant.subject_id)
+        != (prior_projection.tenant_id, prior_projection.case_id, lease.subject_id)
+        or not set(subject_grant.roles).intersection(WORKSPACE_READ_ROLES)
+        or subject_grant.permissions != workspace_permissions_for_roles(subject_grant.roles)
+    ):
+        raise PolicyViolation("gate1_grant_subject_permission_not_authoritative")
+    command = ActionInvocationCommand(
+        incident_id=stored_card.incident_id, run_id=stored_card.run_id,
+        topology_revision=stored_card.topology_revision,
+        projection_revision=stored_card.projection_revision,
+        action_id=stored_card.action_id, idempotency_key=commit.receipt.idempotency_key,
+    )
+    command_fingerprint = command.canonical_hash()
+    try:
+        validate_current_action_card(
+            stored_card, prior_projection, command, subject_grant.permissions, now,
+        )
+    except PolicyViolation as error:
+        raise PolicyViolation("gate1_grant_stored_card_not_authoritative") from error
+    descriptor = next(
+        (
+            item for item in capability_registry.available(CapabilityAudience.USER_QA)
+            if item.capability.value == stored_card.capability
+        ),
+        None,
+    )
+    if (
+        descriptor is None
+        or not descriptor.fresh_read
+        or descriptor.required_gate != CapabilityGate.GATE1
+        or descriptor.version != stored_card.capability_version
+        or descriptor.input_schema != stored_card.tool_schema_version
+        or stored_card.data_class not in {item.value for item in descriptor.data_classes}
+        or stored_card.required_gate != CapabilityGate.GATE1.value
+        or stored_card.capability_registry_revision != capability_registry.policy_version
+    ):
+        raise PolicyViolation("gate1_grant_descriptor_not_authoritative")
+    # The card is an authoritative server artifact, not merely a row with a
+    # familiar shape.  Rebuild its fixed taxonomy/title/CTA/version/scope from
+    # the locked projection and registered descriptor at the only timestamp
+    # derivable from the card itself.  This prevents a direct repository
+    # caller from first appending a plausible-but-unissued request card.
+    expected_gate_cards = NextBestActionGenerator(
+        capability_registry, registry_revision=capability_registry.policy_version,
+    ).generate(prior_projection, stored_card.expires_at - GATE1_LEASE_TTL)
+    if stored_card not in expected_gate_cards:
+        raise PolicyViolation("gate1_grant_stored_card_not_authoritative")
+    expected_projection = prior_projection.copy(update={
+        "projection_revision": prior_projection.projection_revision + 1,
+        "sequence": prior_projection.sequence + 1,
+        "gate_revision": prior_projection.gate_revision + 1,
+        "action_revision": prior_projection.action_revision + 1,
+        "generated_at": commit.projection.generated_at,
+    })
+    if commit.projection != expected_projection:
+        raise PolicyViolation("gate1_grant_projection_successor_invalid")
+    if (
+        commit.command_fingerprint != command_fingerprint
+        or commit.activity_identity != "workspace-action:{}:{}".format(
+            prior_projection.workflow_run_id, command_fingerprint,
+        )
+        or commit.receipt.action_id != stored_card.action_id
+        or commit.receipt.idempotency_key != command.idempotency_key
+        or commit.receipt.gate1_lease_id != "gate1-" + command_fingerprint
+        or commit.receipt.external_write_performed
+    ):
+        raise PolicyViolation("gate1_grant_command_or_receipt_not_authoritative")
+    if (
+        lease.issued_at.astimezone(timezone.utc) > now.astimezone(timezone.utc)
+        or lease.expires_at.astimezone(timezone.utc) <= now.astimezone(timezone.utc)
+        or lease.expires_at.astimezone(timezone.utc) != lease.issued_at.astimezone(timezone.utc) + GATE1_LEASE_TTL
+    ):
+        raise PolicyViolation("gate1_grant_lease_ttl_invalid")
+    expected_lease = Gate1Lease(
+        **{name: getattr(commit.projection, name) for name in IncidentRunBinding.__fields__},
+        lease_id="gate1-" + command_fingerprint, lease_revision=1,
+        subject_id=subject_grant.subject_id, required_permission=stored_card.required_permission,
+        component_id=stored_card.component_id, capability=descriptor.capability.value,
+        capability_version=descriptor.version, data_class=stored_card.data_class,
+        tool_schema_version=descriptor.input_schema,
+        projection_revision=commit.projection.projection_revision,
+        evidence_revision=commit.projection.evidence_revision,
+        capability_registry_revision=capability_registry.policy_version,
+        precondition_version=stored_card.precondition_version,
+        precondition_hash=NextBestActionGenerator._precondition_hash(commit.projection),
+        issuance_command_fingerprint=command_fingerprint,
+        issuance_action_id=stored_card.action_id,
+        issuance_card_version=stored_card.card_version,
+        issuance_idempotency_key=command.idempotency_key,
+        evidence_set_hash=canonical_evidence_set_hash(list(commit.projection.evidence_refs)),
+        issued_at=lease.issued_at, expires_at=lease.expires_at,
+        status=Gate1LeaseStatus.ACTIVE,
+    )
+    if lease != expected_lease:
+        raise PolicyViolation("gate1_grant_lease_not_authoritative")
+    expected_actions = NextBestActionGenerator(
+        capability_registry, registry_revision=capability_registry.policy_version,
+    ).generate_after_gate1(commit.projection, expected_lease, expected_lease.issued_at)
+    if commit.actions != expected_actions:
+        raise PolicyViolation("gate1_grant_read_card_not_authoritative")
+    if (
+        commit.event.projection_revision != commit.projection.projection_revision
+        or commit.event.sequence != commit.projection.sequence
+        or commit.event.event_type != "workspace.action.gate1_granted"
+        or commit.event.payload.get("action_id") != commit.receipt.action_id
+        or commit.event.payload.get("idempotency_key") != commit.receipt.idempotency_key
+        or commit.event.payload.get("command_fingerprint") != command_fingerprint
+        or commit.event.payload.get("activity_identity") != commit.activity_identity
+    ):
+        raise PolicyViolation("gate1_grant_event_not_authoritative")
 
 
 class Gate1LeaseStore(Protocol):

@@ -19,6 +19,7 @@ from flowpulse_cp.capabilities import (
     CapabilityRequest,
     CapabilityResult,
     CapabilityScope,
+    canonical_capability_result_hash,
     deterministic_capability_audit_id,
     EmptyCapabilityInput,
     ToolCallBudget,
@@ -228,6 +229,9 @@ async def complete_fresh_read(repository, item, *, idempotency_prefix):
     current = projection(item)
     await repository.put_binding(item)
     await repository.put_projection(current)
+    await repository.grant_workspace_subject(
+        item, "subject-a", ["viewer"], ["incident:read"],
+    )
     registry = CapabilityRegistry(
         descriptors=[MetricsAdapter.descriptor], adapters={CapabilityName.METRICS: CurrentMetricsAdapter()},
         scope_authority=AcceptingScope(), gate1_authority=Gate1LeaseAuthority(repository, now=lambda: now),
@@ -273,14 +277,82 @@ async def staged_fresh_transition(item, *, idempotency_prefix):
     source = InMemoryWorkspaceRepository()
     grant, fresh, _ = await complete_fresh_read(source, item, idempotency_prefix=idempotency_prefix)
     target = InMemoryWorkspaceRepository()
+    target.configure_workspace_capability_registry(source.workspace_capability_registry)
     await target.put_binding(item)
     await target.put_projection(projection(item))
+    await target.grant_workspace_subject(item, "subject-a", ["viewer"], ["incident:read"])
     await target.append_next_best_action(grant.issued_action)
     await target.commit_workspace_action_transition(grant)
     return target, grant, fresh
 
 
+def rebound_fresh_result(fresh, result):
+    """Re-sign a test result so repository admission—not stale hashes—rejects it."""
+    evidence_refs = list(fresh.capability_audit.input_evidence_refs)
+    for evidence in result.evidence:
+        if evidence.evidence_id not in evidence_refs:
+            evidence_refs.append(evidence.evidence_id)
+    audit = fresh.capability_audit.copy(update={
+        "result_hash": canonical_capability_result_hash(result),
+        "evidence_refs": evidence_refs,
+    })
+    audit = audit.copy(update={
+        "audit_id": deterministic_capability_audit_id(
+            tenant_id=audit.tenant_id, run_id=audit.run_id, activity_id=audit.activity_id,
+            scope=audit.scope, audience=audit.audience, capability=audit.capability,
+            request_hash=audit.request_hash,
+        ),
+    })
+    consumed = fresh.lease.copy(update={
+        "consumed_result_hash": audit.result_hash,
+        "consumed_audit_id": audit.audit_id,
+    })
+    return fresh.copy(update={
+        "capability_result": result, "capability_audit": audit, "lease": consumed,
+    })
+
+
 class Gate1CapabilityTests(unittest.IsolatedAsyncioTestCase):
+    async def test_gate1_grant_rejects_every_forged_lease_axis_before_persistence(self):
+        """A stored request card cannot be used to mint an arbitrary Gate 1 lease."""
+        item = binding()
+
+        async def target_for(label):
+            source = InMemoryWorkspaceRepository()
+            grant, _, _ = await complete_fresh_read(source, item, idempotency_prefix="grant-forge-" + label)
+            target = InMemoryWorkspaceRepository()
+            target.configure_workspace_capability_registry(source.workspace_capability_registry)
+            await target.put_binding(item)
+            await target.put_projection(projection(item))
+            await target.grant_workspace_subject(item, "subject-a", ["viewer"], ["incident:read"])
+            await target.append_next_best_action(grant.issued_action)
+            return target, grant
+
+        for field, value in {
+            "subject_id": "intruder",
+            "required_permission": "incident:admin",
+            "component_id": "payments",
+            "capability_version": "evil.v9",
+            "precondition_hash": "f" * 64,
+            "evidence_set_hash": "f" * 64,
+        }.items():
+            with self.subTest(forged_lease_field=field):
+                target, grant = await target_for(field)
+                forged = grant.copy(update={"lease": grant.lease.copy(update={field: value})})
+                with self.assertRaisesRegex(PolicyViolation, "gate1_grant"):
+                    await target.commit_workspace_action_transition(forged)
+
+        # Even a row-shaped card is not authority: its fixed taxonomy/title,
+        # descriptor version, identity and expiry must be derivable from the
+        # locked projection and the registered capability policy.
+        target, grant = await target_for("stored-card")
+        forged_card = grant.issued_action.copy(update={"summary": "forged server card"})
+        target.next_best_actions[(
+            forged_card.tenant_id, forged_card.case_id, forged_card.action_id,
+        )] = forged_card
+        with self.assertRaisesRegex(PolicyViolation, "gate1_grant_stored_card_not_authoritative"):
+            await target.commit_workspace_action_transition(grant.copy(update={"issued_action": forged_card}))
+
     async def test_action_commit_transition_kinds_require_complete_authoritative_artifacts(self):
         item = binding()
         current = projection(item)
@@ -511,6 +583,54 @@ class Gate1CapabilityTests(unittest.IsolatedAsyncioTestCase):
                 "command_fingerprint": forged_fingerprint, "receipt": forged_receipt,
                 "lease": forged_lease, "capability_audit": forged_audit,
             }))
+
+    async def test_fresh_read_admission_rejects_unauthorized_and_cyclic_lineage_before_consumption(self):
+        """The repository admission boundary accepts only an ordered authorized proof DAG."""
+        item = binding()
+        for label, make_result in {
+            "unauthorized-acl": lambda fresh: fresh.capability_result.copy(update={
+                "evidence": [fresh.capability_result.evidence[0].copy(update={"acl_subjects": ["intruder"]})],
+            }),
+            "cyclic-lineage": lambda fresh: fresh.capability_result.copy(update={
+                "evidence": [
+                    fresh.capability_result.evidence[0].copy(update={
+                        "evidence_id": "cycle-a", "parent_evidence_ids": ["cycle-b"],
+                    }),
+                    fresh.capability_result.evidence[0].copy(update={
+                        "evidence_id": "cycle-b", "parent_evidence_ids": ["cycle-a"],
+                    }),
+                ],
+                "claims": [fresh.capability_result.claims[0].copy(update={"evidence_ids": ["cycle-a"]})],
+                "coverage": [fresh.capability_result.coverage[0].copy(update={"evidence_ids": ["cycle-a"]})],
+            }),
+        }.items():
+            with self.subTest(label=label):
+                repository, grant, fresh = await staged_fresh_transition(item, idempotency_prefix="admission-" + label)
+                forged = rebound_fresh_result(fresh, make_result(fresh))
+                with self.assertRaisesRegex(PolicyViolation, "(fresh_read_(evidence|result)|evidence_acl_subject_denied)"):
+                    await repository.commit_workspace_action_transition(forged)
+                active = await repository.workspace_gate1_lease(
+                    item.tenant_id, item.case_id, grant.lease.lease_id,
+                )
+                self.assertEqual((Gate1LeaseStatus.ACTIVE, 1), (active.status, active.lease_revision))
+                self.assertEqual(1, len(repository.workspace_action_commits))
+                self.assertEqual(0, len(repository.capability_audits))
+
+    async def test_expiry_after_source_result_and_before_atomic_commit_leaves_lease_active_then_retries_once(self):
+        """The authoritative commit clock, not only pre-read validation, gates consumption."""
+        item = binding()
+        repository, grant, fresh = await staged_fresh_transition(item, idempotency_prefix="expiry-before-commit")
+        repository._now = lambda: fresh.lease.expires_at + timedelta(microseconds=1)
+        with self.assertRaisesRegex(PolicyViolation, "gate1_(authoritative_read_card|consumed_lease)_expired"):
+            await repository.commit_workspace_action_transition(fresh)
+        active = await repository.workspace_gate1_lease(item.tenant_id, item.case_id, grant.lease.lease_id)
+        self.assertEqual((Gate1LeaseStatus.ACTIVE, 1), (active.status, active.lease_revision))
+        self.assertEqual(1, len(repository.workspace_action_commits))
+        self.assertEqual(0, len(repository.capability_audits))
+
+        repository._now = lambda: fresh.lease.issued_at + timedelta(seconds=1)
+        self.assertEqual(fresh, await repository.commit_workspace_action_transition(fresh))
+        self.assertEqual(fresh, await repository.commit_workspace_action_transition(fresh))
 
     async def test_action_coverage_is_tenant_bound_verified_and_conflicts_retry_fail_closed(self):
         repository = InMemoryWorkspaceRepository()
