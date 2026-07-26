@@ -23,9 +23,12 @@ from flowpulse_cp.workspace_models import (
     ComponentContext,
     GraphMembership,
     IncidentEvent,
+    IncidentNotification,
+    IncidentNotificationType,
     IncidentGraph,
     IncidentGraphNode,
     IncidentProjection,
+    IncidentSummary,
     IncidentRunBinding,
     NodeExplanation,
     NodeExplanationReceipt,
@@ -63,8 +66,10 @@ def _examples():
         status="provider_unavailable", generated_at=now,
         graph=IncidentGraph(nodes=[IncidentGraphNode(
             component_id="checkout", canonical_identity="service:checkout",
+            display_name="Checkout",
             membership=GraphMembership.CONNECTED, runtime_status="unknown", impact_status="unknown",
-        )]), evidence_revision=1, gate_revision=1, action_revision=1,
+        )]), operator_title="Checkout latency", operator_summary="Checkout requests are degraded.",
+        evidence_revision=1, gate_revision=1, action_revision=1,
         evidence_refs=[], degraded_code="provider_unavailable",
     )
     command = NodeExplanationStart(
@@ -84,6 +89,11 @@ def _examples():
     event = IncidentEvent(
         **binding.dict(), projection_revision=1, sequence=1, event_type="workspace.initialized",
         occurred_at=now, payload={"state": "provider_unavailable"}, evidence_refs=[],
+    )
+    incident_summary = IncidentSummary.from_projection(projection)
+    notification = IncidentNotification(
+        notification_id="2026-07-26T00:00:00+00:00|run-example-01|0000000001",
+        event_type=IncidentNotificationType.ACCEPTED, occurred_at=now, incident=incident_summary,
     )
     context = ComponentContext(
         **binding.dict(), projection_revision=projection.projection_revision,
@@ -133,6 +143,8 @@ def _examples():
         },
         "response_examples": {
             "IncidentProjection": projection.dict(),
+            "IncidentSummary": incident_summary.dict(),
+            "IncidentNotification": notification.dict(),
             "NodeExplanationReceipt": NodeExplanationReceipt(explanation=explanation, reused=False).dict(),
             "IncidentEvent": event.dict(),
             "ComponentContext": context.dict(),
@@ -142,6 +154,8 @@ def _examples():
         "model_schemas": {
             "WorkspaceIntake": WorkspaceIntake.schema(),
             "IncidentProjection": IncidentProjection.schema(),
+            "IncidentSummary": IncidentSummary.schema(),
+            "IncidentNotification": IncidentNotification.schema(),
             "NodeExplanationStart": NodeExplanationStart.schema(),
             "NodeExplanationReceipt": NodeExplanationReceipt.schema(),
             "ConversationTrace": ConversationTrace.schema(),

@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from flowpulse_cp.policy import PolicyViolation
 from flowpulse_cp.workspace_models import (
+    ExplanationEventStatus,
     GraphMembership,
     IncidentEvent,
     IncidentGraph,
@@ -122,6 +123,13 @@ class WorkspaceProjectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("DEGRADED", outcome["explanation"]["state"])
         self.assertFalse(outcome["explanation"]["fresh_read_performed"])
         self.assertFalse(outcome["explanation"]["fresh_diagnosis_claimed"])
+        events = await repository.events_after("tenant-a", "case-a", 1)
+        self.assertEqual(
+            [("node_explanation.started", ExplanationEventStatus.STARTED),
+             ("node_explanation.degraded", ExplanationEventStatus.DEGRADED)],
+            [(event.event_type, event.explanation_status) for event in events],
+        )
+        self.assertNotIn(outcome["explanation"]["summary"], [event.payload for event in events])
         duplicate = await dispatcher.dispatch("workspace_node_explanation_activity", packet.dict())
         self.assertEqual(outcome["explanation"]["explanation_id"], duplicate["explanation"]["explanation_id"])
 

@@ -59,10 +59,22 @@ class ConversationRole(str, Enum):
 class IncidentGraphNode(StrictModel):
     component_id: NonEmpty
     canonical_identity: NonEmpty
+    # This is a server projection, not a frontend prettification rule.  The
+    # fallback keeps older stored projections readable while the response
+    # schema remains strict and requires every emitted node to carry a name.
+    display_name: NonEmpty
     membership: GraphMembership
     classification_reason: Optional[ClassifiedNodeReason] = None
     runtime_status: NonEmpty
     impact_status: NonEmpty
+
+    @root_validator(pre=True, allow_reuse=True)
+    def server_projects_display_name(cls, values):
+        if "display_name" not in values and values.get("component_id"):
+            values["display_name"] = " ".join(
+                part.capitalize() for part in str(values["component_id"]).replace("-", "_").split("_") if part
+            )
+        return values
 
     @root_validator(allow_reuse=True)
     def classified_nodes_have_exact_reason(cls, values):
@@ -129,6 +141,8 @@ class IncidentProjection(IncidentRunBinding):
     sequence: PositiveInt
     lifecycle_state: ProjectionState
     status: NonEmpty
+    operator_title: NonEmpty = "Incident active"
+    operator_summary: NonEmpty = "An active incident requires attention."
     generated_at: datetime
     graph: IncidentGraph
     impacted_path: List[NonEmpty] = Field(default_factory=list)
@@ -387,6 +401,54 @@ class NodeExplanationReceipt(StrictModel):
     reused: StrictBool
 
 
+class IncidentDiscoveryState(str, Enum):
+    ACTIVE = "active"
+
+
+class IncidentNotificationType(str, Enum):
+    ACCEPTED = "incident.accepted"
+    UPDATED = "incident.updated"
+
+
+class ExplanationEventStatus(str, Enum):
+    STARTED = "STARTED"
+    COMPLETED = "COMPLETED"
+    DEGRADED = "DEGRADED"
+
+
+class IncidentSummary(StrictModel):
+    """Bounded, operator-facing discovery record derived from a projection."""
+
+    case_id: NonEmpty
+    incident_id: NonEmpty
+    run_id: NonEmpty
+    topology_revision: NonEmpty
+    projection_revision: PositiveInt
+    sequence: PositiveInt
+    lifecycle_state: ProjectionState
+    status: NonEmpty
+    title: NonEmpty
+    summary: NonEmpty
+
+    @classmethod
+    def from_projection(cls, projection: IncidentProjection) -> "IncidentSummary":
+        return cls(
+            case_id=projection.case_id, incident_id=projection.incident_id, run_id=projection.run_id,
+            topology_revision=projection.topology_revision, projection_revision=projection.projection_revision,
+            sequence=projection.sequence, lifecycle_state=projection.lifecycle_state, status=projection.status,
+            title=projection.operator_title, summary=projection.operator_summary,
+        )
+
+
+class IncidentNotification(StrictModel):
+    """One durable, tenant-scoped browser notification cursor and hydration summary."""
+
+    notification_id: NonEmpty
+    event_type: IncidentNotificationType
+    occurred_at: datetime
+    incident: IncidentSummary
+
+
 class IncidentEvent(IncidentRunBinding):
     schema_version: NonEmpty = "flowpulse.incident-event.v1"
     projection_revision: PositiveInt
@@ -395,6 +457,22 @@ class IncidentEvent(IncidentRunBinding):
     occurred_at: datetime
     payload: Dict[NonEmpty, StrictStr] = Field(default_factory=dict)
     evidence_refs: List[NonEmpty] = Field(default_factory=list)
+    explanation_status: Optional[ExplanationEventStatus] = None
+
+    @root_validator(allow_reuse=True)
+    def explanation_status_matches_bounded_event_type(cls, values):
+        status = values.get("explanation_status")
+        event_type = values.get("event_type")
+        expected = {
+            ExplanationEventStatus.STARTED: "node_explanation.started",
+            ExplanationEventStatus.COMPLETED: "node_explanation.completed",
+            ExplanationEventStatus.DEGRADED: "node_explanation.degraded",
+        }
+        if status is not None and event_type != expected[status]:
+            raise ValueError("node_explanation_event_status_mismatch")
+        if event_type in expected.values() and status is None:
+            raise ValueError("node_explanation_event_status_required")
+        return values
 
 
 class WorkspaceActivityPacket(IncidentRunBinding):
@@ -419,11 +497,15 @@ def initial_topology_revision(tenant_id: str, incident_id: str, run_id: str, ent
     return "topology-v1-{}".format(sha256(canonical.encode("utf-8")).hexdigest()[:20])
 
 
-def initial_projection(binding: IncidentRunBinding, entities: List[str], generated_at: datetime) -> IncidentProjection:
+def initial_projection(
+    binding: IncidentRunBinding, entities: List[str], generated_at: datetime,
+    operator_title: str = "Incident active", operator_summary: str = "An active incident requires attention.",
+) -> IncidentProjection:
     return IncidentProjection(
         schema_version="flowpulse.incident-projection.v1", **binding.dict(),
         projection_revision=1, sequence=1, lifecycle_state=ProjectionState.DEGRADED,
-        status="provider_unavailable", generated_at=generated_at,
+        status="provider_unavailable", operator_title=operator_title, operator_summary=operator_summary,
+        generated_at=generated_at,
         graph=IncidentGraph(nodes=[
             IncidentGraphNode(
                 component_id=entity, canonical_identity="service:{}".format(entity),

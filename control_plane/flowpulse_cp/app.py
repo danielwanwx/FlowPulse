@@ -27,8 +27,11 @@ from .policy import PolicyViolation, require_authenticated_owner
 from .postgres import PostgresCaseRepository
 from .workspace_models import (
     ComponentContext,
+    IncidentDiscoveryState,
     IncidentEvent,
+    IncidentNotification,
     IncidentProjection,
+    IncidentSummary,
     NodeExplanationReceipt,
     NodeExplanationStart,
     WorkspaceIntake,
@@ -215,6 +218,55 @@ def create_app(
             return await workspace_starter.start_workspace(intake, actor)
         except RuntimeError as error:
             raise HTTPException(status_code=503, detail=str(error))
+
+    @app.get("/v1/incidents", response_model=list[IncidentSummary])
+    async def list_active_workspace_incidents(
+        request: Request, state: IncidentDiscoveryState = Query(IncidentDiscoveryState.ACTIVE),
+        limit: int = Query(20, ge=1, le=50), actor: AuthContext = Depends(trusted_auth_context),
+    ) -> list[IncidentSummary]:
+        """Tenant-scoped toast hydration; discovery never starts or advances a workflow."""
+        if state != IncidentDiscoveryState.ACTIVE:
+            raise HTTPException(status_code=422, detail="workspace_incident_state_not_supported")
+        try:
+            return await _workspace_call(
+                _workspace_repository(request), ("workspace_active_incidents", "active_incidents"),
+                actor.tenant_id, limit,
+            )
+        except PolicyViolation as error:
+            raise HTTPException(status_code=409, detail=str(error))
+
+    @app.get(
+        "/v1/incidents/events",
+        response_class=StreamingResponse,
+        responses={
+            200: {
+                "description": "Ordered tenant incident notifications for toast hydration.",
+                "content": {"text/event-stream": {"schema": {"$ref": "#/components/schemas/IncidentNotification"}}},
+            },
+        },
+    )
+    async def workspace_incident_notifications(
+        request: Request, after: Optional[str] = Query(None),
+        last_event_id: Optional[str] = Header(None, alias="Last-Event-ID"),
+        actor: AuthContext = Depends(trusted_auth_context),
+    ) -> StreamingResponse:
+        """Read the global notification projection without creating a case or conversation."""
+        if last_event_id is not None and after is not None and after != last_event_id:
+            raise HTTPException(status_code=400, detail="workspace_incident_notification_checkpoint_invalid")
+        checkpoint = last_event_id if last_event_id is not None else after
+        try:
+            notifications = await _workspace_call(
+                _workspace_repository(request), ("incident_notifications_after",), actor.tenant_id, checkpoint,
+            )
+        except PolicyViolation as error:
+            raise HTTPException(status_code=409, detail=str(error))
+
+        async def stream() -> AsyncIterator[str]:
+            for notification in notifications:
+                yield "id: {}\nevent: incident-notification\ndata: {}\n\n".format(
+                    notification.notification_id, notification.json(),
+                )
+        return StreamingResponse(stream(), media_type="text/event-stream")
 
     @app.get("/v1/incidents/{case_id}/projection", response_model=IncidentProjection)
     async def get_workspace_projection(

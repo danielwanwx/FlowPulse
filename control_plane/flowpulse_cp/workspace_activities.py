@@ -21,6 +21,7 @@ from .capabilities import (
 from .workspace_models import (
     IncidentEvent,
     IncidentRunBinding,
+    ExplanationEventStatus,
     NodeExplanation,
     NodeExplanationState,
     WorkspaceActivityOutcome,
@@ -180,16 +181,20 @@ class WorkspaceActivityDispatcher:
         if hasattr(result, "__await__"):
             await result
 
-    async def _append_event(self, packet: WorkspaceActivityPacket, event_type: str, payload: Dict[str, str]) -> None:
+    async def _append_event(
+        self, packet: WorkspaceActivityPacket, event_type: str, payload: Dict[str, str],
+        *, sequence: int = None, explanation_status: ExplanationEventStatus = None,
+    ) -> None:
         event = IncidentEvent(
             **{name: getattr(packet, name) for name in packet.__fields__ if name in {
                 "tenant_id", "incident_id", "run_id", "topology_revision", "case_id", "case_revision",
                 "workflow_id", "workflow_run_id", "created_at",
             }},
             projection_revision=packet.projection.projection_revision,
-            sequence=packet.event_sequence, event_type=event_type,
+            sequence=sequence if sequence is not None else packet.event_sequence, event_type=event_type,
             occurred_at=datetime.now(timezone.utc), payload=payload,
             evidence_refs=list(packet.projection.evidence_refs),
+            explanation_status=explanation_status,
         )
         await self.repository.append_workspace_event(event)
 
@@ -431,6 +436,11 @@ class WorkspaceActivityDispatcher:
             if packet.actor is None or packet.actor.tenant_id != packet.tenant_id:
                 raise RuntimeError("workspace_node_explanation_actor_not_authorized")
             selection_key = command.selection_key(packet.tenant_id)
+            await self._append_event(
+                packet, "node_explanation.started",
+                {"component_id": command.component_id, "selection_key": selection_key},
+                explanation_status=ExplanationEventStatus.STARTED,
+            )
             conversation = None
             if self.conversation_manager is not None:
                 binding = IncidentRunBinding.parse_obj({
@@ -469,6 +479,12 @@ class WorkspaceActivityDispatcher:
                 packet,
                 "node_explanation.completed" if stored.state == NodeExplanationState.COMPLETED else "node_explanation.degraded",
                 {"explanation_id": stored.explanation_id, "truth_label": stored.truth_label.value},
+                sequence=packet.event_sequence + 1,
+                explanation_status=(
+                    ExplanationEventStatus.COMPLETED
+                    if stored.state == NodeExplanationState.COMPLETED
+                    else ExplanationEventStatus.DEGRADED
+                ),
             )
             return WorkspaceActivityOutcome(explanation=stored).dict()
         raise RuntimeError("workspace_activity_unknown")

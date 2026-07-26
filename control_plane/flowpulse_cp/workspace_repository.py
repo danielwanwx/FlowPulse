@@ -10,7 +10,10 @@ from .capabilities import CapabilityAuditRecord
 from .models import AuthCommandIntent, AuthCommandKind, AuthContext
 
 from .policy import PolicyViolation
-from .workspace_models import IncidentEvent, IncidentProjection, IncidentRunBinding, NodeExplanation, NodeExplanationStart
+from .workspace_models import (
+    IncidentEvent, IncidentNotification, IncidentNotificationType, IncidentProjection, IncidentRunBinding,
+    IncidentSummary, NodeExplanation, NodeExplanationStart,
+)
 from .workspace_actions import (
     ActionInvocationCommand,
     Gate1Lease,
@@ -40,6 +43,11 @@ def _same_binding(left: IncidentRunBinding, right: IncidentRunBinding) -> bool:
         right.tenant_id, right.incident_id, right.run_id, right.topology_revision,
         right.case_id, right.case_revision, right.workflow_id, right.workflow_run_id,
     )
+
+
+def _notification_id(event: IncidentEvent) -> str:
+    """Stable opaque cursor ordered by server-recorded event time/run/sequence."""
+    return "{}|{}|{:010d}".format(event.occurred_at.isoformat(), event.run_id, event.sequence)
 
 
 class InMemoryWorkspaceRepository:
@@ -215,6 +223,59 @@ class InMemoryWorkspaceRepository:
 
     workspace_events_after = events_after
 
+    async def active_incidents(self, tenant_id: str, limit: int = 20) -> List[IncidentSummary]:
+        """Read-only toast hydration from the latest projection for each tenant case."""
+        if limit < 1 or limit > 50:
+            raise PolicyViolation("workspace_active_incident_limit_invalid")
+        current = []
+        for binding in self.bindings.values():
+            if binding.tenant_id != tenant_id:
+                continue
+            projection = await self.get_projection(tenant_id, binding.case_id)
+            if projection is not None:
+                current.append(IncidentSummary.from_projection(projection))
+        return sorted(current, key=lambda item: (item.sequence, item.case_id), reverse=True)[:limit]
+
+    workspace_active_incidents = active_incidents
+
+    async def incident_notifications_after(
+        self, tenant_id: str, after: Optional[str] = None, limit: int = 50,
+    ) -> List[IncidentNotification]:
+        """Return a bounded global notification stream without changing workflow state."""
+        if limit < 1 or limit > 50:
+            raise PolicyViolation("workspace_incident_notification_limit_invalid")
+        notifications = []
+        for key, records in self.events.items():
+            if key[0] != tenant_id:
+                continue
+            for event in records:
+                if not event.event_type.startswith("workspace."):
+                    continue
+                projection = next(
+                    (
+                        item for item in self.projections[key]
+                        if item.projection_revision == event.projection_revision
+                    ),
+                    None,
+                )
+                if projection is None:
+                    continue
+                notifications.append(IncidentNotification(
+                    notification_id=_notification_id(event),
+                    event_type=(
+                        IncidentNotificationType.ACCEPTED
+                        if event.event_type == "workspace.initialized"
+                        else IncidentNotificationType.UPDATED
+                    ),
+                    occurred_at=event.occurred_at, incident=IncidentSummary.from_projection(projection),
+                ))
+        notifications.sort(key=lambda item: item.notification_id)
+        if after is not None:
+            positions = [index for index, item in enumerate(notifications) if item.notification_id == after]
+            if not positions:
+                raise PolicyViolation("workspace_incident_notification_checkpoint_unknown")
+            notifications = notifications[positions[0] + 1:]
+        return notifications[:limit]
     async def start_or_reuse_explanation(self, explanation: NodeExplanation) -> Tuple[NodeExplanation, bool]:
         key = _binding_key(explanation)
         binding = self.bindings.get(key)

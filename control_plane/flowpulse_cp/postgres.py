@@ -35,8 +35,11 @@ from .policy import (
 from .capabilities import CapabilityAuditRecord, CapabilityInvocationContext, CapabilityScope
 from .workspace_models import (
     IncidentEvent,
+    IncidentNotification,
+    IncidentNotificationType,
     IncidentProjection,
     IncidentRunBinding,
+    IncidentSummary,
     NodeExplanation,
     NodeExplanationStart,
 )
@@ -81,6 +84,10 @@ def _coverage_entry_id(entry: CoverageEntry):
             entry.tenant_id, entry.case_id, entry.field, entry.status.value,
         ),
     )
+
+
+def _notification_id(event: IncidentEvent) -> str:
+    return "{}|{}|{:010d}".format(event.occurred_at.isoformat(), event.run_id, event.sequence)
 
 
 async def _lock_workspace_mapping(connection: asyncpg.Connection, binding: IncidentRunBinding) -> None:
@@ -443,6 +450,73 @@ class PostgresCaseRepository:
                 tenant_id, case_id, after,
             )
             return [IncidentEvent.parse_obj(_decode(row["payload"])) for row in rows]
+        return await self._tenant(tenant_id, operation)
+
+    async def workspace_active_incidents(self, tenant_id: str, limit: int = 20) -> List[IncidentSummary]:
+        """Latest tenant-owned projections for toast hydration; this is a pure read model."""
+        if limit < 1 or limit > 50:
+            raise PolicyViolation("workspace_active_incident_limit_invalid")
+
+        async def operation(connection: asyncpg.Connection) -> List[IncidentSummary]:
+            rows = await connection.fetch(
+                """SELECT payload FROM (
+                       SELECT DISTINCT ON (case_id) case_id, payload, created_at
+                       FROM incident_projections
+                       WHERE tenant_id=$1
+                       ORDER BY case_id, projection_revision DESC
+                   ) latest
+                   ORDER BY created_at DESC, case_id ASC
+                   LIMIT $2""",
+                tenant_id, limit,
+            )
+            return [IncidentSummary.from_projection(IncidentProjection.parse_obj(_decode(row["payload"]))) for row in rows]
+        return await self._tenant(tenant_id, operation)
+
+    active_incidents = workspace_active_incidents
+
+    async def incident_notifications_after(
+        self, tenant_id: str, after: Optional[str] = None, limit: int = 50,
+    ) -> List[IncidentNotification]:
+        """Ordered global notification read derived from durable projection events.
+
+        There is deliberately no second workflow or notification authority:
+        only lifecycle events which already represent a projection change are
+        visible here.  The opaque cursor is the recorded event ordering tuple.
+        """
+        if limit < 1 or limit > 50:
+            raise PolicyViolation("workspace_incident_notification_limit_invalid")
+
+        async def operation(connection: asyncpg.Connection) -> List[IncidentNotification]:
+            rows = await connection.fetch(
+                """SELECT e.payload AS event_payload, p.payload AS projection_payload
+                   FROM incident_projection_events e
+                   JOIN incident_projections p
+                     ON p.tenant_id=e.tenant_id AND p.run_id=e.run_id
+                    AND p.topology_revision=e.topology_revision
+                    AND p.projection_revision=e.projection_revision
+                   WHERE e.tenant_id=$1 AND e.event_type LIKE 'workspace.%'
+                   ORDER BY e.occurred_at ASC, e.run_id ASC, e.sequence ASC""",
+                tenant_id,
+            )
+            notifications = []
+            for row in rows:
+                event = IncidentEvent.parse_obj(_decode(row["event_payload"]))
+                projection = IncidentProjection.parse_obj(_decode(row["projection_payload"]))
+                notifications.append(IncidentNotification(
+                    notification_id=_notification_id(event),
+                    event_type=(
+                        IncidentNotificationType.ACCEPTED
+                        if event.event_type == "workspace.initialized"
+                        else IncidentNotificationType.UPDATED
+                    ),
+                    occurred_at=event.occurred_at, incident=IncidentSummary.from_projection(projection),
+                ))
+            if after is not None:
+                positions = [index for index, item in enumerate(notifications) if item.notification_id == after]
+                if not positions:
+                    raise PolicyViolation("workspace_incident_notification_checkpoint_unknown")
+                notifications = notifications[positions[0] + 1:]
+            return notifications[:limit]
         return await self._tenant(tenant_id, operation)
 
     async def start_or_reuse_workspace_explanation(

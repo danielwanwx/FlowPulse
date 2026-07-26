@@ -88,7 +88,9 @@ class IncidentWorkspaceTemporalWorkflow:
             field: request_values[field] for field in IncidentRunBinding.__fields__
         })
         self._event_sequence = 1
-        self._projection = initial_projection(self._binding, request.affected_entities, request.created_at)
+        self._projection = initial_projection(
+            self._binding, request.affected_entities, request.created_at, request.title, request.summary,
+        )
         # The initializer receives only the trusted intake identity and appends
         # its durable workspace-subject grant before the projection is readable.
         initialized = await self._activity("workspace_initialize", actor=request.actor)
@@ -145,8 +147,12 @@ class IncidentWorkspaceTemporalWorkflow:
                 existing = self._explanations.get(selection_key)
                 if existing is not None:
                     return NodeExplanationReceipt.parse_obj({"explanation": existing, "reused": True}).dict()
+                # The activity emits bounded STARTED and terminal explanation
+                # status records.  It owns their durable ordering; the
+                # workflow reserves both sequence slots before it runs.
                 self._event_sequence += 1
                 outcome = await self._activity("workspace_node_explanation", command=command, actor=actor)
+                self._event_sequence += 1
                 if outcome.explanation is None:
                     raise ValueError("workspace_node_explanation_activity_missing_result")
                 payload = outcome.explanation.dict()

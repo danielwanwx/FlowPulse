@@ -28,6 +28,7 @@ class WorkspaceContractGeneratorTests(unittest.TestCase):
             examples = json.loads((output / "flowpulse-incident-workspace-v1.examples.json").read_text())
             manifest = json.loads((output / "flowpulse-incident-workspace-v1.freeze.json").read_text())
             self.assertIn("/v1/incidents", openapi["paths"])
+            self.assertIn("/v1/incidents/events", openapi["paths"])
             self.assertIn("/v1/incidents/{case_id}/events", openapi["paths"])
             self.assertIn("/v1/incidents/{case_id}/actions", openapi["paths"])
             self.assertIn("/v1/incidents/{case_id}/actions/{action_id}", openapi["paths"])
@@ -40,9 +41,19 @@ class WorkspaceContractGeneratorTests(unittest.TestCase):
             event_response = openapi["paths"]["/v1/incidents/{case_id}/events"]["get"]["responses"]["200"]
             self.assertEqual({"text/event-stream"}, set(event_response["content"]))
             self.assertEqual("#/components/schemas/IncidentEvent", event_response["content"]["text/event-stream"]["schema"]["$ref"])
+            notification_response = openapi["paths"]["/v1/incidents/events"]["get"]["responses"]["200"]
+            self.assertEqual({"text/event-stream"}, set(notification_response["content"]))
+            self.assertEqual(
+                "#/components/schemas/IncidentNotification",
+                notification_response["content"]["text/event-stream"]["schema"]["$ref"],
+            )
             self.assertFalse(openapi["components"]["schemas"]["ComponentContext"].get("additionalProperties", True))
             self.assertFalse(openapi["components"]["schemas"]["IncidentEvent"].get("additionalProperties", True))
             self.assertEqual("run-example-01", examples["response_examples"]["IncidentProjection"]["run_id"])
+            self.assertEqual("Checkout", examples["response_examples"]["IncidentProjection"]["graph"]["nodes"][0]["display_name"])
+            self.assertEqual(
+                "incident.accepted", examples["response_examples"]["IncidentNotification"]["event_type"],
+            )
             self.assertEqual(
                 "Find Cause", examples["response_examples"]["NextBestAction"]["title"],
             )
