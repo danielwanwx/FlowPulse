@@ -155,6 +155,30 @@ class LiveWorkspaceV1DrainTests(unittest.TestCase):
                 )
                 self.assertEqual({}, repository.explanations)
                 self.assertEqual({}, repository.capability_audits)
+
+                # A direct v1 start must drain before it attempts to decode
+                # caller input.  Otherwise malformed input can turn the
+                # retired type into a workflow-task failure rather than the
+                # typed, side-effect-free terminal response.
+                bindings_before = dict(repository.bindings)
+                projections_before = {key: list(value) for key, value in repository.projections.items()}
+                events_before = {key: list(value) for key, value in repository.events.items()}
+                malformed = await client.start_workflow(
+                    LegacyIncidentWorkspaceTemporalWorkflow.run,
+                    {"unknown_caller_field": "must-not-be-parsed"},
+                    id="flowpulse.workspace.v1-malformed-start.{}".format(suffix), task_queue=queue,
+                )
+                self.assertEqual(
+                    {"accepted": False, "state": "DRAINING", "reason": "workspace_v1_draining"},
+                    await malformed.result(),
+                )
+                malformed_history = await malformed.fetch_history()
+                self.assertNotIn("workspace_initialize_activity", malformed_history.to_json())
+                self.assertEqual(bindings_before, repository.bindings)
+                self.assertEqual(projections_before, {key: list(value) for key, value in repository.projections.items()})
+                self.assertEqual(events_before, {key: list(value) for key, value in repository.events.items()})
+                self.assertEqual({}, repository.explanations)
+                self.assertEqual({}, repository.capability_audits)
             await handle.terminate(reason="v1_drain_coverage_complete")
 
         asyncio.run(run())

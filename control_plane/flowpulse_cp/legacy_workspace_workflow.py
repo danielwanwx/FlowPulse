@@ -66,12 +66,13 @@ class LegacyIncidentWorkspaceTemporalWorkflow:
 
     @workflow.run
     async def run(self, request_data: Dict[str, Any]) -> Dict[str, Any]:
-        request = WorkspaceWorkflowRequest.parse_obj(request_data)
         # An old history has no marker and deterministically follows its
         # historical initialization. A direct new v1 start records this marker
-        # and terminally drains instead of creating another unauthenticated run.
+        # and terminally drains before decoding untrusted input instead of
+        # creating another unauthenticated run or a workflow-task failure.
         if workflow.patched(V1_DRAIN_START_PATCH):
             return {"accepted": False, "state": "DRAINING", "reason": "workspace_v1_draining"}
+        request = WorkspaceWorkflowRequest.parse_obj(request_data)
         request_values = request.copy(update={"workflow_run_id": workflow.info().run_id}).dict()
         self._binding = IncidentRunBinding.parse_obj({
             field: request_values[field] for field in IncidentRunBinding.__fields__
