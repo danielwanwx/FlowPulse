@@ -21,10 +21,83 @@ const northStarDocuments = new Map([
   ["Agent Team", agentTeam]
 ]);
 
+const expectedNorthStarGuardrails = {
+  schema_version: "flowpulse.north-star-guardrails.v2",
+  product_model_agnostic: true,
+  product_company_multiplayer: true,
+  incident_response_first_vertical: true,
+  top_level_navigation: ["Architecture", "Live", "Incident"],
+  stage_order: ["Investigate", "Decide", "Execute", "Verify"],
+  lifecycle_authority: "Temporal",
+  current_proof_authority: "Evidence Ledger",
+  knowledge_plane_role: "bounded_prior",
+  human_gates: ["Gate 1", "Gate 2"],
+  tenant_isolation: true,
+  provider_truth_labels: ["LOCAL CODEX", "OPENAI API", "RECORDED/DEMO"],
+  frontend_generated_prohibited: ["incidents", "agent_messages", "recommendations", "gates", "evidence", "actions", "verification", "success"],
+  dry_run_before_writes: true,
+  fastapi_temporal_control_plane: "not_integrated",
+  node_compatibility_path: "compatibility_demo"
+};
+
+function topLevelJsonKeys(json) {
+  const keys = [];
+  let depth = 0;
+  for (let index = 0; index < json.length; index += 1) {
+    const character = json[index];
+    if (character === "{" || character === "[") {
+      depth += 1;
+      continue;
+    }
+    if (character === "}" || character === "]") {
+      depth -= 1;
+      continue;
+    }
+    if (character !== "\"") continue;
+
+    let end = index + 1;
+    while (end < json.length) {
+      if (json[end] === "\\") {
+        end += 2;
+        continue;
+      }
+      if (json[end] === "\"") break;
+      end += 1;
+    }
+    if (end >= json.length) throw new Error("North Star guardrail metadata has an unterminated JSON string");
+
+    let next = end + 1;
+    while (/\s/.test(json[next] ?? "")) next += 1;
+    if (depth === 1 && json[next] === ":") keys.push(JSON.parse(json.slice(index, end + 1)));
+    index = end;
+  }
+  return keys;
+}
+
 function readNorthStarGuardrails(source) {
-  const match = source.match(/<!-- north-star-guardrails-v1\n([\s\S]*?)\n-->/);
-  assert.ok(match, "README must contain the North Star guardrail metadata");
-  return JSON.parse(match[1]);
+  const blocks = Array.from(source.matchAll(/<!--\s*(north-star-guardrails-v\d+)\r?\n([\s\S]*?)\r?\n-->/g));
+  if (blocks.length !== 1) throw new Error(`README must contain exactly one North Star guardrail metadata block; found ${blocks.length}`);
+  if (blocks[0][1] !== "north-star-guardrails-v2") throw new Error("README must use the current North Star guardrail metadata block");
+
+  const rawMetadata = blocks[0][2];
+  const keys = topLevelJsonKeys(rawMetadata);
+  const duplicateKeys = keys.filter((key, index) => keys.indexOf(key) !== index);
+  if (duplicateKeys.length > 0) throw new Error(`North Star guardrail metadata has duplicate JSON keys: ${duplicateKeys.join(", ")}`);
+
+  let metadata;
+  try {
+    metadata = JSON.parse(rawMetadata);
+  } catch {
+    throw new Error("North Star guardrail metadata must contain valid JSON");
+  }
+  assert.ok(metadata && typeof metadata === "object" && !Array.isArray(metadata), "North Star guardrail metadata must be a JSON object");
+  assert.deepEqual(Object.keys(metadata).sort(), Object.keys(expectedNorthStarGuardrails).sort(), "North Star guardrail metadata keys must be exact");
+  assert.deepEqual(metadata, expectedNorthStarGuardrails, "North Star guardrail metadata values must match the approved contract");
+  return metadata;
+}
+
+function metadataSource(json, marker = "north-star-guardrails-v2") {
+  return `<!-- ${marker}\n${json}\n-->`;
 }
 
 const northStarGuardrails = readNorthStarGuardrails(readme);
@@ -57,11 +130,15 @@ function splitClaimSentence(sentence) {
 }
 
 function sharedClaimSubject(clause) {
-  const node = clause.match(/\bNode(?:\.js)?\b/i);
+  const node = clause.match(/^(?:the\s+)?Node(?:\.js)?\b/i);
   if (node) return node[0];
-  const compare = clause.match(/\bCompare\b/i);
+  const compare = clause.match(/^(?:the\s+)?Compare\b/i);
   if (compare) return compare[0];
-  const controlPlane = clause.match(new RegExp(`\\b${controlPlaneReference}\\b`, "i"));
+  const legacy = clause.match(new RegExp(`^(?:the\\s+)?${legacyWorkspace}\\b`, "i"));
+  if (legacy) return legacy[0];
+  const temporal = clause.match(/^Temporal\b/i);
+  if (temporal) return temporal[0];
+  const controlPlane = clause.match(new RegExp(`^(?:the\\s+)?${controlPlaneReference}\\b`, "i"));
   return controlPlane?.[0] ?? null;
 }
 
@@ -74,8 +151,8 @@ const primaryWorkspaceRole = "(?:(?:top[-\\s]?level|primary|main|persistent|defa
 const workspaceDenial = "(?:not|never|isn't|aren't|wasn't|weren't)";
 
 function hasNegatedWorkspaceClaim(clause) {
-  const legacyBeforeNegation = new RegExp(`\\b${legacyWorkspace}\\b[^.;]{0,80}\\b${workspaceDenial}\\b[^.;]{0,40}\\b${primaryWorkspaceRole}\\b`, "i");
-  const roleBeforeNegation = new RegExp(`\\b${primaryWorkspaceRole}\\b[^.;]{0,80}\\b${workspaceDenial}\\b[^.;]{0,40}\\b${legacyWorkspace}\\b`, "i");
+  const legacyBeforeNegation = new RegExp(`\\b${legacyWorkspace}\\b\\s+(?:(?:is|are|remains?|serves?\\s+as)\\s+)?${workspaceDenial}\\b[^.;]{0,40}\\b${primaryWorkspaceRole}\\b`, "i");
+  const roleBeforeNegation = new RegExp(`\\b${primaryWorkspaceRole}\\b\\s+(?:(?:is|are|remains?)\\s+)?${workspaceDenial}\\b[^.;]{0,40}\\b${legacyWorkspace}\\b`, "i");
   return legacyBeforeNegation.test(clause) || roleBeforeNegation.test(clause);
 }
 
@@ -87,7 +164,7 @@ function findLegacyPrimaryWorkspaceClaims(source) {
 }
 
 const controlPlaneProvider = "(?:FastAPI|Temporal)(?:\\s*\\/\\s*(?:FastAPI|Temporal))?";
-const controlPlaneReference = `(?:${controlPlaneProvider}\\s+(?:control[-\\s]?plane(?:\\s+(?:integration|equivalents?))?|integration)|(?:the\\s+)?control[-\\s]?plane\\s+integration\\s+(?:with|for)\\s+${controlPlaneProvider})`;
+const controlPlaneReference = `(?:${controlPlaneProvider}\\s+(?:control[-\\s]?plane(?:\\s+(?:integration|equivalents?))?|integration)|(?:the\\s+)?control[-\\s]?plane\\s+integration\\s+(?:with|for)\\s+${controlPlaneProvider}|(?:the\\s+)?control[-\\s]?plane\\s+integration\\s*,?\\s*powered\\s+by\\s+${controlPlaneProvider})`;
 const deliveryVerb = "(?:integrated|available|live|shipped|delivered)";
 const deliveryModifier = "(?:(?:already|now|fully|currently)\\s+)?";
 const deliveryPredicate = `(?:is|are|was|were|has|have|had)\\s+${deliveryModifier}(?:been\\s+)?${deliveryModifier}${deliveryVerb}`;
@@ -112,15 +189,14 @@ const lifecycleAuthority = "(?:(?:the\\s+)?(?:sole|only|primary|exclusive)\\s+(?
 const productionAuthority = "(?:(?:the\\s+)?(?:sole|only|primary|exclusive)\\s+)?production\\s+authorit(?:y|ies)(?:\\s+(?:closure|composition\\s+root))?";
 
 function hasNegatedNodeAuthorityClaim(clause, authority) {
-  const nodeBeforeNegation = new RegExp(`\\b${nodeCompatibilityPath}\\b[^.;]{0,100}\\b(?:is|are|does|do|can|cannot|serves?\\s+as|owns?)?\\s*(?:not|never|no|doesn't|don't)\\b[^.;]{0,80}\\b${authority}\\b`, "i");
-  const negationBeforeNode = new RegExp(`\\b(?:not|never|no)\\b[^.;]{0,80}\\b${authority}\\b[^.;]{0,100}\\b${nodeCompatibilityPath}\\b`, "i");
+  const directNodeNegation = new RegExp(`\\b${nodeCompatibilityPath}\\b(?:\\s+(?:compatibility|demo|server|path|surface)){0,4}\\s+(?:(?:is|are|was|were|remains?|serves?\\s+as|does|do|can)\\s+)?(?:not|never|no|isn't|aren't|wasn't|weren't|doesn't|don't|cannot|can't)\\b[^.;]{0,40}\\b${authority}\\b`, "i");
   const authorityBeforeNegatedNode = new RegExp(`\\b${authority}\\b[^.;]{0,80}\\b(?:is|are|belongs?\\s+to|serves?\\s+as)\\s+(?:not|never|no)\\b[^.;]{0,40}\\b${nodeCompatibilityPath}\\b`, "i");
   const authorityDoesNotBelongToNode = new RegExp(`\\b${authority}\\b[^.;]{0,80}\\b(?:does\\s+not|doesn't)\\s+belong\\s+to\\s+${nodeCompatibilityPath}\\b`, "i");
-  return nodeBeforeNegation.test(clause) || negationBeforeNode.test(clause) || authorityBeforeNegatedNode.test(clause) || authorityDoesNotBelongToNode.test(clause);
+  return directNodeNegation.test(clause) || authorityBeforeNegatedNode.test(clause) || authorityDoesNotBelongToNode.test(clause);
 }
 
 function hasNegatedNodeLifecycleOwnership(clause) {
-  const nodeBeforeNegatedOwnership = new RegExp(`\\b${nodeCompatibilityPath}\\b[^.;]{0,80}\\b(?:does\\s+not|do\\s+not|doesn't|don't|cannot|can't|never)\\s+(?:own|govern|control)s?\\b[^.;]{0,120}\\b(?:the\\s+)?(?:incident\\s+)?lifecycle(?:\\s+transitions?)?\\b`, "i");
+  const nodeBeforeNegatedOwnership = new RegExp(`\\b${nodeCompatibilityPath}\\b(?:\\s+(?:compatibility|demo|server|path|surface)){0,4}\\s+(?:does\\s+not|do\\s+not|doesn't|don't|cannot|can't|never)\\s+(?:own|govern|control)s?\\s+(?:the\\s+)?(?:incident\\s+)?lifecycle(?:\\s+transitions?)?\\b`, "i");
   return nodeBeforeNegatedOwnership.test(clause);
 }
 
@@ -163,14 +239,7 @@ function assertClaimAllowed(findClaims, source) {
 }
 
 test("North Star documents keep the agent-operating-system direction behind current proof and Temporal authority", () => {
-  assert.deepEqual(northStarGuardrails, {
-    schema_version: "flowpulse.north-star-guardrails.v1",
-    top_level_navigation: ["Architecture", "Live", "Incident"],
-    incident_first_vertical: true,
-    lifecycle_authority: "Temporal",
-    fastapi_temporal_control_plane: "not_integrated",
-    node_compatibility_path: "compatibility_demo"
-  });
+  assert.deepEqual(northStarGuardrails, expectedNorthStarGuardrails);
 
   assert.match(readme, /model-agnostic/i);
   assert.match(readme, /company-multiplayer/i);
@@ -192,6 +261,47 @@ test("North Star documents keep the agent-operating-system direction behind curr
   assert.match(audit, /Historical audit and compatibility status/i);
   assert.match(audit, /real FastAPI\/Temporal control-plane equivalents/i);
   assert.doesNotMatch(audit, /production authority closure|only production authority composition root|The production decision, approval claim/i);
+});
+
+test("North Star metadata is complete, unique, duplicate-safe, and exact", () => {
+  const canonicalJson = JSON.stringify(expectedNorthStarGuardrails, null, 2);
+  const guardrailDriftFixtures = [
+    ["model-agnostic positioning", "product_model_agnostic", false],
+    ["company-multiplayer positioning", "product_company_multiplayer", false],
+    ["Incident as the first vertical", "incident_response_first_vertical", false],
+    ["top-level views", "top_level_navigation", ["Architecture", "Live", "Compare"]],
+    ["incident stage order", "stage_order", ["Investigate", "Execute", "Decide", "Verify"]],
+    ["Temporal lifecycle authority", "lifecycle_authority", "Node"],
+    ["Evidence Ledger current-proof authority", "current_proof_authority", "browser"],
+    ["Knowledge as a bounded prior", "knowledge_plane_role", "current_proof"],
+    ["Gate 1 and Gate 2", "human_gates", ["Gate 1"]],
+    ["tenant isolation", "tenant_isolation", false],
+    ["provider truth labels", "provider_truth_labels", ["LOCAL CODEX"]],
+    ["frontend-generated success prohibition", "frontend_generated_prohibited", ["incidents", "agent_messages"]],
+    ["dry run before writes", "dry_run_before_writes", false],
+    ["unintegrated control-plane status", "fastapi_temporal_control_plane", "integrated"],
+    ["Node compatibility/demo status", "node_compatibility_path", "production_authority"]
+  ];
+
+  assert.deepEqual(readNorthStarGuardrails(metadataSource(canonicalJson)), expectedNorthStarGuardrails);
+  assert.throws(() => readNorthStarGuardrails("# FlowPulse"), /exactly one North Star guardrail metadata block/);
+  assert.throws(() => readNorthStarGuardrails(metadataSource("{not valid JSON}")), /valid JSON/);
+  assert.throws(() => readNorthStarGuardrails(`${metadataSource(canonicalJson)}\n${metadataSource(canonicalJson)}`), /exactly one North Star guardrail metadata block/);
+  assert.throws(() => readNorthStarGuardrails(metadataSource(canonicalJson, "north-star-guardrails-v1")), /current North Star guardrail metadata block/);
+  assert.throws(() => readNorthStarGuardrails(`${metadataSource(canonicalJson)}\n${metadataSource(canonicalJson, "north-star-guardrails-v1")}`), /exactly one North Star guardrail metadata block/);
+  assert.throws(() => readNorthStarGuardrails(metadataSource('{"schema_version":"flowpulse.north-star-guardrails.v2","schema_version":"drifted"}')), /duplicate JSON keys/);
+
+  const { tenant_isolation: omittedGuardrail, ...withoutTenantIsolation } = expectedNorthStarGuardrails;
+  assert.throws(() => readNorthStarGuardrails(metadataSource(JSON.stringify(withoutTenantIsolation))), /keys must be exact/);
+  assert.throws(() => readNorthStarGuardrails(metadataSource(JSON.stringify({ ...expectedNorthStarGuardrails, unapproved: true }))), /keys must be exact/);
+
+  for (const [description, key, value] of guardrailDriftFixtures) {
+    assert.throws(
+      () => readNorthStarGuardrails(metadataSource(JSON.stringify({ ...expectedNorthStarGuardrails, [key]: value }))),
+      /values must match the approved contract/,
+      `${description} must not drift`
+    );
+  }
 });
 
 test("North Star documents reject contradictory workspace, shipped-control-plane, and Node-authority claims", () => {
@@ -220,6 +330,8 @@ test("North Star contradiction detectors evaluate wording and negation at clause
   assertClaimDetected(findLegacyPrimaryWorkspaceClaims, "Compare is the default workspace.");
   assertClaimDetected(findLegacyPrimaryWorkspaceClaims, "Compare, despite being a legacy label, is the default workspace.");
   assertClaimDetected(findLegacyPrimaryWorkspaceClaims, "Compare is a legacy label, but it remains the default workspace.");
+  assertClaimDetected(findLegacyPrimaryWorkspaceClaims, "Compare, not Incident, is the default workspace.");
+  assertClaimDetected(findLegacyPrimaryWorkspaceClaims, "Diagnose is a legacy label, but it remains the default workspace.");
   assertClaimDetected(findLegacyPrimaryWorkspaceClaims, "Top-level navigation includes Architecture, Live, and Compare.");
   assertClaimAllowed(findLegacyPrimaryWorkspaceClaims, "Compare is not a primary workspace.");
   assertClaimAllowed(findLegacyPrimaryWorkspaceClaims, "Compare isn't a primary workspace.");
@@ -231,6 +343,7 @@ test("North Star contradiction detectors evaluate wording and negation at clause
   assertClaimDetected(findShippedControlPlaneClaims, "FastAPI is not yet available, but the Temporal control plane integration is already shipped.");
   assertClaimDetected(findShippedControlPlaneClaims, "FastAPI/Temporal control plane integration has been shipped.");
   assertClaimDetected(findShippedControlPlaneClaims, "The control-plane integration with Temporal is shipped.");
+  assertClaimDetected(findShippedControlPlaneClaims, "The control-plane integration, powered by Temporal, is shipped.");
   assertClaimDetected(findShippedControlPlaneClaims, "FastAPI/Temporal control plane integration is already shipped, not mocked.");
   assertClaimAllowed(findShippedControlPlaneClaims, "The planned FastAPI/Temporal control-plane integration is not yet available.");
   assertClaimAllowed(findShippedControlPlaneClaims, "FastAPI/Temporal control plane integration has not been shipped.");
@@ -247,6 +360,7 @@ test("North Star contradiction detectors evaluate wording and negation at clause
   assertClaimDetected(findNodeLifecycleAuthorityClaims, "Although the browser is not the sole lifecycle authority, Node is the sole lifecycle authority.");
   assertClaimDetected(findNodeLifecycleAuthorityClaims, "The browser does not own lifecycle authority whereas Node is the sole lifecycle authority.");
   assertClaimDetected(findNodeLifecycleAuthorityClaims, "Node is the lifecycle authority.");
+  assertClaimDetected(findNodeLifecycleAuthorityClaims, "Node, not Temporal, is the lifecycle authority.");
   assertClaimDetected(findNodeLifecycleAuthorityClaims, "Node, despite being a compatibility layer, is the lifecycle authority.");
   assertClaimDetected(findNodeLifecycleAuthorityClaims, "Node is a compatibility layer, but it is the lifecycle authority.");
   assertClaimDetected(findNodeLifecycleAuthorityClaims, "Node remains the lifecycle authority.");
@@ -258,6 +372,8 @@ test("North Star contradiction detectors evaluate wording and negation at clause
   assertClaimAllowed(findNodeLifecycleAuthorityClaims, "The lifecycle authority is not Node.");
   assertClaimAllowed(findNodeLifecycleAuthorityClaims, "The lifecycle authority does not belong to Node.");
   assertClaimAllowed(findNodeLifecycleAuthorityClaims, "Node doesn't own lifecycle transitions.");
+  assertClaimAllowed(findNodeLifecycleAuthorityClaims, "Temporal replaces Node, but it remains the lifecycle authority.");
+  assertClaimAllowed(findNodeLifecycleAuthorityClaims, "Node isn't the sole lifecycle authority.");
 
   assertClaimDetected(findNodeProductionAuthorityClaims, "Production authorities belong solely to Node.");
   assertClaimAllowed(findNodeProductionAuthorityClaims, "The Node compatibility path is not a production authority.");

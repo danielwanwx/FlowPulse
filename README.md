@@ -4,12 +4,22 @@
 
 It is evidence-grounded by design: models and agents can explain, investigate, and propose, but current proof, human approval, and consequential state remain outside browser and model control. **Incident is the first vertical.** Architecture, Live, and Incident are the three product views; Incident keeps the operator in one staged workspace from Investigate through Decide, Execute, and Verify.
 
-<!-- north-star-guardrails-v1
+<!-- north-star-guardrails-v2
 {
-  "schema_version": "flowpulse.north-star-guardrails.v1",
+  "schema_version": "flowpulse.north-star-guardrails.v2",
+  "product_model_agnostic": true,
+  "product_company_multiplayer": true,
+  "incident_response_first_vertical": true,
   "top_level_navigation": ["Architecture", "Live", "Incident"],
-  "incident_first_vertical": true,
+  "stage_order": ["Investigate", "Decide", "Execute", "Verify"],
   "lifecycle_authority": "Temporal",
+  "current_proof_authority": "Evidence Ledger",
+  "knowledge_plane_role": "bounded_prior",
+  "human_gates": ["Gate 1", "Gate 2"],
+  "tenant_isolation": true,
+  "provider_truth_labels": ["LOCAL CODEX", "OPENAI API", "RECORDED/DEMO"],
+  "frontend_generated_prohibited": ["incidents", "agent_messages", "recommendations", "gates", "evidence", "actions", "verification", "success"],
+  "dry_run_before_writes": true,
   "fastapi_temporal_control_plane": "not_integrated",
   "node_compatibility_path": "compatibility_demo"
 }
