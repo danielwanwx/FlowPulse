@@ -138,6 +138,23 @@ class LiveWorkspaceV1DrainTests(unittest.TestCase):
                 self.assertNotIn("workspace_node_explanation_activity", history.to_json())
                 self.assertEqual({}, repository.explanations)
                 self.assertEqual({}, repository.capability_audits)
+
+                # The actual production registration also drains a direct new
+                # v1 start; only a pre-correction history may enter v1.
+                direct_request = request.copy(update={
+                    "workflow_id": "flowpulse.workspace.v1-new-start.{}".format(suffix),
+                    "workflow_run_id": "pending",
+                })
+                direct = await client.start_workflow(
+                    LegacyIncidentWorkspaceTemporalWorkflow.run,
+                    direct_request.dict(), id=direct_request.workflow_id, task_queue=queue,
+                )
+                self.assertEqual(
+                    {"accepted": False, "state": "DRAINING", "reason": "workspace_v1_draining"},
+                    await direct.result(),
+                )
+                self.assertEqual({}, repository.explanations)
+                self.assertEqual({}, repository.capability_audits)
             await handle.terminate(reason="v1_drain_coverage_complete")
 
         asyncio.run(run())
