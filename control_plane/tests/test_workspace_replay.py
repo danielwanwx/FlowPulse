@@ -19,7 +19,7 @@ from flowpulse_cp.workspace_provenance import history_identity, verify_producer_
 
 
 FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures" / "temporal_workspace_v1"
-IMPLEMENTATION_SHA = "28c94613749bbadc18d0c1b8c09686f59343b324"
+IMPLEMENTATION_SHA = "94338be76b0cb652d59415066f2c2ca22a0ad7b1"
 REPO = Path(__file__).resolve().parents[2]
 
 
