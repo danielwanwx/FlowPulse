@@ -54,7 +54,7 @@ checksum_for() {
 # remains a fail-closed partial migration.
 LEGACY_001_SHA256="3a883df931642d8377e95f0eafea350e3cf09f6ff4be69a8fab423c128dc3d8d"
 LEGACY_002_SHA256="d502e572f2e1affe23f2f68da0b6be45cfe1f46ab3260ced5a7c703ec0a17b4b"
-LEGACY_001_002_CATALOG_MD5="34727d030a310bd737414a14d5dbbb8a"
+LEGACY_001_002_CATALOG_SHA256="30627845f0655e8939cb88b38d126ddf5b53a63bff318fcca91965f304ae5290"
 
 file_for_name() {
   target="$1"
@@ -91,7 +91,9 @@ adopt_exact_legacy_001_002() {
   # Verify the full migration-owned catalog, then lock and verify it again in
   # the same transaction that records 001/002.  The fingerprint includes all
   # public tables/columns/constraints/indexes/RLS flags/policies/triggers and
-  # public functions, so an incomplete or drifted lookalike cannot be adopted.
+  # public functions.  Policy role/mode and trigger enabled-state are security
+  # semantics, so the fingerprint covers them too; an incomplete or drifted
+  # lookalike cannot be adopted.
   psql_run <<SQL
 BEGIN;
 LOCK TABLE schema_migrations IN ACCESS EXCLUSIVE MODE;
@@ -124,13 +126,15 @@ BEGIN
            JOIN pg_namespace n ON n.oid = c.relnamespace
      WHERE n.nspname = 'public' AND c.relkind = 'r' AND c.relname <> 'schema_migrations'
     UNION ALL
-    SELECT 'P|' || c.relname || '|' || p.policyname || '|' || p.cmd || '|' ||
+    SELECT 'P|' || c.relname || '|' || p.policyname || '|' || p.cmd || '|' || p.permissive || '|' ||
+           COALESCE((SELECT string_agg(role_name::text, ',' ORDER BY role_name::text)
+                       FROM unnest(p.roles) AS role_names(role_name)), '') || '|' ||
            COALESCE(p.qual, '') || '|' || COALESCE(p.with_check, '')
       FROM pg_policies p JOIN pg_class c ON c.relname = p.tablename
            JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = p.schemaname
      WHERE p.schemaname = 'public' AND c.relkind = 'r' AND c.relname <> 'schema_migrations'
     UNION ALL
-    SELECT 'G|' || c.relname || '|' || t.tgname || '|' || pg_get_triggerdef(t.oid, true)
+    SELECT 'G|' || c.relname || '|' || t.tgname || '|' || t.tgenabled::text || '|' || pg_get_triggerdef(t.oid, true)
       FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
            JOIN pg_namespace n ON n.oid = c.relnamespace
      WHERE n.nspname = 'public' AND c.relkind = 'r' AND c.relname <> 'schema_migrations' AND NOT t.tgisinternal
@@ -139,8 +143,8 @@ BEGIN
       FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
      WHERE n.nspname = 'public'
   )
-  SELECT md5(string_agg(line, E'\\n' ORDER BY line)) INTO actual FROM signature_rows;
-  IF actual IS DISTINCT FROM '$LEGACY_001_002_CATALOG_MD5' THEN
+  SELECT encode(sha256(convert_to(string_agg(line, E'\\n' ORDER BY line), 'UTF8')), 'hex') INTO actual FROM signature_rows;
+  IF actual IS DISTINCT FROM '$LEGACY_001_002_CATALOG_SHA256' THEN
     RAISE EXCEPTION 'migration_legacy_001_002_schema_not_exact';
   END IF;
 END \$\$;
@@ -178,13 +182,15 @@ BEGIN
            JOIN pg_namespace n ON n.oid = c.relnamespace
      WHERE n.nspname = 'public' AND c.relkind = 'r' AND c.relname <> 'schema_migrations'
     UNION ALL
-    SELECT 'P|' || c.relname || '|' || p.policyname || '|' || p.cmd || '|' ||
+    SELECT 'P|' || c.relname || '|' || p.policyname || '|' || p.cmd || '|' || p.permissive || '|' ||
+           COALESCE((SELECT string_agg(role_name::text, ',' ORDER BY role_name::text)
+                       FROM unnest(p.roles) AS role_names(role_name)), '') || '|' ||
            COALESCE(p.qual, '') || '|' || COALESCE(p.with_check, '')
       FROM pg_policies p JOIN pg_class c ON c.relname = p.tablename
            JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = p.schemaname
      WHERE p.schemaname = 'public' AND c.relkind = 'r' AND c.relname <> 'schema_migrations'
     UNION ALL
-    SELECT 'G|' || c.relname || '|' || t.tgname || '|' || pg_get_triggerdef(t.oid, true)
+    SELECT 'G|' || c.relname || '|' || t.tgname || '|' || t.tgenabled::text || '|' || pg_get_triggerdef(t.oid, true)
       FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
            JOIN pg_namespace n ON n.oid = c.relnamespace
      WHERE n.nspname = 'public' AND c.relkind = 'r' AND c.relname <> 'schema_migrations' AND NOT t.tgisinternal
@@ -193,8 +199,8 @@ BEGIN
       FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
      WHERE n.nspname = 'public'
   )
-  SELECT md5(string_agg(line, E'\\n' ORDER BY line)) INTO actual FROM signature_rows;
-  IF actual IS DISTINCT FROM '$LEGACY_001_002_CATALOG_MD5' THEN
+  SELECT encode(sha256(convert_to(string_agg(line, E'\\n' ORDER BY line), 'UTF8')), 'hex') INTO actual FROM signature_rows;
+  IF actual IS DISTINCT FROM '$LEGACY_001_002_CATALOG_SHA256' THEN
     RAISE EXCEPTION 'migration_legacy_001_002_schema_not_exact';
   END IF;
 END \$\$;

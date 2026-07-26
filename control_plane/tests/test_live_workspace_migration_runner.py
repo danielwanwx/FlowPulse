@@ -360,11 +360,22 @@ class LiveWorkspaceMigrationRunnerTests(unittest.TestCase):
                 await self._drop_database(database)
         asyncio.run(run())
 
-    def test_actual_runner_rejects_incomplete_or_drifted_b754_001_002_lookalikes(self):
+    def test_actual_runner_rejects_incomplete_or_security_drifted_b754_001_002_lookalikes(self):
         async def run():
             for mutation in (
                 "DROP TABLE auth_assertion_consumptions",
                 "DROP POLICY tenant_isolation ON auth_command_intents",
+                # Exact reviewer regressions: the ledgerless-adoption
+                # fingerprint must distinguish role, policy-mode, and enabled
+                # trigger state from the supported b754 schema.
+                "ALTER POLICY tenant_isolation ON auth_command_intents TO flowpulse_cp_app",
+                """
+                DROP POLICY tenant_isolation ON auth_command_intents;
+                CREATE POLICY tenant_isolation ON auth_command_intents AS RESTRICTIVE
+                  USING (tenant_id = current_setting('app.tenant_id', true))
+                  WITH CHECK (tenant_id = current_setting('app.tenant_id', true));
+                """,
+                "ALTER TABLE knowledge_revisions DISABLE TRIGGER knowledge_supersession_guard",
             ):
                 database = "flowpulse_runner_b754_bad_{}".format(uuid4().hex)
                 target_admin_dsn = await self._create_exact_001_002_database(database)
@@ -382,6 +393,11 @@ class LiveWorkspaceMigrationRunnerTests(unittest.TestCase):
                         result = self._runner(database, copied)
                     self.assertNotEqual(0, result.returncode)
                     self.assertIn("migration_legacy_001_002_schema_not_exact", result.stderr + result.stdout)
+                    connection = await asyncpg.connect(target_admin_dsn)
+                    try:
+                        self.assertEqual(0, await connection.fetchval("SELECT count(*) FROM schema_migrations"))
+                    finally:
+                        await connection.close()
                 finally:
                     await self._drop_database(database)
         asyncio.run(run())
