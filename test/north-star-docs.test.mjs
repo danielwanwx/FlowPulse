@@ -75,7 +75,7 @@ function topLevelJsonKeys(json) {
 }
 
 function readNorthStarGuardrails(source) {
-  const guardrailCommentStarts = Array.from(source.matchAll(/<!--[\t\n\r ]*north-star-guardrails[\w-]*/gi));
+  const guardrailCommentStarts = Array.from(source.matchAll(/<!--[\t\n\f\r ]*north-star-guardrails[\w-]*/gi));
   if (guardrailCommentStarts.length !== 1) {
     throw new Error(`README must contain exactly one North Star guardrail metadata block; found ${guardrailCommentStarts.length}`);
   }
@@ -152,7 +152,7 @@ function matchingClaimClauses(source, matchesClaim) {
 
 const legacyWorkspace = "(?:Diagnose|Recovery(?:\\s+Console)?|Compare)";
 const primaryWorkspaceRole = "(?:(?:top[-\\s]?level|primary|main|persistent|default|core|only)\\s+(?:(?:navigation\\s+)?(?:views?|workspaces?)|navigation))";
-const workspaceDenial = "(?:not|never|isn't|aren't|wasn't|weren't)";
+const workspaceDenial = "(?:not(?!\\s+only\\b)|never|isn't|aren't|wasn't|weren't)";
 
 function hasNegatedWorkspaceClaim(clause) {
   const legacyBeforeNegation = new RegExp(`\\b${legacyWorkspace}\\b\\s+(?:(?:is|are|remains?|serves?\\s+as)\\s+)?${workspaceDenial}\\b[^.;]{0,40}\\b${primaryWorkspaceRole}\\b`, "i");
@@ -172,19 +172,25 @@ const controlPlaneReference = `(?:${controlPlaneProvider}\\s+(?:control[-\\s]?pl
 const deliveryVerb = "(?:integrated|available|live|shipped|delivered)";
 const deliveryModifier = "(?:(?:already|now|fully|currently)\\s+)?";
 const deliveryPredicate = `(?:is|are|was|were|has|have|had)\\s+${deliveryModifier}(?:been\\s+)?${deliveryModifier}${deliveryVerb}`;
-const activeDelivery = `(?:(?:we|the\\s+(?:team|platform|product)|FlowPulse)\\s+)?(?:(?:have|has|had)\\s+)?${deliveryModifier}(?:ship(?:ped|s)?|deliver(?:ed|s)?|integrat(?:ed|es))`;
-const negatedDelivery = new RegExp(`\\b(?:not|never)\\s+(?:(?:yet|already|now|fully|currently)\\s+)?(?:been\\s+)?${deliveryVerb}\\b`, "i");
+const completedActiveDelivery = `(?:(?:we|the\\s+(?:team|platform|product)|FlowPulse)\\s+)?(?:(?:have|has|had)\\s+)?${deliveryModifier}(?:shipped|delivered|integrated)`;
 const deferredControlPlane = new RegExp(`\\buntil\\b[^.]{0,120}\\b${controlPlaneReference}\\b[^.]{0,120}\\b${deliveryPredicate}\\b`, "i");
 const conditionalControlPlane = new RegExp(`\\b(?:if|when|once|after|provided\\s+that)\\b[^.]{0,120}\\b${controlPlaneReference}\\b[^.]{0,120}\\b${deliveryPredicate}\\b`, "i");
 const trailingConditionalControlPlane = new RegExp(`\\b${controlPlaneReference}\\b[^.]{0,160}\\b${deliveryPredicate}\\b[^.]{0,120}\\b(?:if|when|once|after|provided\\s+that)\\b`, "i");
-const futureModalControlPlane = new RegExp(`(?:\\b(?:will|shall|may|might|can|could)\\s+(?:ship|deliver|integrate)\\b[^.;]{0,160}\\b${controlPlaneReference}\\b|\\b${controlPlaneReference}\\b[^.;]{0,160}\\b(?:will|shall|may|might|can|could)\\s+(?:ship|deliver|integrate)\\b)`, "i");
+const completedDeliveryBeforeControlPlane = new RegExp(`\\b${completedActiveDelivery}\\b[^.]{0,160}\\b${controlPlaneReference}\\b`, "gi");
+const futureDeliveryPrefix = /\b(?:will|shall|may|might|can|could)\s+$|\bplan(?:s|ned)?\s+to\s+$/i;
+
+function hasCompletedActiveControlPlaneDelivery(clause) {
+  return Array.from(clause.matchAll(completedDeliveryBeforeControlPlane)).some((match) => {
+    const prefix = clause.slice(Math.max(0, match.index - 48), match.index);
+    return !futureDeliveryPrefix.test(prefix);
+  });
+}
 
 function findShippedControlPlaneClaims(source) {
   const controlPlaneBeforeDelivery = new RegExp(`\\b${controlPlaneReference}\\b[^.]{0,160}\\b${deliveryPredicate}\\b`, "i");
-  const deliveryBeforeControlPlane = new RegExp(`\\b${activeDelivery}\\b[^.]{0,160}\\b${controlPlaneReference}\\b`, "i");
   return matchingClaimClauses(source, (clause) => {
-    if (negatedDelivery.test(clause) || deferredControlPlane.test(clause) || conditionalControlPlane.test(clause) || trailingConditionalControlPlane.test(clause) || futureModalControlPlane.test(clause)) return false;
-    return controlPlaneBeforeDelivery.test(clause) || deliveryBeforeControlPlane.test(clause);
+    if (deferredControlPlane.test(clause) || conditionalControlPlane.test(clause) || trailingConditionalControlPlane.test(clause)) return false;
+    return controlPlaneBeforeDelivery.test(clause) || hasCompletedActiveControlPlaneDelivery(clause);
   });
 }
 
@@ -192,10 +198,11 @@ const nodeCompatibilityPath = "(?:Node(?:\\.js)?|src\\/server\\.mjs|server-side\
 const lifecycleAuthorityNoun = "(?:(?:the\\s+)?(?:incident\\s+)?lifecycle\\s+authorit(?:y|ies))";
 const lifecycleAuthority = "(?:(?:the\\s+)?(?:sole|only|primary|exclusive)\\s+(?:incident\\s+)?lifecycle\\s+authorit(?:y|ies))";
 const productionAuthority = "(?:(?:the\\s+)?(?:sole|only|primary|exclusive)\\s+)?production\\s+authorit(?:y|ies)(?:\\s+(?:closure|composition\\s+root))?";
+const authorityDenial = "(?:not(?!\\s+only\\b)|never|no|isn't|aren't|wasn't|weren't|doesn't|don't|cannot|can't)";
 
 function hasNegatedNodeAuthorityClaim(clause, authority) {
-  const directNodeNegation = new RegExp(`\\b${nodeCompatibilityPath}\\b(?:\\s+(?:compatibility|demo|server|path|surface)){0,4}\\s+(?:(?:is|are|was|were|remains?|serves?\\s+as|does|do|can)\\s+)?(?:not|never|no|isn't|aren't|wasn't|weren't|doesn't|don't|cannot|can't)\\b[^.;]{0,40}\\b${authority}\\b`, "i");
-  const authorityBeforeNegatedNode = new RegExp(`\\b${authority}\\b[^.;]{0,80}\\b(?:(?:is|are|belongs?\\s+to|serves?\\s+as)\\s+(?:not|never|no)|isn't|aren't|wasn't|weren't)\\b[^.;]{0,40}\\b${nodeCompatibilityPath}\\b`, "i");
+  const directNodeNegation = new RegExp(`\\b${nodeCompatibilityPath}\\b(?:\\s+(?:compatibility|demo|server|path|surface)){0,4}\\s+(?:(?:is|are|was|were|remains?|serves?\\s+as|does|do|can)\\s+)?${authorityDenial}\\b[^.;]{0,40}\\b${authority}\\b`, "i");
+  const authorityBeforeNegatedNode = new RegExp(`\\b${authority}\\b[^.;]{0,80}\\b(?:(?:is|are|belongs?\\s+to|serves?\\s+as)\\s+${authorityDenial}|isn't|aren't|wasn't|weren't)\\b[^.;]{0,40}\\b${nodeCompatibilityPath}\\b`, "i");
   const authorityDoesNotBelongToNode = new RegExp(`\\b${authority}\\b[^.;]{0,80}\\b(?:does\\s+not|doesn't)\\s+belong\\s+to\\s+${nodeCompatibilityPath}\\b`, "i");
   return directNodeNegation.test(clause) || authorityBeforeNegatedNode.test(clause) || authorityDoesNotBelongToNode.test(clause);
 }
@@ -296,6 +303,7 @@ test("North Star metadata is complete, unique, duplicate-safe, and exact", () =>
   assert.throws(() => readNorthStarGuardrails(`${metadataSource(canonicalJson)}\n${metadataSource(canonicalJson, "north-star-guardrails-v1")}`), /exactly one North Star guardrail metadata block/);
   assert.throws(() => readNorthStarGuardrails(`${metadataSource(canonicalJson)}\n${metadataSource(canonicalJson, "north-star-guardrails-v2 ")}`), /exactly one North Star guardrail metadata block/);
   assert.throws(() => readNorthStarGuardrails(`${metadataSource(canonicalJson)}\n${metadataSource(canonicalJson, "north-star-guardrails-v2\t")}`), /exactly one North Star guardrail metadata block/);
+  assert.throws(() => readNorthStarGuardrails(`${metadataSource(canonicalJson)}\n<!--\f north-star-guardrails-v2\n${canonicalJson}\n-->`), /exactly one North Star guardrail metadata block/);
   assert.throws(() => readNorthStarGuardrails(`${metadataSource(canonicalJson)}\n${metadataSource(canonicalJson, "NORTH-star-GUARDRAILS-v2")}`), /exactly one North Star guardrail metadata block/);
   assert.throws(() => readNorthStarGuardrails(`${metadataSource(canonicalJson)}<!-- north-star-guardrails-v2 -->`), /exactly one North Star guardrail metadata block/);
   assert.throws(() => readNorthStarGuardrails("<!-- north-star-guardrails-v2\n{\"schema_version\":\"flowpulse.north-star-guardrails.v2\"}"), /current North Star guardrail metadata block/);
@@ -342,6 +350,7 @@ test("North Star contradiction detectors evaluate wording and negation at clause
   assertClaimDetected(findLegacyPrimaryWorkspaceClaims, "Compare is a legacy label, but it remains the default workspace.");
   assertClaimDetected(findLegacyPrimaryWorkspaceClaims, "Compare is a legacy label; it remains the default workspace.");
   assertClaimDetected(findLegacyPrimaryWorkspaceClaims, "Compare, not Incident, is the default workspace.");
+  assertClaimDetected(findLegacyPrimaryWorkspaceClaims, "Compare is not only a primary workspace but also the default workspace.");
   assertClaimDetected(findLegacyPrimaryWorkspaceClaims, "Diagnose is a legacy label, but it remains the default workspace.");
   assertClaimDetected(findLegacyPrimaryWorkspaceClaims, "Top-level navigation includes Architecture, Live, and Compare.");
   assertClaimAllowed(findLegacyPrimaryWorkspaceClaims, "Compare is not a primary workspace.");
@@ -364,7 +373,11 @@ test("North Star contradiction detectors evaluate wording and negation at clause
   assertClaimAllowed(findShippedControlPlaneClaims, "Once FastAPI/Temporal control plane integration is delivered, retire the compatibility path.");
   assertClaimDetected(findShippedControlPlaneClaims, "The FastAPI/Temporal control plane integration is future work, but it is already shipped.");
   assertClaimDetected(findShippedControlPlaneClaims, "The FastAPI/Temporal control-plane integration is future work; it is already shipped.");
+  assertClaimDetected(findShippedControlPlaneClaims, "FastAPI/Temporal control plane integration is already shipped and will deliver more features.");
   assertClaimAllowed(findShippedControlPlaneClaims, "We will ship the FastAPI/Temporal control plane integration after approval.");
+  assertClaimAllowed(findShippedControlPlaneClaims, "We will fully deliver the FastAPI/Temporal control plane integration after approval.");
+  assertClaimAllowed(findShippedControlPlaneClaims, "We shall have delivered the FastAPI/Temporal control plane integration after approval.");
+  assertClaimAllowed(findShippedControlPlaneClaims, "We plan to deliver the FastAPI/Temporal control plane integration after approval.");
 
   assertClaimDetected(findNodeLifecycleAuthorityClaims, "The sole lifecycle authority is Node.");
   assertClaimDetected(findNodeLifecycleAuthorityClaims, "Node exclusively governs incident lifecycle transitions.");
@@ -373,6 +386,7 @@ test("North Star contradiction detectors evaluate wording and negation at clause
   assertClaimDetected(findNodeLifecycleAuthorityClaims, "Although the browser is not the sole lifecycle authority, Node is the sole lifecycle authority.");
   assertClaimDetected(findNodeLifecycleAuthorityClaims, "The browser does not own lifecycle authority whereas Node is the sole lifecycle authority.");
   assertClaimDetected(findNodeLifecycleAuthorityClaims, "Node is the lifecycle authority.");
+  assertClaimDetected(findNodeLifecycleAuthorityClaims, "Node is not only the lifecycle authority but also the executor.");
   assertClaimDetected(findNodeLifecycleAuthorityClaims, "Node, not Temporal, is the lifecycle authority.");
   assertClaimDetected(findNodeLifecycleAuthorityClaims, "Node, despite being a compatibility layer, is the lifecycle authority.");
   assertClaimDetected(findNodeLifecycleAuthorityClaims, "Node is a compatibility layer, but it is the lifecycle authority.");
