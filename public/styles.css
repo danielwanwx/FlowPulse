@@ -4502,3 +4502,81 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
   .incident-stage-button small { display: none; }
   .incident-stage-panel { left: 12px; width: auto; }
 }
+
+/* Control-plane incident workspace: server projections only. */
+.control-plane-app {
+  min-height: 100dvh;
+  color: var(--ink);
+  background: var(--page);
+  font-family: var(--font);
+}
+.control-plane-topbar {
+  display: grid;
+  grid-template-columns: minmax(150px, 1fr) auto minmax(150px, 1fr);
+  align-items: center;
+  min-height: 58px;
+  padding: 0 24px;
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--surface) 94%, transparent);
+}
+.control-plane-tabs { display: inline-flex; overflow: hidden; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--surface); }
+.control-plane-tab { min-width: 88px; padding: 7px 12px; border: 0; border-right: 1px solid var(--line); color: var(--muted); background: transparent; font: 700 12px/1 var(--font); cursor: pointer; }
+.control-plane-tab:last-child { border-right: 0; }
+.control-plane-tab.is-active { color: #fff; background: var(--ink); }
+.control-plane-tab:focus-visible, .control-plane-node:focus-visible, .control-plane-toast button:focus-visible, .control-plane-degraded button:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.control-plane-connection { justify-self: end; color: var(--muted); font: 600 11px/1.2 var(--font); }
+.control-plane-connection[data-state="stale"], .control-plane-connection[data-state="reconnecting"], .control-plane-connection[data-state="degraded"] { color: var(--amber); }
+.control-plane-main { display: grid; grid-template-columns: minmax(0, 1fr); min-height: calc(100dvh - 59px); }
+.control-plane-graph-section { min-width: 0; padding: 26px; }
+.control-plane-graph-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; margin-bottom: 18px; }
+.control-plane-kicker { margin: 0 0 6px; color: var(--faint); font-size: 10px; font-weight: 750; letter-spacing: .08em; text-transform: uppercase; }
+.control-plane-graph-header h1, .control-plane-decision h2 { margin: 0; color: var(--ink); font-size: 20px; letter-spacing: -.025em; }
+.control-plane-graph-header p:not(.control-plane-kicker), .control-plane-decision header > p:last-child { margin: 7px 0 0; color: var(--muted); font-size: 13px; line-height: 1.45; }
+.control-plane-status { flex: none; padding: 6px 8px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); background: var(--surface); font: 700 10px/1 var(--font); }
+.control-plane-status.is-degraded { border-color: color-mix(in srgb, var(--red) 45%, var(--line)); color: var(--red); }
+.control-plane-degraded { display: flex; align-items: center; gap: 12px; margin: 0 0 16px; padding: 11px 13px; border: 1px solid color-mix(in srgb, var(--red) 38%, var(--line)); border-radius: 9px; color: #9c2930; background: color-mix(in srgb, var(--red-soft) 94%, #fff); font-size: 12px; }
+.control-plane-degraded span { flex: 1; color: var(--muted); }
+.control-plane-degraded button { padding: 6px 9px; border: 1px solid var(--line-strong); border-radius: 6px; color: var(--ink); background: var(--surface); font: 700 11px/1 var(--font); cursor: pointer; }
+.control-plane-canvas { position: relative; min-height: 520px; overflow: hidden; border: 1px solid var(--line); border-radius: 14px; background: radial-gradient(circle at 20% 14%, color-mix(in srgb, var(--blue) 5%, transparent), transparent 36%), var(--canvas); }
+.control-plane-empty { display: grid; min-height: 520px; margin: 0; place-items: center; color: var(--muted); font-size: 13px; }
+.control-plane-graph { position: relative; min-height: 520px; }
+.control-plane-edge-layer { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+.control-plane-edge { fill: none; stroke: var(--line-strong); stroke-width: 2; }
+.control-plane-edge.is-impacted { stroke: var(--red); stroke-width: 2.5; }
+.control-plane-edge.is-live { stroke-dasharray: 7 10; animation: control-plane-current 2.4s linear infinite; }
+.control-plane-node { position: absolute; z-index: 1; display: grid; gap: 5px; min-width: 138px; max-width: 190px; padding: 12px; border: 1px solid var(--line-strong); border-radius: 10px; color: var(--ink); background: color-mix(in srgb, var(--surface) 96%, transparent); box-shadow: 0 7px 20px rgba(11, 11, 12, .07); text-align: left; cursor: default; }
+.control-plane-node[data-clickable="true"] { cursor: pointer; }
+.control-plane-node.is-impacted { border-color: var(--red); box-shadow: 0 0 0 3px color-mix(in srgb, var(--red) 18%, transparent), 0 10px 25px color-mix(in srgb, var(--red) 18%, transparent); }
+.control-plane-node-name { overflow: hidden; font-size: 13px; font-weight: 750; line-height: 1.15; text-overflow: ellipsis; white-space: nowrap; }
+.control-plane-node-meta { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 10px; line-height: 1.2; }
+.control-plane-node-dot { width: 7px; height: 7px; border-radius: 999px; background: var(--green); }
+.control-plane-node.is-impacted .control-plane-node-dot { background: var(--red); }
+.control-plane-node-classification { color: var(--faint); font-size: 10px; }
+.control-plane-decision { position: fixed; z-index: 4; top: 59px; right: 0; bottom: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; width: min(430px, calc(100vw - 32px)); border-left: 1px solid var(--line); background: var(--surface); box-shadow: -16px 0 34px rgba(11, 11, 12, .08); }
+.control-plane-decision header { padding: 23px 22px 18px; border-bottom: 1px solid var(--line); }
+.control-plane-conversation { min-height: 0; padding: 18px 22px; overflow: auto; }
+.control-plane-conversation-card { padding: 13px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2); }
+.control-plane-conversation-card strong { display: block; margin-bottom: 6px; font-size: 12px; }
+.control-plane-conversation-card p { margin: 0; color: var(--strong-copy); font-size: 13px; line-height: 1.45; }
+.control-plane-conversation-card details { margin-top: 10px; color: var(--muted); font-size: 11px; }
+.control-plane-composer { display: grid; gap: 7px; padding: 15px 22px 22px; border-top: 1px solid var(--line); }
+.control-plane-composer label { color: var(--muted); font-size: 11px; font-weight: 700; }
+.control-plane-composer textarea { resize: none; padding: 9px; border: 1px solid var(--line); border-radius: 7px; color: var(--muted); background: var(--surface-2); font: 12px/1.35 var(--font); }
+.control-plane-composer button { justify-self: end; padding: 7px 11px; border: 0; border-radius: 6px; color: #fff; background: var(--ink); font: 700 11px/1 var(--font); }
+.control-plane-composer button:disabled { opacity: .48; }
+.control-plane-toast { position: fixed; z-index: 8; top: 78px; left: 24px; display: flex; align-items: center; gap: 18px; max-width: 390px; padding: 13px 14px; border: 1px solid color-mix(in srgb, var(--red) 40%, var(--line)); border-radius: 10px; background: color-mix(in srgb, var(--surface) 97%, transparent); box-shadow: 0 14px 34px rgba(11, 11, 12, .14); }
+.control-plane-toast div { display: grid; gap: 4px; }
+.control-plane-toast strong { font-size: 12px; }
+.control-plane-toast span { color: var(--muted); font-size: 11px; line-height: 1.35; }
+.control-plane-toast button { flex: none; padding: 7px 9px; border: 1px solid var(--ink); border-radius: 6px; color: #fff; background: var(--ink); font: 700 11px/1 var(--font); cursor: pointer; }
+@keyframes control-plane-current { to { stroke-dashoffset: -34; } }
+@media (prefers-reduced-motion: reduce) { .control-plane-edge.is-live { animation: none; stroke-dasharray: none; } }
+@media (max-width: 760px) {
+  .control-plane-topbar { grid-template-columns: 1fr; justify-items: center; gap: 9px; padding: 12px; }
+  .control-plane-topbar .brand, .control-plane-connection { display: none; }
+  .control-plane-main { min-height: calc(100dvh - 53px); }
+  .control-plane-graph-section { padding: 16px; }
+  .control-plane-canvas, .control-plane-empty, .control-plane-graph { min-height: 440px; }
+  .control-plane-decision { top: 53px; width: 100%; }
+  .control-plane-toast { top: 68px; left: 16px; right: 16px; max-width: none; }
+}

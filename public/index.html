@@ -11,8 +11,63 @@
     <link rel="stylesheet" href="/styles.css">
   </head>
   <body>
-    <a class="skip-link" href="#twin-canvas">Skip to system canvas</a>
-    <div id="app-shell" class="app-shell is-loading" data-mode="architecture">
+    <a class="skip-link" href="#control-plane-canvas">Skip to system canvas</a>
+    <div id="control-plane-app" class="control-plane-app" data-mode="architecture">
+      <header class="control-plane-topbar">
+        <div class="brand" aria-label="FlowPulse">
+          <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+          <span>FlowPulse</span>
+        </div>
+        <nav class="control-plane-tabs" aria-label="FlowPulse views">
+          <button type="button" class="control-plane-tab is-active" data-control-mode="architecture" aria-pressed="true">Architecture</button>
+          <button type="button" class="control-plane-tab" data-control-mode="live" aria-pressed="false">Live</button>
+          <button type="button" class="control-plane-tab" data-control-mode="incident" aria-pressed="false">Incident</button>
+        </nav>
+        <output id="control-plane-connection" class="control-plane-connection" aria-live="polite">Connecting to incident workspace</output>
+      </header>
+
+      <main class="control-plane-main">
+        <section class="control-plane-graph-section" aria-labelledby="control-plane-title">
+          <header class="control-plane-graph-header">
+            <div>
+              <p id="control-plane-kicker" class="control-plane-kicker">Server projection</p>
+              <h1 id="control-plane-title">Live system</h1>
+              <p id="control-plane-summary">Waiting for the canonical incident projection.</p>
+            </div>
+            <span id="control-plane-status" class="control-plane-status">Loading</span>
+          </header>
+          <div id="control-plane-degraded" class="control-plane-degraded" role="alert" hidden>
+            <strong>Incident workspace is unavailable</strong>
+            <span id="control-plane-degraded-copy">The canonical control-plane projection could not be read.</span>
+            <button id="control-plane-retry" type="button">Retry</button>
+          </div>
+          <div id="control-plane-canvas" class="control-plane-canvas" role="region" aria-label="Server-projected incident graph" tabindex="0">
+            <p class="control-plane-empty">Waiting for a server projection.</p>
+          </div>
+        </section>
+
+        <aside id="control-plane-decision" class="control-plane-decision" aria-labelledby="control-plane-decision-title" hidden>
+          <header>
+            <p class="control-plane-kicker">Current context</p>
+            <h2 id="control-plane-decision-title">Select an impacted component</h2>
+            <p id="control-plane-decision-copy">A node explanation is created only after you select a red impacted node.</p>
+          </header>
+          <section id="control-plane-conversation" class="control-plane-conversation" aria-live="polite"></section>
+          <form class="control-plane-composer" aria-label="Conversation composer">
+            <label for="control-plane-message">Conversation Manager</label>
+            <textarea id="control-plane-message" rows="2" placeholder="Select an impacted component first." disabled></textarea>
+            <button type="submit" disabled>Send</button>
+          </form>
+        </aside>
+      </main>
+
+      <section id="control-plane-toast" class="control-plane-toast" role="status" aria-live="polite" hidden>
+        <div><strong id="control-plane-toast-title"></strong><span id="control-plane-toast-copy"></span></div>
+        <button id="control-plane-focus" type="button">Focus incident</button>
+      </section>
+    </div>
+
+    <div id="app-shell" class="app-shell is-loading" data-mode="architecture" hidden>
       <header class="topbar">
         <div class="brand" aria-label="FlowPulse">
           <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
@@ -205,6 +260,6 @@
     </div>
 
     <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
-    <script type="module" src="/app.js"></script>
+    <script type="module" src="/control-plane-app.mjs"></script>
   </body>
 </html>

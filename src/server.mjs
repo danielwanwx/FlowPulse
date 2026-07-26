@@ -132,6 +132,13 @@ const server = createServer(async (request, response) => {
   if (request.method === "OPTIONS") return send(response, 204, "");
   try {
     const url = new URL(request.url, `http://${request.headers.host || "localhost"}`);
+    // The browser's only control-plane boundary. Keep this ahead of the
+    // compatibility/demo write guard: the allowlisted node-explanation update
+    // is owned and revalidated by the separate Temporal service, never by the
+    // local replay runtime.
+    if (url.pathname.startsWith("/api/control-plane/v1")) {
+      return proxyControlPlaneV1(request, response, url);
+    }
     if (activeDemoWriteBlocked(request.method, url.pathname)) {
       return json(response, 409, { error: "demo_mode_active" });
     }
@@ -1049,6 +1056,171 @@ function plainLocalFaultLoopRequest(value) {
     && (value.idempotency_key === undefined || (typeof value.idempotency_key === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{7,159}$/.test(value.idempotency_key))));
 }
 function autonomyFailure(code, field_path) { const error = new InsufficientEvidenceError("Autonomy authority boundary rejected the run"); error.code = code; error.metadata = { stage: "authority_decision", validator_id: "server_authority_closure", reason_code: code, field_path, next_precondition: "produce_a_matching_frozen_diagnosis_gate" }; return error; }
+
+// Frozen Incident Workspace contract v1.1 transport facade. It deliberately
+// exposes a small fixed route set rather than a general-purpose proxy. The
+// upstream trusted bearer is process-only; nothing from it is serialized or
+// placed in a browser-visible configuration response.
+async function proxyControlPlaneV1(request, response, url) {
+  const route = await controlPlaneRoute(request, url);
+  if (!route) return json(response, 404, { error: "Not found" });
+  if (route.error) return json(response, 400, { error: "control_plane_request_invalid" });
+  const config = controlPlaneConfig();
+  if (!config) return json(response, 503, { error: "control_plane_unavailable" });
+
+  let upstream;
+  try {
+    upstream = await fetch(new URL(route.path, config.baseUrl), {
+      method: route.method,
+      redirect: "error",
+      headers: controlPlaneHeaders(config.bearer, route),
+      body: route.body ? JSON.stringify(route.body) : undefined
+    });
+  } catch {
+    return json(response, 503, { error: "control_plane_unavailable" });
+  }
+
+  if (!upstream.ok) return controlPlaneUpstreamFailure(response, upstream.status);
+  const contentType = String(upstream.headers.get("content-type") || "").toLowerCase();
+  if (route.sse) {
+    if (!contentType.startsWith("text/event-stream")) return json(response, 502, { error: "control_plane_schema_invalid" });
+    response.writeHead(upstream.status, {
+      "content-type": upstream.headers.get("content-type"),
+      "cache-control": upstream.headers.get("cache-control") || "no-store",
+      "x-accel-buffering": "no"
+    });
+    try {
+      if (upstream.body) for await (const chunk of upstream.body) response.write(chunk);
+      response.end();
+    } catch {
+      if (!response.writableEnded) response.end();
+    }
+    return;
+  }
+  if (!contentType.startsWith("application/json")) return json(response, 502, { error: "control_plane_schema_invalid" });
+  try {
+    const body = await boundedUpstreamBody(upstream);
+    response.writeHead(upstream.status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+    response.end(body);
+  } catch {
+    return json(response, 502, { error: "control_plane_schema_invalid" });
+  }
+}
+
+async function controlPlaneRoute(request, url) {
+  const prefix = "/api/control-plane/v1";
+  const path = url.pathname;
+  if (!path.startsWith(prefix) || !controlPlaneMethod(request.method)) return null;
+  const queryError = () => ({ error: true });
+  const forwardedLastEventId = controlPlaneEventCursor(request.headers["last-event-id"]);
+
+  if (path === `${prefix}/incidents` && request.method === "GET") {
+    if (!onlySearchParams(url, ["state", "limit"])) return queryError();
+    const state = url.searchParams.get("state") || "active";
+    const limit = url.searchParams.get("limit") || "20";
+    if (state !== "active" || !validControlPlaneInteger(limit, 1, 50)) return queryError();
+    return { method: "GET", path: `/v1/incidents?state=active&limit=${limit}`, body: null, sse: false };
+  }
+  if (path === `${prefix}/incidents/events` && request.method === "GET") {
+    if (!onlySearchParams(url, ["after"]) || (url.searchParams.has("after") && !validControlPlaneCursor(url.searchParams.get("after"))) || forwardedLastEventId === false) return queryError();
+    const after = url.searchParams.get("after");
+    return { method: "GET", path: `/v1/incidents/events${after ? `?after=${encodeURIComponent(after)}` : ""}`, body: null, sse: true, lastEventId: forwardedLastEventId || null };
+  }
+
+  const caseProjection = matchControlPlanePath(path, /^\/api\/control-plane\/v1\/incidents\/([^/]+)\/projection$/);
+  if (caseProjection && request.method === "GET") {
+    if (url.search) return queryError();
+    return { method: "GET", path: `/v1/incidents/${encodeURIComponent(caseProjection)}/projection`, body: null, sse: false };
+  }
+  const caseEvents = matchControlPlanePath(path, /^\/api\/control-plane\/v1\/incidents\/([^/]+)\/events$/);
+  if (caseEvents && request.method === "GET") {
+    if (!onlySearchParams(url, ["after"]) || (url.searchParams.has("after") && !validControlPlaneInteger(url.searchParams.get("after"), 0, Number.MAX_SAFE_INTEGER)) || forwardedLastEventId === false) return queryError();
+    const after = url.searchParams.get("after");
+    return { method: "GET", path: `/v1/incidents/${encodeURIComponent(caseEvents)}/events${after !== null ? `?after=${after}` : ""}`, body: null, sse: true, lastEventId: forwardedLastEventId || null };
+  }
+  const nodeStart = matchControlPlanePath(path, /^\/api\/control-plane\/v1\/incidents\/([^/]+)\/node-explanations$/);
+  if (nodeStart && request.method === "POST") {
+    if (url.search || !isJsonRequest(request)) return queryError();
+    let body;
+    try { body = await readJson(request); } catch { return queryError(); }
+    if (!validNodeExplanationCommand(body)) return queryError();
+    return { method: "POST", path: `/v1/incidents/${encodeURIComponent(nodeStart)}/node-explanations`, body, sse: false };
+  }
+  const receipt = matchControlPlanePath(path, /^\/api\/control-plane\/v1\/incidents\/([^/]+)\/node-explanations\/([^/]+)$/);
+  if (receipt && request.method === "GET") {
+    if (url.search) return queryError();
+    return { method: "GET", path: `/v1/incidents/${encodeURIComponent(receipt[0])}/node-explanations/${encodeURIComponent(receipt[1])}`, body: null, sse: false };
+  }
+  return null;
+}
+
+function controlPlaneConfig() {
+  const rawUrl = process.env.FLOWPULSE_CONTROL_PLANE_URL;
+  const bearer = process.env.FLOWPULSE_CONTROL_PLANE_BEARER;
+  if (!validControlPlaneText(rawUrl, 512) || !validControlPlaneText(bearer, 2048)) return null;
+  try {
+    const baseUrl = new URL(rawUrl);
+    if (!['http:', 'https:'].includes(baseUrl.protocol) || !baseUrl.hostname || baseUrl.username || baseUrl.password || baseUrl.search || baseUrl.hash || !["", "/"].includes(baseUrl.pathname)) return null;
+    return { baseUrl, bearer };
+  } catch {
+    return null;
+  }
+}
+
+function controlPlaneHeaders(bearer, route) {
+  const headers = { accept: route.sse ? "text/event-stream" : "application/json", authorization: `Bearer ${bearer}` };
+  if (route.body) headers["content-type"] = "application/json";
+  if (route.lastEventId) headers["Last-Event-ID"] = route.lastEventId;
+  return headers;
+}
+
+function controlPlaneUpstreamFailure(response, status) {
+  if ([401, 403].includes(status)) return json(response, status, { error: "control_plane_auth_failed" });
+  if (status === 404) return json(response, 404, { error: "control_plane_not_found" });
+  if (status >= 400 && status < 500) return json(response, status, { error: "control_plane_request_rejected" });
+  return json(response, 503, { error: "control_plane_unavailable" });
+}
+
+async function boundedUpstreamBody(upstream) {
+  const limit = 512 * 1024;
+  let size = 0;
+  const chunks = [];
+  if (upstream.body) {
+    for await (const chunk of upstream.body) {
+      size += chunk.byteLength;
+      if (size > limit) throw new Error("control_plane_response_too_large");
+      chunks.push(Buffer.from(chunk));
+    }
+  }
+  const text = Buffer.concat(chunks).toString("utf8");
+  JSON.parse(text);
+  return text;
+}
+
+function controlPlaneMethod(method) { return method === "GET" || method === "POST"; }
+function onlySearchParams(url, allowed) { return [...url.searchParams.keys()].every((key) => allowed.includes(key)); }
+function validControlPlaneText(value, maximum) { return typeof value === "string" && value.length > 0 && value.length <= maximum && !/[\u0000-\u001f\u007f]/.test(value); }
+function validControlPlaneId(value) { return validControlPlaneText(value, 160) && /^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(value); }
+function validControlPlaneInteger(value, minimum, maximum) { return typeof value === "string" && /^(0|[1-9][0-9]*)$/.test(value) && Number.isSafeInteger(Number(value)) && Number(value) >= minimum && Number(value) <= maximum; }
+function validControlPlaneCursor(value) { return validControlPlaneText(value, 200) && /^[A-Za-z0-9._:|+-]+$/.test(value); }
+function controlPlaneEventCursor(value) { return value === undefined ? null : validControlPlaneCursor(value) ? value : false; }
+function isJsonRequest(request) { return String(request.headers["content-type"] || "").toLowerCase().startsWith("application/json"); }
+function matchControlPlanePath(pathname, pattern) {
+  const match = pathname.match(pattern);
+  if (!match) return null;
+  try {
+    const values = match.slice(1).map((value) => decodeURIComponent(value));
+    return values.every(validControlPlaneId) ? (values.length === 1 ? values[0] : values) : null;
+  } catch { return null; }
+}
+function validNodeExplanationCommand(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype) return false;
+  const keys = Object.keys(value).sort();
+  const expected = ["component_id", "idempotency_key", "incident_id", "projection_revision", "run_id", "topology_revision"];
+  if (keys.length !== expected.length || keys.some((key, index) => key !== expected[index])) return false;
+  return ["incident_id", "run_id", "topology_revision", "component_id", "idempotency_key"].every((key) => validControlPlaneId(value[key]))
+    && Number.isSafeInteger(value.projection_revision) && value.projection_revision >= 1;
+}
 
 async function serveStatic(pathname, response) {
   const requested = pathname === "/" ? "index.html" : pathname.slice(1);
