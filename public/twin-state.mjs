@@ -858,6 +858,40 @@ export function createTopologyRefreshTracker() {
   };
 }
 
+// A topology refresh key belongs to exactly one state request. Every outcome
+// must settle that request's key, while the tracker itself refuses to let an
+// older request settle a newer key.
+export function settleTopologyRefresh(tracker, key, succeeded = false) {
+  if (!tracker || !key) return false;
+  return succeeded === true ? tracker.succeed(key) : tracker.fail(key);
+}
+
+// Loading is intentionally independent of the canonical response generation:
+// a background refresh may supersede a foreground response, but it never owns
+// the foreground overlay.
+export function createCanonicalLoadingController({ setLoading }) {
+  if (typeof setLoading !== "function") throw new Error("Canonical loading requires a state setter.");
+  let activeToken = null;
+  let nextToken = 0;
+  return {
+    begin() {
+      const wasIdle = activeToken === null;
+      activeToken = ++nextToken;
+      if (wasIdle) setLoading(true);
+      return activeToken;
+    },
+    settle(token) {
+      if (token !== activeToken) return false;
+      activeToken = null;
+      setLoading(false);
+      return true;
+    },
+    snapshot() {
+      return { active: activeToken !== null, token: activeToken };
+    }
+  };
+}
+
 // A valid deep link must be able to recover before a loop model is available.
 // The controller makes the selected run id part of the timer ownership, so a
 // later navigation cannot inherit an earlier retry callback.
@@ -901,6 +935,15 @@ export function createPinnedRunStateRetryController({ schedule, cancel, onRetry 
       return { runId, attempts, pending: timer !== null };
     }
   };
+}
+
+// Terminal state failures are scoped to their pinned run. They must stop both
+// retry families, but an old terminal response cannot cancel a newer run.
+export function cancelPinnedRunRetries({ requestedRunId, selectedRunId, selectedStateRetry, cancelSharedReconnect }) {
+  if (requestedRunId === null || requestedRunId !== selectedRunId) return false;
+  selectedStateRetry?.cancel(requestedRunId);
+  cancelSharedReconnect?.(requestedRunId);
+  return true;
 }
 
 // This derives the authoritative current stage from the canonical loop

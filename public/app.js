@@ -24,7 +24,10 @@ import {
   commitPinnedStateResponse,
   isRetryableRequestFailure,
   createTopologyRefreshTracker,
+  settleTopologyRefresh,
+  createCanonicalLoadingController,
   createPinnedRunStateRetryController,
+  cancelPinnedRunRetries,
   sharedRunReconnectDelay,
   agentTeamConversationProjection,
   agentTeamProviderProjection,
@@ -178,6 +181,7 @@ let sharedRunReconnectAttempts = 0;
 let sharedRunReconnectRequiresSchemaFrame = false;
 let canonicalStateRequestGeneration = 0;
 const sharedRunTopologyRefresh = createTopologyRefreshTracker();
+const canonicalStateLoading = createCanonicalLoadingController({ setLoading });
 const selectedRunStateRetry = createPinnedRunStateRetryController({
   schedule: (callback, delay) => setTimeout(callback, delay),
   cancel: (timer) => clearTimeout(timer),
@@ -302,7 +306,13 @@ await refresh({ synchronizeIncidentStage: true });
 async function refresh({ synchronizeIncidentStage = false, topologyRefreshKey = null } = {}) {
   const requestedRunId = selectedRunId;
   const requestGeneration = beginCanonicalStateRequest();
-  setLoading(true);
+  const loadingToken = canonicalStateLoading.begin();
+  let topologyRefreshSettled = false;
+  const settleTopologyRefreshOwnership = (succeeded = false) => {
+    if (topologyRefreshSettled) return false;
+    topologyRefreshSettled = true;
+    return settleTopologyRefresh(sharedRunTopologyRefresh, topologyRefreshKey, succeeded);
+  };
   try {
     const nextState = await request(browserStatePath(requestedRunId));
     const stateCommit = commitCanonicalStateResponse({
@@ -310,8 +320,15 @@ async function refresh({ synchronizeIncidentStage = false, topologyRefreshKey = 
       requestGeneration,
       nextState
     });
-    if (stateCommit === "superseded") return;
-    if (stateCommit === "mismatched") throw new RequestError("The requested incident is unavailable.", { status: 404 });
+    if (stateCommit === "superseded") {
+      settleTopologyRefreshOwnership();
+      return;
+    }
+    if (stateCommit === "mismatched") {
+      settleTopologyRefreshOwnership();
+      throw new RequestError("The requested incident is unavailable.", { status: 404 });
+    }
+    settleTopologyRefreshOwnership(true);
     bindCanonicalWorkspace(state.workspace_projection);
     const canonical = sharedRunModel();
     synchronizeCanonicalIncidentStage(canonical, { force: synchronizeIncidentStage });
@@ -320,7 +337,6 @@ async function refresh({ synchronizeIncidentStage = false, topologyRefreshKey = 
     hideError();
     render();
     ensureSelectedLiveComponentDetail();
-    if (topologyRefreshKey) sharedRunTopologyRefresh.succeed(topologyRefreshKey);
     if (requestedRunId !== null) selectedRunStateRetry.succeed(requestedRunId);
     void hydrateSharedRun();
     void restoreAgentTeamSession();
@@ -328,8 +344,8 @@ async function refresh({ synchronizeIncidentStage = false, topologyRefreshKey = 
     // optional flag API. They must never delay the canonical browser state.
     void refreshDevelopmentStatus();
   } catch (error) {
+    settleTopologyRefreshOwnership();
     if (requestGeneration !== canonicalStateRequestGeneration || selectedRunId !== requestedRunId) return;
-    if (topologyRefreshKey) sharedRunTopologyRefresh.fail(topologyRefreshKey);
     showError(error.message);
     // A restored terminal run cannot rely on a live EventSource to surface a
     // failed reload. Keep its canonical identity pinned and enter the same
@@ -339,7 +355,17 @@ async function refresh({ synchronizeIncidentStage = false, topologyRefreshKey = 
     // can accept the same revision after a transient 503.
     const retryable = isRetryableRequestFailure(error);
     if (!retryable && requestedRunId !== null) {
-      selectedRunStateRetry.cancel(requestedRunId);
+      const terminalRetryCancelled = cancelPinnedRunRetries({
+        requestedRunId,
+        selectedRunId,
+        selectedStateRetry: selectedRunStateRetry,
+        cancelSharedReconnect: cancelSharedRunReconnect
+      });
+      if (terminalRetryCancelled && sharedRun?.run_id === requestedRunId) {
+        sharedRun = { ...sharedRun, stream_state: "stale", error: "Live incident updates are unavailable. Retry manually." };
+        persistSharedRun();
+        renderSharedRunConnectionStatus();
+      }
     } else if (retryable && topologyRefreshKey && requestedRunId !== null) {
       selectedRunStateRetry.schedule(requestedRunId);
     } else if (retryable && sharedRun?.run_id && selectedRunId === sharedRun.run_id) {
@@ -349,7 +375,7 @@ async function refresh({ synchronizeIncidentStage = false, topologyRefreshKey = 
       selectedRunStateRetry.schedule(requestedRunId);
     }
   } finally {
-    if (requestGeneration === canonicalStateRequestGeneration) setLoading(false);
+    canonicalStateLoading.settle(loadingToken);
   }
 }
 
@@ -512,7 +538,8 @@ async function hydrateSharedRun() {
   }
 }
 
-function cancelSharedRunReconnect() {
+function cancelSharedRunReconnect(runId = null) {
+  if (runId !== null && sharedRun?.run_id !== runId) return false;
   if (sharedRunReconnectTimer) clearTimeout(sharedRunReconnectTimer);
   sharedRunReconnectTimer = null;
   sharedRunReconnectAttempts = 0;
@@ -520,6 +547,7 @@ function cancelSharedRunReconnect() {
   sharedRunTopologyRefresh.reset();
   agentLoopEventSource?.close();
   agentLoopEventSource = null;
+  return true;
 }
 
 function scheduleSharedRunReconnect({ error = null } = {}) {
@@ -534,7 +562,6 @@ function scheduleSharedRunReconnect({ error = null } = {}) {
     stream_state: sharedRunReconnectAttempts >= 2 ? "stale" : "reconnecting",
     error
   };
-  renderSharedRunConnectionStatus();
   sharedRunReconnectTimer = setTimeout(() => {
     sharedRunReconnectTimer = null;
     if (sharedRun?.run_id !== runId || selectedRunId !== runId) return;
@@ -543,6 +570,7 @@ function scheduleSharedRunReconnect({ error = null } = {}) {
     // bounded retry path, so the operator never sees a fake retrying state.
     void hydrateSharedRun();
   }, delay);
+  renderSharedRunConnectionStatus();
   if (state || sharedRunModel()) render();
 }
 
@@ -789,10 +817,13 @@ function renderHeader() {
 }
 
 function renderSharedRunConnectionStatus() {
-  const connectionMessage = sharedRun?.stream_state === "reconnecting"
+  const retryPending = sharedRunReconnectTimer !== null;
+  const connectionMessage = sharedRun?.stream_state === "reconnecting" && retryPending
     ? "Reconnecting to live incident updates"
-    : sharedRun?.stream_state === "stale"
+    : sharedRun?.stream_state === "stale" && retryPending
       ? "Live incident updates are stale; retrying"
+      : ["reconnecting", "stale"].includes(sharedRun?.stream_state)
+        ? "Live incident updates are unavailable. Retry manually."
       : "";
   els["shared-run-connection"].hidden = !connectionMessage;
   els["shared-run-connection"].textContent = connectionMessage;

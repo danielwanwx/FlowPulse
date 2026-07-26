@@ -25,7 +25,10 @@ import {
   commitPinnedStateResponse,
   isRetryableRequestFailure,
   createTopologyRefreshTracker,
+  settleTopologyRefresh,
+  createCanonicalLoadingController,
   createPinnedRunStateRetryController,
+  cancelPinnedRunRetries,
   sharedRunReconnectDelay,
   architectureViewTopology,
   componentDetailProjection,
@@ -510,6 +513,107 @@ test("Incident refresh controllers preserve the latest pinned state and retry on
   tracker.succeed(firstKey);
   assert.equal(tracker.request(loop, state), null, "a completed refresh is deduplicated until identity changes");
 
+  const topologyRaceTracker = createTopologyRefreshTracker();
+  const topologyRaceLoop = { run_id: "run-topology-race", topology: { projection_revision: "topology-revision-one" } };
+  const topologyRaceState = { run_id: "run-topology-race", topology_views: { run_id: "run-topology-race", projection_revision: "state-revision-zero" } };
+  const topologyRaceKey = topologyRaceTracker.request(topologyRaceLoop, topologyRaceState);
+  let topologyRaceGeneration = 1;
+  const delayedTopologyResponse = deferred();
+  const pendingTopologyResponse = (async () => {
+    const nextState = await delayedTopologyResponse.promise;
+    const result = commitPinnedStateResponse({
+      requestedRunId: "run-topology-race",
+      selectedRunId: "run-topology-race",
+      requestGeneration: 1,
+      currentGeneration: topologyRaceGeneration,
+      nextState,
+      commit: () => { throw new Error("a superseded topology response must not commit"); }
+    });
+    settleTopologyRefresh(topologyRaceTracker, topologyRaceKey, result === "committed");
+    return result;
+  })();
+  topologyRaceGeneration = 2; // A newer canonical request starts, but its /api/state read fails before it can settle gen1's key.
+  delayedTopologyResponse.resolve({ ...topologyRaceState, topology_views: { ...topologyRaceState.topology_views, projection_revision: "state-revision-late" } });
+  assert.equal(await pendingTopologyResponse, "superseded");
+  assert.equal(topologyRaceTracker.request(topologyRaceLoop, topologyRaceState), topologyRaceKey, "a late superseded topology response releases its own in-flight key after the newer request fails");
+  assert.equal(settleTopologyRefresh(topologyRaceTracker, topologyRaceKey), true);
+  const newerTopologyLoop = { ...topologyRaceLoop, topology: { projection_revision: "topology-revision-two" } };
+  const newerTopologyKey = topologyRaceTracker.request(newerTopologyLoop, topologyRaceState);
+  assert.notEqual(newerTopologyKey, topologyRaceKey);
+  assert.equal(settleTopologyRefresh(topologyRaceTracker, topologyRaceKey), false, "an older request cannot settle a newer topology key");
+  assert.equal(topologyRaceTracker.request(newerTopologyLoop, topologyRaceState), null, "the newer topology key remains owned until its own request settles");
+  assert.equal(settleTopologyRefresh(topologyRaceTracker, newerTopologyKey), true);
+
+  const loadingTransitions = [];
+  const loadingController = createCanonicalLoadingController({ setLoading: (value) => loadingTransitions.push(value) });
+  let loadingGeneration = 1;
+  let loadingState = {
+    run_id: "run-loading",
+    topology_views: { projection_revision: "revision-before", live: { runtime_data: { graph: { nodes: [{ id: "before" }], edges: [] } } } }
+  };
+  const delayedForegroundSuccess = deferred();
+  const foregroundSuccessToken = loadingController.begin();
+  const pendingForegroundSuccess = (async () => {
+    const nextState = await delayedForegroundSuccess.promise;
+    const result = commitPinnedStateResponse({
+      requestedRunId: "run-loading",
+      selectedRunId: "run-loading",
+      requestGeneration: 1,
+      currentGeneration: loadingGeneration,
+      nextState,
+      commit: (value) => { loadingState = value; }
+    });
+    loadingController.settle(foregroundSuccessToken);
+    return result;
+  })();
+  loadingGeneration = 2; // A background agent refresh starts and succeeds without taking the foreground loading token.
+  const backgroundSuccess = {
+    run_id: "run-loading",
+    topology_views: { projection_revision: "revision-background-success", live: { runtime_data: { graph: { nodes: [{ id: "background-success" }], edges: [{ id: "background->success" }] } } } }
+  };
+  assert.equal(commitPinnedStateResponse({
+    requestedRunId: "run-loading",
+    selectedRunId: "run-loading",
+    requestGeneration: 2,
+    currentGeneration: loadingGeneration,
+    nextState: backgroundSuccess,
+    commit: (value) => { loadingState = value; }
+  }), "committed");
+  delayedForegroundSuccess.resolve({
+    run_id: "run-loading",
+    topology_views: { projection_revision: "revision-foreground-old", live: { runtime_data: { graph: { nodes: [{ id: "foreground-old" }], edges: [] } } } }
+  });
+  assert.equal(await pendingForegroundSuccess, "superseded");
+  assert.equal(loadingController.snapshot().active, false, "a background success cannot leave foreground loading active");
+  assert.equal(loadingState.topology_views.projection_revision, "revision-background-success");
+  assert.deepEqual(loadingState.topology_views.live.runtime_data.graph.nodes, [{ id: "background-success" }]);
+
+  const delayedForegroundFailure = deferred();
+  const foregroundFailureToken = loadingController.begin();
+  const foregroundFailureGeneration = ++loadingGeneration;
+  const pendingForegroundFailure = (async () => {
+    const nextState = await delayedForegroundFailure.promise;
+    const result = commitPinnedStateResponse({
+      requestedRunId: "run-loading",
+      selectedRunId: "run-loading",
+      requestGeneration: foregroundFailureGeneration,
+      currentGeneration: loadingGeneration,
+      nextState,
+      commit: (value) => { loadingState = value; }
+    });
+    loadingController.settle(foregroundFailureToken);
+    return result;
+  })();
+  loadingGeneration += 1; // The next background refresh fails; it has no loading token to clear.
+  delayedForegroundFailure.resolve({
+    run_id: "run-loading",
+    topology_views: { projection_revision: "revision-foreground-after-background-failure", live: { runtime_data: { graph: { nodes: [{ id: "foreground-after-failure" }], edges: [] } } } }
+  });
+  assert.equal(await pendingForegroundFailure, "superseded");
+  assert.equal(loadingController.snapshot().active, false, "a background failure cannot leave foreground loading active");
+  assert.equal(loadingState.topology_views.projection_revision, "revision-background-success", "a superseded foreground response cannot roll back the canonical projection after a background failure");
+  assert.deepEqual(loadingTransitions, [true, false, true, false]);
+
   const scheduled = [];
   const retried = [];
   let retryController;
@@ -580,6 +684,42 @@ test("Incident refresh controllers preserve the latest pinned state and retry on
   assert.equal(terminalController.schedule("run-new-selection"), true);
   assert.equal(terminalController.cancel("run-retry-then-missing"), false, "a terminal response for the old run cannot cancel the new run's retry");
   assert.deepEqual(terminalController.snapshot(), { runId: "run-new-selection", attempts: 1, pending: true });
+
+  let restoredStateRequests = 1;
+  let restoredAgentLoopRequests = 0;
+  let restoredTimerId = 0;
+  const restoredTimers = new Map();
+  const restoredSharedReconnect = createPinnedRunStateRetryController({
+    schedule: (callback, delay) => {
+      const timer = ++restoredTimerId;
+      restoredTimers.set(timer, { callback, delay, cancelled: false });
+      return timer;
+    },
+    cancel: (timer) => { restoredTimers.get(timer).cancelled = true; },
+    onRetry: () => { restoredAgentLoopRequests += 1; }
+  });
+  assert.equal(restoredSharedReconnect.schedule("run-restored"), true, "a restored shared run schedules its agent-loop reconnect after a 503");
+  restoredStateRequests += 1; // The operator's manual retry receives the terminal 404.
+  let selectedRetryCancellation = null;
+  assert.equal(cancelPinnedRunRetries({
+    requestedRunId: "run-restored",
+    selectedRunId: "run-restored",
+    selectedStateRetry: { cancel: (runId) => { selectedRetryCancellation = runId; } },
+    cancelSharedReconnect: (runId) => restoredSharedReconnect.cancel(runId)
+  }), true);
+  assert.equal(selectedRetryCancellation, "run-restored");
+  assert.deepEqual(restoredSharedReconnect.snapshot(), { runId: null, attempts: 0, pending: false });
+  for (const timer of restoredTimers.values()) if (!timer.cancelled) timer.callback();
+  assert.equal(restoredStateRequests, 2, "a restored shared run stays on the terminal 404 without a third /api/state request");
+  assert.equal(restoredAgentLoopRequests, 0, "the terminal 404 cancels the queued agent-loop rehydrate");
+  assert.equal(restoredSharedReconnect.schedule("run-new-restored"), true);
+  assert.equal(cancelPinnedRunRetries({
+    requestedRunId: "run-restored",
+    selectedRunId: "run-new-restored",
+    selectedStateRetry: { cancel: () => { throw new Error("an old terminal response must not cancel the selected retry"); } },
+    cancelSharedReconnect: (runId) => restoredSharedReconnect.cancel(runId)
+  }), false);
+  assert.deepEqual(restoredSharedReconnect.snapshot(), { runId: "run-new-restored", attempts: 1, pending: true }, "an old terminal response cannot cancel a new restored run reconnect");
 });
 
 function componentDetailPayload() {
@@ -1847,10 +1987,16 @@ test("Incident hydration pins the restored run, reports a stale stream, and reta
   assert.match(hydrateSource, /const topologyRefreshKey = sharedRunTopologyRefresh\.request\(loop, state\);/);
   assert.match(hydrateSource, /stream_state: sharedRunTransportState\(loop\)/);
   assert.match(hydrateSource, /if \(topologyRefreshKey\) void refresh\(\{ synchronizeIncidentStage: true, topologyRefreshKey \}\);/);
-  assert.match(refreshSource, /if \(topologyRefreshKey\) sharedRunTopologyRefresh\.succeed\(topologyRefreshKey\);/);
-  assert.match(refreshSource, /if \(topologyRefreshKey\) sharedRunTopologyRefresh\.fail\(topologyRefreshKey\);/);
+  assert.match(refreshSource, /const loadingToken = canonicalStateLoading\.begin\(\);/);
+  assert.match(refreshSource, /const settleTopologyRefreshOwnership = \(succeeded = false\) => \{[\s\S]*?settleTopologyRefresh\(sharedRunTopologyRefresh, topologyRefreshKey, succeeded\)/);
+  assert.match(refreshSource, /if \(stateCommit === "superseded"\) \{\s*settleTopologyRefreshOwnership\(\);/);
+  assert.match(refreshSource, /if \(stateCommit === "mismatched"\) \{\s*settleTopologyRefreshOwnership\(\);/);
+  assert.match(refreshSource, /settleTopologyRefreshOwnership\(true\);/);
+  assert.match(refreshSource, /\} catch \(error\) \{\s*settleTopologyRefreshOwnership\(\);[\s\S]*?requestGeneration !== canonicalStateRequestGeneration/);
+  assert.match(refreshSource, /canonicalStateLoading\.settle\(loadingToken\);/);
   assert.match(refreshSource, /const retryable = isRetryableRequestFailure\(error\);/);
-  assert.match(refreshSource, /if \(!retryable && requestedRunId !== null\) \{\s*selectedRunStateRetry\.cancel\(requestedRunId\);/);
+  assert.match(refreshSource, /if \(!retryable && requestedRunId !== null\) \{[\s\S]*?cancelPinnedRunRetries\(\{[\s\S]*?cancelSharedReconnect: cancelSharedRunReconnect/);
+  assert.match(refreshSource, /terminalRetryCancelled && sharedRun\?\.run_id === requestedRunId[\s\S]*?stream_state: "stale"/);
   assert.match(refreshSource, /retryable && topologyRefreshKey && requestedRunId !== null/);
   assert.match(refreshSource, /retryable && requestedRunId !== null/);
   assert.match(appJs, /class RequestError extends Error/);
@@ -1867,6 +2013,8 @@ test("Incident hydration pins the restored run, reports a stale stream, and reta
   assert.match(headerSource, /shared-run-connection/);
   assert.match(headerSource, /Repair executed; verification failed/);
   assert.match(connectionSource, /Live incident updates are stale; retrying/);
+  assert.match(connectionSource, /const retryPending = sharedRunReconnectTimer !== null;/);
+  assert.match(connectionSource, /Live incident updates are unavailable\. Retry manually\./);
   assert.match(connectionSource, /els\["incident-strip"\]\.hidden = false/);
   assert.match(connectionSource, /els\["incident-strip"\]\.classList\.add\("is-connection-status"\)/);
   assert.doesNotMatch(reconnectSource, /if \(!state && !sharedRunModel\(\)\) return;/);
@@ -1877,7 +2025,7 @@ test("Incident hydration pins the restored run, reports a stale stream, and reta
   assert.match(approvalSource, /Repair was executed, but independent verification failed/);
   assert.match(appJs, /verification\.passed \? "Passed" : verification\.failed \? "Failed" : "Awaiting independent check"/);
   assert.match(appJs, /function resetIncidentStageForRun\(runId\)[\s\S]*?incidentStageFollowsAuthority = true/);
-  assert.match(appJs, /function cancelSharedRunReconnect\([\s\S]*?clearTimeout\(sharedRunReconnectTimer\)/);
+  assert.match(appJs, /function cancelSharedRunReconnect\(runId = null\) \{\s*if \(runId !== null && sharedRun\?\.run_id !== runId\) return false;[\s\S]*?clearTimeout\(sharedRunReconnectTimer\)/);
   assert.match(appJs, /if \(selectedRunId !== runId\) \{[\s\S]*?cancelSharedRunReconnect\(\);[\s\S]*?selectedRunStateRetry\.cancel\(\);/);
   assert.match(appJs, /bindCanonicalRunSelection\(loop\)[\s\S]*?resetIncidentStageForRun\(runId\)/);
   assert.match(appJs, /data-start-guided-replay/);
