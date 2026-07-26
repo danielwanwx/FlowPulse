@@ -251,7 +251,13 @@ class DomainActivityEngine:
                 )
             return ActivityOutcome(decision=VerificationDecision.PASS, identity="{}:p0:domain".format(packet.stage))
         except PolicyViolation as error:
-            terminal = CaseState.BLOCKED if packet.stage == "owner_gate" else CaseState.NEEDS_HUMAN
+            # A rejected update is an audit event, not a case-state transition.
+            # In particular, a forged command that arrived before OWNER_WAIT
+            # became externally visible must not overwrite that projection.
+            terminal = (
+                None if packet.stage == "validate_owner_command"
+                else CaseState.BLOCKED if packet.stage == "owner_gate" else CaseState.NEEDS_HUMAN
+            )
             return ActivityOutcome(
                 decision=VerificationDecision.FAIL, state=terminal,
                 identity="{}:p0:domain".format(packet.stage), reason_codes=[str(error)],

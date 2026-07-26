@@ -1,8 +1,9 @@
 """Tenant-scoped FastAPI boundary with a real Postgres lifespan repository."""
 
+import hmac
 import inspect
 from contextlib import asynccontextmanager
-from typing import Any, Optional, Protocol
+from typing import Any, Mapping, Optional, Protocol
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -37,17 +38,20 @@ class TemporalUnavailableStarter:
         raise RuntimeError("temporal_update_unavailable")
 
 
-class LocalTestAuthMiddleware(BaseHTTPMiddleware):
-    """Compose-only test adapter; production must inject ASGI auth state."""
+class FixtureTokenAuthMiddleware(BaseHTTPMiddleware):
+    """Explicit server-side fixture identity map; headers never choose identity."""
+
+    def __init__(self, app, identities: Mapping[str, AuthContext]):
+        super().__init__(app)
+        self._identities = dict(identities)
+
     async def dispatch(self, request: Request, call_next):
-        tenant = request.headers.get("x-flowpulse-test-tenant")
-        subject = request.headers.get("x-flowpulse-test-subject")
-        if tenant and subject:
-            supplied_roles = request.headers.get("x-flowpulse-test-roles", "local-test-owner")
-            roles = [role.strip() for role in supplied_roles.split(",") if role.strip()]
-            request.state.flowpulse_auth = AuthContext(
-                tenant_id=tenant, subject_id=subject, roles=roles
-            )
+        header = request.headers.get("authorization", "")
+        bearer = header.removeprefix("Bearer ") if header.startswith("Bearer ") else ""
+        for configured_token, context in self._identities.items():
+            if hmac.compare_digest(bearer, configured_token):
+                request.state.flowpulse_auth = context
+                break
         return await call_next(request)
 
 
@@ -78,7 +82,7 @@ def create_app(
     repository: Optional[Any] = None,
     temporal_starter: Optional[TemporalStartPort] = None,
     authorization: Optional[AuthorizationPort] = None,
-    allow_local_test_auth: bool = False,
+    trusted_fixture_identities: Optional[Mapping[str, AuthContext]] = None,
     postgres_dsn: Optional[str] = None,
 ) -> FastAPI:
     @asynccontextmanager
@@ -97,8 +101,8 @@ def create_app(
     # TestClient can be used without a context manager in existing callers;
     # retain an explicitly supplied deterministic repository immediately.
     app.state.repository = repository
-    if allow_local_test_auth:
-        app.add_middleware(LocalTestAuthMiddleware)
+    if trusted_fixture_identities:
+        app.add_middleware(FixtureTokenAuthMiddleware, identities=trusted_fixture_identities)
     temporal_starter = temporal_starter or TemporalUnavailableStarter()
     authorization = authorization or UnavailableAuthorizationPort()
 

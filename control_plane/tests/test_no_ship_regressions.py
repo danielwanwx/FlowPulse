@@ -19,11 +19,12 @@ from flowpulse_cp.models import (
     ApprovalDecision, AuthContext, ClaimRecord, EvidenceAuthority, EvidenceEnvelope,
     FreshnessStatus, IncidentCase, IncidentIntake, KnowledgeRevision, OwnerApproval,
     PrivilegedChange, ProofScope, RemediationProposal, SourceKind, OwnerCommandReceipt,
-    TemporalActivityPacket,
+    OwnerGateCommand, TemporalActivityPacket,
     TemporalCaseDescriptor, TemporalCaseRequest,
 )
 from flowpulse_cp.policy import PolicyViolation, repair_contract_hash
 from flowpulse_cp.repository import InMemoryCaseRepository
+from flowpulse_cp.temporal_workflow import DiagnosisTemporalWorkflow
 
 
 def digest(value):
@@ -248,7 +249,12 @@ class NoShipRegressionTests(unittest.TestCase):
         self.assertEqual("approval_submitted", response.json()["phase"])
 
     def test_http_rejects_missing_or_mismatched_trusted_tenant(self):
-        app = create_app(self.repo, temporal_starter=FakeStarter(), allow_local_test_auth=True)
+        app = create_app(
+            self.repo, temporal_starter=FakeStarter(),
+            trusted_fixture_identities={
+                "fixture-owner-token": AuthContext(tenant_id="tenant-a", subject_id="owner-a", roles=["owner"]),
+            },
+        )
         client = TestClient(app)
         intake = {
             "tenant_id": "tenant-b", "external_incident_id": "http-forged", "title": "test", "severity": "SEV2",
@@ -258,25 +264,77 @@ class NoShipRegressionTests(unittest.TestCase):
         self.assertEqual(401, client.post("/v1/cases", json=intake).status_code)
         response = client.post(
             "/v1/cases", json=intake,
-            headers={"x-flowpulse-test-tenant": "tenant-a", "x-flowpulse-test-subject": "owner-a"},
+            headers={"authorization": "Bearer fixture-owner-token"},
         )
         self.assertEqual(403, response.status_code, response.text)
 
-    def test_http_rejects_tenant_subject_without_owner_role(self):
+    def test_http_fixture_identity_ignores_caller_asserted_headers(self):
         item = proposal()
         starter = FakeStarter()
-        app = create_app(self.repo, temporal_starter=starter, allow_local_test_auth=True)
+        app = create_app(
+            self.repo, temporal_starter=starter,
+            trusted_fixture_identities={
+                "fixture-viewer-token": AuthContext(tenant_id="tenant-a", subject_id="viewer-a", roles=["viewer"]),
+            },
+        )
         client = TestClient(app)
         response = client.post(
             "/v1/proposals/{}/dry-run".format(item.proposal_id),
             json={"approval": json.loads(approval(item).json()), "current_witness": {"deploy": "d1"}},
             headers={
-                "x-flowpulse-test-tenant": "tenant-a", "x-flowpulse-test-subject": "viewer-a",
-                "x-flowpulse-test-roles": "viewer",
+                "authorization": "Bearer fixture-viewer-token",
+                "x-flowpulse-test-tenant": "tenant-attacker", "x-flowpulse-test-subject": "attacker",
+                "x-flowpulse-test-roles": "owner",
             },
         )
         self.assertEqual(403, response.status_code, response.text)
         self.assertEqual([], starter.calls)
+
+    def test_http_rejects_caller_asserted_headers_without_fixture_credential(self):
+        app = create_app(
+            self.repo, temporal_starter=FakeStarter(),
+            trusted_fixture_identities={
+                "fixture-owner-token": AuthContext(tenant_id="tenant-a", subject_id="owner-a", roles=["owner"]),
+            },
+        )
+        response = TestClient(app).get(
+            "/v1/cases/case-1",
+            headers={
+                "x-flowpulse-test-tenant": "tenant-attacker", "x-flowpulse-test-subject": "attacker",
+                "x-flowpulse-test-roles": "owner",
+            },
+        )
+        self.assertEqual(401, response.status_code, response.text)
+
+    def test_owner_command_revalidation_fails_closed_after_authoritative_state_changes(self):
+        workflow = DiagnosisTemporalWorkflow()
+        current = case()
+        item = proposal()
+        authority = HmacAuthorizationAuthority("test-auth-secret")
+        command = OwnerGateCommand(
+            case_id=current.case_id, tenant_id=current.tenant_id,
+            auth_assertion=authority.issue(
+                AuthContext(tenant_id="tenant-a", subject_id="owner-a", roles=["owner"]), current, item.proposal_id,
+            ),
+            proposal=item,
+        )
+        workflow._initialized = True
+        workflow._case_id = current.case_id
+        workflow._case_revision = current.case_revision
+        workflow._tenant_id = current.tenant_id
+        workflow._workflow_run_id = current.workflow_run_id
+        workflow._owner_phase = "OWNER_WAIT"
+        self.assertEqual((item, item.proposal_id), workflow._validate_authoritative_command_state(command))
+
+        # This models the mandatory check after the awaited auth activity: a
+        # main-workflow transition or conflicting command closes the window.
+        workflow._owner_phase = "OWNER_GATE"
+        with self.assertRaisesRegex(PolicyViolation, "phase_not_accepting"):
+            workflow._validate_authoritative_command_state(command)
+        workflow._owner_phase = "OWNER_WAIT"
+        workflow._proposal = proposal("proposal-competing", idempotency_key="idem-competing")
+        with self.assertRaisesRegex(PolicyViolation, "proposal_immutable"):
+            workflow._validate_authoritative_command_state(command)
 
 
 if __name__ == "__main__":

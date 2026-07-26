@@ -30,7 +30,10 @@ def main() -> None:
         authorization=HttpAuthorizationClient(
             settings.authorization_service_url, "api", settings.authorization_service_token,
         ),
-        allow_local_test_auth=os.environ.get("FLOWPULSE_LOCAL_TEST_AUTH") == "1",
+        trusted_fixture_identities=(
+            {settings.trusted_fixture_token: settings.trusted_fixture_context}
+            if settings.trusted_fixture_token and settings.trusted_fixture_context else None
+        ),
     )
     uvicorn.run(application, host="0.0.0.0", port=8090)
 

@@ -3,7 +3,11 @@
 from dataclasses import dataclass
 import json
 import os
-from typing import Dict
+from typing import Dict, Optional
+
+from pydantic import ValidationError
+
+from .models import AuthContext
 
 
 def required(name: str) -> str:
@@ -20,15 +24,29 @@ class ApiSettings:
     authorization_service_url: str
     authorization_service_token: str
     temporal_task_queue: str
+    trusted_fixture_token: Optional[str]
+    trusted_fixture_context: Optional[AuthContext]
 
     @classmethod
     def from_environment(cls) -> "ApiSettings":
+        fixture_token = os.environ.get("FLOWPULSE_TRUSTED_AUTH_FIXTURE_TOKEN")
+        fixture_context_json = os.environ.get("FLOWPULSE_TRUSTED_AUTH_FIXTURE_CONTEXT_JSON")
+        if bool(fixture_token) != bool(fixture_context_json):
+            raise RuntimeError("trusted_auth_fixture_token_and_context_must_be_configured_together")
+        fixture_context = None
+        if fixture_context_json:
+            try:
+                fixture_context = AuthContext.parse_obj(json.loads(fixture_context_json))
+            except (json.JSONDecodeError, ValidationError) as error:
+                raise RuntimeError("trusted_auth_fixture_context_invalid") from error
         return cls(
             temporal_address=required("FLOWPULSE_TEMPORAL_ADDRESS"),
             postgres_dsn=required("FLOWPULSE_POSTGRES_DSN"),
             authorization_service_url=required("FLOWPULSE_AUTHORIZATION_SERVICE_URL"),
             authorization_service_token=required("FLOWPULSE_AUTHORIZATION_SERVICE_TOKEN"),
             temporal_task_queue=required("FLOWPULSE_TEMPORAL_TASK_QUEUE"),
+            trusted_fixture_token=fixture_token,
+            trusted_fixture_context=fixture_context,
         )
 
 

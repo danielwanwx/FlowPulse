@@ -27,10 +27,16 @@ class LiveComposeHttpTests(unittest.TestCase):
         "FLOWPULSE_TEST_POSTGRES_DSN",
         "postgresql://flowpulse_cp_app:flowpulse-cp-local-only@127.0.0.1:5433/flowpulse",
     )
-    headers = {
-        "x-flowpulse-test-tenant": "tenant-http", "x-flowpulse-test-subject": "owner-http",
-        "x-flowpulse-test-roles": "owner",
-    }
+    owner_token = os.environ.get("FLOWPULSE_LIVE_API_OWNER_TOKEN")
+
+    @classmethod
+    def setUpClass(cls):
+        if not cls.owner_token:
+            raise unittest.SkipTest("requires FLOWPULSE_LIVE_API_OWNER_TOKEN for the server-side local fixture")
+
+    @property
+    def headers(self):
+        return {"authorization": "Bearer " + self.owner_token}
 
     def request(self, method, path, payload=None, headers=None):
         body = json.dumps(payload).encode("utf-8") if payload is not None else None
@@ -44,14 +50,14 @@ class LiveComposeHttpTests(unittest.TestCase):
         except HTTPError as error:
             return error.code, json.loads(error.read().decode("utf-8"))
 
-    def intake_and_wait(self):
+    def intake_and_wait(self, headers=None):
         now = datetime.now(timezone.utc)
         external = "http-{}".format(uuid4().hex)
         status, intake = self.request("POST", "/v1/cases", {
             "tenant_id": "tenant-http", "external_incident_id": external, "title": "Compose smoke",
             "severity": "SEV2", "environment": "prod", "affected_entities": ["checkout"],
             "observed_at": now.isoformat(), "summary": "deterministic local intake", "actor_id": "forged-body",
-        })
+        }, headers=headers)
         self.assertEqual(202, status, intake)
         self.assertNotEqual("pending", intake["workflow_run_id"])
         for _ in range(50):
@@ -90,6 +96,18 @@ class LiveComposeHttpTests(unittest.TestCase):
                         "SELECT count(*) FROM action_executions WHERE case_id=$1 AND proposal_id=$2", case_id, proposal_id,
                     )
                     return (candidate["status"] if candidate else None, approvals, actions)
+                return await repository._tenant("tenant-http", operation)
+            finally:
+                await repository.close()
+        return asyncio.run(run())
+
+    def auth_intent_count(self):
+        async def run():
+            repository = PostgresCaseRepository(self.dsn)
+            await repository.connect()
+            try:
+                async def operation(connection):
+                    return await connection.fetchval("SELECT count(*) FROM auth_command_intents")
                 return await repository._tenant("tenant-http", operation)
             finally:
                 await repository.close()
@@ -177,12 +195,34 @@ class LiveComposeHttpTests(unittest.TestCase):
             "POST", "/v1/proposals/{}/dry-run".format(proposal.proposal_id),
             {"approval": json.loads(approval.json()), "current_witness": {}},
             headers={
+                "authorization": "Bearer not-a-configured-fixture-token",
                 "x-flowpulse-test-tenant": "tenant-http", "x-flowpulse-test-subject": "viewer-http",
-                "x-flowpulse-test-roles": "viewer",
+                "x-flowpulse-test-roles": "owner",
             },
         )
-        self.assertEqual(403, status, body)
+        self.assertEqual(401, status, body)
         self.assertEqual((None, 0, 0), self.db_counts(case["case_id"], approval.approval_id, proposal.proposal_id))
+
+    def test_host_headers_cannot_forge_identity_or_mint_intent(self):
+        before = self.auth_intent_count()
+        headers = {
+            "x-flowpulse-test-tenant": "tenant-attacker", "x-flowpulse-test-subject": "attacker",
+            "x-flowpulse-test-roles": "owner",
+        }
+        status, body = self.request("GET", "/v1/cases/case-does-not-exist", headers=headers)
+        self.assertEqual(401, status, body)
+        self.assertEqual(before, self.auth_intent_count())
+
+        now, case = self.intake_and_wait(headers={
+            "authorization": "Bearer " + self.owner_token,
+            "x-flowpulse-test-tenant": "tenant-attacker", "x-flowpulse-test-subject": "attacker",
+            "x-flowpulse-test-roles": "viewer",
+        })
+        self.assertEqual("tenant-http", case["tenant_id"])
+        proposal = self.proposal(now, case)
+        status, body = self.request("POST", "/v1/proposals", json.loads(proposal.json()), headers=headers)
+        self.assertEqual(401, status, body)
+        self.assertEqual(before, self.auth_intent_count())
 
 
 if __name__ == "__main__":

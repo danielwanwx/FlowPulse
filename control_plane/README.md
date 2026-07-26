@@ -30,9 +30,10 @@ policies.
 
 ```bash
 cd control_plane
+export FLOWPULSE_TEST_OWNER_TOKEN="$(openssl rand -hex 32)"
 docker compose down --volumes
 docker compose up --build -d
-FLOWPULSE_LIVE_COMPOSE=1 .venv/bin/python -m unittest \
+FLOWPULSE_LIVE_COMPOSE=1 FLOWPULSE_LIVE_API_OWNER_TOKEN="$FLOWPULSE_TEST_OWNER_TOKEN" .venv/bin/python -m unittest \
   discover -s tests -p 'test_live_compose_http.py' -v
 FLOWPULSE_LIVE_HOST_BOUNDARY=1 .venv/bin/python -m unittest \
   discover -s tests -p 'test_live_host_boundaries.py' -v
@@ -65,9 +66,12 @@ the stack available for API replay; stop it later with `docker compose down
 Postgres is published on `127.0.0.1:5433` to avoid colliding with a developer's
 local Postgres. Service-to-service connections continue to use `postgres:5432`.
 
-For a Compose-only smoke test, the deliberately local test-auth adapter accepts
-`x-flowpulse-test-tenant` and `x-flowpulse-test-subject`; production must
-inject `request.state.flowpulse_auth` from trusted authentication middleware.
+For the host-published Compose API, an explicit, caller-supplied-at-startup
+fixture bearer credential maps to one server-configured owner identity. The
+credential itself is not committed; Compose refuses to start without
+`FLOWPULSE_TEST_OWNER_TOKEN`. `x-flowpulse-test-*` headers are ignored and
+cannot select a tenant, subject, or role. Production must inject
+`request.state.flowpulse_auth` from trusted authentication middleware.
 `POST /v1/cases` calls `Client.start_workflow`; it does not fall back to an
 in-memory workflow. Proposal and dry-run endpoints only submit typed Temporal
 updates using the trusted auth subject; they never validate an Owner Gate or
@@ -98,6 +102,12 @@ durable and one-time. The API and worker have no signing key. The Owner Gate
 worker resolves the assertion through the authorization service before any
 proposal/approval mutation; roles inside a direct Temporal payload are not
 trusted.
+
+An owner command submitted before the workflow reaches its owner wait waits
+inside Temporal for the durable `OWNER_WAIT` phase, then validates normally;
+it is not rejected on a transient readiness field. The workflow revalidates
+case/run, phase, proposal/approval immutability, and expected proposal ID after
+the awaited authorization activity and immediately before mutation.
 
 Compose bootstraps separate MinIO identities: the artifact writer can access
 only the evidence bucket, while the verifier/current-source reader is read-only
