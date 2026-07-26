@@ -15,4 +15,3 @@ __all__ = [
     "WORKSPACE_V2_WORKFLOW_TYPE",
     "workspace_workflow_definitions",
 ]
-
