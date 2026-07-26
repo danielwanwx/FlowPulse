@@ -751,6 +751,10 @@
               "type": "array"
             }
           },
+          "required": [
+            "nodes",
+            "edges"
+          ],
           "title": "IncidentGraph",
           "type": "object"
         },
@@ -1983,11 +1987,11 @@
       "case_revision": 1,
       "component": {
         "canonical_identity": "service:checkout",
-        "classification_reason": null,
+        "classification_reason": "Relationship unavailable",
         "component_id": "checkout",
         "display_name": "Checkout",
         "impact_status": "unknown",
-        "membership": "CONNECTED",
+        "membership": "CLASSIFIED",
         "runtime_status": "unknown"
       },
       "created_at": "2026-07-26 00:00:00+00:00",
@@ -2055,11 +2059,11 @@
         "nodes": [
           {
             "canonical_identity": "service:checkout",
-            "classification_reason": null,
+            "classification_reason": "Relationship unavailable",
             "component_id": "checkout",
             "display_name": "Checkout",
             "impact_status": "unknown",
-            "membership": "CONNECTED",
+            "membership": "CLASSIFIED",
             "runtime_status": "unknown"
           }
         ]

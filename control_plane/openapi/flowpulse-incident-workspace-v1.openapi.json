@@ -334,6 +334,16 @@
         "title": "DryRunRequest",
         "type": "object"
       },
+      "ExplanationEventStatus": {
+        "description": "An enumeration.",
+        "enum": [
+          "STARTED",
+          "COMPLETED",
+          "DEGRADED"
+        ],
+        "title": "ExplanationEventStatus",
+        "type": "string"
+      },
       "GraphMembership": {
         "description": "An enumeration.",
         "enum": [
@@ -469,18 +479,6 @@
       },
       "IncidentEvent": {
         "additionalProperties": false,
-        "definitions": {
-          "ExplanationEventStatus": {
-            "description": "An enumeration.",
-            "enum": [
-              "STARTED",
-              "COMPLETED",
-              "DEGRADED"
-            ],
-            "title": "ExplanationEventStatus",
-            "type": "string"
-          }
-        },
         "description": "Public run identity and its immutable internal Temporal correlation.",
         "properties": {
           "case_id": {
@@ -609,6 +607,10 @@
             "type": "array"
           }
         },
+        "required": [
+          "nodes",
+          "edges"
+        ],
         "title": "IncidentGraph",
         "type": "object"
       },
@@ -757,6 +759,45 @@
         ],
         "title": "IncidentIntake",
         "type": "object"
+      },
+      "IncidentNotification": {
+        "additionalProperties": false,
+        "description": "One durable, tenant-scoped browser notification cursor and hydration summary.",
+        "properties": {
+          "event_type": {
+            "$ref": "#/components/schemas/IncidentNotificationType"
+          },
+          "incident": {
+            "$ref": "#/components/schemas/IncidentSummary"
+          },
+          "notification_id": {
+            "minLength": 1,
+            "title": "Notification Id",
+            "type": "string"
+          },
+          "occurred_at": {
+            "format": "date-time",
+            "title": "Occurred At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "notification_id",
+          "event_type",
+          "occurred_at",
+          "incident"
+        ],
+        "title": "IncidentNotification",
+        "type": "object"
+      },
+      "IncidentNotificationType": {
+        "description": "An enumeration.",
+        "enum": [
+          "incident.accepted",
+          "incident.updated"
+        ],
+        "title": "IncidentNotificationType",
+        "type": "string"
       },
       "IncidentProjection": {
         "additionalProperties": false,
@@ -928,7 +969,7 @@
             "$ref": "#/components/schemas/ProjectionState"
           },
           "projection_revision": {
-            "minimum": 1.0,
+            "minimum": 1,
             "title": "Projection Revision",
             "type": "integer"
           },
@@ -938,7 +979,7 @@
             "type": "string"
           },
           "sequence": {
-            "minimum": 1.0,
+            "minimum": 1,
             "title": "Sequence",
             "type": "integer"
           },

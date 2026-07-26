@@ -10,7 +10,7 @@ from pathlib import Path
 CONTROL_PLANE = Path(__file__).resolve().parents[1]
 REPO = CONTROL_PLANE.parent
 ARTIFACT_DIR = CONTROL_PLANE / "openapi"
-PRODUCER_SHA = "0b158cdfc355594d64500d9ae3f8ba33e7ee0a6f"
+PRODUCER_SHA = "f05931e78216921428f666b3ff692fc43a3c948e"
 
 
 class WorkspaceContractFreezeTests(unittest.TestCase):
@@ -48,6 +48,15 @@ class WorkspaceContractFreezeTests(unittest.TestCase):
         self.assertEqual({"text/event-stream"}, set(event_response["content"]))
         global_event_response = openapi["paths"]["/v1/incidents/events"]["get"]["responses"]["200"]
         self.assertEqual({"text/event-stream"}, set(global_event_response["content"]))
+        self.assertEqual(
+            "#/components/schemas/IncidentNotification",
+            global_event_response["content"]["text/event-stream"]["schema"]["$ref"],
+        )
+        self.assertIn("IncidentNotification", openapi["components"]["schemas"])
+        self.assertEqual(
+            {"nodes", "edges"},
+            set(openapi["components"]["schemas"]["IncidentGraph"]["required"]),
+        )
 
     def test_plan_and_contract_record_exact_bundle_hashes_before_frontend_integration(self):
         plan = (REPO / "docs" / "plans" / "2026-07-25-agent-led-incident-control-plane-integration.md").read_text()
