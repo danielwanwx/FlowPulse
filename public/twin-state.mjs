@@ -788,9 +788,18 @@ export function incidentVerificationGuidance(verification) {
 }
 
 // State responses are only useful while they still belong to the selected
-// canonical run. Keep the ownership check and the write adjacent so a late
-// response cannot replace the topology of a newer selection.
-export function commitPinnedStateResponse({ requestedRunId, selectedRunId, nextState, commit }) {
+// canonical run and the newest state request. Keep the ownership check and
+// the write adjacent so a late response cannot replace either a newer run or
+// a newer projection for the same run.
+export function commitPinnedStateResponse({
+  requestedRunId,
+  selectedRunId,
+  requestGeneration,
+  currentGeneration,
+  nextState,
+  commit
+}) {
+  if (requestGeneration !== currentGeneration) return "superseded";
   if (selectedRunId !== requestedRunId) return "superseded";
   if (requestedRunId !== null && nextState?.run_id !== requestedRunId) return "mismatched";
   commit(nextState);

@@ -433,21 +433,24 @@ test("Incident refresh controllers preserve the latest pinned state and retry on
     return { promise, resolve };
   };
   let selectedRunId = "run-a";
+  let currentGeneration = 0;
   let committedState = null;
-  const applyResponse = async (requestedRunId, response) => {
+  const applyResponse = async (requestedRunId, requestGeneration, response) => {
     const nextState = await response;
     return commitPinnedStateResponse({
       requestedRunId,
       selectedRunId,
+      requestGeneration,
+      currentGeneration,
       nextState,
       commit: (value) => { committedState = value; }
     });
   };
   const responseA = deferred();
   const responseB = deferred();
-  const pendingA = applyResponse("run-a", responseA.promise);
+  const pendingA = applyResponse("run-a", ++currentGeneration, responseA.promise);
   selectedRunId = "run-b";
-  const pendingB = applyResponse("run-b", responseB.promise);
+  const pendingB = applyResponse("run-b", ++currentGeneration, responseB.promise);
   const stateB = {
     run_id: "run-b",
     topology_views: {
@@ -466,6 +469,35 @@ test("Incident refresh controllers preserve the latest pinned state and retry on
   assert.equal(committedState.topology_views.projection_revision, "revision-b");
   assert.deepEqual(committedState.topology_views.live.runtime_data.graph.nodes, [{ id: "checkout-b" }]);
   assert.deepEqual(committedState.topology_views.live.runtime_data.graph.edges, [{ id: "checkout-b->payment-b" }]);
+
+  selectedRunId = "run-stable";
+  committedState = null;
+  const olderResponse = deferred();
+  const newerResponse = deferred();
+  const olderGeneration = ++currentGeneration;
+  const pendingOlder = applyResponse("run-stable", olderGeneration, olderResponse.promise);
+  const newerGeneration = ++currentGeneration;
+  const pendingNewer = applyResponse("run-stable", newerGeneration, newerResponse.promise);
+  const newerState = {
+    run_id: "run-stable",
+    topology_views: {
+      projection_revision: "revision-newer",
+      live: { runtime_data: { graph: { nodes: [{ id: "checkout-newer" }], edges: [{ id: "checkout-newer->payment-newer" }] } } }
+    }
+  };
+  newerResponse.resolve(newerState);
+  assert.equal(await pendingNewer, "committed");
+  olderResponse.resolve({
+    run_id: "run-stable",
+    topology_views: {
+      projection_revision: "revision-older",
+      live: { runtime_data: { graph: { nodes: [{ id: "checkout-older" }], edges: [{ id: "checkout-older->payment-older" }] } } }
+    }
+  });
+  assert.equal(await pendingOlder, "superseded", "an older response for the same run cannot roll back a newer projection");
+  assert.equal(committedState.topology_views.projection_revision, "revision-newer");
+  assert.deepEqual(committedState.topology_views.live.runtime_data.graph.nodes, [{ id: "checkout-newer" }]);
+  assert.deepEqual(committedState.topology_views.live.runtime_data.graph.edges, [{ id: "checkout-newer->payment-newer" }]);
 
   const loop = { run_id: "run-action", topology: null };
   const state = { run_id: "run-action", topology_views: { run_id: "run-action", projection_revision: "revision-one" } };
@@ -518,6 +550,36 @@ test("Incident refresh controllers preserve the latest pinned state and retry on
   rejectedRetries[2].callback();
   assert.equal(scheduleOnFailure({ kind: "http", status: 503 }), false, "selected-run retries stop after the bounded 750→1500→3000ms window");
   assert.deepEqual(rejectedRetries.map(({ delay }) => delay), [750, 1500, 3000]);
+
+  let requestCount = 1;
+  let retryTimerId = 0;
+  const retryTimers = new Map();
+  const terminalController = createPinnedRunStateRetryController({
+    schedule: (callback, delay) => {
+      const timer = ++retryTimerId;
+      retryTimers.set(timer, { callback, delay, cancelled: false });
+      return timer;
+    },
+    cancel: (timer) => {
+      retryTimers.get(timer).cancelled = true;
+    },
+    onRetry: () => { requestCount += 1; }
+  });
+  const settlePinnedRequest = (runId, error) => {
+    if (isRetryableRequestFailure(error)) return terminalController.schedule(runId);
+    terminalController.cancel(runId);
+    return false;
+  };
+  assert.equal(settlePinnedRequest("run-retry-then-missing", { kind: "http", status: 503 }), true);
+  assert.deepEqual(terminalController.snapshot(), { runId: "run-retry-then-missing", attempts: 1, pending: true });
+  requestCount += 1; // The operator's manual Retry receives a terminal 404 before the queued 503 retry fires.
+  assert.equal(settlePinnedRequest("run-retry-then-missing", { kind: "http", status: 404 }), false);
+  assert.deepEqual(terminalController.snapshot(), { runId: null, attempts: 0, pending: false });
+  for (const timer of retryTimers.values()) if (!timer.cancelled) timer.callback();
+  assert.equal(requestCount, 2, "the queued 503 retry is cancelled after a terminal 404 and cannot make a third request");
+  assert.equal(terminalController.schedule("run-new-selection"), true);
+  assert.equal(terminalController.cancel("run-retry-then-missing"), false, "a terminal response for the old run cannot cancel the new run's retry");
+  assert.deepEqual(terminalController.snapshot(), { runId: "run-new-selection", attempts: 1, pending: true });
 });
 
 function componentDetailPayload() {
@@ -725,11 +787,11 @@ test("the shared header omits nonessential capture, theme, and workspace-menu ch
 
 test("initial rendering does not wait for optional development diagnostics", () => {
   const refreshSource = appJs.slice(appJs.indexOf("async function refresh({ synchronizeIncidentStage = false, topologyRefreshKey = null } = {})"), appJs.indexOf("function render()"));
-  assert.match(refreshSource, /const nextState = await request\(browserStatePath\(\)\);/);
+  assert.match(refreshSource, /const requestGeneration = beginCanonicalStateRequest\(\);[\s\S]*?const nextState = await request\(browserStatePath\(requestedRunId\)\);/);
   assert.match(refreshSource, /void refreshDevelopmentStatus\(\);/);
   assert.doesNotMatch(refreshSource, /Promise\.all\(/);
   assert.match(appJs, /async function refreshDevelopmentStatus\(\)/);
-  assert.match(appJs, /function browserStatePath\(\)[\s\S]*selectedRunId/);
+  assert.match(appJs, /function browserStatePath\(runId = selectedRunId\)[\s\S]*runId !== null/);
   assert.match(appJs, /function readRequestedRunId\(\)[\s\S]*get\("run_id"\)/);
   assert.match(appJs, /function bindCanonicalRunSelection\(loop\)[\s\S]*history\.replaceState/);
 });
@@ -1765,11 +1827,13 @@ test("Incident hydration pins the restored run, reports a stale stream, and reta
   const streamOpenSource = streamSource.slice(streamSource.indexOf("stream.onopen"), streamSource.indexOf("stream.addEventListener(\"local-fault-loop\""));
   assert.match(bootstrap, /let selectedRunId = readRequestedRunId\(\);[\s\S]*?if \(selectedRunId === null && sharedRun\?\.run_id\) bindCanonicalRunSelection\(sharedRun\);/);
   assert.match(appJs, /if \(selectedRunId === null\) bindCanonicalRunSelection\(loop\);/);
-  assert.match(refreshSource, /const nextState = await request\(browserStatePath\(\)\);[\s\S]*?commitPinnedStateResponse\([\s\S]*?commit: \(value\) => \{ state = value; \}/);
-  assert.doesNotMatch(refreshSource, /state = await request\(browserStatePath\(\)\)/);
-  assert.match(agentStreamSource, /const nextState = await request\(browserStatePath\(\)\);[\s\S]*?commitPinnedStateResponse\([\s\S]*?commit: \(value\) => \{ state = value; \}/);
-  assert.doesNotMatch(agentStreamSource, /state = await request\(browserStatePath\(\)\)/);
-  assert.doesNotMatch(appJs, /state = await request\(browserStatePath\(\)\)/);
+  assert.match(refreshSource, /const requestGeneration = beginCanonicalStateRequest\(\);[\s\S]*?const nextState = await request\(browserStatePath\(requestedRunId\)\);[\s\S]*?commitCanonicalStateResponse\([\s\S]*?requestGeneration/);
+  assert.doesNotMatch(refreshSource, /state = await request\(browserStatePath/);
+  assert.match(agentStreamSource, /const requestGeneration = beginCanonicalStateRequest\(\);[\s\S]*?const nextState = await request\(browserStatePath\(requestedRunId\)\);[\s\S]*?commitCanonicalStateResponse\([\s\S]*?requestGeneration/);
+  assert.doesNotMatch(agentStreamSource, /state = await request\(browserStatePath/);
+  assert.doesNotMatch(appJs, /state = await request\(browserStatePath/);
+  assert.match(appJs, /function commitCanonicalStateResponse\(\{ requestedRunId, requestGeneration, nextState \}\)[\s\S]*?currentGeneration: canonicalStateRequestGeneration/);
+  assert.match(refreshSource, /if \(requestGeneration !== canonicalStateRequestGeneration \|\| selectedRunId !== requestedRunId\) return;/);
   assert.match(hydrateSource, /if \(!runId \|\| selectedRunId !== runId\) return;/);
   assert.match(hydrateSource, /agent-loop\?run_id=\$\{encodeURIComponent\(runId\)\}/);
   assert.match(hydrateSource, /new EventSource\(`\/api\/demo\/agent-loop\/events\?run_id=\$\{encodeURIComponent\(runId\)\}/);
@@ -1786,6 +1850,7 @@ test("Incident hydration pins the restored run, reports a stale stream, and reta
   assert.match(refreshSource, /if \(topologyRefreshKey\) sharedRunTopologyRefresh\.succeed\(topologyRefreshKey\);/);
   assert.match(refreshSource, /if \(topologyRefreshKey\) sharedRunTopologyRefresh\.fail\(topologyRefreshKey\);/);
   assert.match(refreshSource, /const retryable = isRetryableRequestFailure\(error\);/);
+  assert.match(refreshSource, /if \(!retryable && requestedRunId !== null\) \{\s*selectedRunStateRetry\.cancel\(requestedRunId\);/);
   assert.match(refreshSource, /retryable && topologyRefreshKey && requestedRunId !== null/);
   assert.match(refreshSource, /retryable && requestedRunId !== null/);
   assert.match(appJs, /class RequestError extends Error/);

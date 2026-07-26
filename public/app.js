@@ -176,6 +176,7 @@ if (selectedRunId === null && sharedRun?.run_id) bindCanonicalRunSelection(share
 let sharedRunReconnectTimer = null;
 let sharedRunReconnectAttempts = 0;
 let sharedRunReconnectRequiresSchemaFrame = false;
+let canonicalStateRequestGeneration = 0;
 const sharedRunTopologyRefresh = createTopologyRefreshTracker();
 const selectedRunStateRetry = createPinnedRunStateRetryController({
   schedule: (callback, delay) => setTimeout(callback, delay),
@@ -193,6 +194,22 @@ class RequestError extends Error {
     this.kind = kind;
     this.status = status;
   }
+}
+
+function beginCanonicalStateRequest() {
+  canonicalStateRequestGeneration += 1;
+  return canonicalStateRequestGeneration;
+}
+
+function commitCanonicalStateResponse({ requestedRunId, requestGeneration, nextState }) {
+  return commitPinnedStateResponse({
+    requestedRunId,
+    selectedRunId,
+    requestGeneration,
+    currentGeneration: canonicalStateRequestGeneration,
+    nextState,
+    commit: (value) => { state = value; }
+  });
 }
 
 window.addEventListener("popstate", () => {
@@ -284,14 +301,14 @@ await refresh({ synchronizeIncidentStage: true });
 
 async function refresh({ synchronizeIncidentStage = false, topologyRefreshKey = null } = {}) {
   const requestedRunId = selectedRunId;
+  const requestGeneration = beginCanonicalStateRequest();
   setLoading(true);
   try {
-    const nextState = await request(browserStatePath());
-    const stateCommit = commitPinnedStateResponse({
+    const nextState = await request(browserStatePath(requestedRunId));
+    const stateCommit = commitCanonicalStateResponse({
       requestedRunId,
-      selectedRunId,
-      nextState,
-      commit: (value) => { state = value; }
+      requestGeneration,
+      nextState
     });
     if (stateCommit === "superseded") return;
     if (stateCommit === "mismatched") throw new RequestError("The requested incident is unavailable.", { status: 404 });
@@ -311,8 +328,8 @@ async function refresh({ synchronizeIncidentStage = false, topologyRefreshKey = 
     // optional flag API. They must never delay the canonical browser state.
     void refreshDevelopmentStatus();
   } catch (error) {
+    if (requestGeneration !== canonicalStateRequestGeneration || selectedRunId !== requestedRunId) return;
     if (topologyRefreshKey) sharedRunTopologyRefresh.fail(topologyRefreshKey);
-    if (selectedRunId !== requestedRunId) return;
     showError(error.message);
     // A restored terminal run cannot rely on a live EventSource to surface a
     // failed reload. Keep its canonical identity pinned and enter the same
@@ -321,7 +338,9 @@ async function refresh({ synchronizeIncidentStage = false, topologyRefreshKey = 
     // EventSource failure. Retry that exact state read so the refresh tracker
     // can accept the same revision after a transient 503.
     const retryable = isRetryableRequestFailure(error);
-    if (retryable && topologyRefreshKey && requestedRunId !== null) {
+    if (!retryable && requestedRunId !== null) {
+      selectedRunStateRetry.cancel(requestedRunId);
+    } else if (retryable && topologyRefreshKey && requestedRunId !== null) {
       selectedRunStateRetry.schedule(requestedRunId);
     } else if (retryable && sharedRun?.run_id && selectedRunId === sharedRun.run_id) {
       scheduleSharedRunReconnect({ error: "Canonical incident refresh is unavailable." });
@@ -330,7 +349,7 @@ async function refresh({ synchronizeIncidentStage = false, topologyRefreshKey = 
       selectedRunStateRetry.schedule(requestedRunId);
     }
   } finally {
-    setLoading(false);
+    if (requestGeneration === canonicalStateRequestGeneration) setLoading(false);
   }
 }
 
@@ -383,8 +402,8 @@ function readRequestedRunId() {
   }
 }
 
-function browserStatePath() {
-  return selectedRunId !== null ? `/api/state?run_id=${encodeURIComponent(selectedRunId)}` : "/api/state";
+function browserStatePath(runId = selectedRunId) {
+  return runId !== null ? `/api/state?run_id=${encodeURIComponent(runId)}` : "/api/state";
 }
 
 function bindCanonicalRunSelection(loop) {
@@ -3666,12 +3685,12 @@ async function runLive() {
   } catch (error) {
     try {
       const requestedRunId = selectedRunId;
-      const nextState = await request(browserStatePath());
-      commitPinnedStateResponse({
+      const requestGeneration = beginCanonicalStateRequest();
+      const nextState = await request(browserStatePath(requestedRunId));
+      commitCanonicalStateResponse({
         requestedRunId,
-        selectedRunId,
-        nextState,
-        commit: (value) => { state = value; }
+        requestGeneration,
+        nextState
       });
     } catch { /* keep the last visible projection */ }
     showToast(error.message, true);
@@ -4540,12 +4559,12 @@ function connectAgentStream() {
     streamRefreshTimer = setTimeout(async () => {
       try {
         const requestedRunId = selectedRunId;
-        const nextState = await request(browserStatePath());
-        if (commitPinnedStateResponse({
+        const requestGeneration = beginCanonicalStateRequest();
+        const nextState = await request(browserStatePath(requestedRunId));
+        if (commitCanonicalStateResponse({
           requestedRunId,
-          selectedRunId,
-          nextState,
-          commit: (value) => { state = value; }
+          requestGeneration,
+          nextState
         }) !== "committed") return;
         cursor = availableStage(state.events);
         render();
