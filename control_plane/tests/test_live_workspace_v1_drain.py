@@ -2,14 +2,10 @@
 
 import asyncio
 import os
-import sys
 import unittest
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Any, Dict
 from uuid import uuid4
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from temporalio import workflow
 from temporalio.client import Client
