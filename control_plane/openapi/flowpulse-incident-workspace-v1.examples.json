@@ -1,6 +1,52 @@
 {
   "identity_note": "run_id and topology_revision are backend-owned public identities; case_id, workflow_id, and workflow_run_id are internal correlations. run_id is never derived from a Temporal ID.",
   "model_schemas": {
+    "ActionInvocationCommand": {
+      "additionalProperties": false,
+      "description": "The complete browser command: opaque action plus canonical identity only.",
+      "properties": {
+        "action_id": {
+          "minLength": 1,
+          "title": "Action Id",
+          "type": "string"
+        },
+        "idempotency_key": {
+          "minLength": 1,
+          "title": "Idempotency Key",
+          "type": "string"
+        },
+        "incident_id": {
+          "minLength": 1,
+          "title": "Incident Id",
+          "type": "string"
+        },
+        "projection_revision": {
+          "minimum": 1,
+          "title": "Projection Revision",
+          "type": "integer"
+        },
+        "run_id": {
+          "minLength": 1,
+          "title": "Run Id",
+          "type": "string"
+        },
+        "topology_revision": {
+          "minLength": 1,
+          "title": "Topology Revision",
+          "type": "string"
+        }
+      },
+      "required": [
+        "incident_id",
+        "run_id",
+        "topology_revision",
+        "projection_revision",
+        "action_id",
+        "idempotency_key"
+      ],
+      "title": "ActionInvocationCommand",
+      "type": "object"
+    },
     "ComponentContext": {
       "additionalProperties": false,
       "definitions": {
@@ -254,7 +300,7 @@
               "type": "string"
             },
             "card_schema_version": {
-              "default": "next-best-action.not-configured.v1",
+              "default": "flowpulse.next-best-action.v1",
               "minLength": 1,
               "title": "Card Schema Version",
               "type": "string"
@@ -790,6 +836,242 @@
       "title": "IncidentProjection",
       "type": "object"
     },
+    "NextBestAction": {
+      "additionalProperties": false,
+      "definitions": {
+        "NextBestActionCta": {
+          "description": "An enumeration.",
+          "enum": [
+            "request_gate_1",
+            "run_read_capability",
+            "review_evidence",
+            "request_gate_2",
+            "submit_approved_dry_run"
+          ],
+          "title": "NextBestActionCta",
+          "type": "string"
+        },
+        "NextBestActionTaxonomy": {
+          "description": "An enumeration.",
+          "enum": [
+            "FIND_CAUSE",
+            "MAP_IMPACT",
+            "REVIEW_EVIDENCE",
+            "APPROVE_PLAN",
+            "APPLY_FIX"
+          ],
+          "title": "NextBestActionTaxonomy",
+          "type": "string"
+        }
+      },
+      "description": "A fixed, server-generated recommendation\u2014not an executable command.",
+      "properties": {
+        "action_id": {
+          "minLength": 1,
+          "title": "Action Id",
+          "type": "string"
+        },
+        "action_revision": {
+          "minimum": 1,
+          "title": "Action Revision",
+          "type": "integer"
+        },
+        "capability": {
+          "minLength": 1,
+          "title": "Capability",
+          "type": "string"
+        },
+        "capability_registry_revision": {
+          "minLength": 1,
+          "title": "Capability Registry Revision",
+          "type": "string"
+        },
+        "card_version": {
+          "minimum": 1,
+          "title": "Card Version",
+          "type": "integer"
+        },
+        "case_id": {
+          "minLength": 1,
+          "title": "Case Id",
+          "type": "string"
+        },
+        "case_revision": {
+          "minimum": 1,
+          "title": "Case Revision",
+          "type": "integer"
+        },
+        "component_id": {
+          "minLength": 1,
+          "title": "Component Id",
+          "type": "string"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "cta": {
+          "$ref": "#/definitions/NextBestActionCta"
+        },
+        "data_class": {
+          "minLength": 1,
+          "title": "Data Class",
+          "type": "string"
+        },
+        "display_order": {
+          "minimum": 1,
+          "title": "Display Order",
+          "type": "integer"
+        },
+        "evidence_refs": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "evidence_revision": {
+          "minimum": 1,
+          "title": "Evidence Revision",
+          "type": "integer"
+        },
+        "expires_at": {
+          "format": "date-time",
+          "title": "Expires At",
+          "type": "string"
+        },
+        "gate1_lease_id": {
+          "minLength": 1,
+          "title": "Gate1 Lease Id",
+          "type": "string"
+        },
+        "gate_revision": {
+          "minimum": 1,
+          "title": "Gate Revision",
+          "type": "integer"
+        },
+        "incident_id": {
+          "minLength": 1,
+          "title": "Incident Id",
+          "type": "string"
+        },
+        "precondition_hash": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Precondition Hash",
+          "type": "string"
+        },
+        "precondition_version": {
+          "minLength": 1,
+          "title": "Precondition Version",
+          "type": "string"
+        },
+        "projection_revision": {
+          "minimum": 1,
+          "title": "Projection Revision",
+          "type": "integer"
+        },
+        "recommended": {
+          "title": "Recommended",
+          "type": "boolean"
+        },
+        "required_gate": {
+          "minLength": 1,
+          "title": "Required Gate",
+          "type": "string"
+        },
+        "required_permission": {
+          "minLength": 1,
+          "title": "Required Permission",
+          "type": "string"
+        },
+        "run_id": {
+          "minLength": 1,
+          "title": "Run Id",
+          "type": "string"
+        },
+        "schema_version": {
+          "default": "flowpulse.next-best-action.v1",
+          "minLength": 1,
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "summary": {
+          "minLength": 1,
+          "title": "Summary",
+          "type": "string"
+        },
+        "taxonomy": {
+          "$ref": "#/definitions/NextBestActionTaxonomy"
+        },
+        "tenant_id": {
+          "minLength": 1,
+          "title": "Tenant Id",
+          "type": "string"
+        },
+        "title": {
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        },
+        "tool_schema_version": {
+          "minLength": 1,
+          "title": "Tool Schema Version",
+          "type": "string"
+        },
+        "topology_revision": {
+          "minLength": 1,
+          "title": "Topology Revision",
+          "type": "string"
+        },
+        "workflow_id": {
+          "minLength": 1,
+          "title": "Workflow Id",
+          "type": "string"
+        },
+        "workflow_run_id": {
+          "minLength": 1,
+          "title": "Workflow Run Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tenant_id",
+        "incident_id",
+        "run_id",
+        "topology_revision",
+        "case_id",
+        "case_revision",
+        "workflow_id",
+        "workflow_run_id",
+        "created_at",
+        "action_id",
+        "card_version",
+        "taxonomy",
+        "title",
+        "cta",
+        "summary",
+        "display_order",
+        "recommended",
+        "projection_revision",
+        "evidence_revision",
+        "gate_revision",
+        "action_revision",
+        "component_id",
+        "capability",
+        "data_class",
+        "required_permission",
+        "required_gate",
+        "tool_schema_version",
+        "capability_registry_revision",
+        "precondition_version",
+        "precondition_hash",
+        "expires_at"
+      ],
+      "title": "NextBestAction",
+      "type": "object"
+    },
     "NodeExplanationReceipt": {
       "additionalProperties": false,
       "definitions": {
@@ -1129,7 +1411,7 @@
               "type": "string"
             },
             "card_schema_version": {
-              "default": "next-best-action.not-configured.v1",
+              "default": "flowpulse.next-best-action.v1",
               "minLength": 1,
               "title": "Card Schema Version",
               "type": "string"
@@ -1260,6 +1542,104 @@
       "title": "NodeExplanationStart",
       "type": "object"
     },
+    "WorkspaceActionReceipt": {
+      "additionalProperties": false,
+      "description": "Public run identity and its immutable internal Temporal correlation.",
+      "properties": {
+        "action_id": {
+          "minLength": 1,
+          "title": "Action Id",
+          "type": "string"
+        },
+        "case_id": {
+          "minLength": 1,
+          "title": "Case Id",
+          "type": "string"
+        },
+        "case_revision": {
+          "minimum": 1,
+          "title": "Case Revision",
+          "type": "integer"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "external_write_performed": {
+          "default": false,
+          "title": "External Write Performed",
+          "type": "boolean"
+        },
+        "gate1_lease_id": {
+          "minLength": 1,
+          "title": "Gate1 Lease Id",
+          "type": "string"
+        },
+        "idempotency_key": {
+          "minLength": 1,
+          "title": "Idempotency Key",
+          "type": "string"
+        },
+        "incident_id": {
+          "minLength": 1,
+          "title": "Incident Id",
+          "type": "string"
+        },
+        "reason": {
+          "minLength": 1,
+          "title": "Reason",
+          "type": "string"
+        },
+        "run_id": {
+          "minLength": 1,
+          "title": "Run Id",
+          "type": "string"
+        },
+        "status": {
+          "minLength": 1,
+          "title": "Status",
+          "type": "string"
+        },
+        "tenant_id": {
+          "minLength": 1,
+          "title": "Tenant Id",
+          "type": "string"
+        },
+        "topology_revision": {
+          "minLength": 1,
+          "title": "Topology Revision",
+          "type": "string"
+        },
+        "workflow_id": {
+          "minLength": 1,
+          "title": "Workflow Id",
+          "type": "string"
+        },
+        "workflow_run_id": {
+          "minLength": 1,
+          "title": "Workflow Run Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tenant_id",
+        "incident_id",
+        "run_id",
+        "topology_revision",
+        "case_id",
+        "case_revision",
+        "workflow_id",
+        "workflow_run_id",
+        "created_at",
+        "action_id",
+        "idempotency_key",
+        "status",
+        "reason"
+      ],
+      "title": "WorkspaceActionReceipt",
+      "type": "object"
+    },
     "WorkspaceIntake": {
       "additionalProperties": false,
       "description": "Browser-safe intake: tenant and actor come only from trusted auth.",
@@ -1319,6 +1699,14 @@
   },
   "provider_note": "Standard and demo provider modes return typed degraded state when no provider is configured. Deterministic output is test-only dependency injection and is labeled TEST_DETERMINISTIC; explicit configured providers are labeled LIVE.",
   "request_examples": {
+    "ActionInvocationCommand": {
+      "action_id": "action-example-gate1",
+      "idempotency_key": "example-action-01",
+      "incident_id": "incident-example",
+      "projection_revision": 1,
+      "run_id": "run-example-01",
+      "topology_revision": "topology-v1-example"
+    },
     "NodeExplanationStart": {
       "component_id": "checkout",
       "conversation_schema_version": "flowpulse.node-explanation.v1",
@@ -1420,6 +1808,42 @@
       "workflow_id": "flowpulse.incident-workspace:tenant-example:run-example-01",
       "workflow_run_id": "temporal-run-example"
     },
+    "NextBestAction": {
+      "action_id": "action-example-gate1",
+      "action_revision": 1,
+      "capability": "METRICS",
+      "capability_registry_revision": "capability-policy.v2",
+      "card_version": 1,
+      "case_id": "workspace-case-example",
+      "case_revision": 1,
+      "component_id": "checkout",
+      "created_at": "2026-07-26 00:00:00+00:00",
+      "cta": "request_gate_1",
+      "data_class": "CURRENT_INCIDENT",
+      "display_order": 1,
+      "evidence_refs": [],
+      "evidence_revision": 1,
+      "expires_at": "2026-07-26 00:00:00+00:00",
+      "gate1_lease_id": null,
+      "gate_revision": 1,
+      "incident_id": "incident-example",
+      "precondition_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "precondition_version": "workspace-precondition.v1",
+      "projection_revision": 1,
+      "recommended": true,
+      "required_gate": "GATE1",
+      "required_permission": "incident:read",
+      "run_id": "run-example-01",
+      "schema_version": "flowpulse.next-best-action.v1",
+      "summary": "Request a bounded fresh read for the current incident.",
+      "taxonomy": "FIND_CAUSE",
+      "tenant_id": "tenant-example",
+      "title": "Find Cause",
+      "tool_schema_version": "metrics-input.v1",
+      "topology_revision": "topology-v1-example",
+      "workflow_id": "flowpulse.incident-workspace:tenant-example:run-example-01",
+      "workflow_run_id": "temporal-run-example"
+    },
     "NodeExplanationReceipt": {
       "explanation": {
         "case_id": "workspace-case-example",
@@ -1446,6 +1870,23 @@
         "workflow_run_id": "temporal-run-example"
       },
       "reused": false
+    },
+    "WorkspaceActionReceipt": {
+      "action_id": "action-example-gate1",
+      "case_id": "workspace-case-example",
+      "case_revision": 1,
+      "created_at": "2026-07-26 00:00:00+00:00",
+      "external_write_performed": false,
+      "gate1_lease_id": "gate1-example",
+      "idempotency_key": "example-action-01",
+      "incident_id": "incident-example",
+      "reason": "temporal_gate1_lease_accepted",
+      "run_id": "run-example-01",
+      "status": "GATE1_GRANTED",
+      "tenant_id": "tenant-example",
+      "topology_revision": "topology-v1-example",
+      "workflow_id": "flowpulse.incident-workspace:tenant-example:run-example-01",
+      "workflow_run_id": "temporal-run-example"
     }
   },
   "schema_version": "flowpulse.incident-workspace.examples.v1"

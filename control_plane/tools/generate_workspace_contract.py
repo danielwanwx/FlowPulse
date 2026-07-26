@@ -35,6 +35,13 @@ from flowpulse_cp.workspace_models import (
     ProjectionState,
     WorkspaceIntake,
 )
+from flowpulse_cp.workspace_actions import (
+    ActionInvocationCommand,
+    NextBestAction,
+    NextBestActionCta,
+    NextBestActionTaxonomy,
+    WorkspaceActionReceipt,
+)
 
 
 def _write_json(path: Path, value) -> str:
@@ -83,6 +90,28 @@ def _examples():
         component=projection.graph.nodes[0], evidence_refs=projection.evidence_refs,
         fresh_read_performed=False,
     )
+    action = NextBestAction(
+        **binding.dict(), action_id="action-example-gate1", card_version=1,
+        taxonomy=NextBestActionTaxonomy.FIND_CAUSE, title="Find Cause",
+        cta=NextBestActionCta.REQUEST_GATE1,
+        summary="Request a bounded fresh read for the current incident.",
+        display_order=1, recommended=True, projection_revision=1,
+        evidence_revision=1, gate_revision=1, action_revision=1,
+        component_id="checkout", capability="METRICS", data_class="CURRENT_INCIDENT",
+        required_permission="incident:read", required_gate="GATE1",
+        tool_schema_version="metrics-input.v1", capability_registry_revision="capability-policy.v2",
+        precondition_version="workspace-precondition.v1", precondition_hash="a" * 64,
+        evidence_refs=[], expires_at=now,
+    )
+    action_command = ActionInvocationCommand(
+        incident_id=binding.incident_id, run_id=binding.run_id,
+        topology_revision=binding.topology_revision, projection_revision=1,
+        action_id=action.action_id, idempotency_key="example-action-01",
+    )
+    action_receipt = WorkspaceActionReceipt(
+        **binding.dict(), action_id=action.action_id, idempotency_key=action_command.idempotency_key,
+        status="GATE1_GRANTED", gate1_lease_id="gate1-example", reason="temporal_gate1_lease_accepted",
+    )
     return {
         "schema_version": "flowpulse.incident-workspace.examples.v1",
         "identity_note": (
@@ -100,12 +129,15 @@ def _examples():
                 affected_entities=["checkout"], observed_at=now, summary="Safe schema example.",
             ).dict(),
             "NodeExplanationStart": command.dict(),
+            "ActionInvocationCommand": action_command.dict(),
         },
         "response_examples": {
             "IncidentProjection": projection.dict(),
             "NodeExplanationReceipt": NodeExplanationReceipt(explanation=explanation, reused=False).dict(),
             "IncidentEvent": event.dict(),
             "ComponentContext": context.dict(),
+            "NextBestAction": action.dict(),
+            "WorkspaceActionReceipt": action_receipt.dict(),
         },
         "model_schemas": {
             "WorkspaceIntake": WorkspaceIntake.schema(),
@@ -115,6 +147,9 @@ def _examples():
             "ConversationTrace": ConversationTrace.schema(),
             "IncidentEvent": IncidentEvent.schema(),
             "ComponentContext": ComponentContext.schema(),
+            "ActionInvocationCommand": ActionInvocationCommand.schema(),
+            "NextBestAction": NextBestAction.schema(),
+            "WorkspaceActionReceipt": WorkspaceActionReceipt.schema(),
         },
     }
 

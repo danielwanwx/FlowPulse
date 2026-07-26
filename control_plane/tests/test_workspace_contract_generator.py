@@ -29,6 +29,8 @@ class WorkspaceContractGeneratorTests(unittest.TestCase):
             manifest = json.loads((output / "flowpulse-incident-workspace-v1.freeze.json").read_text())
             self.assertIn("/v1/incidents", openapi["paths"])
             self.assertIn("/v1/incidents/{case_id}/events", openapi["paths"])
+            self.assertIn("/v1/incidents/{case_id}/actions", openapi["paths"])
+            self.assertIn("/v1/incidents/{case_id}/actions/{action_id}", openapi["paths"])
             self.assertEqual(
                 [{"FlowPulseTrustedBearer": []}],
                 openapi["paths"]["/v1/incidents"]["post"]["security"],
@@ -41,6 +43,12 @@ class WorkspaceContractGeneratorTests(unittest.TestCase):
             self.assertFalse(openapi["components"]["schemas"]["ComponentContext"].get("additionalProperties", True))
             self.assertFalse(openapi["components"]["schemas"]["IncidentEvent"].get("additionalProperties", True))
             self.assertEqual("run-example-01", examples["response_examples"]["IncidentProjection"]["run_id"])
+            self.assertEqual(
+                "Find Cause", examples["response_examples"]["NextBestAction"]["title"],
+            )
+            self.assertNotIn(
+                "capability", examples["request_examples"]["ActionInvocationCommand"],
+            )
             self.assertEqual("provider_unavailable", examples["response_examples"]["IncidentProjection"]["degraded_code"])
             self.assertEqual(
                 "flowpulse.incident-workspace.v2",

@@ -10,7 +10,7 @@ from pathlib import Path
 CONTROL_PLANE = Path(__file__).resolve().parents[1]
 REPO = CONTROL_PLANE.parent
 ARTIFACT_DIR = CONTROL_PLANE / "openapi"
-PRODUCER_SHA = "72d0ebfcc6fa4acc516d5e8785392f14c713d6f6"
+PRODUCER_SHA = "b4c49f25204dca664fd13081fc3f4995122bebcf"
 
 
 class WorkspaceContractFreezeTests(unittest.TestCase):
@@ -25,7 +25,8 @@ class WorkspaceContractFreezeTests(unittest.TestCase):
         self.assertEqual(["tenant_id", "incident_id", "run_id", "topology_revision"], boundary["public_identity"])
         self.assertIn("workflow_run_id", boundary["internal_correlation"])
         self.assertIn("/v1/incidents/{case_id}/node-explanations", openapi["paths"])
-        self.assertNotIn("/v1/incidents/{case_id}/actions/{action_id}", openapi["paths"])
+        self.assertIn("/v1/incidents/{case_id}/actions", openapi["paths"])
+        self.assertIn("/v1/incidents/{case_id}/actions/{action_id}", openapi["paths"])
         self.assertEqual(
             ["DEGRADED", "TEST_DETERMINISTIC", "DEMO", "LIVE"],
             boundary["provider_truth_labels"],
@@ -37,6 +38,10 @@ class WorkspaceContractFreezeTests(unittest.TestCase):
         self.assertEqual(
             "flowpulse.incident-workspace.v2",
             openapi["components"]["schemas"]["VersionBundle"]["properties"]["workflow_version"]["default"],
+        )
+        self.assertEqual(
+            "flowpulse.next-best-action.v1",
+            openapi["components"]["schemas"]["VersionBundle"]["properties"]["card_schema_version"]["default"],
         )
         event_response = openapi["paths"]["/v1/incidents/{case_id}/events"]["get"]["responses"]["200"]
         self.assertEqual({"text/event-stream"}, set(event_response["content"]))
