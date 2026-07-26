@@ -147,7 +147,15 @@ function sharedClaimSubject(clause) {
 }
 
 function normalizeClaimText(source) {
-  return source.replace(/[’‘]/g, "'");
+  const contractions = {
+    "can't": "can not",
+    "shan't": "shall not",
+    "won't": "will not"
+  };
+  return source
+    .replace(/[’‘]/g, "'")
+    .replace(/\b([A-Za-z]+)n't\b/g, (match, stem) => contractions[match.toLowerCase()] ?? stem + " not")
+    .replace(/\b([A-Za-z]+)'ve\b/g, "$1 have");
 }
 
 function matchingClaimClauses(source, matchesClaim) {
@@ -175,17 +183,15 @@ function findLegacyPrimaryWorkspaceClaims(source) {
 
 const controlPlaneProvider = "(?:FastAPI|Temporal)(?:\\s*\\/\\s*(?:FastAPI|Temporal))?";
 const controlPlaneReference = `(?:${controlPlaneProvider}\\s+(?:control[-\\s]?plane(?:\\s+(?:integration|equivalents?))?|integration)|(?:the\\s+)?control[-\\s]?plane\\s+integration\\s+(?:with|for)\\s+${controlPlaneProvider}|(?:the\\s+)?control[-\\s]?plane\\s+integration\\s*,?\\s*powered\\s+by\\s+${controlPlaneProvider})`;
-const deliveryVerb = "(?:integrated|available|live|shipped|delivered)";
-const deliveryModifier = "(?:(?:already|now|fully|currently)\\s+)?";
-const deliveryPredicate = `(?:is|are|was|were|has|have|had)\\s+${deliveryModifier}(?:been\\s+)?${deliveryModifier}${deliveryVerb}`;
 const controlPlaneSubject = new RegExp(`\\b${controlPlaneReference}\\b`, "i");
-const deferredControlPlane = new RegExp(`\\buntil\\b[^.]{0,120}\\b${controlPlaneReference}\\b[^.]{0,120}\\b${deliveryPredicate}\\b`, "i");
-const conditionalControlPlane = new RegExp(`\\b(?:if|when|once|after|provided\\s+that)\\b[^.]{0,120}\\b${controlPlaneReference}\\b[^.]{0,120}\\b${deliveryPredicate}\\b`, "i");
-const trailingConditionalControlPlane = new RegExp(`\\b${controlPlaneReference}\\b[^.]{0,160}\\b${deliveryPredicate}\\b[^.]{0,120}\\b(?:if|when|once|after|provided\\s+that)\\b`, "i");
 
 function controlPlaneDeliveryVerdict(clause) {
   const normalized = normalizeClaimText(clause)
-    .replace(/,\s*(?:(?:after|before|during|following|upon|despite|without|with)\b[^,]*|[A-Za-z]+ly)\s*,/g, " ");
+    .replace(/,\s*([^,]+?)\s*,/g, (whole, parenthetical) => (
+      /^\s*powered\s+by\b/i.test(parenthetical) || /\b(?:not|never)\b/i.test(parenthetical)
+        ? whole
+        : " "
+    ));
   const integration = controlPlaneSubject.exec(normalized);
   if (!integration) return "absent";
 
@@ -198,61 +204,87 @@ function controlPlaneDeliveryVerdict(clause) {
   const spanEnd = tokens.findLastIndex((token) => token.start < integration.index + integration[0].length) + 1;
   if (spanStart < 0 || spanEnd <= spanStart) return "absent";
 
-  const actions = new Set(["ship", "shipped", "deliver", "delivered", "integrate", "integrated"]);
-  const completedStates = new Set(["shipped", "delivered", "integrated", "live", "available"]);
-  const modals = new Set(["will", "shall", "should", "may", "might", "can", "could", "would", "must"]);
-  const negations = new Set(["not", "never", "haven't", "hasn't", "hadn't", "didn't", "don't", "doesn't", "won't", "can't"]);
-  const rhetoricalTerms = new Set(["only", "just", "merely", "simply", "solely", "exclusively"]);
-  const predicateSeparators = new Set([".", ";", ",", "and", "but", "because", "however", "so", "then", "whereas", "while", "yet"]);
-  const prepositionalObjectMarkers = new Set(["about", "for", "of", "on", "regarding", "to"]);
-  const objectTailModifiers = new Set(["after", "already", "at", "before", "but", "by", "during", "for", "from", "in", "itself", "on", "that", "then", "today", "tomorrow", "which", "with", "yesterday"]);
-  const passiveWords = new Set(["am", "are", "be", "been", "being", "did", "has", "have", "had", "is", "was", "were", "will", "shall", "should", "may", "might", "can", "could", "would", "must", "not", "never", "no", "means", "by", "already", "certainly", "confidently", "definitely", "fully", "just", "now", "really", "successfully", "yet", ...rhetoricalTerms]);
-  const isQualified = (predicate) => predicate.some((token, index) => (negations.has(token) && !rhetoricalTerms.has(predicate[index + 1]))
+  const isPredicateSeparator = (token) => /^(?:[.,;]|and|but|because|however|so|then|whereas|while|yet)$/.test(token);
+  const isModal = (token) => /^(?:will|shall|should|may|might|can|could|would|must)$/.test(token);
+  const isRhetoricalAmplifier = (token) => /^(?:only|just|merely|simply|solely|exclusively)$/.test(token);
+  const isDeliveryAction = (token) => /^(?:ship|shipped|deliver|delivered|integrate|integrated)$/.test(token);
+  const isCompletedAction = (token) => /^(?:shipped|delivered|integrated|live|available)$/.test(token);
+  const isObjectRelation = (token) => /^(?:about|for|of|on|regarding|to)$/.test(token);
+  const isPredicateAdverb = (token) => token.endsWith("ly") || /^(?:already|now|just)$/.test(token);
+  const hasComplementIntroducer = (tokensToCheck) => tokensToCheck.some((token) => /(?:ing|ed)$/.test(token));
+  const isQualified = (predicate) => predicate.some((token, index) => (
+    (token === "not" && !isRhetoricalAmplifier(predicate[index + 1]))
+    || token === "never"
     || (token === "no" && predicate[index + 1] === "means")
-    || modals.has(token)
-    || (["plan", "plans", "planned", "intend", "intends", "intended", "expect", "expects", "expected"].includes(token) && predicate[index + 1] === "to"));
+    || isModal(token)
+    || (/^(?:plan|plans|planned|intend|intends|intended|expect|expects|expected)$/.test(token) && predicate[index + 1] === "to")
+  ));
   const predicateStart = (actionIndex) => {
     for (let index = actionIndex - 1; index >= 0; index -= 1) {
-      if (predicateSeparators.has(tokens[index].value)) return index + 1;
+      if (isPredicateSeparator(tokens[index].value)) return index + 1;
     }
     return 0;
   };
   const bindsIntegrationObject = (actionIndex) => {
     const before = tokens.slice(actionIndex + 1, spanStart).map((token) => token.value);
-    if (before.some((token) => prepositionalObjectMarkers.has(token) || token === "-" || token === "/")) return false;
+    if (before.some((token) => isObjectRelation(token) || token === "-" || token === "/") || hasComplementIntroducer(before)) return false;
     const next = tokens[spanEnd]?.value;
     return !next
-      || predicateSeparators.has(next)
-      || objectTailModifiers.has(next)
-      || next.endsWith("ly");
+      || isPredicateSeparator(next)
+      || /^(?:after|at|before|by|during|from|in|itself|last|next|that|this|today|tomorrow|which|with|yesterday)$/.test(next)
+      || isPredicateAdverb(next)
+      || isObjectRelation(next);
+  };
+  const integrationSubject = () => {
+    const subjectPrefix = tokens.slice(predicateStart(spanStart), spanStart).map((token) => token.value);
+    return {
+      isSubject: !subjectPrefix.some((token) => isObjectRelation(token) || hasComplementIntroducer([token])),
+      negated: subjectPrefix.includes("no")
+    };
   };
 
   for (let actionIndex = spanStart - 1; actionIndex >= 0; actionIndex -= 1) {
-    if (predicateSeparators.has(tokens[actionIndex].value)) break;
-    if (!actions.has(tokens[actionIndex].value)) continue;
+    if (isPredicateSeparator(tokens[actionIndex].value)) break;
+    if (!isDeliveryAction(tokens[actionIndex].value)) continue;
     if (!bindsIntegrationObject(actionIndex)) continue;
     const predicate = tokens.slice(predicateStart(actionIndex), actionIndex).map((token) => token.value);
-    if (isQualified(predicate)) return "qualified";
-    if (completedStates.has(tokens[actionIndex].value)) return "completed";
+    const object = tokens.slice(actionIndex + 1, spanStart).map((token) => token.value);
+    if (isQualified(predicate) || object.includes("no")) return "qualified";
+    if (isCompletedAction(tokens[actionIndex].value)) return "completed";
     return predicate.includes("did") ? "completed" : "qualified";
   }
 
+  const subject = integrationSubject();
+  if (!subject.isSubject) return "absent";
   for (let actionIndex = spanEnd; actionIndex < tokens.length; actionIndex += 1) {
-    if (predicateSeparators.has(tokens[actionIndex].value) && tokens[actionIndex].value !== ",") break;
-    if (!actions.has(tokens[actionIndex].value) && !completedStates.has(tokens[actionIndex].value)) continue;
+    if (isPredicateSeparator(tokens[actionIndex].value) && tokens[actionIndex].value !== ",") break;
+    if (!isDeliveryAction(tokens[actionIndex].value) && !isCompletedAction(tokens[actionIndex].value)) continue;
     const predicate = tokens.slice(spanEnd, actionIndex)
       .map((token) => token.value)
       .filter((token) => token !== ",");
-    if (!predicate.every((token) => passiveWords.has(token) || token.endsWith("ly"))) return "absent";
-    if (isQualified(predicate)) return "qualified";
-    return completedStates.has(tokens[actionIndex].value) || predicate.includes("did") ? "completed" : "qualified";
+    if (!predicate.every((token) => (
+      /^(?:am|are|be|been|being|did|has|have|had|is|was|were|not|never|no|means|by|yet)$/.test(token)
+      || isModal(token)
+      || isRhetoricalAmplifier(token)
+      || isPredicateAdverb(token)
+    ))) return "absent";
+    if (subject.negated || isQualified(predicate)) return "qualified";
+    return isCompletedAction(tokens[actionIndex].value) || predicate.includes("did") ? "completed" : "qualified";
   }
   return "absent";
 }
 
 function findShippedControlPlaneClaims(source) {
   return matchingClaimClauses(source, (clause) => {
-    if (deferredControlPlane.test(clause) || conditionalControlPlane.test(clause) || trailingConditionalControlPlane.test(clause)) return false;
+    const normalized = normalizeClaimText(clause);
+    const integration = controlPlaneSubject.exec(normalized);
+    if (!integration) return false;
+    const after = normalized.slice(integration.index + integration[0].length);
+    const conditional = /^\s*(?:if|when|once|after|until|provided\s+that)\b/i.test(normalized)
+      || /\b(?:if|when|once|after|until|provided\s+that)\b/i.test(after);
+    const factualPast = /\b(?:was|were|had|did)\b/i.test(after)
+      || /\b(?:yesterday|last\s+\w+)\b/i.test(after);
+    if (conditional && !factualPast) return false;
     return controlPlaneDeliveryVerdict(clause) === "completed";
   });
 }
@@ -467,6 +499,14 @@ test("North Star contradiction detectors evaluate wording and negation at clause
   assertClaimDetected(findShippedControlPlaneClaims, "The FastAPI/Temporal control plane integration was confidently delivered.");
   assertClaimDetected(findShippedControlPlaneClaims, "We have not merely shipped the FastAPI/Temporal control plane integration but verified it.");
   assertClaimDetected(findShippedControlPlaneClaims, "The FastAPI/Temporal control plane integration was not only shipped but verified.");
+  assertClaimDetected(findShippedControlPlaneClaims, "We shipped the FastAPI/Temporal control plane integration to production.");
+  assertClaimDetected(findShippedControlPlaneClaims, "We shipped the FastAPI/Temporal control plane integration last week.");
+  assertClaimDetected(findShippedControlPlaneClaims, "The FastAPI/Temporal control plane integration was shipped to production.");
+  assertClaimDetected(findShippedControlPlaneClaims, "The FastAPI/Temporal control plane integration was shipped last week.");
+  assertClaimDetected(findShippedControlPlaneClaims, "We shipped, per the approved rollout plan, the FastAPI/Temporal control plane integration.");
+  assertClaimDetected(findShippedControlPlaneClaims, "We didn't merely ship the FastAPI/Temporal control plane integration but also verified it.");
+  assertClaimDetected(findShippedControlPlaneClaims, "The FastAPI/Temporal control plane integration wasn't merely shipped but also verified.");
+  assertClaimDetected(findShippedControlPlaneClaims, "After the FastAPI/Temporal control plane integration was shipped yesterday, we celebrated.");
   assertClaimAllowed(findShippedControlPlaneClaims, "We have not shipped the FastAPI/Temporal control plane integration.");
   assertClaimAllowed(findShippedControlPlaneClaims, "We never shipped the FastAPI/Temporal control plane integration.");
   assertClaimAllowed(findShippedControlPlaneClaims, "We haven't shipped the FastAPI/Temporal control plane integration.");
@@ -478,6 +518,15 @@ test("North Star contradiction detectors evaluate wording and negation at clause
   assertClaimAllowed(findShippedControlPlaneClaims, "We shipped the FastAPI/Temporal control plane integration mock.");
   assertClaimAllowed(findShippedControlPlaneClaims, "We shipped the FastAPI/Temporal control plane integration demo.");
   assertClaimAllowed(findShippedControlPlaneClaims, "We delivered the FastAPI/Temporal control plane integration test fixture.");
+  assertClaimAllowed(findShippedControlPlaneClaims, "We delivered documentation describing the FastAPI/Temporal control plane integration.");
+  assertClaimAllowed(findShippedControlPlaneClaims, "We shipped a mock implementation called the FastAPI/Temporal control plane integration.");
+  assertClaimAllowed(findShippedControlPlaneClaims, "We shipped documentation titled FastAPI/Temporal control plane integration.");
+  assertClaimAllowed(findShippedControlPlaneClaims, "Documentation describing the FastAPI/Temporal control plane integration was delivered.");
+  assertClaimAllowed(findShippedControlPlaneClaims, "We should've shipped the FastAPI/Temporal control plane integration.");
+  assertClaimAllowed(findShippedControlPlaneClaims, "We couldn't have delivered the FastAPI/Temporal control plane integration.");
+  assertClaimAllowed(findShippedControlPlaneClaims, "We shipped no FastAPI/Temporal control plane integration.");
+  assertClaimAllowed(findShippedControlPlaneClaims, "The FastAPI/Temporal control plane integration shouldn't have been shipped.");
+  assertClaimAllowed(findShippedControlPlaneClaims, "No FastAPI/Temporal control plane integration was shipped.");
   assertClaimAllowed(findShippedControlPlaneClaims, "The FastAPI/Temporal control plane integration will have been delivered by Q4.");
   assertClaimAllowed(findShippedControlPlaneClaims, "The team will ship documentation for the FastAPI/Temporal control plane integration.");
   assertClaimAllowed(findShippedControlPlaneClaims, "We will ship the FastAPI/Temporal control plane integration after approval.");
