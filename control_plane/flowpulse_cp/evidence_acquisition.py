@@ -25,10 +25,11 @@ class S3CurrentEvidenceAcquirer:
     and every source URI is later bound by ``S3SourceReadback``.
     """
 
-    def __init__(self, client: S3GetPort, bucket: str, prefix: str) -> None:
+    def __init__(self, client: S3GetPort, bucket: str, prefix: str, bound_tenant_id: str = None) -> None:
         self.client = client
         self.bucket = bucket
         self.prefix = prefix.strip("/")
+        self.bound_tenant_id = bound_tenant_id
 
     def manifest_key(self, case: IncidentCase) -> str:
         return "{}/{}/cases/{}/revisions/{}/current-evidence.json".format(
@@ -36,6 +37,8 @@ class S3CurrentEvidenceAcquirer:
         )
 
     def acquire(self, case: IncidentCase, subject_id: str) -> EvidenceAcquisitionResult:
+        if self.bound_tenant_id is not None and case.tenant_id != self.bound_tenant_id:
+            raise PolicyViolation("controlled_current_evidence_tenant_credential_mismatch")
         try:
             response = self.client.get_object(Bucket=self.bucket, Key=self.manifest_key(case))
         except Exception as error:

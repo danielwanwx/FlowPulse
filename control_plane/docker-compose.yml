@@ -7,11 +7,13 @@ services:
       FLOWPULSE_TEMPORAL_ADDRESS: temporal:7233
       FLOWPULSE_POSTGRES_DSN: postgresql://flowpulse_cp_app:flowpulse-cp-local-only@postgres:5432/flowpulse
       FLOWPULSE_AUTHORIZATION_SERVICE_URL: http://authz:8091
+      FLOWPULSE_AUTHORIZATION_SERVICE_TOKEN: flowpulse-api-authz-local-only
       FLOWPULSE_TEMPORAL_TASK_QUEUE: flowpulse-diagnosis-p0
       FLOWPULSE_LOCAL_TEST_AUTH: "1"
       FLOWPULSE_LOCAL_DETERMINISTIC_EVIDENCE: "1"
     depends_on:
       postgres: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
       temporal: {condition: service_healthy}
       authz: {condition: service_healthy}
   worker:
@@ -21,6 +23,7 @@ services:
       FLOWPULSE_TEMPORAL_ADDRESS: temporal:7233
       FLOWPULSE_POSTGRES_DSN: postgresql://flowpulse_cp_app:flowpulse-cp-local-only@postgres:5432/flowpulse
       FLOWPULSE_AUTHORIZATION_SERVICE_URL: http://authz:8091
+      FLOWPULSE_AUTHORIZATION_SERVICE_TOKEN: flowpulse-worker-authz-local-only
       FLOWPULSE_TEMPORAL_TASK_QUEUE: flowpulse-diagnosis-p0
       FLOWPULSE_OBJECT_STORE_ENDPOINT: http://minio:9000
       FLOWPULSE_OBJECT_STORE_BUCKET: flowpulse-evidence
@@ -29,18 +32,19 @@ services:
       FLOWPULSE_SOURCE_READ_ENDPOINT: http://minio:9000
       FLOWPULSE_SOURCE_READ_BUCKET: flowpulse-sources
       FLOWPULSE_SOURCE_READ_PREFIX: controlled
-      FLOWPULSE_SOURCE_READ_ACCESS_KEY: flowpulse-source-reader-local
-      FLOWPULSE_SOURCE_READ_SECRET_KEY: flowpulse-source-reader-local-only
+      FLOWPULSE_SOURCE_READ_TENANT_ID: tenant-minio
+      FLOWPULSE_SOURCE_READ_ACCESS_KEY: flowpulse-source-reader-tenant-minio
+      FLOWPULSE_SOURCE_READ_SECRET_KEY: flowpulse-source-reader-tenant-minio-local-only
       FLOWPULSE_LOCAL_DETERMINISTIC_EVIDENCE: "1"
     depends_on:
       postgres: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
       temporal: {condition: service_healthy}
       authz: {condition: service_healthy}
       minio-init: {condition: service_completed_successfully}
   authz:
     build: .
     command: python -m flowpulse_cp.main
-    ports: ["8091:8091"]
     environment:
       FLOWPULSE_COMPONENT: authz
       PORT: "8091"
@@ -49,8 +53,11 @@ services:
       FLOWPULSE_AUTH_ASSERTION_AUDIENCE: flowpulse.temporal-owner-gate.v1
       FLOWPULSE_AUTH_ASSERTION_ACTIVE_KEY_ID: local-k2
       FLOWPULSE_AUTH_ASSERTION_KEYRING_JSON: '{"local-k1":"flowpulse-retired-local-only","local-k2":"flowpulse-active-local-only"}'
+      FLOWPULSE_AUTHZ_API_SERVICE_TOKEN: flowpulse-api-authz-local-only
+      FLOWPULSE_AUTHZ_WORKER_SERVICE_TOKEN: flowpulse-worker-authz-local-only
     depends_on:
       postgres: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8091/healthz')"]
       interval: 2s
@@ -71,6 +78,15 @@ services:
       timeout: 3s
       retries: 20
     ports: ["5433:5432"]
+  migrate:
+    image: postgres:16-alpine
+    entrypoint: ["psql", "-h", "postgres", "-U", "flowpulse", "-d", "flowpulse", "-v", "ON_ERROR_STOP=1", "-f", "/migrations/002_authorization_intents.sql"]
+    environment:
+      PGPASSWORD: flowpulse
+    volumes:
+      - ./migrations:/migrations:ro
+    depends_on:
+      postgres: {condition: service_healthy}
   temporal:
     image: temporalio/auto-setup:1.25.2
     environment:
@@ -81,7 +97,6 @@ services:
       POSTGRES_SEEDS: postgres
     depends_on:
       postgres: {condition: service_healthy}
-    ports: ["7233:7233"]
     healthcheck:
       test: ["CMD-SHELL", "temporal --address temporal:7233 operator namespace describe default >/dev/null 2>&1"]
       interval: 2s
@@ -112,8 +127,8 @@ services:
       FLOWPULSE_OBJECT_STORE_ACCESS_KEY: flowpulse-artifact-writer-local
       FLOWPULSE_OBJECT_STORE_SECRET_KEY: flowpulse-artifact-writer-local-only
       FLOWPULSE_SOURCE_READ_BUCKET: flowpulse-sources
-      FLOWPULSE_SOURCE_READ_ACCESS_KEY: flowpulse-source-reader-local
-      FLOWPULSE_SOURCE_READ_SECRET_KEY: flowpulse-source-reader-local-only
+      FLOWPULSE_SOURCE_READ_ACCESS_KEY: flowpulse-source-reader-tenant-minio
+      FLOWPULSE_SOURCE_READ_SECRET_KEY: flowpulse-source-reader-tenant-minio-local-only
     volumes:
       - ./minio/bootstrap.sh:/bootstrap.sh:ro
       - ./minio/policies:/policies:ro

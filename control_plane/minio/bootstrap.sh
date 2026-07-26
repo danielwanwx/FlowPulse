@@ -13,3 +13,6 @@ mc admin policy create flowpulse flowpulse-source-reader /policies/source-reader
 mc admin policy attach flowpulse flowpulse-artifact-writer --user "$FLOWPULSE_OBJECT_STORE_ACCESS_KEY" || true
 mc admin policy attach flowpulse flowpulse-source-reader --user "$FLOWPULSE_SOURCE_READ_ACCESS_KEY" || true
 mc cp /fixtures/source-readback.json "flowpulse/$FLOWPULSE_SOURCE_READ_BUCKET/controlled/tenant-minio/cases/case-minio/revisions/1/evidence/ev-minio/v1.json"
+# Seed an existing neighboring tenant object. The tenant-minio reader policy
+# must reject this raw object request before adapter-level validation runs.
+mc cp /fixtures/source-readback.json "flowpulse/$FLOWPULSE_SOURCE_READ_BUCKET/controlled/tenant-other/cases/case-other/revisions/1/evidence/ev-other/v1.json"

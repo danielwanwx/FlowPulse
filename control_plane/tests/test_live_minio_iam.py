@@ -31,7 +31,9 @@ class LiveMinioIamTests(unittest.TestCase):
         )
 
     def test_reader_is_read_only_scoped_and_verifier_uses_it(self):
-        reader = self.client("flowpulse-source-reader-local", "flowpulse-source-reader-local-only")
+        reader = self.client(
+            "flowpulse-source-reader-tenant-minio", "flowpulse-source-reader-tenant-minio-local-only",
+        )
         writer = self.client("flowpulse-artifact-writer-local", "flowpulse-artifact-writer-local-only")
         key = "controlled/tenant-minio/cases/case-minio/revisions/1/evidence/ev-minio/v1.json"
         raw = reader.get_object(Bucket=self.source_bucket, Key=key)["Body"].read()
@@ -42,18 +44,25 @@ class LiveMinioIamTests(unittest.TestCase):
             reader.get_object(Bucket=self.artifact_bucket, Key="tenant-minio/sha256/missing")
         with self.assertRaises(ClientError):
             writer.get_object(Bucket=self.source_bucket, Key=key)
+        with self.assertRaises(ClientError):
+            reader.get_object(
+                Bucket=self.source_bucket,
+                Key="controlled/tenant-other/cases/case-other/revisions/1/evidence/ev-other/v1.json",
+            )
+        with self.assertRaises(ClientError):
+            reader.list_objects_v2(Bucket=self.source_bucket, Prefix="controlled/tenant-other/")
 
         import json
         from flowpulse_cp.models import EvidenceEnvelope
         evidence = EvidenceEnvelope.parse_obj(json.loads(raw.decode("utf-8")))
-        source = S3SourceReadback(reader, self.source_bucket, "controlled")
+        source = S3SourceReadback(reader, self.source_bucket, "controlled", "tenant-minio")
         reread = source.readback(evidence)
         self.assertEqual(evidence, reread)
         with self.assertRaisesRegex(PolicyViolation, "adapter_binding_missing"):
             source.readback(evidence.copy(update={"source_uri": "s3://wrong-bucket/controlled/x"}))
         with self.assertRaisesRegex(PolicyViolation, "adapter_binding_missing"):
             source.readback(evidence.copy(update={"source_uri": "s3://flowpulse-sources/attacker/key"}))
-        with self.assertRaisesRegex(PolicyViolation, "adapter_binding_missing"):
+        with self.assertRaisesRegex(PolicyViolation, "tenant_credential_mismatch"):
             source.readback(evidence.copy(update={"tenant_id": "tenant-other"}))
 
         now = datetime.now(timezone.utc)

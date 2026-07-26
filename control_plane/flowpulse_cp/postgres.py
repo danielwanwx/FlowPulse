@@ -1,15 +1,16 @@
 """Tenant-scoped Postgres projections; Temporal remains the state authority."""
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Dict, List, Optional, TypeVar
-from uuid import NAMESPACE_URL, uuid5
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 import asyncpg
 
 from .models import (
     ActivityOutcome,
     AuthContext,
+    AuthCommandIntent,
     CaseState,
     ClaimRecord,
     CoverageEntry,
@@ -84,6 +85,62 @@ class PostgresCaseRepository:
                 "SELECT payload FROM incident_cases WHERE tenant_id=$1 AND case_id=$2", tenant_id, case_id
             )
             return IncidentCase.parse_obj(_decode(row["payload"])) if row else None
+        return await self._tenant(tenant_id, operation)
+
+    async def create_auth_command_intent(
+        self, actor: AuthContext, case: IncidentCase, proposal_id: Optional[str] = None,
+        approval_id: Optional[str] = None,
+    ) -> AuthCommandIntent:
+        """Persist server-side mint scope from trusted HTTP identity and projection."""
+        authoritative = await self.get_case(actor.tenant_id, case.case_id)
+        if authoritative is None:
+            raise PolicyViolation("authorization_intent_unknown_case")
+        if authoritative.workflow_run_id != case.workflow_run_id:
+            raise PolicyViolation("authorization_intent_workflow_run_mismatch")
+        now = datetime.now(timezone.utc)
+        intent = AuthCommandIntent(
+            intent_id="intent-{}".format(uuid4().hex), tenant_id=actor.tenant_id,
+            case_id=authoritative.case_id, case_revision=authoritative.case_revision,
+            workflow_run_id=authoritative.workflow_run_id, proposal_id=proposal_id, approval_id=approval_id,
+            subject_id=actor.subject_id, roles=actor.roles, created_at=now, expires_at=now + timedelta(minutes=1),
+        )
+        async def operation(connection: asyncpg.Connection) -> None:
+            await connection.execute(
+                """INSERT INTO auth_command_intents
+                   (intent_id, tenant_id, case_id, case_revision, workflow_run_id, proposal_id, approval_id,
+                    subject_id, roles, status, expires_at, payload)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,'PENDING',$10,$11::jsonb)""",
+                intent.intent_id, intent.tenant_id, intent.case_id, intent.case_revision, intent.workflow_run_id,
+                intent.proposal_id, intent.approval_id, intent.subject_id, json.dumps(intent.roles),
+                intent.expires_at, _payload(intent),
+            )
+        await self._tenant(actor.tenant_id, operation)
+        return intent
+
+    async def consume_auth_command_intent(self, tenant_id: str, intent_id: str) -> AuthCommandIntent:
+        """Mint once from the authoritative projection; body claims cannot change scope."""
+        async def operation(connection: asyncpg.Connection) -> AuthCommandIntent:
+            row = await connection.fetchrow(
+                """SELECT payload FROM auth_command_intents
+                   WHERE tenant_id=$1 AND intent_id=$2 AND status='PENDING' AND expires_at > now()
+                   FOR UPDATE""",
+                tenant_id, intent_id,
+            )
+            if row is None:
+                raise PolicyViolation("authorization_intent_unknown_expired_or_consumed")
+            intent = AuthCommandIntent.parse_obj(_decode(row["payload"]))
+            case_row = await connection.fetchrow(
+                """SELECT payload FROM incident_cases
+                   WHERE tenant_id=$1 AND case_id=$2 AND case_revision=$3 AND workflow_run_id=$4""",
+                intent.tenant_id, intent.case_id, intent.case_revision, intent.workflow_run_id,
+            )
+            if case_row is None:
+                raise PolicyViolation("authorization_intent_case_scope_not_authoritative")
+            await connection.execute(
+                "UPDATE auth_command_intents SET status='MINTED', minted_at=now() WHERE tenant_id=$1 AND intent_id=$2",
+                tenant_id, intent_id,
+            )
+            return intent
         return await self._tenant(tenant_id, operation)
 
     async def put_case(self, case: IncidentCase) -> None:

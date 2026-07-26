@@ -24,10 +24,11 @@ class S3GetPort(Protocol):
 class S3SourceReadback(EvidenceReadbackPort):
     """Re-read a fixed, case-derived source location with read-only credentials."""
 
-    def __init__(self, client: S3GetPort, bucket: str, prefix: str) -> None:
+    def __init__(self, client: S3GetPort, bucket: str, prefix: str, bound_tenant_id: str = None) -> None:
         self.client = client
         self.bucket = bucket
         self.prefix = prefix.strip("/")
+        self.bound_tenant_id = bound_tenant_id
 
     def expected_key(self, evidence: EvidenceEnvelope) -> str:
         return "{}/{}/cases/{}/revisions/{}/evidence/{}/{}.json".format(
@@ -36,6 +37,8 @@ class S3SourceReadback(EvidenceReadbackPort):
         )
 
     def readback(self, evidence: EvidenceEnvelope) -> EvidenceEnvelope:
+        if self.bound_tenant_id is not None and evidence.tenant_id != self.bound_tenant_id:
+            raise PolicyViolation("source_readback_tenant_credential_mismatch")
         parsed = urlparse(evidence.source_uri)
         if (
             parsed.scheme != "s3"

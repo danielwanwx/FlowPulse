@@ -18,6 +18,7 @@ class ApiSettings:
     temporal_address: str
     postgres_dsn: str
     authorization_service_url: str
+    authorization_service_token: str
     temporal_task_queue: str
 
     @classmethod
@@ -26,6 +27,7 @@ class ApiSettings:
             temporal_address=required("FLOWPULSE_TEMPORAL_ADDRESS"),
             postgres_dsn=required("FLOWPULSE_POSTGRES_DSN"),
             authorization_service_url=required("FLOWPULSE_AUTHORIZATION_SERVICE_URL"),
+            authorization_service_token=required("FLOWPULSE_AUTHORIZATION_SERVICE_TOKEN"),
             temporal_task_queue=required("FLOWPULSE_TEMPORAL_TASK_QUEUE"),
         )
 
@@ -41,9 +43,11 @@ class WorkerSettings:
     source_read_endpoint: str
     source_read_bucket: str
     source_read_prefix: str
+    source_read_tenant_id: str
     source_read_access_key: str
     source_read_secret_key: str
     authorization_service_url: str
+    authorization_service_token: str
     temporal_task_queue: str
 
     @classmethod
@@ -58,9 +62,11 @@ class WorkerSettings:
             source_read_endpoint=required("FLOWPULSE_SOURCE_READ_ENDPOINT"),
             source_read_bucket=required("FLOWPULSE_SOURCE_READ_BUCKET"),
             source_read_prefix=required("FLOWPULSE_SOURCE_READ_PREFIX"),
+            source_read_tenant_id=required("FLOWPULSE_SOURCE_READ_TENANT_ID"),
             source_read_access_key=required("FLOWPULSE_SOURCE_READ_ACCESS_KEY"),
             source_read_secret_key=required("FLOWPULSE_SOURCE_READ_SECRET_KEY"),
             authorization_service_url=required("FLOWPULSE_AUTHORIZATION_SERVICE_URL"),
+            authorization_service_token=required("FLOWPULSE_AUTHORIZATION_SERVICE_TOKEN"),
             temporal_task_queue=required("FLOWPULSE_TEMPORAL_TASK_QUEUE"),
         )
 
@@ -72,6 +78,8 @@ class AuthzSettings:
     audience: str
     active_key_id: str
     keyring: Dict[str, str]
+    api_service_token: str
+    worker_service_token: str
 
     @classmethod
     def from_environment(cls) -> "AuthzSettings":
@@ -87,4 +95,6 @@ class AuthzSettings:
             audience=required("FLOWPULSE_AUTH_ASSERTION_AUDIENCE"),
             active_key_id=required("FLOWPULSE_AUTH_ASSERTION_ACTIVE_KEY_ID"),
             keyring=keyring,
+            api_service_token=required("FLOWPULSE_AUTHZ_API_SERVICE_TOKEN"),
+            worker_service_token=required("FLOWPULSE_AUTHZ_WORKER_SERVICE_TOKEN"),
         )

@@ -336,14 +336,15 @@ def _s3_store(endpoint: str, bucket: str, access_key: str, secret_key: str) -> S
 async def run_worker(
     address: str, task_queue: str, postgres_dsn: str, object_endpoint: str, object_bucket: str,
     object_access_key: str, object_secret_key: str, source_endpoint: str, source_bucket: str, source_prefix: str,
-    source_access_key: str, source_secret_key: str, authorization_service_url: str,
+    source_tenant_id: str, source_access_key: str, source_secret_key: str, authorization_service_url: str,
+    authorization_service_token: str,
     local_deterministic_evidence: bool = False,
 ) -> None:
     client = await Client.connect(address)
     repository = PostgresCaseRepository(postgres_dsn)
     await repository.connect()
     artifacts = _s3_store(object_endpoint, object_bucket, object_access_key, object_secret_key)
-    authorization = HttpAuthorizationClient(authorization_service_url)
+    authorization = HttpAuthorizationClient(authorization_service_url, "worker", authorization_service_token)
     source_client = boto3.client(
         "s3", endpoint_url=source_endpoint, aws_access_key_id=source_access_key,
         aws_secret_access_key=source_secret_key, region_name="us-east-1",
@@ -351,10 +352,10 @@ async def run_worker(
     source_readback = (
         LocalDeterministicSourceReadback()
         if local_deterministic_evidence
-        else S3SourceReadback(source_client, source_bucket, source_prefix)
+        else S3SourceReadback(source_client, source_bucket, source_prefix, source_tenant_id)
     )
     evidence_acquirer = None if local_deterministic_evidence else S3CurrentEvidenceAcquirer(
-        source_client, source_bucket, source_prefix,
+        source_client, source_bucket, source_prefix, source_tenant_id,
     )
     async with Worker(
         client, task_queue=task_queue, workflows=[DiagnosisTemporalWorkflow],

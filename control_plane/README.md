@@ -18,8 +18,10 @@ The suite uses a deterministic fake Temporal adapter and frozen source readback.
 
 ## Service and integration wiring
 
-The local Compose path starts the API (`0.0.0.0:8090`), an isolated assertion
-issuer (`0.0.0.0:8091`), Temporal, a Temporal worker, Postgres, and MinIO. The worker registers `flowpulse.diagnosis.v1` and
+The local Compose path starts the API (`0.0.0.0:8090`), an internally reachable
+assertion issuer, Temporal, a Temporal worker, Postgres, and MinIO. Only the
+API, Postgres, and local MinIO fixture are published to the host: assertion
+minting and Temporal are Compose-network-only. The worker registers `flowpulse.diagnosis.v1` and
 all seven activity definitions; its Postgres adapter persists append-only
 activity/verification records, while the MinIO/S3 content-addressed artifact
 store persists the typed activity packet under a tenant prefix. Compose's
@@ -30,14 +32,25 @@ policies.
 cd control_plane
 docker compose down --volumes
 docker compose up --build -d
-FLOWPULSE_LIVE_TEMPORAL=1 .venv/bin/python -m unittest \
-  discover -s tests -p 'test_live_temporal_negative_paths.py' -v
 FLOWPULSE_LIVE_COMPOSE=1 .venv/bin/python -m unittest \
   discover -s tests -p 'test_live_compose_http.py' -v
-FLOWPULSE_LIVE_POSTGRES=1 .venv/bin/python -m unittest \
+FLOWPULSE_LIVE_HOST_BOUNDARY=1 .venv/bin/python -m unittest \
+  discover -s tests -p 'test_live_host_boundaries.py' -v
+FLOWPULSE_LIVE_POSTGRES=1 \
+  FLOWPULSE_TEST_POSTGRES_DSN=postgresql://flowpulse_cp_app:flowpulse-cp-local-only@127.0.0.1:5433/flowpulse \
+  FLOWPULSE_TEST_POSTGRES_ADMIN_DSN=postgresql://flowpulse:flowpulse@127.0.0.1:5433/postgres \
+  .venv/bin/python -m unittest \
   discover -s tests -p 'test_live_postgres_idempotency.py' -v
 FLOWPULSE_LIVE_MINIO=1 .venv/bin/python -m unittest \
   discover -s tests -p 'test_live_minio_iam.py' -v
+docker compose exec -T authz env \
+  FLOWPULSE_LIVE_TEMPORAL=1 \
+  FLOWPULSE_TEMPORAL_ADDRESS=temporal:7233 \
+  FLOWPULSE_AUTHORIZATION_SERVICE_URL=http://authz:8091 \
+  FLOWPULSE_AUTHZ_API_SERVICE_TOKEN=flowpulse-api-authz-local-only \
+  FLOWPULSE_AUTHZ_WORKER_SERVICE_TOKEN=flowpulse-worker-authz-local-only \
+  FLOWPULSE_TEST_POSTGRES_DSN=postgresql://flowpulse_cp_app:flowpulse-cp-local-only@postgres:5432/flowpulse \
+  python -m unittest discover -s tests -p 'test_live_temporal_negative_paths.py' -v
 ```
 
 The opt-in live suite starts workflows through the registered worker and
@@ -74,7 +87,11 @@ neither workflow intake nor activity packets accept caller-provided readback
 evidence.
 
 Temporal owner commands carry a short-lived HMAC-signed authorization
-assertion minted by the isolated authorization service. Assertions are bound to
+assertion minted by the isolated authorization service. Its mint endpoint
+accepts only the API service identity; it consumes a one-time, tenant-scoped
+command intent created from the authenticated HTTP context and the authoritative
+case projection. Callers cannot supply roles, case, proposal, or approval scope
+to minting. Assertions are bound to
 issuer, audience, key ID, nonce/JTI, expiry, tenant, case/revision/run,
 proposal, approval, authenticated subject, and roles; JTI consumption is
 durable and one-time. The API and worker have no signing key. The Owner Gate
@@ -84,15 +101,19 @@ trusted.
 
 Compose bootstraps separate MinIO identities: the artifact writer can access
 only the evidence bucket, while the verifier/current-source reader is read-only
-under the configured controlled source prefix. Neither identity is injected
-into the API. The live IAM test proves readback succeeds with the reader and
-that reader writes, writer source reads, cross-bucket reads, and a wrong
-tenant/key/bucket binding all fail.
+under one configured tenant's controlled source prefix. Neither identity is
+injected into the API. The live IAM test performs raw MinIO requests and proves
+that reader writes, writer source reads, cross-bucket reads, and cross-tenant
+object/list requests all fail before adapter checks.
 
-The migration is mounted into the local Postgres initializer. A deployment
-migration runner must apply the equivalent migration before any worker connects.
-The Compose values are local-only and must not be treated as production
-credentials or a production deployment recipe.
+`001_control_plane.sql` is preserved as the `88563ce` baseline. The separate
+forward-only `002_authorization_intents.sql` is run by the Compose `migrate`
+service on every startup, so a pre-existing Postgres volume receives the new
+intent/replay tables without rerunning the initializer. The live Postgres suite
+creates an exact 001 database, writes a case, applies 002 twice, and verifies
+both data preservation and durable assertion consumption. The Compose values
+are local-only fixtures and must not be treated as production credentials or a
+production deployment recipe.
 
 ## Authority boundary
 

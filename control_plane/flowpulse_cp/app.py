@@ -138,9 +138,10 @@ def create_app(
         if case is None:
             raise HTTPException(status_code=404, detail="case_not_found")
         try:
+            intent = await _resolve(repository.create_auth_command_intent(actor, case, proposal.proposal_id))
             return await temporal_starter.submit_owner_command(case, OwnerGateCommand(
                 case_id=case.case_id, tenant_id=case.tenant_id,
-                auth_assertion=authorization.issue(actor, case, proposal.proposal_id), proposal=proposal,
+                auth_assertion=await _resolve(authorization.issue_intent(intent)), proposal=proposal,
             ))
         except (PolicyViolation, RuntimeError) as error:
             raise HTTPException(status_code=409, detail=str(error))
@@ -159,9 +160,12 @@ def create_app(
             case = await _resolve(repository.get_case(actor.tenant_id, approval.case_id))
             if case is None:
                 raise PolicyViolation("unknown_case")
+            intent = await _resolve(
+                repository.create_auth_command_intent(actor, case, proposal_id, approval.approval_id)
+            )
             return await temporal_starter.submit_owner_command(case, OwnerGateCommand(
                 case_id=case.case_id, tenant_id=case.tenant_id,
-                auth_assertion=authorization.issue(actor, case, proposal_id, approval.approval_id), proposal_id=proposal_id,
+                auth_assertion=await _resolve(authorization.issue_intent(intent)), proposal_id=proposal_id,
                 approval=approval, current_witness=body.current_witness,
             ))
         except PolicyViolation as error:

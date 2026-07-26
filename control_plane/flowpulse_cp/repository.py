@@ -7,10 +7,11 @@ sole workflow authority; repositories never advance a case on their own.
 
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from uuid import uuid4
 
 from .models import (
     ClaimRecord,
@@ -22,6 +23,7 @@ from .models import (
     OwnerApproval,
     RemediationProposal,
     VerificationReport,
+    AuthCommandIntent,
 )
 from .policy import PolicyViolation
 
@@ -50,6 +52,7 @@ class InMemoryCaseRepository:
         self.proposals: Dict[str, RemediationProposal] = {}
         self.approvals: Dict[str, OwnerApproval] = {}
         self.verifications: Dict[str, VerificationReport] = {}
+        self.auth_command_intents: Dict[str, AuthCommandIntent] = {}
 
     def append_event(self, event: DomainEvent) -> None:
         case = self.cases.get(event.case_id)
@@ -87,6 +90,23 @@ class InMemoryCaseRepository:
     def get_proposal(self, tenant_id: str, proposal_id: str) -> Optional[RemediationProposal]:
         proposal = self.proposals.get(proposal_id)
         return proposal if proposal and proposal.tenant_id == tenant_id else None
+
+    def create_auth_command_intent(
+        self, actor, case: IncidentCase, proposal_id: Optional[str] = None, approval_id: Optional[str] = None,
+    ) -> AuthCommandIntent:
+        authoritative = self.get_case(actor.tenant_id, case.case_id)
+        if authoritative is None:
+            raise PolicyViolation("authorization_intent_unknown_case")
+        now = datetime.now(timezone.utc)
+        intent = AuthCommandIntent(
+            intent_id="intent-{}".format(uuid4().hex), tenant_id=actor.tenant_id,
+            case_id=authoritative.case_id, case_revision=authoritative.case_revision,
+            workflow_run_id=authoritative.workflow_run_id, proposal_id=proposal_id, approval_id=approval_id,
+            subject_id=actor.subject_id, roles=actor.roles, created_at=now,
+            expires_at=now + timedelta(minutes=1),
+        )
+        self.auth_command_intents[intent.intent_id] = intent
+        return intent
 
     def put_evidence(self, evidence: EvidenceEnvelope) -> None:
         case = self.cases.get(evidence.case_id)

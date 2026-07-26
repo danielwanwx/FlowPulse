@@ -403,6 +403,32 @@ class AuthAssertion(StrictModel):
     signature: Hash
 
 
+class AuthCommandIntent(StrictModel):
+    """Server-created mint input; clients never choose its identity or scope."""
+    intent_id: NonEmpty
+    tenant_id: NonEmpty
+    case_id: NonEmpty
+    case_revision: PositiveInt
+    workflow_run_id: NonEmpty
+    proposal_id: Optional[NonEmpty] = None
+    approval_id: Optional[NonEmpty] = None
+    subject_id: NonEmpty
+    roles: List[NonEmpty]
+    created_at: datetime
+    expires_at: datetime
+
+    def actor(self) -> AuthContext:
+        return AuthContext(tenant_id=self.tenant_id, subject_id=self.subject_id, roles=self.roles)
+
+    def case(self) -> IncidentCase:
+        return IncidentCase(
+            case_id=self.case_id, tenant_id=self.tenant_id, case_revision=self.case_revision,
+            workflow_id="authorization-intent", workflow_run_id=self.workflow_run_id,
+            severity="authorization-intent", environment="authorization-intent",
+            affected_entities=["authorization-intent"], created_at=self.created_at, updated_at=self.created_at,
+        )
+
+
 class DryRunRequest(StrictModel):
     approval: OwnerApproval
     current_witness: Dict[NonEmpty, NonEmpty]

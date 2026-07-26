@@ -8,9 +8,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
+import asyncpg
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from flowpulse_cp.models import DryRunReceipt, IncidentCase, TemporalActivityPacket
+from flowpulse_cp.authorization import AssertionReplayRepository, HmacAuthorizationAuthority
+from flowpulse_cp.models import AuthContext, DryRunReceipt, IncidentCase, TemporalActivityPacket
 from flowpulse_cp.policy import PolicyViolation
 from flowpulse_cp.postgres import PostgresCaseRepository
 
@@ -21,6 +24,70 @@ class LivePostgresIdempotencyTests(unittest.TestCase):
         "FLOWPULSE_TEST_POSTGRES_DSN",
         "postgresql://flowpulse_cp_app:flowpulse-cp-local-only@127.0.0.1:5433/flowpulse",
     )
+    admin_dsn = os.environ.get(
+        "FLOWPULSE_TEST_POSTGRES_ADMIN_DSN",
+        "postgresql://flowpulse:flowpulse@127.0.0.1:5433/postgres",
+    )
+
+    def test_legacy_001_volume_upgrades_with_002_without_losing_case_or_verify_consume(self):
+        async def run():
+            database = "flowpulse_legacy_{}".format(uuid4().hex)
+            target_dsn = self.dsn.rsplit("/", 1)[0] + "/" + database
+            target_admin_dsn = self.admin_dsn.rsplit("/", 1)[0] + "/" + database
+            base = (Path(__file__).resolve().parents[1] / "migrations" / "001_control_plane.sql").read_text()
+            forward = (Path(__file__).resolve().parents[1] / "migrations" / "002_authorization_intents.sql").read_text()
+            admin = await asyncpg.connect(self.admin_dsn)
+            try:
+                await admin.execute("CREATE DATABASE " + database)
+                legacy = await asyncpg.connect(target_admin_dsn)
+                try:
+                    await legacy.execute(base)
+                finally:
+                    await legacy.close()
+
+                repository = PostgresCaseRepository(target_dsn)
+                await repository.connect()
+                now = datetime.now(timezone.utc)
+                case = IncidentCase(
+                    case_id="case-legacy-{}".format(uuid4().hex), tenant_id="tenant-legacy",
+                    workflow_id="workflow-legacy", workflow_run_id="run-legacy", severity="SEV2",
+                    environment="prod", affected_entities=["checkout"], created_at=now, updated_at=now,
+                )
+                try:
+                    await repository.put_case(case)
+                    migration = await asyncpg.connect(target_admin_dsn)
+                    try:
+                        # The Compose migration runner can repeat this safely on
+                        # an initialized volume after the 001 entrypoint has run.
+                        await migration.execute(forward)
+                        await migration.execute(forward)
+                    finally:
+                        await migration.close()
+                    self.assertEqual(case, await repository.get_case(case.tenant_id, case.case_id))
+
+                    authority = HmacAuthorizationAuthority("legacy-upgrade-test-key")
+                    assertion = authority.issue(
+                        AuthContext(tenant_id=case.tenant_id, subject_id="owner-legacy", roles=["owner"]), case,
+                    )
+                    self.assertEqual("owner-legacy", authority.resolve(assertion, case).subject_id)
+                    replay = AssertionReplayRepository(target_dsn)
+                    await replay.connect()
+                    try:
+                        await replay.consume(assertion)
+                    finally:
+                        await replay.close()
+                    async def counts(connection):
+                        return await connection.fetchval("SELECT count(*) FROM auth_assertion_consumptions")
+                    self.assertEqual(1, await repository._tenant(case.tenant_id, counts))
+                finally:
+                    await repository.close()
+            finally:
+                await admin.execute(
+                    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname=$1", database,
+                )
+                await admin.execute("DROP DATABASE IF EXISTS " + database)
+                await admin.close()
+        asyncio.run(run())
 
     def test_activity_retry_and_cross_tenant_idempotency_key_reuse_fail_closed(self):
         async def run():

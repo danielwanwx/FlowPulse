@@ -6,24 +6,23 @@ from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from typing import Dict, Optional, Protocol
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.request import Request as UrlRequest, urlopen
 from uuid import uuid4
 
 import asyncpg
-from fastapi import FastAPI, HTTPException
-from .models import AuthAssertion, AuthContext, IncidentCase, StrictModel
+from fastapi import FastAPI, HTTPException, Request
+
+from .models import AuthAssertion, AuthCommandIntent, AuthContext, IncidentCase, NonEmpty, StrictModel
 from .policy import PolicyViolation, canonical_json
+from .postgres import PostgresCaseRepository
 
 
 DEFAULT_AUDIENCE = "flowpulse.temporal-owner-gate.v1"
 
 
 class AuthorizationPort(Protocol):
-    def issue(
-        self, actor: AuthContext, case: IncidentCase, proposal_id: str = None,
-        approval_id: str = None, now: datetime = None,
-    ) -> AuthAssertion:
-        """Mint a scoped assertion through the trusted auth boundary."""
+    def issue_intent(self, intent: AuthCommandIntent) -> AuthAssertion:
+        """Mint an assertion from an already server-created command intent."""
 
     def resolve(
         self, assertion: AuthAssertion, case: IncidentCase, proposal_id: str = None,
@@ -94,6 +93,9 @@ class HmacAuthorizationAuthority:
         )
         return unsigned.copy(update={"signature": self._signature(unsigned)})
 
+    def issue_intent(self, intent: AuthCommandIntent) -> AuthAssertion:
+        return self.issue(intent.actor(), intent.case(), intent.proposal_id, intent.approval_id)
+
     def resolve(
         self, assertion: AuthAssertion, case: IncidentCase, proposal_id: str = None,
         approval_id: str = None, now: datetime = None, consume: bool = True,
@@ -123,7 +125,7 @@ class HmacAuthorizationAuthority:
 
 
 class UnavailableAuthorizationPort:
-    def issue(self, *args, **kwargs):
+    def issue_intent(self, *args, **kwargs):
         raise PolicyViolation("authorization_service_unavailable")
 
     def resolve(self, *args, **kwargs):
@@ -133,16 +135,24 @@ class UnavailableAuthorizationPort:
 class HttpAuthorizationClient:
     """No-secret API/worker adapter to the dedicated authorization service."""
 
-    def __init__(self, base_url: str, timeout_seconds: float = 5.0) -> None:
-        if not base_url:
-            raise ValueError("authorization_service_url_required")
+    def __init__(
+        self, base_url: str, service_identity: str, service_token: str, timeout_seconds: float = 5.0,
+    ) -> None:
+        if not base_url or not service_identity or not service_token:
+            raise ValueError("authorization_service_identity_required")
         self.base_url = base_url.rstrip("/")
+        self.service_identity = service_identity
+        self.service_token = service_token
         self.timeout_seconds = timeout_seconds
 
     def _post(self, path: str, payload: Dict) -> Dict:
-        request = Request(
+        request = UrlRequest(
             self.base_url + path, data=json.dumps(payload, default=str, sort_keys=True).encode("utf-8"), method="POST",
-            headers={"content-type": "application/json"},
+            headers={
+                "content-type": "application/json",
+                "x-flowpulse-service-identity": self.service_identity,
+                "authorization": "Bearer " + self.service_token,
+            },
         )
         try:
             with urlopen(request, timeout=self.timeout_seconds) as response:
@@ -156,14 +166,9 @@ class HttpAuthorizationClient:
         except (URLError, OSError) as error:
             raise PolicyViolation("authorization_service_unavailable") from error
 
-    def issue(
-        self, actor: AuthContext, case: IncidentCase, proposal_id: str = None,
-        approval_id: str = None, now: datetime = None,
-    ) -> AuthAssertion:
-        if now is not None:
-            raise PolicyViolation("authorization_issue_clock_override_forbidden")
+    def issue_intent(self, intent: AuthCommandIntent) -> AuthAssertion:
         return AuthAssertion.parse_obj(self._post("/v1/assertions/mint", {
-            "actor": actor.dict(), "case": case.dict(), "proposal_id": proposal_id, "approval_id": approval_id,
+            "tenant_id": intent.tenant_id, "intent_id": intent.intent_id,
         }))
 
     def resolve(
@@ -173,21 +178,18 @@ class HttpAuthorizationClient:
         if now is not None:
             raise PolicyViolation("authorization_resolve_clock_override_forbidden")
         return AuthContext.parse_obj(self._post("/v1/assertions/verify-consume", {
-            "assertion": assertion.dict(), "case": case.dict(), "proposal_id": proposal_id,
+            "assertion": assertion.dict(), "proposal_id": proposal_id,
             "approval_id": approval_id,
         }))
 
 
 class AuthMintRequest(StrictModel):
-    actor: AuthContext
-    case: IncidentCase
-    proposal_id: Optional[str] = None
-    approval_id: Optional[str] = None
+    tenant_id: NonEmpty
+    intent_id: NonEmpty
 
 
 class AuthVerifyRequest(StrictModel):
     assertion: AuthAssertion
-    case: IncidentCase
     proposal_id: Optional[str] = None
     approval_id: Optional[str] = None
 
@@ -225,31 +227,54 @@ class AssertionReplayRepository:
                     raise PolicyViolation("auth_assertion_replayed")
 
 
-def create_authz_app(authority: HmacAuthorizationAuthority, replay_dsn: str) -> FastAPI:
+def create_authz_app(
+    authority: HmacAuthorizationAuthority, replay_dsn: str, api_service_token: str, worker_service_token: str,
+) -> FastAPI:
+    if not api_service_token or not worker_service_token:
+        raise ValueError("authorization_service_tokens_required")
     replay = AssertionReplayRepository(replay_dsn)
+    repository = PostgresCaseRepository(replay_dsn)
     app = FastAPI(title="FlowPulse P0 Authorization Service", version="0.1.0")
 
     @app.on_event("startup")
     async def startup() -> None:
         await replay.connect()
+        await repository.connect()
 
     @app.on_event("shutdown")
     async def shutdown() -> None:
         await replay.close()
+        await repository.close()
+
+    def require_service(request: Request, required_identity: str) -> None:
+        identity = request.headers.get("x-flowpulse-service-identity")
+        token = request.headers.get("authorization", "").removeprefix("Bearer ")
+        expected = {"api": api_service_token, "worker": worker_service_token}.get(identity)
+        if identity != required_identity or expected is None or not hmac.compare_digest(token, expected):
+            raise HTTPException(status_code=403, detail="authorization_service_identity_rejected")
 
     @app.get("/healthz")
     async def healthz() -> Dict[str, str]:
         return {"status": "ok", "issuer": authority.issuer, "audience": authority.audience}
 
     @app.post("/v1/assertions/mint", response_model=AuthAssertion)
-    async def mint(request: AuthMintRequest) -> AuthAssertion:
-        return authority.issue(request.actor, request.case, request.proposal_id, request.approval_id)
+    async def mint(request: AuthMintRequest, http_request: Request) -> AuthAssertion:
+        require_service(http_request, "api")
+        try:
+            intent = await repository.consume_auth_command_intent(request.tenant_id, request.intent_id)
+            return authority.issue_intent(intent)
+        except PolicyViolation as error:
+            raise HTTPException(status_code=403, detail=str(error))
 
     @app.post("/v1/assertions/verify-consume", response_model=AuthContext)
-    async def verify_consume(request: AuthVerifyRequest) -> AuthContext:
+    async def verify_consume(request: AuthVerifyRequest, http_request: Request) -> AuthContext:
+        require_service(http_request, "worker")
         try:
+            authoritative_case = await repository.get_case(request.assertion.tenant_id, request.assertion.case_id)
+            if authoritative_case is None:
+                raise PolicyViolation("authorization_assertion_case_not_authoritative")
             context = authority.resolve(
-                request.assertion, request.case, request.proposal_id, request.approval_id, consume=False,
+                request.assertion, authoritative_case, request.proposal_id, request.approval_id, consume=False,
             )
             await replay.consume(request.assertion)
             return context

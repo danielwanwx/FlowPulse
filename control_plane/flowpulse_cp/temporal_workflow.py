@@ -1,5 +1,6 @@
 """The sole durable workflow definition for FlowPulse P0."""
 
+import asyncio
 from datetime import timedelta
 from typing import Any, Dict, Optional
 
@@ -51,6 +52,9 @@ class DiagnosisTemporalWorkflow:
         self._owner_authenticated = None
         self._owner_wait_ready = False
         self._command_count = 0
+        # Update handlers may await an auth activity. Serialize the full
+        # check/authorize/commit transaction to prevent same-run TOCTOU.
+        self._owner_command_lock = asyncio.Lock()
 
     def _packet(
         self, stage: str, specialist_role: str = None, proposal=None, approval=None,
@@ -156,45 +160,46 @@ class DiagnosisTemporalWorkflow:
     async def submit_owner_command(self, command_data: Dict[str, Any]) -> Dict[str, Any]:
         """Validate/consume auth before durable proposal or approval mutation."""
         try:
-            command = OwnerGateCommand.parse_obj(command_data)
-            if not self._initialized:
-                raise PolicyViolation("workflow_not_initialized")
-            if command.case_id != self._case_id or command.tenant_id != self._tenant_id:
-                raise PolicyViolation("owner_command_case_or_tenant_mismatch")
-            if not self._owner_wait_ready:
-                raise PolicyViolation("owner_gate_not_ready")
-            proposed = command.proposal or self._proposal
-            expected_proposal_id = proposed.proposal_id if proposed is not None else None
-            if command.proposal is not None and self._proposal is not None and self._proposal != command.proposal:
-                raise PolicyViolation("owner_command_proposal_immutable")
-            if command.approval is not None:
-                if expected_proposal_id is None or command.approval.proposal_id != expected_proposal_id:
-                    raise PolicyViolation("owner_command_unknown_or_mismatched_proposal")
-                if command.proposal_id not in {None, expected_proposal_id}:
-                    raise PolicyViolation("owner_command_proposal_id_mismatch")
-                if self._approval is not None and (
-                    self._approval != command.approval or self._current_witness != command.current_witness
-                ):
-                    raise PolicyViolation("owner_command_approval_immutable")
-            validation = await self._activity(
-                "validate_owner_command", proposal=command.proposal, approval=command.approval,
-                witness=command.current_witness, auth_assertion=command.auth_assertion,
-                proposal_id=expected_proposal_id,
-            )
-            if validation.decision != VerificationDecision.PASS or validation.authenticated is None:
-                raise PolicyViolation((validation.reason_codes or ["owner_command_authorization_rejected"])[0])
-            # No field below is changed until the isolated auth activity has
-            # verified issuer/audience/key/scope and consumed the assertion jti.
-            self._proposal = proposed
-            if command.approval is not None:
-                self._approval = command.approval
-                self._current_witness = command.current_witness
-                self._owner_assertion = command.auth_assertion
-                self._owner_authenticated = validation.authenticated
-            self._command_count += 1
-            return OwnerCommandReceipt(
-                case_id=self._case_id, tenant_id=self._tenant_id, workflow_run_id=self._workflow_run_id,
-                phase="approval_submitted" if command.approval is not None else "proposal_submitted",
-            ).dict()
+            async with self._owner_command_lock:
+                command = OwnerGateCommand.parse_obj(command_data)
+                if not self._initialized:
+                    raise PolicyViolation("workflow_not_initialized")
+                if command.case_id != self._case_id or command.tenant_id != self._tenant_id:
+                    raise PolicyViolation("owner_command_case_or_tenant_mismatch")
+                if not self._owner_wait_ready:
+                    raise PolicyViolation("owner_gate_not_ready")
+                proposed = command.proposal or self._proposal
+                expected_proposal_id = proposed.proposal_id if proposed is not None else None
+                if command.proposal is not None and self._proposal is not None and self._proposal != command.proposal:
+                    raise PolicyViolation("owner_command_proposal_immutable")
+                if command.approval is not None:
+                    if expected_proposal_id is None or command.approval.proposal_id != expected_proposal_id:
+                        raise PolicyViolation("owner_command_unknown_or_mismatched_proposal")
+                    if command.proposal_id not in {None, expected_proposal_id}:
+                        raise PolicyViolation("owner_command_proposal_id_mismatch")
+                    if self._approval is not None and (
+                        self._approval != command.approval or self._current_witness != command.current_witness
+                    ):
+                        raise PolicyViolation("owner_command_approval_immutable")
+                validation = await self._activity(
+                    "validate_owner_command", proposal=command.proposal, approval=command.approval,
+                    witness=command.current_witness, auth_assertion=command.auth_assertion,
+                    proposal_id=expected_proposal_id,
+                )
+                if validation.decision != VerificationDecision.PASS or validation.authenticated is None:
+                    raise PolicyViolation((validation.reason_codes or ["owner_command_authorization_rejected"])[0])
+                # No field below is changed until the isolated auth activity has
+                # verified issuer/audience/key/scope and consumed the assertion jti.
+                self._proposal = proposed
+                if command.approval is not None:
+                    self._approval = command.approval
+                    self._current_witness = command.current_witness
+                    self._owner_assertion = command.auth_assertion
+                    self._owner_authenticated = validation.authenticated
+                self._command_count += 1
+                return OwnerCommandReceipt(
+                    case_id=self._case_id, tenant_id=self._tenant_id, workflow_run_id=self._workflow_run_id,
+                    phase="approval_submitted" if command.approval is not None else "proposal_submitted",
+                ).dict()
         except (PolicyViolation, ValidationError) as error:
             return self._rejected(command_data, error)
