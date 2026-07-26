@@ -62,6 +62,17 @@ its result degraded, and must set both `fresh_read_performed` and
 `fresh_diagnosis_claimed` to `false`. Toast focus and all GET/SSE requests are
 read-only and cannot schedule it.
 
+The API first records a server-owned, immutable command intent after it reloads
+the binding, projection, and tenant-scoped subject grant. It then mints a
+short-lived, one-time assertion bound to the tenant, subject, case, public
+identity, projection revision, component, and canonical command hash. The
+production Temporal update accepts only that assertion envelope and resolves
+the actor through the authorization activity before any Conversation Manager or
+provider call. Empty recorded-evidence lists do not bypass the subject grant.
+The former actor-less update decoder is retained only in the frozen legacy
+workflow used to replay historical v1 histories; it is not registered by the
+production worker.
+
 ## Frontend transport and contract freeze
 
 The browser points only to its same-origin frontend route
@@ -82,11 +93,11 @@ for schemas.
 ## Workspace contract freeze
 
 The producer implementation commit is
-`7e2306fcceb8e7bbcc10f92a3c0fceda5110b828`. The generated bundle is:
+`e7cf2d8ec2f8a537762f6808a5769ca035a4f5ec`. The generated bundle is:
 
 - `control_plane/openapi/flowpulse-incident-workspace-v1.openapi.json` — SHA-256 `ad8911366e7e508d47a4d258768a052e71b44658d9bf33b474bf3a491ad0c75f`
 - `control_plane/openapi/flowpulse-incident-workspace-v1.examples.json` — SHA-256 `1e7a6094d116cca582a983f333f17a4b298b8d254819abf8ee4c4ab8fa1eb55c`
-- `control_plane/openapi/flowpulse-incident-workspace-v1.freeze.json` — SHA-256 `1b211e49c53d0a99fd33e62f97272f193855396ae1c4ccc7a26b4af485bbd302`
+- `control_plane/openapi/flowpulse-incident-workspace-v1.freeze.json` — SHA-256 `31c9de65646ddcfda909c0654b5c26f01ffd65c875e187afe382b927750f4519`
 
 The frontend product branch must record these values verbatim, together with
 the public identity and same-origin process-side authentication boundary,

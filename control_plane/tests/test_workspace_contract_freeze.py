@@ -10,7 +10,7 @@ from pathlib import Path
 CONTROL_PLANE = Path(__file__).resolve().parents[1]
 REPO = CONTROL_PLANE.parent
 ARTIFACT_DIR = CONTROL_PLANE / "openapi"
-PRODUCER_SHA = "7e2306fcceb8e7bbcc10f92a3c0fceda5110b828"
+PRODUCER_SHA = "e7cf2d8ec2f8a537762f6808a5769ca035a4f5ec"
 
 
 class WorkspaceContractFreezeTests(unittest.TestCase):
