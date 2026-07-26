@@ -82,7 +82,7 @@ for schemas.
 ## Contract Core freeze
 
 The producer implementation commit is
-`28c94613749bbadc18d0c1b8c09686f59343b324`. The generated bundle is:
+`dc542b90f56afff877475bb63f8aa7c5ff0bd1e1`. The generated bundle is:
 
 - `control_plane/openapi/flowpulse-incident-workspace-v1.openapi.json` — SHA-256 `5b75766b905d8a959389d7647b0f7711b2eddf47f5b65d5ff931de9b63a0c295`
 - `control_plane/openapi/flowpulse-incident-workspace-v1.examples.json` — SHA-256 `c74534afa472b5eb6433c6fb814fd18537c3317ac45c1aff631cf578de13b583`
