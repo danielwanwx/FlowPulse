@@ -4,6 +4,7 @@ import asyncio
 from datetime import datetime, timezone
 from hashlib import sha256
 from typing import Any, Dict, Optional
+from uuid import uuid4
 
 import boto3
 from temporalio import activity
@@ -50,6 +51,16 @@ from .postgres import PostgresCaseRepository
 from .repository import InMemoryCaseRepository
 from .source_readback import LocalDeterministicSourceReadback, S3SourceReadback
 from .temporal_workflow import DiagnosisTemporalWorkflow
+from .workspace_activities import WorkspaceActivityDispatcher, build_workspace_activities
+from .workspace_models import (
+    IncidentProjection,
+    NodeExplanationReceipt,
+    NodeExplanationStart,
+    WorkspaceIntake,
+    WorkspaceWorkflowRequest,
+    initial_topology_revision,
+)
+from .workspace_workflow import IncidentWorkspaceTemporalWorkflow
 
 
 class TemporalStarter:
@@ -120,6 +131,59 @@ class TemporalStarter:
         if not receipt.accepted:
             raise PolicyViolation(receipt.phase.removeprefix("rejected:"))
         return receipt
+
+
+class WorkspaceTemporalStarter:
+    """Temporal start/update port for the additive Incident Workspace.
+
+    The public ``run_id`` is generated independently of Temporal's workflow and
+    run IDs.  The only initial response is a typed degraded projection; the
+    worker's activity persists the authoritative projection and mapping.
+    """
+
+    def __init__(self, address: str, task_queue: str) -> None:
+        self.address = address
+        self.task_queue = task_queue
+
+    async def start_workspace(self, intake: WorkspaceIntake, actor: AuthContext) -> IncidentProjection:
+        now = datetime.now(timezone.utc)
+        run_id = "run-{}".format(uuid4().hex)
+        case_id = "workspace-case-{}".format(uuid4().hex)
+        workflow_id = "flowpulse.incident-workspace:{}:{}".format(actor.tenant_id, run_id)
+        topology_revision = initial_topology_revision(
+            actor.tenant_id, intake.incident_id, run_id, intake.affected_entities,
+        )
+        request = WorkspaceWorkflowRequest(
+            tenant_id=actor.tenant_id, incident_id=intake.incident_id, run_id=run_id,
+            topology_revision=topology_revision, case_id=case_id, case_revision=1,
+            workflow_id=workflow_id, workflow_run_id="pending", created_at=now, actor=actor,
+            title=intake.title, severity=intake.severity, environment=intake.environment,
+            affected_entities=intake.affected_entities, summary=intake.summary,
+        )
+        client = await Client.connect(self.address)
+        handle = await client.start_workflow(
+            IncidentWorkspaceTemporalWorkflow.run, request.dict(), id=workflow_id, task_queue=self.task_queue,
+        )
+        # An HTTP success is not a speculative browser fixture: this update is
+        # accepted only after the initializer activity has persisted the
+        # Temporal-derived projection and its public/internal binding.
+        response = await handle.execute_update(IncidentWorkspaceTemporalWorkflow.await_workspace_projection)
+        projection = IncidentProjection.parse_obj(response)
+        if projection.workflow_run_id != handle.result_run_id:
+            raise RuntimeError("workspace_temporal_run_correlation_mismatch")
+        return projection
+
+    async def start_or_reuse_node_explanation(
+        self, projection: IncidentProjection, command: NodeExplanationStart,
+    ) -> NodeExplanationReceipt:
+        client = await Client.connect(self.address)
+        handle = client.get_workflow_handle(projection.workflow_id, run_id=projection.workflow_run_id)
+        response = await handle.execute_update(
+            IncidentWorkspaceTemporalWorkflow.start_or_reuse_node_explanation, command.dict(),
+        )
+        if not response.get("accepted", True):
+            raise RuntimeError(response.get("reason", "workspace_node_explanation_rejected"))
+        return NodeExplanationReceipt.parse_obj(response)
 
 
 class DomainActivityEngine:
@@ -366,10 +430,17 @@ async def run_worker(
     )
     async with Worker(
         client, task_queue=task_queue,
-        workflows=[LegacyDiagnosisTemporalWorkflow, DiagnosisTemporalWorkflow],
-        activities=build_temporal_activities(PostgresActivityDispatcher(
-            repository, artifacts, source_readback, authorization, evidence_acquirer,
-        )),
+        workflows=[
+            LegacyDiagnosisTemporalWorkflow,
+            DiagnosisTemporalWorkflow,
+            IncidentWorkspaceTemporalWorkflow,
+        ],
+        activities=(
+            build_temporal_activities(PostgresActivityDispatcher(
+                repository, artifacts, source_readback, authorization, evidence_acquirer,
+            ))
+            + build_workspace_activities(WorkspaceActivityDispatcher(repository))
+        ),
     ):
         try:
             await asyncio.Future()

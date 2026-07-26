@@ -1,6 +1,21 @@
 # FlowPulse
 
-**An evidence-grounded incident control loop for distributed systems.**
+**A model-agnostic, company-multiplayer agent operating system for evidence-grounded incident response.**
+
+Incident response is FlowPulse's first vertical, not a second authority beside
+the control plane. The browser and this repository's legacy Node demo consume
+safe projections; the backend control plane owns the durable workflow and
+evidence boundary. Temporal is the only workflow/state-transition authority,
+Postgres holds append-only records and tenant-scoped read projections, and
+object storage holds versioned raw artifacts. Models and agents can propose or
+explain within typed activity boundaries, but they never become authority.
+
+The additive Incident Workspace contract uses public
+`(tenant_id, incident_id, run_id, topology_revision)` identities. Those are
+backend-issued product identities, distinct from internal `case_id`, Temporal
+`workflow_id`, and real `workflow_run_id`; a frontend must not derive a public
+`run_id` from a Temporal string. See
+[the control-plane workspace contract](docs/architecture/incident-workspace-control-plane-contract.md).
 
 FlowPulse turns bounded telemetry and change evidence into one inspectable operator workflow: observe the system, investigate a causal claim, challenge it, enforce the owner gate, execute only an allowlisted recovery, then verify the result. The browser is a read-only projection. The append-only ledger and server-side policy own the consequential state.
 

@@ -2,7 +2,7 @@
 
 import json
 from datetime import datetime, timedelta, timezone
-from typing import Any, Awaitable, Callable, Dict, List, Optional, TypeVar
+from typing import Any, Awaitable, Callable, Dict, List, Mapping, Optional, Tuple, TypeVar
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 import asyncpg
@@ -30,6 +30,7 @@ from .policy import (
     validate_claim_evidence,
     validate_evidence_admission,
 )
+from .workspace_models import IncidentEvent, IncidentProjection, IncidentRunBinding, NodeExplanation
 
 
 T = TypeVar("T")
@@ -41,6 +42,14 @@ def _payload(record: Any) -> str:
 
 def _decode(value: Any) -> Dict[str, Any]:
     return json.loads(value) if isinstance(value, str) else value
+
+
+def _workspace_binding(record: Any) -> IncidentRunBinding:
+    """Extract only the immutable binding fields from richer workspace records."""
+    fields = IncidentRunBinding.__fields__
+    if isinstance(record, Mapping):
+        return IncidentRunBinding.parse_obj({name: record[name] for name in fields})
+    return IncidentRunBinding.parse_obj({name: getattr(record, name) for name in fields})
 
 
 def activity_event_identity(packet: TemporalActivityPacket, activity_id: str) -> str:
@@ -85,6 +94,229 @@ class PostgresCaseRepository:
                 "SELECT payload FROM incident_cases WHERE tenant_id=$1 AND case_id=$2", tenant_id, case_id
             )
             return IncidentCase.parse_obj(_decode(row["payload"])) if row else None
+        return await self._tenant(tenant_id, operation)
+
+    async def put_workspace_binding(self, binding: IncidentRunBinding) -> IncidentRunBinding:
+        """Persist the immutable public-run to Temporal mapping from an activity only."""
+        binding = _workspace_binding(binding)
+        async def operation(connection: asyncpg.Connection) -> IncidentRunBinding:
+            await connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtext($1))",
+                "workspace-binding:{}:{}:{}".format(binding.tenant_id, binding.run_id, binding.topology_revision),
+            )
+            existing = await connection.fetchrow(
+                """SELECT payload FROM incident_run_bindings
+                   WHERE tenant_id=$1 AND run_id=$2 AND topology_revision=$3""",
+                binding.tenant_id, binding.run_id, binding.topology_revision,
+            )
+            if existing is not None:
+                current = _workspace_binding(_decode(existing["payload"]))
+                if current != binding:
+                    raise PolicyViolation("workspace_public_internal_binding_mismatch")
+                return current
+            rebound = await connection.fetchrow(
+                """SELECT payload FROM incident_run_bindings
+                   WHERE tenant_id=$1 AND case_id=$2 AND (workflow_id <> $3 OR workflow_run_id <> $4)""",
+                binding.tenant_id, binding.case_id, binding.workflow_id, binding.workflow_run_id,
+            )
+            if rebound is not None:
+                raise PolicyViolation("workspace_case_rebound_to_different_temporal_run")
+            await connection.execute(
+                """INSERT INTO incident_run_bindings
+                   (tenant_id, incident_id, run_id, topology_revision, case_id, case_revision,
+                    workflow_id, workflow_run_id, created_at, payload)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)""",
+                binding.tenant_id, binding.incident_id, binding.run_id, binding.topology_revision,
+                binding.case_id, binding.case_revision, binding.workflow_id, binding.workflow_run_id,
+                binding.created_at, _payload(binding),
+            )
+            return binding
+        return await self._tenant(binding.tenant_id, operation)
+
+    async def workspace_binding(self, tenant_id: str, case_id: str) -> Optional[IncidentRunBinding]:
+        async def operation(connection: asyncpg.Connection) -> Optional[IncidentRunBinding]:
+            row = await connection.fetchrow(
+                """SELECT payload FROM incident_run_bindings
+                   WHERE tenant_id=$1 AND case_id=$2 ORDER BY created_at DESC LIMIT 1""",
+                tenant_id, case_id,
+            )
+            return _workspace_binding(_decode(row["payload"])) if row else None
+        return await self._tenant(tenant_id, operation)
+
+    async def workspace_binding_by_public_identity(
+        self, tenant_id: str, incident_id: str, run_id: str, topology_revision: str,
+    ) -> Optional[IncidentRunBinding]:
+        async def operation(connection: asyncpg.Connection) -> Optional[IncidentRunBinding]:
+            row = await connection.fetchrow(
+                """SELECT payload FROM incident_run_bindings
+                   WHERE tenant_id=$1 AND incident_id=$2 AND run_id=$3 AND topology_revision=$4""",
+                tenant_id, incident_id, run_id, topology_revision,
+            )
+            return _workspace_binding(_decode(row["payload"])) if row else None
+        return await self._tenant(tenant_id, operation)
+
+    async def put_workspace_projection(self, projection: IncidentProjection) -> IncidentProjection:
+        async def operation(connection: asyncpg.Connection) -> IncidentProjection:
+            await connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtext($1))",
+                "workspace-projection:{}:{}:{}".format(
+                    projection.tenant_id, projection.run_id, projection.topology_revision,
+                ),
+            )
+            binding_row = await connection.fetchrow(
+                """SELECT payload FROM incident_run_bindings
+                   WHERE tenant_id=$1 AND run_id=$2 AND topology_revision=$3""",
+                projection.tenant_id, projection.run_id, projection.topology_revision,
+            )
+            if binding_row is None or _workspace_binding(_decode(binding_row["payload"])) != _workspace_binding(projection):
+                raise PolicyViolation("workspace_public_internal_binding_mismatch")
+            latest = await connection.fetchrow(
+                """SELECT projection_revision, sequence FROM incident_projections
+                   WHERE tenant_id=$1 AND run_id=$2 AND topology_revision=$3
+                   ORDER BY projection_revision DESC LIMIT 1""",
+                projection.tenant_id, projection.run_id, projection.topology_revision,
+            )
+            if latest is not None and (
+                projection.projection_revision <= latest["projection_revision"] or projection.sequence <= latest["sequence"]
+            ):
+                raise PolicyViolation("workspace_projection_revision_or_sequence_not_monotonic")
+            await connection.execute(
+                """INSERT INTO incident_projections
+                   (tenant_id, incident_id, run_id, topology_revision, case_id, case_revision, workflow_id, workflow_run_id,
+                    projection_revision, sequence, payload, created_at)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12)""",
+                projection.tenant_id, projection.incident_id, projection.run_id, projection.topology_revision,
+                projection.case_id, projection.case_revision, projection.workflow_id, projection.workflow_run_id,
+                projection.projection_revision, projection.sequence, _payload(projection), projection.generated_at,
+            )
+            return projection
+        return await self._tenant(projection.tenant_id, operation)
+
+    async def workspace_projection(self, tenant_id: str, case_id: str) -> Optional[IncidentProjection]:
+        async def operation(connection: asyncpg.Connection) -> Optional[IncidentProjection]:
+            row = await connection.fetchrow(
+                """SELECT payload FROM incident_projections
+                   WHERE tenant_id=$1 AND case_id=$2
+                   ORDER BY projection_revision DESC LIMIT 1""",
+                tenant_id, case_id,
+            )
+            return IncidentProjection.parse_obj(_decode(row["payload"])) if row else None
+        return await self._tenant(tenant_id, operation)
+
+    async def append_workspace_event(self, event: IncidentEvent) -> IncidentEvent:
+        event_id = uuid5(
+            NAMESPACE_URL,
+            "workspace-event:{}:{}:{}:{}".format(
+                event.tenant_id, event.run_id, event.topology_revision, event.sequence,
+            ),
+        )
+        async def operation(connection: asyncpg.Connection) -> IncidentEvent:
+            await connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtext($1))",
+                "workspace-event:{}:{}:{}".format(event.tenant_id, event.run_id, event.topology_revision),
+            )
+            binding_row = await connection.fetchrow(
+                """SELECT payload FROM incident_run_bindings
+                   WHERE tenant_id=$1 AND run_id=$2 AND topology_revision=$3""",
+                event.tenant_id, event.run_id, event.topology_revision,
+            )
+            if binding_row is None or _workspace_binding(_decode(binding_row["payload"])) != _workspace_binding(event):
+                raise PolicyViolation("workspace_public_internal_binding_mismatch")
+            prior = await connection.fetchrow(
+                """SELECT sequence FROM incident_projection_events
+                   WHERE tenant_id=$1 AND run_id=$2 AND topology_revision=$3
+                   ORDER BY sequence DESC LIMIT 1""",
+                event.tenant_id, event.run_id, event.topology_revision,
+            )
+            if prior is not None and event.sequence <= prior["sequence"]:
+                same = await connection.fetchrow(
+                    """SELECT payload FROM incident_projection_events
+                       WHERE tenant_id=$1 AND run_id=$2 AND topology_revision=$3 AND sequence=$4""",
+                    event.tenant_id, event.run_id, event.topology_revision, event.sequence,
+                )
+                if same is not None:
+                    recorded = IncidentEvent.parse_obj(_decode(same["payload"]))
+                    if recorded.copy(update={"occurred_at": event.occurred_at}) == event:
+                        return recorded
+                raise PolicyViolation("workspace_event_sequence_not_monotonic")
+            await connection.execute(
+                """INSERT INTO incident_projection_events
+                   (event_id, tenant_id, incident_id, run_id, topology_revision, case_id, case_revision, workflow_id,
+                    workflow_run_id, projection_revision, sequence, event_type, payload, occurred_at)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb,$14)""",
+                event_id, event.tenant_id, event.incident_id, event.run_id, event.topology_revision,
+                event.case_id, event.case_revision, event.workflow_id, event.workflow_run_id,
+                event.projection_revision, event.sequence, event.event_type, _payload(event), event.occurred_at,
+            )
+            return event
+        return await self._tenant(event.tenant_id, operation)
+
+    async def workspace_events_after(self, tenant_id: str, case_id: str, after: int) -> List[IncidentEvent]:
+        async def operation(connection: asyncpg.Connection) -> List[IncidentEvent]:
+            rows = await connection.fetch(
+                """SELECT payload FROM incident_projection_events
+                   WHERE tenant_id=$1 AND case_id=$2 AND sequence > $3
+                   ORDER BY sequence ASC""",
+                tenant_id, case_id, after,
+            )
+            return [IncidentEvent.parse_obj(_decode(row["payload"])) for row in rows]
+        return await self._tenant(tenant_id, operation)
+
+    async def start_or_reuse_workspace_explanation(
+        self, explanation: NodeExplanation,
+    ) -> Tuple[NodeExplanation, bool]:
+        async def operation(connection: asyncpg.Connection) -> Tuple[NodeExplanation, bool]:
+            await connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtext($1))",
+                "workspace-explanation:{}:{}".format(explanation.tenant_id, explanation.selection_key),
+            )
+            binding_row = await connection.fetchrow(
+                """SELECT payload FROM incident_run_bindings
+                   WHERE tenant_id=$1 AND run_id=$2 AND topology_revision=$3""",
+                explanation.tenant_id, explanation.run_id, explanation.topology_revision,
+            )
+            if binding_row is None or _workspace_binding(_decode(binding_row["payload"])) != _workspace_binding(explanation):
+                raise PolicyViolation("workspace_public_internal_binding_mismatch")
+            existing = await connection.fetchrow(
+                "SELECT payload FROM node_explanations WHERE tenant_id=$1 AND selection_key=$2",
+                explanation.tenant_id, explanation.selection_key,
+            )
+            if existing is not None:
+                return NodeExplanation.parse_obj(_decode(existing["payload"])), True
+            inserted = await connection.fetchrow(
+                """INSERT INTO node_explanations
+                   (explanation_id, tenant_id, incident_id, run_id, topology_revision, case_id, case_revision, workflow_id,
+                    workflow_run_id, projection_revision, component_id, conversation_schema_version,
+                    selection_key, payload, created_at)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15)
+                   ON CONFLICT (tenant_id, selection_key) DO NOTHING RETURNING payload""",
+                explanation.explanation_id, explanation.tenant_id, explanation.incident_id, explanation.run_id,
+                explanation.topology_revision, explanation.case_id, explanation.case_revision,
+                explanation.workflow_id, explanation.workflow_run_id, explanation.projection_revision,
+                explanation.component_id, explanation.conversation_schema_version, explanation.selection_key,
+                _payload(explanation), explanation.created_at,
+            )
+            if inserted is not None:
+                return explanation, False
+            existing = await connection.fetchrow(
+                "SELECT payload FROM node_explanations WHERE tenant_id=$1 AND selection_key=$2",
+                explanation.tenant_id, explanation.selection_key,
+            )
+            if existing is None:
+                raise PolicyViolation("workspace_explanation_insert_failed")
+            return NodeExplanation.parse_obj(_decode(existing["payload"])), True
+        return await self._tenant(explanation.tenant_id, operation)
+
+    async def workspace_explanation(
+        self, tenant_id: str, case_id: str, explanation_id: str,
+    ) -> Optional[NodeExplanation]:
+        async def operation(connection: asyncpg.Connection) -> Optional[NodeExplanation]:
+            row = await connection.fetchrow(
+                """SELECT payload FROM node_explanations
+                   WHERE tenant_id=$1 AND case_id=$2 AND explanation_id=$3""",
+                tenant_id, case_id, explanation_id,
+            )
+            return NodeExplanation.parse_obj(_decode(row["payload"])) if row else None
         return await self._tenant(tenant_id, operation)
 
     async def create_auth_command_intent(

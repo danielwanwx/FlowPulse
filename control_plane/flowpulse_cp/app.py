@@ -2,10 +2,12 @@
 
 import hmac
 import inspect
+import json
 from contextlib import asynccontextmanager
-from typing import Any, Mapping, Optional, Protocol
+from typing import Any, AsyncIterator, Mapping, Optional, Protocol
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from .authorization import AuthorizationPort, UnavailableAuthorizationPort
@@ -20,6 +22,7 @@ from .models import (
 )
 from .policy import PolicyViolation, require_authenticated_owner
 from .postgres import PostgresCaseRepository
+from .workspace_models import IncidentProjection, NodeExplanationReceipt, NodeExplanationStart, WorkspaceIntake
 
 
 class TemporalStartPort(Protocol):
@@ -36,6 +39,26 @@ class TemporalUnavailableStarter:
 
     async def submit_owner_command(self, case: IncidentCase, command: OwnerGateCommand) -> OwnerCommandReceipt:
         raise RuntimeError("temporal_update_unavailable")
+
+
+class WorkspaceStartPort(Protocol):
+    async def start_workspace(self, intake: WorkspaceIntake, actor: AuthContext) -> IncidentProjection:
+        ...
+
+    async def start_or_reuse_node_explanation(
+        self, projection: IncidentProjection, command: NodeExplanationStart,
+    ) -> NodeExplanationReceipt:
+        ...
+
+
+class WorkspaceUnavailableStarter:
+    async def start_workspace(self, intake: WorkspaceIntake, actor: AuthContext) -> IncidentProjection:
+        raise RuntimeError("workspace_temporal_start_unavailable")
+
+    async def start_or_reuse_node_explanation(
+        self, projection: IncidentProjection, command: NodeExplanationStart,
+    ) -> NodeExplanationReceipt:
+        raise RuntimeError("workspace_temporal_update_unavailable")
 
 
 class FixtureTokenAuthMiddleware(BaseHTTPMiddleware):
@@ -78,9 +101,26 @@ def _repository(request: Request) -> Any:
     return repository
 
 
+def _workspace_repository(request: Request) -> Any:
+    repository = getattr(request.app.state, "workspace_repository", None)
+    if repository is None:
+        raise HTTPException(status_code=503, detail="workspace_projection_repository_unavailable")
+    return repository
+
+
+async def _workspace_call(repository: Any, names, *args):
+    for name in names:
+        candidate = getattr(repository, name, None)
+        if candidate is not None:
+            return await _resolve(candidate(*args))
+    raise HTTPException(status_code=503, detail="workspace_projection_repository_method_unavailable")
+
+
 def create_app(
     repository: Optional[Any] = None,
     temporal_starter: Optional[TemporalStartPort] = None,
+    workspace_repository: Optional[Any] = None,
+    workspace_starter: Optional[WorkspaceStartPort] = None,
     authorization: Optional[AuthorizationPort] = None,
     trusted_fixture_identities: Optional[Mapping[str, AuthContext]] = None,
     postgres_dsn: Optional[str] = None,
@@ -91,6 +131,7 @@ def create_app(
         if created is not None:
             await created.connect()
         app.state.repository = created or repository
+        app.state.workspace_repository = created or workspace_repository
         try:
             yield
         finally:
@@ -101,9 +142,11 @@ def create_app(
     # TestClient can be used without a context manager in existing callers;
     # retain an explicitly supplied deterministic repository immediately.
     app.state.repository = repository
+    app.state.workspace_repository = workspace_repository
     if trusted_fixture_identities:
         app.add_middleware(FixtureTokenAuthMiddleware, identities=trusted_fixture_identities)
     temporal_starter = temporal_starter or TemporalUnavailableStarter()
+    workspace_starter = workspace_starter or WorkspaceUnavailableStarter()
     authorization = authorization or UnavailableAuthorizationPort()
 
     @app.get("/healthz")
@@ -112,6 +155,107 @@ def create_app(
             "status": "ok" if getattr(request.app.state, "repository", None) is not None else "degraded",
             "workflow_authority": "temporal",
         }
+
+    @app.post("/v1/incidents", response_model=IncidentProjection, status_code=202)
+    async def intake_workspace_incident(
+        intake: WorkspaceIntake, request: Request, actor: AuthContext = Depends(trusted_auth_context),
+    ) -> IncidentProjection:
+        _workspace_repository(request)
+        try:
+            return await workspace_starter.start_workspace(intake, actor)
+        except RuntimeError as error:
+            raise HTTPException(status_code=503, detail=str(error))
+
+    @app.get("/v1/incidents/{case_id}/projection", response_model=IncidentProjection)
+    async def get_workspace_projection(
+        case_id: str, request: Request, actor: AuthContext = Depends(trusted_auth_context),
+    ) -> IncidentProjection:
+        projection = await _workspace_call(
+            _workspace_repository(request), ("workspace_projection", "get_projection"), actor.tenant_id, case_id,
+        )
+        if projection is None:
+            raise HTTPException(status_code=404, detail="workspace_projection_not_found")
+        return projection
+
+    @app.get("/v1/incidents/{case_id}/components/{component_id}/context")
+    async def workspace_component_context(
+        case_id: str, component_id: str, request: Request, actor: AuthContext = Depends(trusted_auth_context),
+    ) -> dict:
+        projection = await _workspace_call(
+            _workspace_repository(request), ("workspace_projection", "get_projection"), actor.tenant_id, case_id,
+        )
+        if projection is None:
+            raise HTTPException(status_code=404, detail="workspace_projection_not_found")
+        node = next((item for item in projection.graph.nodes if item.component_id == component_id), None)
+        if node is None:
+            raise HTTPException(status_code=404, detail="workspace_component_not_canonical")
+        return {
+            "schema_version": "flowpulse.component-context.v1",
+            "incident_id": projection.incident_id, "run_id": projection.run_id,
+            "topology_revision": projection.topology_revision, "component": node.dict(),
+            "evidence_refs": projection.evidence_refs, "fresh_read_performed": False,
+        }
+
+    @app.post("/v1/incidents/{case_id}/node-explanations", response_model=NodeExplanationReceipt, status_code=202)
+    async def start_node_explanation(
+        case_id: str, command: NodeExplanationStart, request: Request,
+        actor: AuthContext = Depends(trusted_auth_context),
+    ) -> NodeExplanationReceipt:
+        projection = await _workspace_call(
+            _workspace_repository(request), ("workspace_projection", "get_projection"), actor.tenant_id, case_id,
+        )
+        if projection is None:
+            raise HTTPException(status_code=404, detail="workspace_projection_not_found")
+        if (
+            command.incident_id != projection.incident_id or command.run_id != projection.run_id
+            or command.topology_revision != projection.topology_revision
+            or command.projection_revision != projection.projection_revision
+        ):
+            raise HTTPException(status_code=409, detail="workspace_node_explanation_identity_or_revision_mismatch")
+        if command.component_id not in {node.component_id for node in projection.graph.nodes}:
+            raise HTTPException(status_code=409, detail="workspace_node_explanation_component_not_canonical")
+        try:
+            return await workspace_starter.start_or_reuse_node_explanation(projection, command)
+        except RuntimeError as error:
+            raise HTTPException(status_code=503, detail=str(error))
+
+    @app.get("/v1/incidents/{case_id}/node-explanations/{explanation_id}", response_model=NodeExplanationReceipt)
+    async def get_node_explanation(
+        case_id: str, explanation_id: str, request: Request, actor: AuthContext = Depends(trusted_auth_context),
+    ) -> NodeExplanationReceipt:
+        explanation = await _workspace_call(
+            _workspace_repository(request), ("workspace_explanation", "get_explanation"),
+            actor.tenant_id, case_id, explanation_id,
+        )
+        if explanation is None:
+            raise HTTPException(status_code=404, detail="workspace_node_explanation_not_found")
+        return NodeExplanationReceipt(explanation=explanation, reused=True)
+
+    @app.get("/v1/incidents/{case_id}/events")
+    async def workspace_events(
+        case_id: str, request: Request, after: int = Query(0, ge=0),
+        last_event_id: Optional[str] = Header(None, alias="Last-Event-ID"),
+        actor: AuthContext = Depends(trusted_auth_context),
+    ) -> StreamingResponse:
+        checkpoint = after
+        if last_event_id is not None:
+            try:
+                header_checkpoint = int(last_event_id)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="workspace_event_checkpoint_invalid")
+            if header_checkpoint < 0 or (after and after != header_checkpoint):
+                raise HTTPException(status_code=400, detail="workspace_event_checkpoint_invalid")
+            checkpoint = header_checkpoint
+        events = await _workspace_call(
+            _workspace_repository(request), ("workspace_events_after", "events_after"),
+            actor.tenant_id, case_id, checkpoint,
+        )
+
+        async def stream() -> AsyncIterator[str]:
+            for event in events:
+                yield "id: {}\nevent: incident-event\ndata: {}\n\n".format(event.sequence, event.json())
+
+        return StreamingResponse(stream(), media_type="text/event-stream")
 
     @app.post("/v1/cases", response_model=IncidentCase, status_code=202)
     async def intake_case(

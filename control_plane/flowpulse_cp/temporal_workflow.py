@@ -57,7 +57,15 @@ class DiagnosisTemporalWorkflow:
         # Update handlers may await an auth activity. Serialize each
         # workflow-state check/commit section; the recheck after the await
         # closes the gap between them.
-        self._owner_command_lock = asyncio.Lock()
+        # Construct only from an executing coroutine. Python 3.9's
+        # ``asyncio.Lock`` otherwise requires a process-global current loop,
+        # while this workflow is also instantiated by pure policy tests.
+        self._owner_command_lock = None
+
+    def _owner_lock(self):
+        if self._owner_command_lock is None:
+            self._owner_command_lock = asyncio.Lock()
+        return self._owner_command_lock
 
     def _packet(
         self, stage: str, specialist_role: str = None, proposal=None, approval=None,
@@ -202,7 +210,7 @@ class DiagnosisTemporalWorkflow:
             # wait or a terminal outcome exists; it is never rejected merely
             # because a normal in-memory flag has not been set yet.
             await workflow.wait_condition(lambda: self._initialized)
-            async with self._owner_command_lock:
+            async with self._owner_lock():
                 await workflow.wait_condition(
                     lambda: self._owner_phase in {"OWNER_WAIT", "OWNER_GATE", "TERMINAL"}
                 )
@@ -219,7 +227,7 @@ class DiagnosisTemporalWorkflow:
             )
             if validation.decision != VerificationDecision.PASS or validation.authenticated is None:
                 raise PolicyViolation((validation.reason_codes or ["owner_command_authorization_rejected"])[0])
-            async with self._owner_command_lock:
+            async with self._owner_lock():
                 # The activity awaited above is an external boundary. Re-read
                 # all workflow-authoritative state before committing anything.
                 revalidated, revalidated_proposal_id = self._validate_authoritative_command_state(command)

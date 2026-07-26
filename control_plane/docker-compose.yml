@@ -74,7 +74,7 @@ services:
       POSTGRES_PASSWORD: flowpulse
       POSTGRES_DB: flowpulse
     volumes:
-      - ./migrations:/docker-entrypoint-initdb.d:ro
+      - ./migrations/001_control_plane.sql:/docker-entrypoint-initdb.d/001_control_plane.sql:ro
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U flowpulse -d flowpulse"]
@@ -84,7 +84,7 @@ services:
     ports: ["5433:5432"]
   migrate:
     image: postgres:16-alpine
-    entrypoint: ["psql", "-h", "postgres", "-U", "flowpulse", "-d", "flowpulse", "-v", "ON_ERROR_STOP=1", "-f", "/migrations/002_authorization_intents.sql"]
+    entrypoint: ["/bin/sh", "/migrations/apply.sh"]
     environment:
       PGPASSWORD: flowpulse
     volumes:

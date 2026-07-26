@@ -1,6 +1,9 @@
 # FlowPulse Diagnosis Control Plane P0
 
-This service is a new, isolated control-plane kernel. The existing Node app remains its presentation/demo layer and this directory does not replace its ledger.
+This service is a new, isolated control-plane kernel for FlowPulse: a
+model-agnostic, company-multiplayer agent operating system whose first vertical
+is incident response. The existing Node app remains its presentation/demo layer
+and this directory does not replace its ledger.
 
 ## Local deterministic check
 
@@ -148,3 +151,38 @@ production deployment recipe.
 - OpenAI/Responses integrations belong only in typed Temporal activities; P0 tests use deterministic fakes.
 - Knowledge retrieval is ACL/version filtered reference evidence. It cannot prove a current incident root cause.
 - P0 cannot execute a production action or autonomously promote knowledge.
+
+## Incident Workspace Contract Core
+
+`flowpulse.incident-workspace.v1` is an additive Temporal workflow for the
+Incident/Live product surface. Its public canonical identity is
+`(tenant_id, incident_id, run_id, topology_revision)`. `run_id` is issued by
+the backend and `topology_revision` is a versioned graph identity; neither is a
+Temporal identifier. The immutable binding also records internal `case_id`,
+`case_revision`, `workflow_id`, and the real `workflow_run_id` returned by
+Temporal. Every workspace projection, event, and NodeExplanation carries that
+binding and its relevant projection/evidence/gate/action revisions.
+
+The initial v1 workflow has no configured Conversation Manager, provider, or
+fresh-read capability. `POST /v1/incidents` therefore returns a durable typed
+`DEGRADED` projection (`provider_unavailable`), rather than fabricated model
+output. `POST /v1/incidents/{case_id}/node-explanations` is a Temporal update
+that selects exactly once by the public run key
+`node_explanation:{tenant}:{run}:{projection_revision}:{component}:{schema}`.
+Before Gate 1 it can only return recorded projection/evidence context and the
+same typed degraded state: no fresh tools, fresh diagnosis, or side effect.
+`GET /v1/incidents/{case_id}/events` is an ordered, strictly-after SSE read
+projection. A focus toast, hover, drawer open, or SSE subscription has no
+command route and creates no workflow/event/tool side effect.
+
+The API is still tenant-scoped through trusted server authentication. For the
+local cross-worktree test harness, the browser uses the frontend same-origin
+`/api/control-plane/v1` Node transport façade. Only that Node process receives
+the local fixture session/bearer and forwards it server-side; browser runtime
+configuration, JavaScript, requests, and screenshots must not expose it. The
+façade is transport only and never creates authority or success responses.
+
+The generated contract bundle is checked in under `openapi/` once this
+checkpoint's freeze manifest records the producer commit and artifact hashes.
+Frontend product integration is blocked until that committed bundle and the
+identity/auth mapping are reviewed together.
