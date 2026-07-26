@@ -787,6 +787,22 @@ export function incidentVerificationGuidance(verification) {
   };
 }
 
+// State responses are only useful while they still belong to the selected
+// canonical run. Keep the ownership check and the write adjacent so a late
+// response cannot replace the topology of a newer selection.
+export function commitPinnedStateResponse({ requestedRunId, selectedRunId, nextState, commit }) {
+  if (selectedRunId !== requestedRunId) return "superseded";
+  if (requestedRunId !== null && nextState?.run_id !== requestedRunId) return "mismatched";
+  commit(nextState);
+  return "committed";
+}
+
+export function isRetryableRequestFailure(error) {
+  if (error?.kind === "network") return true;
+  if (error?.kind !== "http") return false;
+  return error.status === 408 || error.status === 429 || (Number.isInteger(error.status) && error.status >= 500 && error.status <= 599);
+}
+
 function canonicalTopologyRefreshKey(loop, state) {
   const topology = plainRecord(loop?.topology) ? loop.topology : null;
   const needsRefresh = !topology
@@ -841,6 +857,7 @@ export function createPinnedRunStateRetryController({ schedule, cancel, onRetry 
   let timer = null;
   let runId = null;
   let attempts = 0;
+  const maxAttempts = 3;
   const reset = () => {
     if (timer !== null) cancel(timer);
     timer = null;
@@ -851,6 +868,7 @@ export function createPinnedRunStateRetryController({ schedule, cancel, onRetry 
     schedule(nextRunId) {
       if (typeof nextRunId !== "string" || !nextRunId || timer !== null && runId === nextRunId) return false;
       if (timer !== null) reset();
+      if (attempts >= maxAttempts) return false;
       runId = nextRunId;
       attempts += 1;
       const delay = sharedRunReconnectDelay(attempts);

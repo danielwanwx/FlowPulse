@@ -22,6 +22,8 @@ import {
   incidentVerificationProjection,
   incidentCompareControlAvailable,
   incidentVerificationGuidance,
+  commitPinnedStateResponse,
+  isRetryableRequestFailure,
   createTopologyRefreshTracker,
   createPinnedRunStateRetryController,
   sharedRunReconnectDelay,
@@ -424,7 +426,47 @@ test("Incident accepts only the backend authority and verifier chain for its cur
   assert.match(twinStateSource, /function incidentFocusSignal\(id, metric\) \{\n  if \(!metric \|\| !validCanonicalMetric\(metric, false\)\) return null;/);
 });
 
-test("Incident refresh controllers retry failed pinned state and topology refreshes without suppressing recovery", () => {
+test("Incident refresh controllers preserve the latest pinned state and retry only recoverable failures", async () => {
+  const deferred = () => {
+    let resolve;
+    const promise = new Promise((nextResolve) => { resolve = nextResolve; });
+    return { promise, resolve };
+  };
+  let selectedRunId = "run-a";
+  let committedState = null;
+  const applyResponse = async (requestedRunId, response) => {
+    const nextState = await response;
+    return commitPinnedStateResponse({
+      requestedRunId,
+      selectedRunId,
+      nextState,
+      commit: (value) => { committedState = value; }
+    });
+  };
+  const responseA = deferred();
+  const responseB = deferred();
+  const pendingA = applyResponse("run-a", responseA.promise);
+  selectedRunId = "run-b";
+  const pendingB = applyResponse("run-b", responseB.promise);
+  const stateB = {
+    run_id: "run-b",
+    topology_views: {
+      projection_revision: "revision-b",
+      live: { runtime_data: { graph: { nodes: [{ id: "checkout-b" }], edges: [{ id: "checkout-b->payment-b" }] } } }
+    }
+  };
+  responseB.resolve(stateB);
+  assert.equal(await pendingB, "committed");
+  responseA.resolve({
+    run_id: "run-a",
+    topology_views: { projection_revision: "revision-a", live: { runtime_data: { graph: { nodes: [{ id: "checkout-a" }], edges: [{ id: "checkout-a->payment-a" }] } } } }
+  });
+  assert.equal(await pendingA, "superseded", "a late response from the previous run never commits");
+  assert.equal(committedState.run_id, "run-b");
+  assert.equal(committedState.topology_views.projection_revision, "revision-b");
+  assert.deepEqual(committedState.topology_views.live.runtime_data.graph.nodes, [{ id: "checkout-b" }]);
+  assert.deepEqual(committedState.topology_views.live.runtime_data.graph.edges, [{ id: "checkout-b->payment-b" }]);
+
   const loop = { run_id: "run-action", topology: null };
   const state = { run_id: "run-action", topology_views: { run_id: "run-action", projection_revision: "revision-one" } };
   const tracker = createTopologyRefreshTracker();
@@ -455,6 +497,27 @@ test("Incident refresh controllers retry failed pinned state and topology refres
   scheduled[0].callback();
   assert.deepEqual(retried, ["run-deep-link"], "the scheduled retry keeps the original pinned run id");
   assert.deepEqual(retryController.snapshot(), { runId: null, attempts: 0, pending: false }, "a successful retry restores the fresh deep link and resets backoff");
+
+  const rejectedRetries = [];
+  const rejectedController = createPinnedRunStateRetryController({
+    schedule: (callback, delay) => {
+      rejectedRetries.push({ callback, delay });
+      return rejectedRetries.length;
+    },
+    cancel: () => {},
+    onRetry: () => {}
+  });
+  const scheduleOnFailure = (error) => isRetryableRequestFailure(error) && rejectedController.schedule("run-missing");
+  assert.equal(scheduleOnFailure({ kind: "http", status: 404 }), false, "a missing pinned run remains a stable error instead of polling forever");
+  assert.equal(rejectedRetries.length, 0);
+  assert.equal(scheduleOnFailure({ kind: "http", status: 503 }), true, "a one-shot 503 schedules recovery");
+  rejectedRetries[0].callback();
+  assert.equal(scheduleOnFailure({ kind: "network" }), true);
+  rejectedRetries[1].callback();
+  assert.equal(scheduleOnFailure({ kind: "http", status: 503 }), true);
+  rejectedRetries[2].callback();
+  assert.equal(scheduleOnFailure({ kind: "http", status: 503 }), false, "selected-run retries stop after the bounded 750→1500→3000ms window");
+  assert.deepEqual(rejectedRetries.map(({ delay }) => delay), [750, 1500, 3000]);
 });
 
 function componentDetailPayload() {
@@ -662,7 +725,7 @@ test("the shared header omits nonessential capture, theme, and workspace-menu ch
 
 test("initial rendering does not wait for optional development diagnostics", () => {
   const refreshSource = appJs.slice(appJs.indexOf("async function refresh({ synchronizeIncidentStage = false, topologyRefreshKey = null } = {})"), appJs.indexOf("function render()"));
-  assert.match(refreshSource, /state = await request\(browserStatePath\(\)\);/);
+  assert.match(refreshSource, /const nextState = await request\(browserStatePath\(\)\);/);
   assert.match(refreshSource, /void refreshDevelopmentStatus\(\);/);
   assert.doesNotMatch(refreshSource, /Promise\.all\(/);
   assert.match(appJs, /async function refreshDevelopmentStatus\(\)/);
@@ -1696,12 +1759,17 @@ test("Incident hydration pins the restored run, reports a stale stream, and reta
   const sharedRecoverySource = appJs.slice(appJs.indexOf("function renderSharedRecoveryCanvas"), appJs.indexOf("function canonicalRecoveryTopologyMarkup"));
   const sharedSummarySource = appJs.slice(appJs.indexOf("function workspaceSummaryModel"), appJs.indexOf("function recoveryGateLabel"));
   const streamSource = appJs.slice(appJs.indexOf("function connectSharedRunStream"), appJs.indexOf("function appendLoopTimelineItem"));
+  const agentStreamSource = appJs.slice(appJs.indexOf("function connectAgentStream"), appJs.indexOf("function escapeHtml"));
   const reconnectSource = appJs.slice(appJs.indexOf("function scheduleSharedRunReconnect"), appJs.indexOf("function connectSharedRunStream"));
   const timelineSource = appJs.slice(appJs.indexOf("function renderTimeline"), appJs.indexOf("function sharedTimelineMarkers"));
   const streamOpenSource = streamSource.slice(streamSource.indexOf("stream.onopen"), streamSource.indexOf("stream.addEventListener(\"local-fault-loop\""));
   assert.match(bootstrap, /let selectedRunId = readRequestedRunId\(\);[\s\S]*?if \(selectedRunId === null && sharedRun\?\.run_id\) bindCanonicalRunSelection\(sharedRun\);/);
   assert.match(appJs, /if \(selectedRunId === null\) bindCanonicalRunSelection\(loop\);/);
-  assert.match(appJs, /state = await request\(browserStatePath\(\)\);[\s\S]*?state\?\.run_id !== requestedRunId/);
+  assert.match(refreshSource, /const nextState = await request\(browserStatePath\(\)\);[\s\S]*?commitPinnedStateResponse\([\s\S]*?commit: \(value\) => \{ state = value; \}/);
+  assert.doesNotMatch(refreshSource, /state = await request\(browserStatePath\(\)\)/);
+  assert.match(agentStreamSource, /const nextState = await request\(browserStatePath\(\)\);[\s\S]*?commitPinnedStateResponse\([\s\S]*?commit: \(value\) => \{ state = value; \}/);
+  assert.doesNotMatch(agentStreamSource, /state = await request\(browserStatePath\(\)\)/);
+  assert.doesNotMatch(appJs, /state = await request\(browserStatePath\(\)\)/);
   assert.match(hydrateSource, /if \(!runId \|\| selectedRunId !== runId\) return;/);
   assert.match(hydrateSource, /agent-loop\?run_id=\$\{encodeURIComponent\(runId\)\}/);
   assert.match(hydrateSource, /new EventSource\(`\/api\/demo\/agent-loop\/events\?run_id=\$\{encodeURIComponent\(runId\)\}/);
@@ -1717,7 +1785,11 @@ test("Incident hydration pins the restored run, reports a stale stream, and reta
   assert.match(hydrateSource, /if \(topologyRefreshKey\) void refresh\(\{ synchronizeIncidentStage: true, topologyRefreshKey \}\);/);
   assert.match(refreshSource, /if \(topologyRefreshKey\) sharedRunTopologyRefresh\.succeed\(topologyRefreshKey\);/);
   assert.match(refreshSource, /if \(topologyRefreshKey\) sharedRunTopologyRefresh\.fail\(topologyRefreshKey\);/);
-  assert.match(refreshSource, /selectedRunStateRetry\.schedule\(requestedRunId\);/);
+  assert.match(refreshSource, /const retryable = isRetryableRequestFailure\(error\);/);
+  assert.match(refreshSource, /retryable && topologyRefreshKey && requestedRunId !== null/);
+  assert.match(refreshSource, /retryable && requestedRunId !== null/);
+  assert.match(appJs, /class RequestError extends Error/);
+  assert.match(appJs, /new RequestError\(data\?\.error \|\| `Request failed \(\$\{response\.status\}\)`/);
   assert.doesNotMatch(streamOpenSource, /sharedRunReconnectAttempts = 0/);
   assert.match(streamSource, /topology: projection\.topology \|\| sharedRun\.loop\.topology/);
   assert.match(streamSource, /needsAuthoritativeBrowserProjection[\s\S]*?void refresh\(\{ synchronizeIncidentStage: true \}\)/);
@@ -1753,6 +1825,8 @@ test("Incident hydration pins the restored run, reports a stale stream, and reta
   assert.match(sharedSummarySource, /const verification = incidentVerificationProjection\(shared\);/);
   assert.doesNotMatch(sharedSummarySource, /verification\?\.payload\?\.passed/);
   assert.match(timelineSource, /incidentCompareControlAvailable\(shared\)/);
+  const recoveryNextActionSource = appJs.slice(appJs.indexOf("function recoveryNextAction"), appJs.indexOf("function compactAgentSwitcherMarkup"));
+  assert.match(recoveryNextActionSource, /if \(verification\.failed\) return "Review failed verification with an operator";/);
   assert.match(railSource, /focusedStage = null/);
   assert.match(railSource, /focus\(\{ preventScroll: true \}\)/);
   assert.match(stylesCss, /\.causal-note\.note-deploy \{ left: clamp\(140px, 14%, calc\(100% - 140px\)\);/);

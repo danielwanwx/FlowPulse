@@ -21,6 +21,8 @@ import {
   incidentVerificationProjection,
   incidentCompareControlAvailable,
   incidentVerificationGuidance,
+  commitPinnedStateResponse,
+  isRetryableRequestFailure,
   createTopologyRefreshTracker,
   createPinnedRunStateRetryController,
   sharedRunReconnectDelay,
@@ -184,6 +186,15 @@ const selectedRunStateRetry = createPinnedRunStateRetryController({
 });
 let sharedRunFollowing = true;
 
+class RequestError extends Error {
+  constructor(message, { kind = "http", status = null } = {}) {
+    super(message);
+    this.name = "RequestError";
+    this.kind = kind;
+    this.status = status;
+  }
+}
+
 window.addEventListener("popstate", () => {
   const requestedRunId = readRequestedRunId();
   if (requestedRunId !== selectedRunId) {
@@ -275,9 +286,15 @@ async function refresh({ synchronizeIncidentStage = false, topologyRefreshKey = 
   const requestedRunId = selectedRunId;
   setLoading(true);
   try {
-    state = await request(browserStatePath());
-    if (selectedRunId !== requestedRunId) return;
-    if (requestedRunId !== null && state?.run_id !== requestedRunId) throw new Error("The requested incident is unavailable.");
+    const nextState = await request(browserStatePath());
+    const stateCommit = commitPinnedStateResponse({
+      requestedRunId,
+      selectedRunId,
+      nextState,
+      commit: (value) => { state = value; }
+    });
+    if (stateCommit === "superseded") return;
+    if (stateCommit === "mismatched") throw new RequestError("The requested incident is unavailable.", { status: 404 });
     bindCanonicalWorkspace(state.workspace_projection);
     const canonical = sharedRunModel();
     synchronizeCanonicalIncidentStage(canonical, { force: synchronizeIncidentStage });
@@ -303,12 +320,13 @@ async function refresh({ synchronizeIncidentStage = false, topologyRefreshKey = 
     // A rejected topology refresh is a pinned /api/state failure, not an
     // EventSource failure. Retry that exact state read so the refresh tracker
     // can accept the same revision after a transient 503.
-    if (topologyRefreshKey && requestedRunId !== null) {
+    const retryable = isRetryableRequestFailure(error);
+    if (retryable && topologyRefreshKey && requestedRunId !== null) {
       selectedRunStateRetry.schedule(requestedRunId);
-    } else if (sharedRun?.run_id && selectedRunId === sharedRun.run_id) {
+    } else if (retryable && sharedRun?.run_id && selectedRunId === sharedRun.run_id) {
       scheduleSharedRunReconnect({ error: "Canonical incident refresh is unavailable." });
       renderSharedRunConnectionStatus();
-    } else if (requestedRunId !== null) {
+    } else if (retryable && requestedRunId !== null) {
       selectedRunStateRetry.schedule(requestedRunId);
     }
   } finally {
@@ -2429,6 +2447,7 @@ function recoveryGateLabel(events) {
 
 function recoveryNextAction(events, verification = incidentVerificationProjection({ events })) {
   if (verification.passed) return "Review verified recovery";
+  if (verification.failed) return "Review failed verification with an operator";
   const authority = [...events].reverse().find((event) => event.type === "local_fault_loop.authority.decided");
   if (authority?.payload?.outcome === "needs_human") return "Owner decision outside this workspace";
   if (events.some((event) => event.type === "local_fault_loop.repair.executed")) return "Wait for independent verification";
@@ -3645,7 +3664,16 @@ async function runLive() {
     showToast(`Live evaluator score ${Math.round(response.result.evaluation.score * 100)}%.`);
     render();
   } catch (error) {
-    try { state = await request(browserStatePath()); } catch { /* keep the last visible projection */ }
+    try {
+      const requestedRunId = selectedRunId;
+      const nextState = await request(browserStatePath());
+      commitPinnedStateResponse({
+        requestedRunId,
+        selectedRunId,
+        nextState,
+        commit: (value) => { state = value; }
+      });
+    } catch { /* keep the last visible projection */ }
     showToast(error.message, true);
     render();
   } finally {
@@ -4481,9 +4509,19 @@ function formatMetric(metric, value) { return metric.includes("percent") ? `${va
 function formatAge(value) { return value == null ? "—" : value < 1000 ? "<1s" : value < 60_000 ? `${Math.floor(value / 1000)}s` : `${Math.floor(value / 60_000)}m`; }
 
 async function request(path, options) {
-  const response = await fetch(path, { headers: { "content-type": "application/json" }, ...options });
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error || `Request failed (${response.status})`);
+  let response;
+  try {
+    response = await fetch(path, { headers: { "content-type": "application/json" }, ...options });
+  } catch {
+    throw new RequestError("Network request failed.", { kind: "network" });
+  }
+  let data;
+  try {
+    data = await response.json();
+  } catch {
+    throw new RequestError(response.ok ? "The server returned an invalid response." : `Request failed (${response.status})`, { status: response.status });
+  }
+  if (!response.ok) throw new RequestError(data?.error || `Request failed (${response.status})`, { status: response.status });
   return data;
 }
 
@@ -4501,7 +4539,14 @@ function connectAgentStream() {
     clearTimeout(streamRefreshTimer);
     streamRefreshTimer = setTimeout(async () => {
       try {
-        state = await request(browserStatePath());
+        const requestedRunId = selectedRunId;
+        const nextState = await request(browserStatePath());
+        if (commitPinnedStateResponse({
+          requestedRunId,
+          selectedRunId,
+          nextState,
+          commit: (value) => { state = value; }
+        }) !== "committed") return;
         cursor = availableStage(state.events);
         render();
         ensureSelectedLiveComponentDetail();
