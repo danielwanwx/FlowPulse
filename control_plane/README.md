@@ -134,14 +134,17 @@ injected into the API. The live IAM test performs raw MinIO requests and proves
 that reader writes, writer source reads, cross-bucket reads, and cross-tenant
 object/list requests all fail before adapter checks.
 
-`001_control_plane.sql` is preserved as the `88563ce` baseline. The separate
-forward-only `002_authorization_intents.sql` is run by the Compose `migrate`
-service on every startup, so a pre-existing Postgres volume receives the new
-intent/replay tables without rerunning the initializer. The live Postgres suite
-creates an exact 001 database, writes a case, applies 002 twice, and verifies
-both data preservation and durable assertion consumption. The Compose values
-are local-only fixtures and must not be treated as production credentials or a
-production deployment recipe.
+`001_control_plane.sql` is preserved as the `88563ce` baseline. The ordered,
+forward-only Compose `migrate` service records immutable checksums, preserves
+that baseline, then applies `002_authorization_intents.sql` and additive
+`003_incident_workspace_projection.sql` exactly once to a pre-existing volume.
+`003` adds RLS-forced append-only public run bindings, projections, ordered
+events, NodeExplanation selections, and evidence bindings; it does not rewrite
+001/002 data. The live Postgres suite creates an exact 001 database, writes a
+case, applies the forward migrations, and verifies data preservation, durable
+assertion consumption, workspace RLS, and append-only mapping behavior. The
+Compose values are local-only fixtures and must not be treated as production
+credentials or a production deployment recipe.
 
 ## Authority boundary
 
@@ -182,7 +185,8 @@ the local fixture session/bearer and forwards it server-side; browser runtime
 configuration, JavaScript, requests, and screenshots must not expose it. The
 façade is transport only and never creates authority or success responses.
 
-The generated contract bundle is checked in under `openapi/` once this
-checkpoint's freeze manifest records the producer commit and artifact hashes.
-Frontend product integration is blocked until that committed bundle and the
-identity/auth mapping are reviewed together.
+The generated contract bundle is checked in under `openapi/`. Its freeze
+manifest records producer implementation commit
+`341033f531a2afa2786cab4fcba37167e6f3d483` and the reproducible SHA-256 for
+the OpenAPI and safe example artifacts. Frontend product integration is blocked
+until that committed bundle and identity/auth mapping are reviewed together.

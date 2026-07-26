@@ -78,3 +78,16 @@ integration must wait for the manifest's producer commit and artifact hashes,
 plus the exact public/internal identity and same-origin auth mapping. This file
 is the narrative companion; the checked-in generated bundle is authoritative
 for schemas.
+
+## Contract Core freeze
+
+The producer implementation commit is
+`341033f531a2afa2786cab4fcba37167e6f3d483`. The generated bundle is:
+
+- `control_plane/openapi/flowpulse-incident-workspace-v1.openapi.json` — SHA-256 `ff152ef7e8e4b20fb03fd9f1b7191a558aaae1d0e38c62fe1ca6a9be29a4f4b9`
+- `control_plane/openapi/flowpulse-incident-workspace-v1.examples.json` — SHA-256 `85d857e1a73a6a40071e51848e4b08736a703958b808867636a0f8da12d178dd`
+- `control_plane/openapi/flowpulse-incident-workspace-v1.freeze.json` — SHA-256 `4994bc07d1d239fb582517d663be0edb1b9a65b83fcab4774d3046c25e648199`
+
+The frontend product branch must record these values verbatim, together with
+the public identity and same-origin process-side authentication boundary,
+before it consumes the Contract Core API.

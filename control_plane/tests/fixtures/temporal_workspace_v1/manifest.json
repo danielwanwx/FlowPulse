@@ -1,0 +1,24 @@
+{
+  "histories": [
+    {
+      "event_count": 28,
+      "expected_outcome": "degraded_node_explanation_without_fresh_read_or_diagnosis",
+      "filename": "workspace_node_explanation_degraded.json",
+      "name": "workspace_node_explanation_degraded",
+      "sha256": "b31f876b94fcdb598db82bd393337f62a50a5e6094b79b6c18d7d907f1ed5010"
+    }
+  ],
+  "producer": {
+    "git_sha": "341033f531a2afa2786cab4fcba37167e6f3d483",
+    "public_identity": {
+      "incident_id": "workspace-http-741ad29873de48d1b95c068fe26407d2",
+      "run_id": "run-6fc584ad015041119d1f6aaf21fe3f32",
+      "tenant_id": "tenant-http",
+      "topology_revision": "topology-v1-e6270dcba6e0d59cf5cd"
+    },
+    "workflow_id": "flowpulse.incident-workspace:tenant-http:run-6fc584ad015041119d1f6aaf21fe3f32",
+    "workflow_run_id": "325a5034-254a-40f1-8d73-0a13573b393c",
+    "workflow_type": "flowpulse.incident-workspace.v1"
+  },
+  "schema_version": 1
+}
