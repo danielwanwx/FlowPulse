@@ -158,6 +158,31 @@ class CurrentEvidenceCapabilityResult(CapabilityResult):
     coverage: List[CoverageEntry] = Field(min_items=1, max_items=64)
 
 
+def canonical_capability_request_hash(request: CapabilityRequest) -> str:
+    """Hash the exact capability request the registry accepted."""
+    return sha256(request.json(sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def canonical_capability_result_hash(result: CapabilityResult) -> str:
+    """Hash the full ordered domain result, including evidence/claims/coverage."""
+    if not isinstance(result, CapabilityResult):
+        raise PolicyViolation("capability_result_hash_invalid")
+    return sha256(result.json(sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def deterministic_capability_audit_id(
+    *, tenant_id: str, run_id: str, activity_id: str, scope: CapabilityScope,
+    audience: CapabilityAudience, capability: CapabilityName, request_hash: str,
+) -> UUID:
+    """Derive the immutable audit identity from the accepted invocation."""
+    return uuid5(
+        NAMESPACE_URL,
+        "capability:{}:{}:{}:{}:{}:{}:{}".format(
+            tenant_id, run_id, activity_id, scope.value, audience.value, capability.value, request_hash,
+        ),
+    )
+
+
 class CapabilityAuditRecord(IncidentRunBinding):
     audit_id: UUID
     projection_revision: NonNegativeInt
@@ -173,6 +198,7 @@ class CapabilityAuditRecord(IncidentRunBinding):
     required_gate: CapabilityGate
     policy_version: NonEmpty
     request_hash: Hash
+    result_hash: Optional[Hash] = None
     input_evidence_refs: List[NonEmpty] = Field(default_factory=list)
     evidence_refs: List[NonEmpty] = Field(default_factory=list)
     status: NonEmpty = "COMPLETED"
@@ -378,7 +404,7 @@ class CapabilityRegistry:
             except Exception as error:
                 raise PolicyViolation("capability_evidence_admission_invalid_result") from error
             self._validate_result_evidence(result, invocation_context)
-        request_hash = sha256(request.json(sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+        request_hash = canonical_capability_request_hash(request)
         evidence_refs = list(input_evidence_refs)
         for evidence in result.evidence:
             if evidence.evidence_id not in evidence_refs:
@@ -388,12 +414,10 @@ class CapabilityRegistry:
                 field: getattr(invocation_context, field)
                 for field in IncidentRunBinding.__fields__ if field != "created_at"
             },
-            audit_id=uuid5(
-                NAMESPACE_URL,
-                "capability:{}:{}:{}:{}:{}:{}:{}".format(
-                    invocation_context.tenant_id, invocation_context.run_id, invocation_context.activity_id,
-                    invocation_context.scope.value, audience.value, request.capability.value, request_hash,
-                ),
+            audit_id=deterministic_capability_audit_id(
+                tenant_id=invocation_context.tenant_id, run_id=invocation_context.run_id,
+                activity_id=invocation_context.activity_id, scope=invocation_context.scope,
+                audience=audience, capability=request.capability, request_hash=request_hash,
             ),
             projection_revision=invocation_context.projection_revision,
             evidence_revision=invocation_context.evidence_revision,
@@ -408,6 +432,7 @@ class CapabilityRegistry:
             required_gate=descriptor.required_gate,
             policy_version=self.policy_version,
             request_hash=request_hash,
+            result_hash=canonical_capability_result_hash(result),
             input_evidence_refs=input_evidence_refs,
             evidence_refs=evidence_refs,
             # Temporal-owned packet time makes an exact retry byte-identical.

@@ -113,6 +113,7 @@ class WorkspaceActivityDispatcher:
 
     async def _consumed_gate1_lease(
         self, lease_id: str, invocation_context: CapabilityInvocationContext, command_fingerprint: str,
+        action, receipt: WorkspaceActionReceipt, capability_audit,
     ) -> Gate1Lease:
         """Prepare, but do not persist, the exact consumed lease revision.
 
@@ -132,6 +133,12 @@ class WorkspaceActivityDispatcher:
             "status": Gate1LeaseStatus.CONSUMED,
             "consumed_by_activity_id": invocation_context.activity_id,
             "consumed_command_fingerprint": command_fingerprint,
+            "consumed_action_id": action.action_id,
+            "consumed_card_version": action.card_version,
+            "consumed_idempotency_key": receipt.idempotency_key,
+            "consumed_request_hash": capability_audit.request_hash,
+            "consumed_result_hash": capability_audit.result_hash,
+            "consumed_audit_id": capability_audit.audit_id,
             "consumed_evidence_set_hash": evidence_set_hash,
             "consumed_evidence_revision": invocation_context.evidence_revision,
         })
@@ -317,6 +324,7 @@ class WorkspaceActivityDispatcher:
                 )
                 consumed_lease = await self._consumed_gate1_lease(
                     action.gate1_lease_id, invocation_context, command_fingerprint,
+                    action, receipt, invocation.audit,
                 )
                 commit = await self.repository.commit_workspace_action_transition(WorkspaceActionCommit(
                     activity_identity=activity_identity, command_fingerprint=command_fingerprint,
@@ -344,6 +352,7 @@ class WorkspaceActivityDispatcher:
                 lease_id=lease_id, lease_revision=1, subject_id=actor.subject_id,
                 required_permission=action.required_permission, component_id=action.component_id,
                 capability=action.capability, data_class=action.data_class,
+                capability_version=action.capability_version,
                 tool_schema_version=action.tool_schema_version,
                 projection_revision=updated_projection.projection_revision,
                 evidence_revision=updated_projection.evidence_revision,

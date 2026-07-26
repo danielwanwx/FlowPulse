@@ -12,6 +12,7 @@ from hashlib import sha256
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional, Protocol
+from uuid import UUID
 
 from pydantic import Field, ValidationError, root_validator
 
@@ -27,6 +28,9 @@ from .capabilities import (
     CapabilityResult,
     CapabilityScope,
     CurrentEvidenceCapabilityResult,
+    canonical_capability_request_hash,
+    canonical_capability_result_hash,
+    deterministic_capability_audit_id,
 )
 from .models import AuthAssertion, Hash, NonEmpty, PositiveInt, StrictBool, StrictModel
 from .policy import PolicyViolation
@@ -91,6 +95,9 @@ class NextBestAction(IncidentRunBinding):
     action_revision: PositiveInt
     component_id: NonEmpty
     capability: NonEmpty
+    # Optional only to decode frozen P0 cards. Every newly generated Gate 1
+    # card carries the adapter version and is required at consumption time.
+    capability_version: Optional[NonEmpty] = None
     data_class: NonEmpty
     required_permission: NonEmpty
     required_gate: NonEmpty
@@ -251,6 +258,7 @@ class NextBestActionGenerator:
             projection_revision=projection.projection_revision, evidence_revision=projection.evidence_revision,
             gate_revision=projection.gate_revision, action_revision=projection.action_revision,
             component_id=component_id, capability=descriptor.capability.value, data_class=data_class.value,
+            capability_version=descriptor.version,
             required_permission="incident:read", required_gate=descriptor.required_gate.value,
             tool_schema_version=descriptor.input_schema, capability_registry_revision=self.registry_revision,
             precondition_version="workspace-precondition.v1", precondition_hash=precondition_hash,
@@ -298,6 +306,7 @@ class Gate1Lease(IncidentRunBinding):
     required_permission: NonEmpty
     component_id: NonEmpty
     capability: NonEmpty
+    capability_version: Optional[NonEmpty] = None
     data_class: NonEmpty
     tool_schema_version: NonEmpty
     projection_revision: PositiveInt
@@ -318,6 +327,12 @@ class Gate1Lease(IncidentRunBinding):
     status: Gate1LeaseStatus
     consumed_by_activity_id: Optional[NonEmpty] = None
     consumed_command_fingerprint: Optional[Hash] = None
+    consumed_action_id: Optional[NonEmpty] = None
+    consumed_card_version: Optional[PositiveInt] = None
+    consumed_idempotency_key: Optional[NonEmpty] = None
+    consumed_request_hash: Optional[Hash] = None
+    consumed_result_hash: Optional[Hash] = None
+    consumed_audit_id: Optional[UUID] = None
     consumed_evidence_set_hash: Optional[Hash] = None
     consumed_evidence_revision: Optional[PositiveInt] = None
 
@@ -346,7 +361,7 @@ class WorkspaceActionCommit(StrictModel):
         error = _workspace_action_commit_kind_error(
             values.get("receipt"), values.get("lease"), values.get("actions", []),
             values.get("issued_action"), values.get("capability_result"), values.get("capability_audit"),
-            values.get("command_fingerprint"),
+            values.get("command_fingerprint"), values.get("activity_identity"),
         )
         if error is not None:
             raise ValueError(error)
@@ -357,6 +372,7 @@ def _workspace_action_commit_kind_error(
     receipt: Optional[WorkspaceActionReceipt], lease: Optional[Gate1Lease], actions: List[NextBestAction],
     issued_action: Optional[NextBestAction], capability_result: Optional[CapabilityResult],
     capability_audit: Optional[CapabilityAuditRecord], command_fingerprint: Optional[str],
+    activity_identity: Optional[str],
 ) -> Optional[str]:
     """Return the one permitted artifact shape for each authoritative action transition.
 
@@ -385,6 +401,7 @@ def _workspace_action_commit_kind_error(
             return "fresh_read_transition_incompatible_artifacts"
         return _fresh_read_artifact_binding_error(
             receipt, lease, capability_result, capability_audit, command_fingerprint,
+            activity_identity,
         )
     if receipt.status == "GATE1_GRANTED":
         if lease_status != Gate1LeaseStatus.ACTIVE.value or lease_revision != 1:
@@ -411,6 +428,7 @@ def _workspace_action_commit_kind_error(
 def _fresh_read_artifact_binding_error(
     receipt: WorkspaceActionReceipt, lease: Gate1Lease, capability_result: CapabilityResult,
     capability_audit: CapabilityAuditRecord, command_fingerprint: Optional[str],
+    activity_identity: Optional[str],
 ) -> Optional[str]:
     """Validate the complete domain result and the immutable Gate 1 audit binding.
 
@@ -429,6 +447,9 @@ def _fresh_read_artifact_binding_error(
         return "fresh_read_current_evidence_artifacts_required"
     if not isinstance(capability_audit, CapabilityAuditRecord):
         return "fresh_read_audit_binding_invalid"
+    result_error = _fresh_read_result_lineage_error(capability_result, capability_audit)
+    if result_error is not None:
+        return result_error
     if _workspace_binding_tuple(capability_audit) != _workspace_binding_tuple(lease):
         return "fresh_read_audit_binding_invalid"
     try:
@@ -448,8 +469,29 @@ def _fresh_read_artifact_binding_error(
         or capability_audit.projection_revision != lease.projection_revision
         or capability_audit.evidence_revision != lease.evidence_revision
         or capability_audit.status != "COMPLETED"
+        or not lease.capability_version
+        or capability_audit.capability_version != lease.capability_version
     ):
         return "fresh_read_audit_binding_invalid"
+    try:
+        expected_request_hash = canonical_capability_request_hash(CapabilityRequest(
+            capability=capability, component_id=lease.component_id, data_class=data_class, parameters={},
+        ))
+        expected_result_hash = canonical_capability_result_hash(capability_result)
+    except (PolicyViolation, ValidationError, TypeError):
+        return "fresh_read_audit_binding_invalid"
+    expected_audit_id = deterministic_capability_audit_id(
+        tenant_id=capability_audit.tenant_id, run_id=capability_audit.run_id,
+        activity_id=capability_audit.activity_id, scope=capability_audit.scope,
+        audience=capability_audit.audience, capability=capability_audit.capability,
+        request_hash=expected_request_hash,
+    )
+    if (
+        capability_audit.request_hash != expected_request_hash
+        or capability_audit.result_hash != expected_result_hash
+        or capability_audit.audit_id != expected_audit_id
+    ):
+        return "fresh_read_audit_provenance_invalid"
     try:
         input_evidence_hash = canonical_evidence_set_hash(list(capability_audit.input_evidence_refs))
     except (PolicyViolation, TypeError):
@@ -464,9 +506,13 @@ def _fresh_read_artifact_binding_error(
     expected_activity_id = "workspace-gate1:{}:{}:{}".format(
         lease.workflow_run_id, receipt.action_id, receipt.idempotency_key,
     )
+    expected_transition_activity = "workspace-action:{}:{}".format(
+        lease.workflow_run_id, command_fingerprint,
+    )
     if (
         capability_audit.activity_id != expected_activity_id
         or lease.consumed_by_activity_id != expected_activity_id
+        or activity_identity != expected_transition_activity
     ):
         return "fresh_read_audit_binding_invalid"
     expected_evidence_refs = list(capability_audit.input_evidence_refs)
@@ -475,6 +521,41 @@ def _fresh_read_artifact_binding_error(
             expected_evidence_refs.append(evidence.evidence_id)
     if capability_audit.evidence_refs != expected_evidence_refs:
         return "fresh_read_audit_result_evidence_mismatch"
+    if (
+        lease.consumed_action_id != receipt.action_id
+        or lease.consumed_idempotency_key != receipt.idempotency_key
+        or lease.consumed_request_hash != expected_request_hash
+        or lease.consumed_result_hash != expected_result_hash
+        or lease.consumed_audit_id != capability_audit.audit_id
+        or lease.consumed_card_version is None
+    ):
+        return "fresh_read_audit_provenance_invalid"
+    return None
+
+
+def _fresh_read_result_lineage_error(
+    capability_result: CapabilityResult, capability_audit: CapabilityAuditRecord,
+) -> Optional[str]:
+    """Require each fresh domain record to cite the exact authorized evidence set."""
+    evidence_ids = [item.evidence_id for item in capability_result.evidence]
+    claim_ids = [item.claim_id for item in capability_result.claims]
+    if len(evidence_ids) != len(set(evidence_ids)) or len(claim_ids) != len(set(claim_ids)):
+        return "fresh_read_result_duplicate_identity"
+    authorized_ids = set(capability_audit.input_evidence_refs).union(evidence_ids)
+    coverage_keys = set()
+    for evidence in capability_result.evidence:
+        if evidence.evidence_id in evidence.parent_evidence_ids:
+            return "fresh_read_result_lineage_invalid"
+        if not set(evidence.parent_evidence_ids).issubset(authorized_ids):
+            return "fresh_read_result_lineage_invalid"
+    for claim in capability_result.claims:
+        if not set(claim.evidence_ids).issubset(authorized_ids):
+            return "fresh_read_result_lineage_invalid"
+    for coverage in capability_result.coverage:
+        key = (coverage.tenant_id, coverage.case_id, coverage.field, coverage.status.value)
+        if key in coverage_keys or not set(coverage.evidence_ids).issubset(authorized_ids):
+            return "fresh_read_result_lineage_invalid"
+        coverage_keys.add(key)
     return None
 
 
@@ -484,7 +565,7 @@ def validate_workspace_action_commit_kind(commit: WorkspaceActionCommit) -> None
         getattr(commit, "receipt", None), getattr(commit, "lease", None),
         getattr(commit, "actions", []), getattr(commit, "issued_action", None),
         getattr(commit, "capability_result", None), getattr(commit, "capability_audit", None),
-        getattr(commit, "command_fingerprint", None),
+        getattr(commit, "command_fingerprint", None), getattr(commit, "activity_identity", None),
     )
     if error is not None:
         raise PolicyViolation(error)
@@ -492,7 +573,9 @@ def validate_workspace_action_commit_kind(commit: WorkspaceActionCommit) -> None
 
 def validate_consumed_gate1_lease_transition(
     active_lease: Gate1Lease, consumed_lease: Gate1Lease, *, command_fingerprint: str,
-    capability_audit: CapabilityAuditRecord,
+    capability_audit: CapabilityAuditRecord, receipt: Optional[WorkspaceActionReceipt] = None,
+    activity_identity: Optional[str] = None, capability_result: Optional[CapabilityResult] = None,
+    read_card: Optional[NextBestAction] = None,
 ) -> None:
     """Prove a proposed consumption is the one legal successor of the active lease.
 
@@ -518,16 +601,86 @@ def validate_consumed_gate1_lease_transition(
         raise PolicyViolation("gate1_consumed_lease_transition_invalid")
     if evidence_set_hash != active_lease.evidence_set_hash:
         raise PolicyViolation("gate1_consumed_lease_transition_invalid")
-    expected = active_lease.copy(update={
+    expected_updates = {
         "lease_revision": active_lease.lease_revision + 1,
         "status": Gate1LeaseStatus.CONSUMED,
         "consumed_by_activity_id": capability_audit.activity_id,
         "consumed_command_fingerprint": command_fingerprint,
         "consumed_evidence_set_hash": evidence_set_hash,
         "consumed_evidence_revision": active_lease.evidence_revision,
-    })
+    }
+    if receipt is not None and capability_result is not None and read_card is not None:
+        try:
+            result_hash = canonical_capability_result_hash(capability_result)
+        except PolicyViolation:
+            raise PolicyViolation("gate1_consumed_lease_transition_invalid")
+        expected_updates.update({
+            "consumed_action_id": receipt.action_id,
+            "consumed_card_version": read_card.card_version,
+            "consumed_idempotency_key": receipt.idempotency_key,
+            "consumed_request_hash": capability_audit.request_hash,
+            "consumed_result_hash": result_hash,
+            "consumed_audit_id": capability_audit.audit_id,
+        })
+        expected_activity = "workspace-action:{}:{}".format(active_lease.workflow_run_id, command_fingerprint)
+        if activity_identity != expected_activity:
+            raise PolicyViolation("gate1_consumed_lease_transition_invalid")
+    expected = active_lease.copy(update=expected_updates)
     if consumed_lease != expected:
         raise PolicyViolation("gate1_consumed_lease_transition_invalid")
+
+
+def validate_authoritative_gate1_read_card(
+    active_lease: Gate1Lease, grant: Optional[WorkspaceActionCommit], commit: WorkspaceActionCommit,
+) -> NextBestAction:
+    """Bind a consumption to the exact read card durably emitted by its grant."""
+    validate_gate1_issuance_binding(active_lease, grant)
+    if not active_lease.capability_version or grant is None:
+        raise PolicyViolation("gate1_authoritative_read_card_missing")
+    read_cards = [
+        card for card in grant.actions
+        if card.cta == NextBestActionCta.RUN_READ_CAPABILITY and card.gate1_lease_id == active_lease.lease_id
+    ]
+    if len(read_cards) != 1:
+        raise PolicyViolation("gate1_authoritative_read_card_missing")
+    card = read_cards[0]
+    if (
+        _workspace_binding_tuple(card) != _workspace_binding_tuple(active_lease)
+        or card.projection_revision != active_lease.projection_revision
+        or card.evidence_revision != active_lease.evidence_revision
+        or card.component_id != active_lease.component_id
+        or card.capability != active_lease.capability
+        or card.capability_version != active_lease.capability_version
+        or card.data_class != active_lease.data_class
+        or card.required_gate != CapabilityGate.GATE1.value
+        or card.tool_schema_version != active_lease.tool_schema_version
+        or card.capability_registry_revision != active_lease.capability_registry_revision
+        or card.precondition_version != active_lease.precondition_version
+        or card.precondition_hash != active_lease.precondition_hash
+        or commit.receipt.action_id != card.action_id
+        or commit.lease is None
+        or commit.lease.consumed_action_id != card.action_id
+        or commit.lease.consumed_card_version != card.card_version
+        or commit.lease.consumed_idempotency_key != commit.receipt.idempotency_key
+    ):
+        raise PolicyViolation("gate1_authoritative_read_card_mismatch")
+    command = ActionInvocationCommand(
+        incident_id=card.incident_id, run_id=card.run_id, topology_revision=card.topology_revision,
+        projection_revision=card.projection_revision, action_id=card.action_id,
+        idempotency_key=commit.receipt.idempotency_key,
+    )
+    expected_fingerprint = command.canonical_hash()
+    if (
+        commit.command_fingerprint != expected_fingerprint
+        or commit.lease.consumed_command_fingerprint != expected_fingerprint
+        or commit.activity_identity != "workspace-action:{}:{}".format(card.workflow_run_id, expected_fingerprint)
+        or commit.capability_audit is None
+        or commit.capability_audit.activity_id != "workspace-gate1:{}:{}:{}".format(
+            card.workflow_run_id, card.action_id, commit.receipt.idempotency_key,
+        )
+    ):
+        raise PolicyViolation("gate1_authoritative_read_card_mismatch")
+    return card
 
 
 class Gate1LeaseStore(Protocol):

@@ -17,8 +17,8 @@ from .workspace_actions import (
     NextBestAction,
     WorkspaceActionCommit,
     WorkspaceActionReceipt,
+    validate_authoritative_gate1_read_card,
     validate_consumed_gate1_lease_transition,
-    validate_gate1_issuance_binding,
     validate_workspace_action_commit_kind,
 )
 
@@ -420,10 +420,12 @@ class InMemoryWorkspaceRepository:
                 )
                 if active is None:
                     raise PolicyViolation("gate1_lease_not_found")
-                validate_gate1_issuance_binding(active, grant)
+                read_card = validate_authoritative_gate1_read_card(active, grant, commit)
                 validate_consumed_gate1_lease_transition(
                     active, commit.lease, command_fingerprint=commit.command_fingerprint,
-                    capability_audit=commit.capability_audit,
+                    capability_audit=commit.capability_audit, receipt=commit.receipt,
+                    activity_identity=commit.activity_identity, capability_result=commit.capability_result,
+                    read_card=read_card,
                 )
             if commit.capability_result is not None:
                 audit = commit.capability_audit
@@ -436,6 +438,9 @@ class InMemoryWorkspaceRepository:
                         commit.projection.tenant_id, commit.projection.case_id, commit.projection.case_revision
                     ):
                         raise PolicyViolation("capability_result_evidence_scope_mismatch")
+                    existing = self.workspace_action_evidence.get(evidence.evidence_id)
+                    if existing is not None and existing != evidence:
+                        raise PolicyViolation("evidence_id_immutable")
                     self.workspace_action_evidence[evidence.evidence_id] = evidence
                 for claim in commit.capability_result.claims:
                     if (
@@ -444,6 +449,9 @@ class InMemoryWorkspaceRepository:
                         commit.projection.tenant_id, commit.projection.case_id, commit.projection.case_revision
                     ):
                         raise PolicyViolation("capability_result_claim_scope_mismatch")
+                    existing = self.workspace_action_claims.get(claim.claim_id)
+                    if existing is not None and existing != claim:
+                        raise PolicyViolation("claim_record_immutable")
                     self.workspace_action_claims[claim.claim_id] = claim
                 for coverage in commit.capability_result.coverage:
                     if (coverage.tenant_id, coverage.case_id) != (commit.projection.tenant_id, commit.projection.case_id):

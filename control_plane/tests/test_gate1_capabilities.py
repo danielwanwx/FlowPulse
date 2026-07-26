@@ -5,6 +5,7 @@ import sys
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from uuid import uuid4
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -18,6 +19,7 @@ from flowpulse_cp.capabilities import (
     CapabilityRequest,
     CapabilityResult,
     CapabilityScope,
+    deterministic_capability_audit_id,
     EmptyCapabilityInput,
     ToolCallBudget,
 )
@@ -383,7 +385,7 @@ class Gate1CapabilityTests(unittest.IsolatedAsyncioTestCase):
         }.items():
             with self.subTest(audit_field=field):
                 tampered = fresh.copy(update={"capability_audit": audit.copy(update={field: value})})
-                with self.assertRaisesRegex(PolicyViolation, "fresh_read_audit_(binding_invalid|result_evidence_mismatch)"):
+                with self.assertRaisesRegex(PolicyViolation, "fresh_read_audit_(binding_invalid|result_evidence_mismatch|provenance_invalid)"):
                     await repository.commit_workspace_action_transition(tampered)
 
         for field, value in {
@@ -424,6 +426,91 @@ class Gate1CapabilityTests(unittest.IsolatedAsyncioTestCase):
 
         active = await repository.workspace_gate1_lease(item.tenant_id, item.case_id, grant.lease.lease_id)
         self.assertEqual((Gate1LeaseStatus.ACTIVE, 1), (active.status, active.lease_revision))
+
+    async def test_fresh_read_rejects_forged_card_audit_result_and_lineage_before_consumption(self):
+        """Only the Gate 1 grant's exact read card may create a fresh-read ledger set."""
+        item = binding()
+
+        async def fresh_target(label):
+            return await staged_fresh_transition(item, idempotency_prefix="forgery-" + label)
+
+        repository, _, fresh = await fresh_target("request-hash")
+        with self.assertRaisesRegex(PolicyViolation, "fresh_read_audit"):
+            await repository.commit_workspace_action_transition(fresh.copy(update={
+                "capability_audit": fresh.capability_audit.copy(update={"request_hash": "f" * 64}),
+            }))
+
+        repository, _, fresh = await fresh_target("capability-version")
+        with self.assertRaisesRegex(PolicyViolation, "fresh_read_audit"):
+            await repository.commit_workspace_action_transition(fresh.copy(update={
+                "capability_audit": fresh.capability_audit.copy(update={"capability_version": "evil.v9"}),
+            }))
+
+        repository, _, fresh = await fresh_target("audit-id")
+        with self.assertRaisesRegex(PolicyViolation, "fresh_read_audit"):
+            await repository.commit_workspace_action_transition(fresh.copy(update={
+                "capability_audit": fresh.capability_audit.copy(update={"audit_id": uuid4()}),
+            }))
+
+        repository, _, fresh = await fresh_target("claim")
+        with self.assertRaisesRegex(PolicyViolation, "fresh_read_(audit|result)"):
+            await repository.commit_workspace_action_transition(fresh.copy(update={
+                "capability_result": fresh.capability_result.copy(update={
+                    "claims": [fresh.capability_result.claims[0].copy(update={"statement": "forged claim"})],
+                }),
+            }))
+
+        repository, _, fresh = await fresh_target("coverage")
+        with self.assertRaisesRegex(PolicyViolation, "fresh_read_(audit|result)"):
+            await repository.commit_workspace_action_transition(fresh.copy(update={
+                "capability_result": fresh.capability_result.copy(update={
+                    "coverage": [fresh.capability_result.coverage[0].copy(update={"evidence_ids": ["unknown-evidence"]})],
+                }),
+            }))
+
+        repository, _, fresh = await fresh_target("duplicate")
+        duplicate_evidence = fresh.capability_result.evidence[0].copy(update={"source_anchor": "conflicting"})
+        with self.assertRaisesRegex(PolicyViolation, "fresh_read_(audit|result)"):
+            await repository.commit_workspace_action_transition(fresh.copy(update={
+                "capability_result": fresh.capability_result.copy(update={
+                    "evidence": [fresh.capability_result.evidence[0], duplicate_evidence],
+                }),
+            }))
+
+        repository, _, fresh = await fresh_target("card")
+        forged_command = ActionInvocationCommand(
+            incident_id=item.incident_id, run_id=item.run_id, topology_revision=item.topology_revision,
+            projection_revision=fresh.lease.projection_revision, action_id="action-forged",
+            idempotency_key="forged-idempotency",
+        )
+        forged_fingerprint = forged_command.canonical_hash()
+        forged_audit_activity = "workspace-gate1:{}:{}:{}".format(
+            item.workflow_run_id, forged_command.action_id, forged_command.idempotency_key,
+        )
+        forged_audit = fresh.capability_audit.copy(update={
+            "activity_id": forged_audit_activity,
+            "audit_id": deterministic_capability_audit_id(
+                tenant_id=item.tenant_id, run_id=item.run_id, activity_id=forged_audit_activity,
+                scope=CapabilityScope.USER_QA, audience=CapabilityAudience.USER_QA,
+                capability=CapabilityName.METRICS, request_hash=fresh.capability_audit.request_hash,
+            ),
+        })
+        forged_lease = fresh.lease.copy(update={
+            "consumed_by_activity_id": forged_audit_activity,
+            "consumed_command_fingerprint": forged_fingerprint,
+            "consumed_action_id": forged_command.action_id,
+            "consumed_idempotency_key": forged_command.idempotency_key,
+            "consumed_audit_id": forged_audit.audit_id,
+        })
+        forged_receipt = fresh.receipt.copy(update={
+            "action_id": forged_command.action_id, "idempotency_key": forged_command.idempotency_key,
+        })
+        with self.assertRaisesRegex(PolicyViolation, "gate1_authoritative_read_card"):
+            await repository.commit_workspace_action_transition(fresh.copy(update={
+                "activity_identity": "workspace-action:{}:{}".format(item.workflow_run_id, forged_fingerprint),
+                "command_fingerprint": forged_fingerprint, "receipt": forged_receipt,
+                "lease": forged_lease, "capability_audit": forged_audit,
+            }))
 
     async def test_action_coverage_is_tenant_bound_verified_and_conflicts_retry_fail_closed(self):
         repository = InMemoryWorkspaceRepository()

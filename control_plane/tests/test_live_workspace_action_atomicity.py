@@ -19,10 +19,14 @@ from flowpulse_cp.capabilities import (
     CapabilityDescriptor,
     CapabilityGate,
     CapabilityName,
+    CapabilityRequest,
     CapabilityRegistry,
     CapabilityResult,
     CapabilityScope,
     EmptyCapabilityInput,
+    canonical_capability_request_hash,
+    canonical_capability_result_hash,
+    deterministic_capability_audit_id,
 )
 from flowpulse_cp.models import (
     ClaimRecord,
@@ -38,6 +42,7 @@ from flowpulse_cp.models import (
 from flowpulse_cp.policy import PolicyViolation
 from flowpulse_cp.postgres import PostgresCaseRepository
 from flowpulse_cp.workspace_actions import (
+    ActionInvocationCommand,
     Gate1Lease,
     Gate1LeaseStatus,
     NextBestActionGenerator,
@@ -111,6 +116,7 @@ class LiveWorkspaceActionAtomicityTests(unittest.TestCase):
                     **binding.dict(), lease_id="gate1-" + command_hash, lease_revision=1, subject_id="owner-{}".format(suffix),
                     required_permission="incident:read", component_id="checkout", capability=CapabilityName.METRICS.value,
                     data_class=CapabilityDataClass.CURRENT_INCIDENT.value, tool_schema_version="metrics-input.v1",
+                    capability_version=MetricsAdapter.descriptor.version,
                     projection_revision=2, evidence_revision=1, capability_registry_revision=registry.policy_version,
                     precondition_version="workspace-precondition.v1",
                     precondition_hash=NextBestActionGenerator._precondition_hash(updated),
@@ -282,6 +288,7 @@ class LiveWorkspaceActionAtomicityTests(unittest.TestCase):
                 **binding.dict(), lease_id="gate1-" + grant_fingerprint, lease_revision=1, subject_id=subject,
                 required_permission="incident:read", component_id="checkout", capability=CapabilityName.METRICS.value,
                 data_class=CapabilityDataClass.CURRENT_INCIDENT.value, tool_schema_version="metrics-input.v1",
+                capability_version=MetricsAdapter.descriptor.version,
                 projection_revision=2, evidence_revision=1, capability_registry_revision=registry.policy_version,
                 precondition_version="workspace-precondition.v1",
                 precondition_hash=NextBestActionGenerator._precondition_hash(granted_projection),
@@ -327,24 +334,44 @@ class LiveWorkspaceActionAtomicityTests(unittest.TestCase):
                     status=CoverageStatus.FILLED, evidence_ids=[evidence.evidence_id],
                 )],
             )
-            fresh_fingerprint = sha256((suffix + ":fresh").encode("utf-8")).hexdigest()
             fresh_idempotency = "fresh-{}".format(suffix)
+            fresh_fingerprint = ActionInvocationCommand(
+                incident_id=binding.incident_id, run_id=binding.run_id,
+                topology_revision=binding.topology_revision,
+                projection_revision=read_card.projection_revision,
+                action_id=read_card.action_id, idempotency_key=fresh_idempotency,
+            ).canonical_hash()
             activity_id = "workspace-gate1:{}:{}:{}".format(
                 binding.workflow_run_id, read_card.action_id, fresh_idempotency,
             )
+            transition_activity_id = "workspace-action:{}:{}".format(
+                binding.workflow_run_id, fresh_fingerprint,
+            )
+            request_hash = canonical_capability_request_hash(CapabilityRequest(
+                capability=CapabilityName.METRICS, component_id="checkout",
+                data_class=CapabilityDataClass.CURRENT_INCIDENT, parameters={},
+            ))
+            result_hash = canonical_capability_result_hash(result)
             audit = CapabilityAuditRecord(
-                **binding.dict(), audit_id=uuid4(), projection_revision=2, evidence_revision=1,
+                **binding.dict(), audit_id=deterministic_capability_audit_id(
+                    tenant_id=tenant, run_id=binding.run_id, activity_id=activity_id,
+                    scope=CapabilityScope.USER_QA, audience=CapabilityAudience.USER_QA,
+                    capability=CapabilityName.METRICS, request_hash=request_hash,
+                ), projection_revision=2, evidence_revision=1,
                 activity_id=activity_id, scope=CapabilityScope.USER_QA, subject_id=subject,
                 audience=CapabilityAudience.USER_QA, capability=CapabilityName.METRICS,
                 component_id="checkout", capability_version="metrics.v1",
                 data_class=CapabilityDataClass.CURRENT_INCIDENT, required_gate=CapabilityGate.GATE1,
-                policy_version=registry.policy_version, request_hash=sha256((suffix + ":request").encode("utf-8")).hexdigest(),
+                policy_version=registry.policy_version, request_hash=request_hash, result_hash=result_hash,
                 input_evidence_refs=[], evidence_refs=[evidence.evidence_id],
             )
             consumed = lease.copy(update={
                 "lease_revision": 2, "status": Gate1LeaseStatus.CONSUMED,
                 "consumed_by_activity_id": activity_id, "consumed_command_fingerprint": fresh_fingerprint,
                 "consumed_evidence_set_hash": canonical_evidence_set_hash([]), "consumed_evidence_revision": 1,
+                "consumed_action_id": read_card.action_id, "consumed_card_version": read_card.card_version,
+                "consumed_idempotency_key": fresh_idempotency, "consumed_request_hash": request_hash,
+                "consumed_result_hash": result_hash, "consumed_audit_id": audit.audit_id,
             })
             fresh_projection = granted_projection.copy(update={
                 "projection_revision": 3, "sequence": 3, "evidence_revision": 2, "action_revision": 3,
@@ -355,13 +382,13 @@ class LiveWorkspaceActionAtomicityTests(unittest.TestCase):
                 status="FRESH_READ_COMPLETED", gate1_lease_id=lease.lease_id, reason="test-fresh",
             )
             fresh = WorkspaceActionCommit(
-                activity_identity="fresh-{}".format(suffix), command_fingerprint=fresh_fingerprint,
+                activity_identity=transition_activity_id, command_fingerprint=fresh_fingerprint,
                 projection=fresh_projection, receipt=receipt, lease=consumed,
                 capability_result=result, capability_audit=audit, event=IncidentEvent(
                     **binding.dict(), projection_revision=3, sequence=3, event_type="workspace.action.fresh_read_completed",
                     occurred_at=now, payload={
                         "action_id": read_card.action_id, "idempotency_key": fresh_idempotency,
-                        "command_fingerprint": fresh_fingerprint, "activity_identity": "fresh-{}".format(suffix),
+                        "command_fingerprint": fresh_fingerprint, "activity_identity": transition_activity_id,
                     }, evidence_refs=[evidence.evidence_id],
                 ),
             )
@@ -392,12 +419,71 @@ class LiveWorkspaceActionAtomicityTests(unittest.TestCase):
                     "subject": {"capability_audit": audit.copy(update={"subject_id": "intruder"})},
                     "activity": {"capability_audit": audit.copy(update={"activity_id": "other-activity"})},
                     "evidence_refs": {"capability_audit": audit.copy(update={"evidence_refs": []})},
+                    "request_hash": {"capability_audit": audit.copy(update={"request_hash": "f" * 64})},
+                    "result_hash": {"capability_audit": audit.copy(update={"result_hash": "f" * 64})},
+                    "audit_id": {"capability_audit": audit.copy(update={"audit_id": uuid4()})},
+                    "capability_version": {"capability_audit": audit.copy(update={"capability_version": "evil.v9"})},
                     "issuance": {"lease": consumed.copy(update={"issuance_action_id": "other-card"})},
                     "precondition": {"lease": consumed.copy(update={"precondition_hash": "e" * 64})},
                 }.items():
                     with self.subTest(rebound=label):
                         with self.assertRaisesRegex(PolicyViolation, "fresh_read_audit_|gate1_consumed_lease_transition_invalid"):
                             await repository.commit_workspace_action_transition(fresh.copy(update=changed))
+
+                for label, result_change in {
+                    "claim": result.copy(update={"claims": [
+                        result.claims[0].copy(update={"statement": "mutated claim"}),
+                    ]}),
+                    "coverage": result.copy(update={"coverage": [
+                        result.coverage[0].copy(update={"evidence_ids": ["unknown-evidence"]}),
+                    ]}),
+                    "duplicate_evidence": result.copy(update={"evidence": [
+                        result.evidence[0], result.evidence[0].copy(update={"source_anchor": "conflict"}),
+                    ]}),
+                }.items():
+                    with self.subTest(result_binding=label):
+                        with self.assertRaisesRegex(PolicyViolation, "fresh_read_(audit|result)"):
+                            await repository.commit_workspace_action_transition(fresh.copy(update={
+                                "capability_result": result_change,
+                            }))
+
+                forged_idempotency = "forged-{}".format(suffix)
+                forged_command = ActionInvocationCommand(
+                    incident_id=binding.incident_id, run_id=binding.run_id,
+                    topology_revision=binding.topology_revision,
+                    projection_revision=read_card.projection_revision,
+                    action_id="forged-action-{}".format(suffix), idempotency_key=forged_idempotency,
+                )
+                forged_fingerprint = forged_command.canonical_hash()
+                forged_activity = "workspace-gate1:{}:{}:{}".format(
+                    binding.workflow_run_id, forged_command.action_id, forged_idempotency,
+                )
+                forged_audit = audit.copy(update={
+                    "activity_id": forged_activity,
+                    "audit_id": deterministic_capability_audit_id(
+                        tenant_id=tenant, run_id=binding.run_id, activity_id=forged_activity,
+                        scope=CapabilityScope.USER_QA, audience=CapabilityAudience.USER_QA,
+                        capability=CapabilityName.METRICS, request_hash=request_hash,
+                    ),
+                })
+                forged_lease = consumed.copy(update={
+                    "consumed_by_activity_id": forged_activity,
+                    "consumed_command_fingerprint": forged_fingerprint,
+                    "consumed_action_id": forged_command.action_id,
+                    "consumed_idempotency_key": forged_idempotency,
+                    "consumed_audit_id": forged_audit.audit_id,
+                })
+                forged_receipt = receipt.copy(update={
+                    "action_id": forged_command.action_id, "idempotency_key": forged_idempotency,
+                })
+                with self.assertRaisesRegex(PolicyViolation, "gate1_authoritative_read_card"):
+                    await repository.commit_workspace_action_transition(fresh.copy(update={
+                        "activity_identity": "workspace-action:{}:{}".format(
+                            binding.workflow_run_id, forged_fingerprint,
+                        ),
+                        "command_fingerprint": forged_fingerprint, "receipt": forged_receipt,
+                        "lease": forged_lease, "capability_audit": forged_audit,
+                    }))
 
                 async def counts(connection):
                     return await connection.fetchrow(

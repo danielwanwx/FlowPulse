@@ -46,8 +46,8 @@ from .workspace_actions import (
     NextBestAction,
     WorkspaceActionCommit,
     WorkspaceActionReceipt,
+    validate_authoritative_gate1_read_card,
     validate_consumed_gate1_lease_transition,
-    validate_gate1_issuance_binding,
     validate_workspace_action_commit_kind,
 )
 
@@ -713,6 +713,16 @@ class PostgresCaseRepository:
         for coverage in result.coverage:
             if (coverage.tenant_id, coverage.case_id) != (commit.projection.tenant_id, commit.projection.case_id):
                 raise PolicyViolation("capability_result_coverage_scope_mismatch")
+            for evidence_id in coverage.evidence_ids:
+                evidence_row = await connection.fetchrow(
+                    """SELECT 1 FROM evidence_envelopes
+                       WHERE tenant_id=$1 AND case_id=$2 AND case_revision=$3
+                         AND evidence_id=$4 AND acl_subjects ? $5""",
+                    commit.projection.tenant_id, commit.projection.case_id,
+                    commit.projection.case_revision, evidence_id, audit.subject_id,
+                )
+                if evidence_row is None:
+                    raise PolicyViolation("capability_result_coverage_evidence_unknown_or_unauthorized")
             await self._persist_coverage_entry(connection, coverage)
         await self._action_checkpoint("after_evidence_admission")
         existing_audit = await connection.fetchrow(
@@ -920,20 +930,25 @@ class PostgresCaseRepository:
                 if active is None:
                     raise PolicyViolation("gate1_lease_not_found")
                 active_lease = Gate1Lease.parse_obj(_decode(active["payload"]))
-                grant_row = await connection.fetchrow(
+                grant_rows = await connection.fetch(
                     """SELECT payload FROM workspace_action_transitions
                        WHERE tenant_id=$1 AND case_id=$2
                          AND payload #>> '{receipt,status}' = 'GATE1_GRANTED'
                          AND payload #>> '{lease,lease_id}' = $3""",
                     commit.lease.tenant_id, commit.lease.case_id, commit.lease.lease_id,
                 )
-                validate_gate1_issuance_binding(
+                if len(grant_rows) > 1:
+                    raise PolicyViolation("gate1_lease_grant_transition_ambiguous")
+                read_card = validate_authoritative_gate1_read_card(
                     active_lease,
-                    WorkspaceActionCommit.parse_obj(_decode(grant_row["payload"])) if grant_row is not None else None,
+                    WorkspaceActionCommit.parse_obj(_decode(grant_rows[0]["payload"])) if grant_rows else None,
+                    commit,
                 )
                 validate_consumed_gate1_lease_transition(
                     active_lease, commit.lease, command_fingerprint=commit.command_fingerprint,
-                    capability_audit=commit.capability_audit,
+                    capability_audit=commit.capability_audit, receipt=commit.receipt,
+                    activity_identity=commit.activity_identity, capability_result=commit.capability_result,
+                    read_card=read_card,
                 )
 
             # This happens before every action projection write but remains in
