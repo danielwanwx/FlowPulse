@@ -46,6 +46,7 @@ from .workspace_actions import (
     NextBestAction,
     WorkspaceActionCommit,
     WorkspaceActionReceipt,
+    validate_gate1_issuance_binding,
 )
 
 
@@ -446,6 +447,23 @@ class PostgresCaseRepository:
             return Gate1Lease.parse_obj(_decode(row["payload"])) if row else None
         return await self._tenant(tenant_id, operation)
 
+    async def workspace_gate1_grant_transition(
+        self, tenant_id: str, case_id: str, lease_id: str,
+    ) -> Optional[WorkspaceActionCommit]:
+        """Load the immutable transition which issued one exact Gate 1 lease."""
+        async def operation(connection: asyncpg.Connection) -> Optional[WorkspaceActionCommit]:
+            rows = await connection.fetch(
+                """SELECT payload FROM workspace_action_transitions
+                   WHERE tenant_id=$1 AND case_id=$2
+                     AND payload #>> '{receipt,status}' = 'GATE1_GRANTED'
+                     AND payload #>> '{lease,lease_id}' = $3""",
+                tenant_id, case_id, lease_id,
+            )
+            if len(rows) > 1:
+                raise PolicyViolation("gate1_lease_grant_transition_ambiguous")
+            return WorkspaceActionCommit.parse_obj(_decode(rows[0]["payload"])) if rows else None
+        return await self._tenant(tenant_id, operation)
+
     async def append_next_best_action(self, action: NextBestAction) -> NextBestAction:
         async def operation(connection: asyncpg.Connection) -> NextBestAction:
             await _lock_workspace_mapping(connection, _workspace_binding(action))
@@ -535,6 +553,142 @@ class PostgresCaseRepository:
             return WorkspaceActionReceipt.parse_obj(_decode(row["payload"])) if row else None
         return await self._tenant(tenant_id, operation)
 
+    async def _persist_workspace_action_capability(
+        self, connection: asyncpg.Connection, commit: WorkspaceActionCommit,
+    ) -> None:
+        """Admit fresh evidence and append its audit in the action transaction."""
+        result = commit.capability_result
+        audit = commit.capability_audit
+        if result is None and audit is None:
+            return
+        if result is None or audit is None:
+            raise PolicyViolation("workspace_action_capability_records_incomplete")
+        if _workspace_binding(audit) != _workspace_binding(commit.projection):
+            raise PolicyViolation("workspace_action_capability_binding_mismatch")
+        context = CapabilityInvocationContext.parse_obj({
+            **{field: getattr(audit, field) for field in IncidentRunBinding.__fields__},
+            "projection_revision": audit.projection_revision,
+            "evidence_revision": audit.evidence_revision,
+            "activity_id": audit.activity_id,
+            "scope": audit.scope,
+            "subject_id": audit.subject_id,
+            "component_ids": [audit.component_id],
+            "authorized_subjects": [audit.subject_id], "subject_roles": [],
+            "data_class": audit.data_class,
+            "recorded_evidence_ids": audit.input_evidence_refs,
+            "gate1_authorized": audit.required_gate.value == "GATE1",
+            "system_authorized": audit.scope == CapabilityScope.AUTONOMOUS_DIAGNOSIS,
+        })
+        await self._assert_capability_scope_connection(connection, context)
+        case = await connection.fetchrow(
+            "SELECT case_revision FROM incident_cases WHERE tenant_id=$1 AND case_id=$2",
+            commit.projection.tenant_id, commit.projection.case_id,
+        )
+        if case is None or case["case_revision"] != commit.projection.case_revision:
+            raise PolicyViolation("evidence_case_tenant_or_revision_mismatch")
+        for evidence in result.evidence:
+            validate_evidence_admission(evidence, audit.subject_id)
+            if (
+                evidence.tenant_id, evidence.case_id, evidence.case_revision
+            ) != (
+                commit.projection.tenant_id, commit.projection.case_id, commit.projection.case_revision
+            ):
+                raise PolicyViolation("capability_result_evidence_scope_mismatch")
+            existing = await connection.fetchrow(
+                "SELECT payload FROM evidence_envelopes WHERE evidence_id=$1", evidence.evidence_id,
+            )
+            if existing is not None:
+                if EvidenceEnvelope.parse_obj(_decode(existing["payload"])) != evidence:
+                    raise PolicyViolation("evidence_id_immutable")
+                continue
+            for parent_evidence_id in evidence.parent_evidence_ids:
+                if parent_evidence_id == evidence.evidence_id:
+                    raise PolicyViolation("evidence_parent_self_reference")
+                parent = await connection.fetchrow(
+                    """SELECT evidence_id FROM evidence_envelopes
+                       WHERE tenant_id=$1 AND case_id=$2 AND case_revision=$3 AND evidence_id=$4""",
+                    evidence.tenant_id, evidence.case_id, evidence.case_revision, parent_evidence_id,
+                )
+                if parent is None:
+                    raise PolicyViolation("unknown_parent_evidence")
+            await connection.execute(
+                """INSERT INTO evidence_envelopes
+                   (evidence_id, case_id, tenant_id, case_revision, acl_subjects, proof_scope, source_uri,
+                    source_anchor, content_hash, independence_key, payload)
+                   VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10,$11::jsonb)""",
+                evidence.evidence_id, evidence.case_id, evidence.tenant_id, evidence.case_revision,
+                json.dumps(evidence.acl_subjects), evidence.proof_scope.value, evidence.source_uri,
+                evidence.source_anchor, evidence.content_hash, evidence.independence_key, _payload(evidence),
+            )
+        for claim in result.claims:
+            if (
+                claim.tenant_id, claim.case_id, claim.case_revision
+            ) != (
+                commit.projection.tenant_id, commit.projection.case_id, commit.projection.case_revision
+            ):
+                raise PolicyViolation("capability_result_claim_scope_mismatch")
+            cited = []
+            for evidence_id in claim.evidence_ids:
+                evidence_row = await connection.fetchrow(
+                    """SELECT payload FROM evidence_envelopes
+                       WHERE tenant_id=$1 AND case_id=$2 AND case_revision=$3
+                         AND evidence_id=$4 AND acl_subjects ? $5""",
+                    claim.tenant_id, claim.case_id, claim.case_revision, evidence_id, audit.subject_id,
+                )
+                if evidence_row is not None:
+                    cited.append(EvidenceEnvelope.parse_obj(_decode(evidence_row["payload"])))
+            validate_claim_evidence(claim, cited, audit.subject_id)
+            existing = await connection.fetchrow(
+                "SELECT payload FROM claim_records WHERE claim_id=$1", claim.claim_id,
+            )
+            if existing is not None:
+                if ClaimRecord.parse_obj(_decode(existing["payload"])) != claim:
+                    raise PolicyViolation("claim_record_immutable")
+            else:
+                await connection.execute(
+                    """INSERT INTO claim_records
+                       (claim_id, case_id, tenant_id, case_revision, evidence_ids, status, payload)
+                       VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7::jsonb)""",
+                    claim.claim_id, claim.case_id, claim.tenant_id, claim.case_revision,
+                    json.dumps(claim.evidence_ids), claim.status.value, _payload(claim),
+                )
+                for evidence_id in claim.evidence_ids:
+                    await connection.execute(
+                        """INSERT INTO claim_evidence_links
+                           (claim_id, evidence_id, case_id, tenant_id, case_revision)
+                           VALUES ($1,$2,$3,$4,$5)""",
+                        claim.claim_id, evidence_id, claim.case_id, claim.tenant_id, claim.case_revision,
+                    )
+        for coverage in result.coverage:
+            if (coverage.tenant_id, coverage.case_id) != (commit.projection.tenant_id, commit.projection.case_id):
+                raise PolicyViolation("capability_result_coverage_scope_mismatch")
+            await connection.execute(
+                """INSERT INTO coverage_entries (entry_id, case_id, tenant_id, field, status, payload)
+                   VALUES ($1,$2,$3,$4,$5,$6::jsonb) ON CONFLICT DO NOTHING""",
+                uuid5(NAMESPACE_URL, "coverage:{}:{}:{}".format(
+                    coverage.case_id, coverage.field, coverage.status.value,
+                )),
+                coverage.case_id, coverage.tenant_id, coverage.field, coverage.status.value, _payload(coverage),
+            )
+        await self._action_checkpoint("after_evidence_admission")
+        existing_audit = await connection.fetchrow(
+            "SELECT payload FROM tool_calls WHERE tenant_id=$1 AND tool_call_id=$2",
+            audit.tenant_id, audit.audit_id,
+        )
+        if existing_audit is not None:
+            if CapabilityAuditRecord.parse_obj(_decode(existing_audit["payload"])) != audit:
+                raise PolicyViolation("workspace_capability_audit_immutable")
+        else:
+            await connection.execute(
+                """INSERT INTO tool_calls
+                   (tool_call_id, case_id, tenant_id, activity_id, capability, status, request_hash,
+                    response_artifact_key, payload, created_at)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,NULL,$8::jsonb,$9)""",
+                audit.audit_id, audit.case_id, audit.tenant_id, audit.activity_id,
+                audit.capability.value, audit.status, audit.request_hash, _payload(audit), audit.created_at,
+            )
+        await self._action_checkpoint("after_audit")
+
     async def _verify_workspace_action_commit(
         self, connection: asyncpg.Connection, commit: WorkspaceActionCommit,
     ) -> None:
@@ -578,6 +732,38 @@ class PostgresCaseRepository:
             )
             if row is None or NextBestAction.parse_obj(_decode(row["payload"])) != action:
                 raise PolicyViolation("workspace_action_transition_partial")
+        if commit.issued_action is not None:
+            row = await connection.fetchrow(
+                """SELECT payload FROM next_best_actions
+                   WHERE tenant_id=$1 AND action_id=$2 AND card_version=$3""",
+                commit.issued_action.tenant_id, commit.issued_action.action_id, commit.issued_action.card_version,
+            )
+            if row is None or NextBestAction.parse_obj(_decode(row["payload"])) != commit.issued_action:
+                raise PolicyViolation("workspace_action_transition_partial")
+        if commit.capability_result is not None:
+            audit = commit.capability_audit
+            if audit is None:
+                raise PolicyViolation("workspace_action_transition_partial")
+            audit_row = await connection.fetchrow(
+                "SELECT payload FROM tool_calls WHERE tenant_id=$1 AND tool_call_id=$2",
+                audit.tenant_id, audit.audit_id,
+            )
+            if audit_row is None or CapabilityAuditRecord.parse_obj(_decode(audit_row["payload"])) != audit:
+                raise PolicyViolation("workspace_action_transition_partial")
+            for evidence in commit.capability_result.evidence:
+                row = await connection.fetchrow(
+                    "SELECT payload FROM evidence_envelopes WHERE tenant_id=$1 AND evidence_id=$2",
+                    evidence.tenant_id, evidence.evidence_id,
+                )
+                if row is None or EvidenceEnvelope.parse_obj(_decode(row["payload"])) != evidence:
+                    raise PolicyViolation("workspace_action_transition_partial")
+            for claim in commit.capability_result.claims:
+                row = await connection.fetchrow(
+                    "SELECT payload FROM claim_records WHERE tenant_id=$1 AND claim_id=$2",
+                    claim.tenant_id, claim.claim_id,
+                )
+                if row is None or ClaimRecord.parse_obj(_decode(row["payload"])) != claim:
+                    raise PolicyViolation("workspace_action_transition_partial")
 
     async def workspace_action_commit(
         self, tenant_id: str, case_id: str, idempotency_key: str,
@@ -616,6 +802,8 @@ class PostgresCaseRepository:
             or _workspace_binding(commit.event) != binding
             or (commit.lease is not None and _workspace_binding(commit.lease) != binding)
             or any(_workspace_binding(action) != binding for action in commit.actions)
+            or (commit.issued_action is not None and _workspace_binding(commit.issued_action) != binding)
+            or (commit.capability_audit is not None and _workspace_binding(commit.capability_audit) != binding)
         ):
             raise PolicyViolation("workspace_action_transition_binding_mismatch")
 
@@ -645,6 +833,62 @@ class PostgresCaseRepository:
             )
             if partial is not None:
                 raise PolicyViolation("workspace_action_transition_partial")
+
+            if commit.issued_action is not None:
+                stored_action = await connection.fetchrow(
+                    """SELECT payload FROM next_best_actions
+                       WHERE tenant_id=$1 AND case_id=$2 AND action_id=$3""",
+                    commit.issued_action.tenant_id, commit.issued_action.case_id, commit.issued_action.action_id,
+                )
+                if (
+                    stored_action is None
+                    or NextBestAction.parse_obj(_decode(stored_action["payload"])) != commit.issued_action
+                ):
+                    raise PolicyViolation("workspace_action_issued_card_not_authoritative")
+            if commit.lease is not None and commit.lease.status.value == "CONSUMED":
+                active = await connection.fetchrow(
+                    """SELECT payload FROM workspace_gate1_leases
+                       WHERE tenant_id=$1 AND case_id=$2 AND lease_id=$3
+                       ORDER BY lease_revision DESC LIMIT 1""",
+                    commit.lease.tenant_id, commit.lease.case_id, commit.lease.lease_id,
+                )
+                if active is None:
+                    raise PolicyViolation("gate1_lease_not_found")
+                active_lease = Gate1Lease.parse_obj(_decode(active["payload"]))
+                grant_row = await connection.fetchrow(
+                    """SELECT payload FROM workspace_action_transitions
+                       WHERE tenant_id=$1 AND case_id=$2
+                         AND payload #>> '{receipt,status}' = 'GATE1_GRANTED'
+                         AND payload #>> '{lease,lease_id}' = $3""",
+                    commit.lease.tenant_id, commit.lease.case_id, commit.lease.lease_id,
+                )
+                validate_gate1_issuance_binding(
+                    active_lease,
+                    WorkspaceActionCommit.parse_obj(_decode(grant_row["payload"])) if grant_row is not None else None,
+                )
+                expected_active = commit.lease.copy(update={
+                    "lease_revision": active_lease.lease_revision,
+                    "status": active_lease.status,
+                    "consumed_by_activity_id": None,
+                    "consumed_command_fingerprint": None,
+                    "consumed_evidence_set_hash": None,
+                    "consumed_evidence_revision": None,
+                })
+                if (
+                    active_lease.status.value != "ACTIVE"
+                    or commit.lease.lease_revision != active_lease.lease_revision + 1
+                    or expected_active != active_lease
+                    or commit.lease.consumed_command_fingerprint != commit.command_fingerprint
+                    or commit.lease.consumed_evidence_set_hash != active_lease.evidence_set_hash
+                    or commit.lease.consumed_evidence_revision != active_lease.evidence_revision
+                    or not commit.lease.consumed_by_activity_id
+                ):
+                    raise PolicyViolation("gate1_lease_not_active")
+
+            # This happens before every action projection write but remains in
+            # the same transaction.  A source/admission/audit/checkpoint
+            # failure therefore cannot advance the authoritative Gate lease.
+            await self._persist_workspace_action_capability(connection, commit)
 
             duplicate = await connection.fetchrow(
                 """SELECT payload FROM incident_projections
@@ -752,7 +996,10 @@ class PostgresCaseRepository:
             )
             await self._action_checkpoint("after_transition")
             return commit
-        return await self._tenant(binding.tenant_id, operation)
+        return await self._tenant(
+            binding.tenant_id, operation,
+            subject_id=(commit.capability_audit.subject_id if commit.capability_audit is not None else None),
+        )
 
     async def _assert_capability_scope_connection(
         self, connection: asyncpg.Connection, context: CapabilityInvocationContext,

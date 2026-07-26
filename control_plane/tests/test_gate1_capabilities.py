@@ -29,6 +29,8 @@ from flowpulse_cp.workspace_actions import (
     Gate1LeaseAuthority,
     Gate1LeaseStatus,
     NextBestActionGenerator,
+    WorkspaceActionCommit,
+    WorkspaceActionReceipt,
     WorkspaceActionPacket,
     canonical_evidence_set_hash,
 )
@@ -39,6 +41,7 @@ from flowpulse_cp.workspace_models import (
     IncidentProjection,
     IncidentRunBinding,
     ProjectionState,
+    IncidentEvent,
 )
 from flowpulse_cp.workspace_repository import InMemoryWorkspaceRepository
 from flowpulse_cp.workspace_activities import WorkspaceActivityDispatcher
@@ -89,6 +92,50 @@ def lease(item, **changes):
     return Gate1Lease(**values)
 
 
+class Gate1AuthorityStore:
+    """Small authoritative grant fixture; it never mutates a lease."""
+
+    def __init__(self, active, grant):
+        self.active = active
+        self.grant = grant
+
+    async def workspace_gate1_lease(self, tenant_id, case_id, lease_id):
+        if (tenant_id, case_id, lease_id) != (self.active.tenant_id, self.active.case_id, self.active.lease_id):
+            return None
+        return self.active
+
+    async def workspace_gate1_grant_transition(self, tenant_id, case_id, lease_id):
+        if (tenant_id, case_id, lease_id) != (self.active.tenant_id, self.active.case_id, self.active.lease_id):
+            return None
+        return self.grant
+
+
+def granted_lease(item, **changes):
+    registry = CapabilityRegistry(descriptors=[MetricsAdapter.descriptor], adapters={CapabilityName.METRICS: MetricsAdapter()})
+    current = projection(item)
+    card = NextBestActionGenerator(registry).generate(current, NOW)[0]
+    base = lease(item, **{
+        "lease_id": "gate1-" + ("d" * 64),
+        "issuance_action_id": card.action_id,
+        "issuance_card_version": card.card_version,
+        "issuance_idempotency_key": "grant-idempotency",
+    })
+    base = base.copy(update=changes)
+    receipt = WorkspaceActionReceipt(
+        **item.dict(), action_id=card.action_id, idempotency_key="grant-idempotency",
+        status="GATE1_GRANTED", gate1_lease_id=base.lease_id, reason="fixture-grant",
+    )
+    event = IncidentEvent(
+        **item.dict(), projection_revision=1, sequence=2, event_type="workspace.action.gate1_granted",
+        occurred_at=NOW, payload={}, evidence_refs=[],
+    )
+    grant = WorkspaceActionCommit(
+        activity_identity="fixture-grant", command_fingerprint=base.issuance_command_fingerprint,
+        projection=current, receipt=receipt, event=event, lease=base, issued_action=card,
+    )
+    return base, Gate1AuthorityStore(base, grant)
+
+
 class MetricsAdapter:
     descriptor = CapabilityDescriptor(
         capability=CapabilityName.METRICS, version="metrics.v1", fresh_read=True, enabled=True,
@@ -117,6 +164,16 @@ class CurrentMetricsAdapter(MetricsAdapter):
         return CapabilityResult(summary="current metric", evidence=[evidence])
 
 
+class ControlledMetricsAdapter(CurrentMetricsAdapter):
+    def __init__(self):
+        self.fail_source = False
+
+    async def invoke(self, parsed_input, invocation_context):
+        if self.fail_source:
+            raise RuntimeError("source_failed")
+        return await super().invoke(parsed_input, invocation_context)
+
+
 class AcceptingScope:
     async def assert_scope(self, invocation_context):
         return None
@@ -138,90 +195,113 @@ def projection(item):
 
 
 class Gate1CapabilityTests(unittest.IsolatedAsyncioTestCase):
-    async def test_lease_binds_full_command_and_exact_evidence_set_on_consumption(self):
+    async def test_lease_validates_full_command_and_exact_evidence_set_without_consuming(self):
         item = binding()
-        repository = InMemoryWorkspaceRepository()
-        await repository.put_binding(item)
-        await repository.append_gate1_lease(lease(item))
-        authority = Gate1LeaseAuthority(repository, now=lambda: NOW)
+        active, store = granted_lease(item)
+        authority = Gate1LeaseAuthority(store, now=lambda: NOW)
         request = CapabilityRequest(
             capability=CapabilityName.METRICS, component_id="checkout",
             data_class=CapabilityDataClass.CURRENT_INCIDENT, parameters={},
         )
-        consumed = await authority.assert_active(context(item), request, MetricsAdapter.descriptor)
-        self.assertEqual("c" * 64, consumed.consumed_command_fingerprint)
+        validated = await authority.assert_active(
+            context(item, gate1_lease_id=active.lease_id), request, MetricsAdapter.descriptor,
+        )
+        self.assertEqual(Gate1LeaseStatus.ACTIVE, validated.status)
+        self.assertIsNone(validated.consumed_command_fingerprint)
         self.assertEqual(
             canonical_evidence_set_hash(["evidence-a", "evidence-b"]),
-            consumed.consumed_evidence_set_hash,
+            active.evidence_set_hash,
         )
-        self.assertEqual(1, consumed.consumed_evidence_revision)
+        self.assertIsNone(validated.consumed_evidence_revision)
 
         for label, changed_context in {
-            "same-revision-evidence-substitution": context(item, recorded_evidence_ids=["evidence-a", "evidence-c"]),
-            "same-activity-command-replay": context(item, action_command_fingerprint="e" * 64),
-            "cross-tenant": context(item, tenant_id="tenant-b"),
-            "cross-run": context(item, run_id="run-public-b"),
+            "same-revision-evidence-substitution": context(item, gate1_lease_id=active.lease_id, recorded_evidence_ids=["evidence-a", "evidence-c"]),
+            "cross-tenant": context(item, gate1_lease_id=active.lease_id, tenant_id="tenant-b"),
+            "cross-run": context(item, gate1_lease_id=active.lease_id, run_id="run-public-b"),
         }.items():
             with self.subTest(label=label):
                 with self.assertRaises(PolicyViolation):
                     await authority.assert_active(changed_context, request, MetricsAdapter.descriptor)
 
-    async def test_lease_is_single_fresh_read_capability_and_only_retries_same_activity(self):
+    async def test_lease_validation_is_non_authoritative_until_action_transition_commits(self):
         item = binding()
-        repository = InMemoryWorkspaceRepository()
-        await repository.put_binding(item)
-        await repository.append_gate1_lease(lease(item))
-        authority = Gate1LeaseAuthority(repository, now=lambda: NOW)
+        active, store = granted_lease(item)
+        authority = Gate1LeaseAuthority(store, now=lambda: NOW)
         request = CapabilityRequest(
             capability=CapabilityName.METRICS, component_id="checkout",
             data_class=CapabilityDataClass.CURRENT_INCIDENT, parameters={},
         )
-        first = await authority.assert_active(context(item), request, MetricsAdapter.descriptor)
-        self.assertEqual(Gate1LeaseStatus.CONSUMED, first.status)
-        self.assertEqual("activity-gate1", first.consumed_by_activity_id)
-        retry = await authority.assert_active(context(item), request, MetricsAdapter.descriptor)
+        first = await authority.assert_active(context(item, gate1_lease_id=active.lease_id), request, MetricsAdapter.descriptor)
+        self.assertEqual(Gate1LeaseStatus.ACTIVE, first.status)
+        self.assertIsNone(first.consumed_by_activity_id)
+        retry = await authority.assert_active(context(item, gate1_lease_id=active.lease_id), request, MetricsAdapter.descriptor)
         self.assertEqual(first, retry)
-        with self.assertRaisesRegex(PolicyViolation, "gate1_lease_not_active"):
-            await authority.assert_active(context(item, activity_id="activity-other"), request, MetricsAdapter.descriptor)
+        self.assertEqual(Gate1LeaseStatus.ACTIVE, retry.status)
 
-    async def test_shared_registry_requires_and_consumes_the_exact_gate1_lease_before_fresh_read_audit(self):
+    async def test_lease_requires_the_exact_immutable_grant_transition_and_card(self):
         item = binding()
-        repository = InMemoryWorkspaceRepository()
-        await repository.put_binding(item)
-        await repository.append_gate1_lease(lease(item))
+        request = CapabilityRequest(
+            capability=CapabilityName.METRICS, component_id="checkout",
+            data_class=CapabilityDataClass.CURRENT_INCIDENT, parameters={},
+        )
+        for label, mutate in {
+            "tampered-lease-id": lambda active, store: setattr(
+                store, "active", active.copy(update={"lease_id": "gate1-" + ("e" * 64)}),
+            ),
+            "tampered-issuance-fingerprint": lambda active, store: setattr(
+                store, "active", active.copy(update={"issuance_command_fingerprint": "e" * 64}),
+            ),
+            "missing-grant": lambda active, store: setattr(store, "grant", None),
+            "mismatched-grant-idempotency": lambda active, store: setattr(
+                store, "grant", store.grant.copy(update={
+                    "receipt": store.grant.receipt.copy(update={"idempotency_key": "other-idempotency"}),
+                }),
+            ),
+            "mismatched-grant-card": lambda active, store: setattr(
+                store, "grant", store.grant.copy(update={
+                    "issued_action": store.grant.issued_action.copy(update={"card_version": 2}),
+                }),
+            ),
+        }.items():
+            with self.subTest(label=label):
+                active, store = granted_lease(item)
+                mutate(active, store)
+                with self.assertRaisesRegex(PolicyViolation, "gate1_lease_(issuance|grant_transition)"):
+                    await Gate1LeaseAuthority(store, now=lambda: NOW).assert_active(
+                        context(item, gate1_lease_id=store.active.lease_id), request,
+                    )
+
+    async def test_shared_registry_validates_the_exact_gate1_lease_before_fresh_read_audit(self):
+        item = binding()
+        active, store = granted_lease(item)
         registry = CapabilityRegistry(
             descriptors=[MetricsAdapter.descriptor],
             adapters={CapabilityName.METRICS: CurrentMetricsAdapter()},
-            audit_sink=repository, scope_authority=AcceptingScope(),
-            gate1_authority=Gate1LeaseAuthority(repository, now=lambda: NOW),
+            scope_authority=AcceptingScope(),
+            gate1_authority=Gate1LeaseAuthority(store, now=lambda: NOW),
         )
         request = CapabilityRequest(
             capability=CapabilityName.METRICS, component_id="checkout",
             data_class=CapabilityDataClass.CURRENT_INCIDENT, parameters={},
         )
         first = await registry.invoke(
-            CapabilityAudience.USER_QA, context(item), request, ToolCallBudget(max_calls=1),
+            CapabilityAudience.USER_QA, context(item, gate1_lease_id=active.lease_id), request, ToolCallBudget(max_calls=1),
             evidence_admission=AcceptingAdmission(),
         )
         self.assertEqual(["metric-evidence-a"], first.audit.evidence_refs)
-        self.assertEqual(1, len(repository.capability_audits))
-        with self.assertRaisesRegex(PolicyViolation, "gate1_lease_not_active"):
-            await registry.invoke(
-                CapabilityAudience.USER_QA, context(item, activity_id="gate1-second"), request,
-                ToolCallBudget(max_calls=1), evidence_admission=AcceptingAdmission(),
-            )
+        self.assertEqual(1, len(registry.audit_records))
+        self.assertEqual(Gate1LeaseStatus.ACTIVE, active.status)
 
     async def test_exact_lease_permits_one_bound_fresh_read_and_every_stale_axis_fails_closed(self):
         repository = InMemoryWorkspaceRepository()
         item = binding()
-        await repository.put_binding(item)
-        authority = Gate1LeaseAuthority(repository, now=lambda: NOW)
-        await repository.append_gate1_lease(lease(item))
+        active, store = granted_lease(item)
+        authority = Gate1LeaseAuthority(store, now=lambda: NOW)
         request = CapabilityRequest(
             capability=CapabilityName.METRICS, component_id="checkout",
             data_class=CapabilityDataClass.CURRENT_INCIDENT, parameters={},
         )
-        await authority.assert_active(context(item), request)
+        await authority.assert_active(context(item, gate1_lease_id=active.lease_id), request)
 
         invalid = {
             "expiry": (lease(item, expires_at=NOW), context(item)),
@@ -238,11 +318,11 @@ class Gate1CapabilityTests(unittest.IsolatedAsyncioTestCase):
         }
         for label, (replacement, scoped) in invalid.items():
             with self.subTest(label=label):
-                isolated = InMemoryWorkspaceRepository()
-                await isolated.put_binding(item)
-                await isolated.append_gate1_lease(replacement)
+                _, isolated = granted_lease(item, **replacement.dict(exclude={"created_at"}))
                 with self.assertRaises(PolicyViolation):
-                    await Gate1LeaseAuthority(isolated, now=lambda: NOW).assert_active(scoped, request)
+                    await Gate1LeaseAuthority(isolated, now=lambda: NOW).assert_active(
+                        scoped.copy(update={"gate1_lease_id": replacement.lease_id}), request,
+                    )
 
         for label, wrong_request in {
             "capability": request.copy(update={"capability": CapabilityName.LOGS}),
@@ -251,7 +331,7 @@ class Gate1CapabilityTests(unittest.IsolatedAsyncioTestCase):
         }.items():
             with self.subTest(label=label):
                 with self.assertRaises(PolicyViolation):
-                    await authority.assert_active(context(item), wrong_request)
+                    await authority.assert_active(context(item, gate1_lease_id=active.lease_id), wrong_request)
 
     async def test_temporal_action_activity_issues_one_lease_and_invalidates_the_old_card(self):
         item = binding()
@@ -292,6 +372,71 @@ class Gate1CapabilityTests(unittest.IsolatedAsyncioTestCase):
                 command=command.copy(update={"action_id": "other-card"}),
                 actor_tenant_id=item.tenant_id, actor_subject_id="subject-a", actor_roles=["viewer"],
             ).dict())
+
+    async def test_fresh_read_failure_never_consumes_a_lease_before_complete_transition(self):
+        item = binding()
+        all_checkpoints = (
+            "source", "after_evidence_admission", "after_audit", "after_projection", "after_lease",
+            "after_cards", "after_receipt", "after_event", "after_transition",
+        )
+        for target in all_checkpoints:
+            with self.subTest(target=target):
+                initial = projection(item).copy(update={"generated_at": datetime.now(timezone.utc)})
+                repository = InMemoryWorkspaceRepository()
+                await repository.put_binding(item)
+                await repository.put_projection(initial)
+                adapter = ControlledMetricsAdapter()
+                registry = CapabilityRegistry(
+                    descriptors=[MetricsAdapter.descriptor], adapters={CapabilityName.METRICS: adapter},
+                    scope_authority=AcceptingScope(), gate1_authority=Gate1LeaseAuthority(repository, now=lambda: NOW),
+                )
+                gate_card = NextBestActionGenerator(registry).generate(initial, datetime.now(timezone.utc))[0]
+                await repository.append_next_best_action(gate_card)
+                dispatcher = WorkspaceActivityDispatcher(repository, capability_registry=registry)
+                gate_command = ActionInvocationCommand(
+                    incident_id=item.incident_id, run_id=item.run_id, topology_revision=item.topology_revision,
+                    projection_revision=1, action_id=gate_card.action_id, idempotency_key="grant-{}".format(target),
+                )
+                granted = await dispatcher.dispatch("workspace_execute_action_activity", WorkspaceActionPacket(
+                    **item.dict(), projection=initial, event_sequence=2, command=gate_command,
+                    actor_tenant_id=item.tenant_id, actor_subject_id="subject-a", actor_roles=["viewer"],
+                ).dict())
+                read_card = (await repository.workspace_next_best_actions(item.tenant_id, item.case_id))[-1]
+                read_command = ActionInvocationCommand(
+                    incident_id=item.incident_id, run_id=item.run_id, topology_revision=item.topology_revision,
+                    projection_revision=granted["projection"]["projection_revision"], action_id=read_card.action_id,
+                    idempotency_key="read-{}".format(target),
+                )
+                read_packet = WorkspaceActionPacket(
+                    **item.dict(), projection=IncidentProjection.parse_obj(granted["projection"]), event_sequence=3,
+                    command=read_command, actor_tenant_id=item.tenant_id, actor_subject_id="subject-a", actor_roles=["viewer"],
+                )
+                if target == "source":
+                    adapter.fail_source = True
+                else:
+                    repository.failure_injector = lambda checkpoint, expected=target: (
+                        (_ for _ in ()).throw(RuntimeError("injected:" + checkpoint))
+                        if checkpoint == expected else None
+                    )
+                with self.assertRaisesRegex(RuntimeError, "source_failed|injected:"):
+                    await dispatcher.dispatch("workspace_execute_action_activity", read_packet.dict())
+                active = await repository.workspace_gate1_lease(
+                    item.tenant_id, item.case_id, granted["receipt"]["gate1_lease_id"],
+                )
+                self.assertEqual((Gate1LeaseStatus.ACTIVE, 1), (active.status, active.lease_revision))
+                self.assertEqual(0, len(repository.capability_audits))
+                self.assertEqual(1, len(repository.workspace_action_commits))
+                adapter.fail_source = False
+                repository.failure_injector = None
+                accepted = await dispatcher.dispatch("workspace_execute_action_activity", read_packet.dict())
+                retried = await dispatcher.dispatch("workspace_execute_action_activity", read_packet.dict())
+                self.assertEqual(accepted["receipt"], retried["receipt"])
+                consumed = await repository.workspace_gate1_lease(
+                    item.tenant_id, item.case_id, granted["receipt"]["gate1_lease_id"],
+                )
+                self.assertEqual((Gate1LeaseStatus.CONSUMED, 2), (consumed.status, consumed.lease_revision))
+                self.assertEqual(1, len(repository.capability_audits))
+                self.assertEqual(2, len(repository.workspace_action_commits))
 
     async def test_action_commit_rolls_back_every_persistence_boundary_then_retry_is_complete_once(self):
         item = binding()

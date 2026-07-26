@@ -20,9 +20,11 @@ from .capabilities import (
     CapabilityDataClass,
     CapabilityDescriptor,
     CapabilityGate,
+    CapabilityAuditRecord,
     CapabilityName,
     CapabilityRegistry,
     CapabilityRequest,
+    CapabilityResult,
 )
 from .models import AuthAssertion, Hash, NonEmpty, PositiveInt, StrictBool, StrictModel
 from .policy import PolicyViolation
@@ -302,6 +304,12 @@ class Gate1Lease(IncidentRunBinding):
     precondition_version: NonEmpty
     precondition_hash: Hash
     issuance_command_fingerprint: Hash
+    # These identify the server-generated Gate 1 card which issued this
+    # lease.  Optional keeps previously archived/read-only records decodable;
+    # a live consumption rejects a record that lacks them.
+    issuance_action_id: Optional[NonEmpty] = None
+    issuance_card_version: Optional[PositiveInt] = None
+    issuance_idempotency_key: Optional[NonEmpty] = None
     evidence_set_hash: Hash
     issued_at: datetime
     expires_at: datetime
@@ -322,6 +330,22 @@ class WorkspaceActionCommit(StrictModel):
     event: IncidentEvent
     lease: Optional[Gate1Lease] = None
     actions: List[NextBestAction] = Field(default_factory=list, max_items=3)
+    # The source Gate 1 card is retained with the grant transition so a later
+    # read can validate the original opaque card identity rather than trusting
+    # only a lease payload.
+    issued_action: Optional[NextBestAction] = None
+    # Fresh-read domain admission and capability audit are persisted with the
+    # transition, never before it.
+    capability_result: Optional[CapabilityResult] = None
+    capability_audit: Optional[CapabilityAuditRecord] = None
+
+    @root_validator(allow_reuse=True)
+    def capability_records_are_complete(cls, values):
+        result = values.get("capability_result")
+        audit = values.get("capability_audit")
+        if (result is None) != (audit is None):
+            raise ValueError("workspace_action_capability_result_and_audit_must_match")
+        return values
 
 
 class Gate1LeaseStore(Protocol):
@@ -333,13 +357,23 @@ class Gate1LeaseStore(Protocol):
     async def append_gate1_lease(self, lease: Gate1Lease) -> Gate1Lease:
         """Append a new authoritative lease state under the immutable binding."""
 
+    async def workspace_gate1_grant_transition(
+        self, tenant_id: str, case_id: str, lease_id: str,
+    ) -> Optional[WorkspaceActionCommit]:
+        """Return the immutable Gate 1 grant transition for this lease."""
+
 
 async def _maybe_await(value: Any) -> Any:
     return await value if inspect.isawaitable(value) else value
 
 
 class Gate1LeaseAuthority:
-    """Fail-closed validation port injected into the shared capability registry."""
+    """Fail-closed validation port injected into the shared capability registry.
+
+    It deliberately does not mutate a lease.  A read is only consumed inside
+    the action transition transaction after source acquisition, admission, and
+    audit construction all succeeded.
+    """
 
     def __init__(self, store: Gate1LeaseStore, now=None) -> None:
         self._store = store
@@ -356,14 +390,7 @@ class Gate1LeaseAuthority:
         ))
         if lease is None:
             raise PolicyViolation("gate1_lease_not_found")
-        # A Temporal activity may retry after it has durably consumed the
-        # lease but before the activity completion reached Temporal.  The same
-        # activity identity may resume; every other caller fails closed.
-        retrying_same_activity = (
-            lease.status == Gate1LeaseStatus.CONSUMED
-            and lease.consumed_by_activity_id == invocation_context.activity_id
-        )
-        if lease.status != Gate1LeaseStatus.ACTIVE and not retrying_same_activity:
+        if lease.status != Gate1LeaseStatus.ACTIVE:
             raise PolicyViolation("gate1_lease_not_active")
         now = self._now().astimezone(timezone.utc)
         if lease.expires_at.astimezone(timezone.utc) <= now:
@@ -381,6 +408,7 @@ class Gate1LeaseAuthority:
         command_fingerprint = getattr(invocation_context, "action_command_fingerprint", None)
         if not command_fingerprint:
             raise PolicyViolation("gate1_lease_command_fingerprint_required")
+        await self._assert_issuance_binding(lease)
         if lease.required_permission not in getattr(invocation_context, "subject_permissions", []):
             raise PolicyViolation("gate1_lease_permission_denied")
         if lease.component_id not in getattr(invocation_context, "component_ids", []):
@@ -393,20 +421,51 @@ class Gate1LeaseAuthority:
             raise PolicyViolation("gate1_lease_data_class_mismatch")
         if descriptor is not None and lease.tool_schema_version != descriptor.input_schema:
             raise PolicyViolation("gate1_lease_tool_schema_mismatch")
-        if retrying_same_activity:
-            if (
-                lease.consumed_command_fingerprint != command_fingerprint
-                or lease.consumed_evidence_set_hash != evidence_set_hash
-                or lease.consumed_evidence_revision != invocation_context.evidence_revision
-            ):
-                raise PolicyViolation("gate1_lease_consumed_binding_mismatch")
-            return lease
-        consumed = lease.copy(update={
-            "lease_revision": lease.lease_revision + 1,
-            "status": Gate1LeaseStatus.CONSUMED,
-            "consumed_by_activity_id": invocation_context.activity_id,
-            "consumed_command_fingerprint": command_fingerprint,
-            "consumed_evidence_set_hash": evidence_set_hash,
-            "consumed_evidence_revision": invocation_context.evidence_revision,
-        })
-        return await _maybe_await(self._store.append_gate1_lease(consumed))
+        return lease
+
+    async def _assert_issuance_binding(self, lease: Gate1Lease) -> None:
+        """Bind consumption to the immutable transition that granted Gate 1."""
+        grant = await _maybe_await(self._store.workspace_gate1_grant_transition(
+            lease.tenant_id, lease.case_id, lease.lease_id,
+        ))
+        validate_gate1_issuance_binding(lease, grant)
+
+
+def validate_gate1_issuance_binding(
+    lease: Gate1Lease, grant: Optional[WorkspaceActionCommit],
+) -> None:
+    """Validate the full immutable grant provenance for an active lease."""
+    if (
+        not lease.issuance_action_id
+        or lease.issuance_card_version is None
+        or not lease.issuance_idempotency_key
+        or lease.lease_id != "gate1-" + lease.issuance_command_fingerprint
+    ):
+        raise PolicyViolation("gate1_lease_issuance_binding_missing_or_invalid")
+    if grant is None:
+        raise PolicyViolation("gate1_lease_grant_transition_not_found")
+    issued_action = grant.issued_action
+    granted_lease = grant.lease
+    if (
+        granted_lease is None
+        or issued_action is None
+        or granted_lease.status != Gate1LeaseStatus.ACTIVE
+        or granted_lease.lease_revision != 1
+        or granted_lease != lease
+        or grant.command_fingerprint != lease.issuance_command_fingerprint
+        or grant.receipt.status != "GATE1_GRANTED"
+        or grant.receipt.gate1_lease_id != lease.lease_id
+        or grant.receipt.action_id != lease.issuance_action_id
+        or grant.receipt.idempotency_key != lease.issuance_idempotency_key
+        or issued_action.action_id != lease.issuance_action_id
+        or issued_action.card_version != lease.issuance_card_version
+        or issued_action.cta != NextBestActionCta.REQUEST_GATE1
+        or issued_action.gate1_lease_id is not None
+    ):
+        raise PolicyViolation("gate1_lease_issuance_binding_mismatch")
+    if _workspace_binding_tuple(issued_action) != _workspace_binding_tuple(lease):
+        raise PolicyViolation("gate1_lease_issuance_binding_mismatch")
+
+
+def _workspace_binding_tuple(item: IncidentRunBinding) -> tuple:
+    return tuple(getattr(item, name) for name in IncidentRunBinding.__fields__)

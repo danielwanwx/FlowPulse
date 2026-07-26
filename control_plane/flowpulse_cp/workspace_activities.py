@@ -18,7 +18,6 @@ from .capabilities import (
     CapabilityScope,
     ToolCallBudget,
 )
-from .capability_adapters import DomainEvidenceAdmission
 from .workspace_models import (
     IncidentEvent,
     IncidentRunBinding,
@@ -111,6 +110,31 @@ class WorkspaceActivityDispatcher:
             },
             evidence_refs=list(projection.evidence_refs),
         )
+
+    async def _consumed_gate1_lease(
+        self, lease_id: str, invocation_context: CapabilityInvocationContext, command_fingerprint: str,
+    ) -> Gate1Lease:
+        """Prepare, but do not persist, the exact consumed lease revision.
+
+        The repository rechecks this against the locked active revision and
+        writes it only with the admitted source result/audit/action outbox.
+        """
+        active = await self.repository.workspace_gate1_lease(
+            invocation_context.tenant_id, invocation_context.case_id, lease_id,
+        )
+        if active is None or active.status != Gate1LeaseStatus.ACTIVE:
+            raise PolicyViolation("gate1_lease_not_active")
+        evidence_set_hash = canonical_evidence_set_hash(list(invocation_context.recorded_evidence_ids))
+        if active.evidence_set_hash != evidence_set_hash:
+            raise PolicyViolation("gate1_lease_evidence_set_mismatch")
+        return active.copy(update={
+            "lease_revision": active.lease_revision + 1,
+            "status": Gate1LeaseStatus.CONSUMED,
+            "consumed_by_activity_id": invocation_context.activity_id,
+            "consumed_command_fingerprint": command_fingerprint,
+            "consumed_evidence_set_hash": evidence_set_hash,
+            "consumed_evidence_revision": invocation_context.evidence_revision,
+        })
 
     async def _persist_case(self, packet: WorkspaceActivityPacket) -> None:
         if not hasattr(self.repository, "put_case"):
@@ -261,6 +285,10 @@ class WorkspaceActivityDispatcher:
                     gate1_lease_id=action.gate1_lease_id,
                     action_command_fingerprint=command_fingerprint,
                 )
+                # The registry validates and obtains the controlled source,
+                # but it must not durably admit evidence, write the audit, or
+                # consume the lease yet.  Those records join the consumed
+                # lease in the one action transition transaction below.
                 invocation = await self.capability_registry.invoke(
                     CapabilityAudience.USER_QA, invocation_context,
                     CapabilityRequest(
@@ -268,7 +296,7 @@ class WorkspaceActivityDispatcher:
                         data_class=CapabilityDataClass(action.data_class), parameters={},
                     ),
                     ToolCallBudget(max_calls=1),
-                    evidence_admission=DomainEvidenceAdmission(self.repository, actor.subject_id),
+                    defer_durable_persistence=True,
                 )
                 evidence_refs = list(packet.projection.evidence_refs)
                 for evidence in invocation.result.evidence:
@@ -287,9 +315,14 @@ class WorkspaceActivityDispatcher:
                     status="FRESH_READ_COMPLETED", gate1_lease_id=action.gate1_lease_id,
                     reason="temporal_gate1_bound_read_completed",
                 )
+                consumed_lease = await self._consumed_gate1_lease(
+                    action.gate1_lease_id, invocation_context, command_fingerprint,
+                )
                 commit = await self.repository.commit_workspace_action_transition(WorkspaceActionCommit(
                     activity_identity=activity_identity, command_fingerprint=command_fingerprint,
                     projection=updated_projection, receipt=receipt,
+                    lease=consumed_lease, capability_result=invocation.result,
+                    capability_audit=invocation.audit,
                     event=self._action_event(
                         packet, updated_projection, "workspace.action.fresh_read_completed",
                         command_fingerprint, activity_identity,
@@ -317,6 +350,9 @@ class WorkspaceActivityDispatcher:
                 capability_registry_revision=action.capability_registry_revision,
                 precondition_version=action.precondition_version, precondition_hash=NextBestActionGenerator._precondition_hash(updated_projection),
                 issuance_command_fingerprint=command_fingerprint,
+                issuance_action_id=action.action_id,
+                issuance_card_version=action.card_version,
+                issuance_idempotency_key=packet.command.idempotency_key,
                 evidence_set_hash=canonical_evidence_set_hash(list(updated_projection.evidence_refs)),
                 issued_at=now, expires_at=now + timedelta(minutes=30), status=Gate1LeaseStatus.ACTIVE,
             )
@@ -332,6 +368,7 @@ class WorkspaceActivityDispatcher:
             commit = await self.repository.commit_workspace_action_transition(WorkspaceActionCommit(
                 activity_identity=activity_identity, command_fingerprint=command_fingerprint,
                 projection=updated_projection, receipt=receipt, lease=lease, actions=next_actions,
+                issued_action=action,
                 event=self._action_event(
                     packet, updated_projection, "workspace.action.gate1_granted",
                     command_fingerprint, activity_identity,

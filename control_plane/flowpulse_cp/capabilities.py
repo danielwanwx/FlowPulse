@@ -323,6 +323,7 @@ class CapabilityRegistry:
         budget: ToolCallBudget,
         *,
         evidence_admission: Optional[CapabilityEvidenceAdmission] = None,
+        defer_durable_persistence: bool = False,
     ) -> CapabilityInvocationResult:
         descriptor = next(
             (item for item in self.available(audience) if item.capability == request.capability), None,
@@ -368,7 +369,7 @@ class CapabilityRegistry:
         if descriptor.fresh_read and not result.evidence:
             raise PolicyViolation("fresh_capability_evidence_required")
         self._validate_result_evidence(result, invocation_context)
-        if result.evidence:
+        if result.evidence and not defer_durable_persistence:
             if evidence_admission is None:
                 raise PolicyViolation("capability_evidence_admission_port_required")
             admitted = await _maybe_await(evidence_admission.admit(result, invocation_context))
@@ -416,7 +417,11 @@ class CapabilityRegistry:
         if existing is not None and existing != audit:
             raise PolicyViolation("capability_audit_immutable")
         self.audit_records[audit.audit_id] = audit
-        if self.audit_sink is not None:
+        # Gate 1 fresh reads carry the returned domain records and audit into
+        # the action transition outbox.  That transaction is the only place
+        # where a successful fresh read becomes durable.  All other callers
+        # retain the normal immediate admission/audit behaviour.
+        if self.audit_sink is not None and not defer_durable_persistence:
             persisted = self.audit_sink.append_capability_audit(audit)
             persisted = await _maybe_await(persisted)
             if persisted != audit:

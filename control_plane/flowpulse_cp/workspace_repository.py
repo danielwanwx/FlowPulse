@@ -54,6 +54,9 @@ class InMemoryWorkspaceRepository:
         self.workspace_action_receipts: Dict[Tuple[str, str, str], WorkspaceActionReceipt] = {}
         self.workspace_action_idempotency: Dict[Tuple[str, str, str], str] = {}
         self.workspace_action_commits: Dict[Tuple[str, str, str], WorkspaceActionCommit] = {}
+        self.workspace_action_evidence = {}
+        self.workspace_action_claims = {}
+        self.workspace_action_coverage = {}
         # Test-only seam: a checkpoint raises inside the same in-memory
         # transaction simulation and restores every append-only collection.
         self.failure_injector = failure_injector
@@ -225,6 +228,23 @@ class InMemoryWorkspaceRepository:
         records = self.gate1_leases.get((tenant_id, case_id, lease_id), [])
         return records[-1] if records else None
 
+    async def workspace_gate1_grant_transition(
+        self, tenant_id: str, case_id: str, lease_id: str,
+    ) -> Optional[WorkspaceActionCommit]:
+        grants = [
+            commit for commit in self.workspace_action_commits.values()
+            if (
+                commit.receipt.tenant_id == tenant_id
+                and commit.receipt.case_id == case_id
+                and commit.receipt.status == "GATE1_GRANTED"
+                and commit.lease is not None
+                and commit.lease.lease_id == lease_id
+            )
+        ]
+        if len(grants) > 1:
+            raise PolicyViolation("gate1_lease_grant_transition_ambiguous")
+        return grants[0] if grants else None
+
     async def append_next_best_action(self, action: NextBestAction) -> NextBestAction:
         binding = self.bindings.get(_binding_key(action))
         if binding is None or not _same_binding(binding, action):
@@ -332,6 +352,21 @@ class InMemoryWorkspaceRepository:
             )
             if latest != commit.lease:
                 raise PolicyViolation("workspace_action_transition_partial")
+        if commit.issued_action is not None:
+            if await self.workspace_next_best_action(
+                commit.issued_action.tenant_id, commit.issued_action.case_id, commit.issued_action.action_id,
+            ) != commit.issued_action:
+                raise PolicyViolation("workspace_action_transition_partial")
+        if commit.capability_result is not None:
+            audit = commit.capability_audit
+            if audit is None or self.capability_audits.get(audit.audit_id) != audit:
+                raise PolicyViolation("workspace_action_transition_partial")
+            for evidence in commit.capability_result.evidence:
+                if self.workspace_action_evidence.get(evidence.evidence_id) != evidence:
+                    raise PolicyViolation("workspace_action_transition_partial")
+            for claim in commit.capability_result.claims:
+                if self.workspace_action_claims.get(claim.claim_id) != claim:
+                    raise PolicyViolation("workspace_action_transition_partial")
         for action in commit.actions:
             if await self.workspace_next_best_action(action.tenant_id, action.case_id, action.action_id) != action:
                 raise PolicyViolation("workspace_action_transition_partial")
@@ -353,8 +388,56 @@ class InMemoryWorkspaceRepository:
             "workspace_action_idempotency": copy.deepcopy(self.workspace_action_idempotency),
             "events": copy.deepcopy(self.events),
             "workspace_action_commits": copy.deepcopy(self.workspace_action_commits),
+            "workspace_action_evidence": copy.deepcopy(self.workspace_action_evidence),
+            "workspace_action_claims": copy.deepcopy(self.workspace_action_claims),
+            "workspace_action_coverage": copy.deepcopy(self.workspace_action_coverage),
+            "capability_audits": copy.deepcopy(self.capability_audits),
         }
         try:
+            if commit.issued_action is not None:
+                if _binding_key(commit.issued_action) != _binding_key(commit.projection):
+                    raise PolicyViolation("workspace_action_transition_binding_mismatch")
+                stored_action = await self.workspace_next_best_action(
+                    commit.issued_action.tenant_id, commit.issued_action.case_id, commit.issued_action.action_id,
+                )
+                if stored_action != commit.issued_action:
+                    raise PolicyViolation("workspace_action_issued_card_not_authoritative")
+            if commit.lease is not None and commit.lease.status.value == "CONSUMED":
+                active = await self.workspace_gate1_lease(
+                    commit.lease.tenant_id, commit.lease.case_id, commit.lease.lease_id,
+                )
+                if (
+                    active is None or active.status.value != "ACTIVE"
+                    or commit.lease.lease_revision != active.lease_revision + 1
+                ):
+                    raise PolicyViolation("gate1_lease_not_active")
+            if commit.capability_result is not None:
+                audit = commit.capability_audit
+                if audit is None or _binding_key(audit) != _binding_key(commit.projection):
+                    raise PolicyViolation("workspace_action_capability_binding_mismatch")
+                for evidence in commit.capability_result.evidence:
+                    if (
+                        evidence.tenant_id, evidence.case_id, evidence.case_revision
+                    ) != (
+                        commit.projection.tenant_id, commit.projection.case_id, commit.projection.case_revision
+                    ):
+                        raise PolicyViolation("capability_result_evidence_scope_mismatch")
+                    self.workspace_action_evidence[evidence.evidence_id] = evidence
+                for claim in commit.capability_result.claims:
+                    if (
+                        claim.tenant_id, claim.case_id, claim.case_revision
+                    ) != (
+                        commit.projection.tenant_id, commit.projection.case_id, commit.projection.case_revision
+                    ):
+                        raise PolicyViolation("capability_result_claim_scope_mismatch")
+                    self.workspace_action_claims[claim.claim_id] = claim
+                for coverage in commit.capability_result.coverage:
+                    if (coverage.tenant_id, coverage.case_id) != (commit.projection.tenant_id, commit.projection.case_id):
+                        raise PolicyViolation("capability_result_coverage_scope_mismatch")
+                    self.workspace_action_coverage[(coverage.case_id, coverage.field, coverage.status.value)] = coverage
+                self._action_checkpoint("after_evidence_admission")
+                await self.append_capability_audit(audit)
+                self._action_checkpoint("after_audit")
             await self.put_workspace_projection(commit.projection)
             self._action_checkpoint("after_projection")
             if commit.lease is not None:
@@ -378,6 +461,10 @@ class InMemoryWorkspaceRepository:
             self.workspace_action_idempotency = snapshots["workspace_action_idempotency"]
             self.events = snapshots["events"]
             self.workspace_action_commits = snapshots["workspace_action_commits"]
+            self.workspace_action_evidence = snapshots["workspace_action_evidence"]
+            self.workspace_action_claims = snapshots["workspace_action_claims"]
+            self.workspace_action_coverage = snapshots["workspace_action_coverage"]
+            self.capability_audits = snapshots["capability_audits"]
             raise
 
     async def append_capability_audit(self, audit: CapabilityAuditRecord) -> CapabilityAuditRecord:
