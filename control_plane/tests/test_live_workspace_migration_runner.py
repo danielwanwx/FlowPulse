@@ -125,7 +125,10 @@ class LiveWorkspaceMigrationRunnerTests(unittest.TestCase):
                     finally:
                         await check.close()
 
-                    crash = copied / "005_runner_crash_recovery.sql"
+                    # 005 is an established workspace migration.  The
+                    # temporary crash/recovery fixture must be the next
+                    # contiguous migration, not a competing 005 prefix.
+                    crash = copied / "006_runner_crash_recovery.sql"
                     crash.write_text(
                         "CREATE TABLE runner_crash_marker (id integer PRIMARY KEY);\nSELECT 1 / 0;\n",
                         encoding="utf-8",
@@ -136,7 +139,7 @@ class LiveWorkspaceMigrationRunnerTests(unittest.TestCase):
                     try:
                         self.assertIsNone(await check.fetchval("SELECT to_regclass('public.runner_crash_marker')"))
                         self.assertIsNone(await check.fetchval(
-                            "SELECT checksum_sha256 FROM schema_migrations WHERE filename='005_runner_crash_recovery.sql'"
+                            "SELECT checksum_sha256 FROM schema_migrations WHERE filename='006_runner_crash_recovery.sql'"
                         ))
                     finally:
                         await check.close()
@@ -150,7 +153,7 @@ class LiveWorkspaceMigrationRunnerTests(unittest.TestCase):
                             "SELECT to_regclass('public.runner_crash_marker')::text"
                         ))
                         self.assertIsNotNone(await check.fetchval(
-                            "SELECT checksum_sha256 FROM schema_migrations WHERE filename='005_runner_crash_recovery.sql'"
+                            "SELECT checksum_sha256 FROM schema_migrations WHERE filename='006_runner_crash_recovery.sql'"
                         ))
                     finally:
                         await check.close()
