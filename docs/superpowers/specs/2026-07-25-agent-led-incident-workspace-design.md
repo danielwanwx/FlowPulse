@@ -141,7 +141,8 @@ When the backend accepts a new incident, Live remains selected and unchanged.
 The product displays one lightweight, dismissible top-left toast with English
 only copy, for example:
 
-> **Checkout payment incident detected**  
+> **Checkout payment incident detected**
+>
 > Select to focus the affected path.
 
 The toast has a single `Focus incident` action and expires visually without
@@ -158,10 +159,32 @@ never automatically opened or pinned over the canvas.
 ### Node-scoped Agent context
 
 Selecting an impacted red node opens the right-side decision workspace with
-that canonical `component_id`, the selected incident identity, and a concise
-component explanation. Opening the panel is read-only and does not invoke a
-model. A conversation begins only when the operator submits a message or
-chooses a validated card.
+that canonical `component_id` and selected incident identity, then creates one
+idempotent `node_explanation` Conversation Manager turn. The turn streams a
+short component-specific explanation and one clear next step, normally
+`Request investigation access` when Gate 1 is absent. This is the only
+automatic chat behavior: toast focus alone never creates a conversation,
+invokes a model, or begins an investigation.
+
+The node explanation is constrained to the validated canonical projection,
+recorded Evidence Ledger entries, and Component Context Pack priors explicitly
+labeled as priors. It cannot call a fresh read tool before Gate 1, claim that a
+fresh diagnosis has run, infer unrecorded telemetry, or propose an executable
+fix. It is a concise explanation of the selected component's recorded state,
+not an investigation result.
+
+The backend deduplicates this turn with a durable selection key:
+
+```text
+node_explanation:{tenant_id}:{run_id}:{projection_revision}:{component_id}:{conversation_schema_version}
+```
+
+One node click creates or resumes at most one turn for that key. Repeated
+clicks, reload/hydration, SSE replay, and duplicate events return the recorded
+turn rather than starting another model run. A different component or a
+user-initiated selection after a different projection revision receives a new
+key. The browser renders the server-projected stream and never manufactures a
+local explanation.
 
 Before Gate 1, the panel may show the last validated incident projection and
 bounded Knowledge Plane priors, explicitly labeled as non-current context. It
@@ -254,9 +277,9 @@ free-form generated action type. Example English-only cards:
 
 | Title | Useful sentence | CTA |
 | --- | --- | --- |
-| `Find the payment failure` | `Collect fresh traces and resolver errors for Payment.` | `Start investigation` |
-| `Review the rollback plan` | `Check the dry-run impact before requesting approval.` | `Open plan` |
-| `Compare recovery` | `Compare the failed and recovered snapshots using fresh verification evidence.` | `Compare recovery` |
+| `Find Cause` | `Collect fresh traces and resolver errors for Payment.` | `Request investigation access` |
+| `Review Fix` | `Check the dry-run impact before requesting approval.` | `Review fix` |
+| `Compare Recovery` | `Compare the failed and recovered snapshots using fresh verification evidence.` | `Compare recovery` |
 
 Keyboard controls announce the selected card position and recommendation;
 touch and pointer navigation preserve the same ordering. A click submits the
@@ -266,8 +289,9 @@ server-issued action ID for revalidation; it is never a direct tool call.
 
 Cards have a fixed taxonomy. The agent may select from the current stage's
 allowlist, order up to three returned cards, mark at most one recommended, and
-fill only the one-sentence component-specific explanation and CTA. It cannot
-invent a card type, a fourth card, a new stage, or a capability name.
+fill only the one-sentence component-specific summary. It may select one
+registry-compatible CTA behavior, but cannot invent a title, card type, fourth
+card, new stage, capability name, CTA behavior, or CTA text.
 
 | Stage | Allowed card types |
 | --- | --- |
@@ -276,11 +300,33 @@ invent a card type, a fourth card, a new stage, or a capability name.
 | Execute | `Apply Fix`, `Track Progress`, `Prepare Rollback` |
 | Verify | `Compare Recovery`, `Check Risk`, `Close Incident` |
 
-The backend validates `card_type` against this table and maps it to its
-English title. An agent output that contains an unknown type, duplicate type,
-more than three cards, more than one recommendation, unsafe copy, or a CTA
-without a registered capability is rejected. The browser renders only the
-validated title, summary, CTA, and server-issued `action_id`.
+The backend validates `card_type` against this table and derives the displayed
+English title exactly from that type. CTA behavior is also a closed schema,
+not model text. The action schema carries one of these behaviors and the
+backend derives its fixed English label:
+
+| CTA behavior | Fixed label |
+| --- | --- |
+| `request_gate_1` | `Request investigation access` |
+| `run_read_capability` | `Investigate` |
+| `review_evidence` | `Review evidence` |
+| `review_fix` | `Review fix` |
+| `compare_options` | `Compare options` |
+| `request_gate_2` | `Request plan approval` |
+| `submit_approved_action` | `Apply approved fix` |
+| `track_progress` | `Track progress` |
+| `prepare_rollback` | `Prepare rollback` |
+| `compare_recovery` | `Compare recovery` |
+| `check_risk` | `Check risk` |
+| `close_incident` | `Close incident` |
+
+The registry defines which CTA behaviors are compatible with each card type,
+stage, capability, and gate state. An agent output that contains an unknown
+type, duplicate type, more than three cards, more than one recommendation,
+unsafe summary, unsupported CTA behavior, or a CTA without a registered
+capability is rejected. The browser renders only the backend-derived fixed
+title and CTA label, the validated dynamic summary, and the server-issued
+`action_id`.
 
 ## 6. UX state machine
 
@@ -292,8 +338,9 @@ incident lifecycle state. The following is the user-visible state machine:
 | --- | --- | --- | --- |
 | `LiveNormal` | No active incident focus | Inspect graph | Backend incident signal creates `IncidentToast` |
 | `IncidentToast` | New server-projected incident | Dismiss or `Focus incident` | Dismiss returns `LiveNormal`; focus enters `IncidentFocused` |
-| `IncidentFocused` | Toast focus or Incident navigation | Select impacted node; open global summary | Node selection enters `NodeContext` |
-| `NodeContext` | Impacted node selected | Read current projection; request Gate 1; ask bounded non-tool question | Gate 1 grant enables `InvestigateReady` |
+| `IncidentFocused` | Toast focus or Incident navigation | Select impacted node; open global summary | Node selection enters `NodeExplanationStreaming` |
+| `NodeExplanationStreaming` | Impacted node click with a new or resumable selection key | Read the recorded component explanation; request Gate 1 | Server streams/reuses exactly one scoped turn, then enters `NodeContext` |
+| `NodeContext` | Node explanation is terminal | Read current projection; request Gate 1; ask bounded non-tool question | Gate 1 grant enables `InvestigateReady` |
 | `InvestigateReady` | Valid Gate 1 | Submit question; choose read action | Validated result or invalidation updates projection |
 | `DecideReady` | Backend accepts a proposal | Review options; request Gate 2 | Approved, current Owner Gate enables `ExecuteReady` |
 | `ExecuteReady` | Valid Gate 2 and preconditions | Submit the approved action | Activity progress or invalidation updates projection |
@@ -301,11 +348,13 @@ incident lifecycle state. The following is the user-visible state machine:
 | `Closed` | Temporal accepts verified closure | Review report | New incident signal creates a new toast |
 | `Degraded` | Capability, stream, permission, or schema unavailable | Review recorded evidence; retry an allowed refresh | Valid recovery returns to the prior compatible state |
 
-`IncidentFocused`, `NodeContext`, and panel width are browser presentation
-state keyed by canonical run and component IDs. Stage, approval, plan,
-execution, and verification states are read from the canonical backend
-projection only. Cross-run navigation clears local panel/conversation focus
-unless the new run explicitly carries the same valid component identity.
+`IncidentFocused`, `NodeExplanationStreaming`, `NodeContext`, and panel width
+are browser presentation state keyed by canonical run and component IDs. The
+durable explanation-turn key prevents a reload or duplicate stream frame from
+producing another automatic turn. Stage, approval, plan, execution, and
+verification states are read from the canonical backend projection only.
+Cross-run navigation clears local panel/conversation focus unless the new run
+explicitly carries the same valid component identity.
 
 ## 7. Domain and data models
 
@@ -528,9 +577,10 @@ NextBestAction
   stage
   card_type
   recommended: boolean
-  title
+  title: backend-derived fixed title for card_type
   summary
-  cta_label
+  cta_behavior
+  cta_label: backend-derived fixed label for cta_behavior
   capability_id, capability_version
   evidence_refs[]
   evidence_snapshot_version
@@ -544,11 +594,12 @@ NextBestAction
   invalidation_keys[]
 ```
 
-`title`, `summary`, and `cta_label` are safe English strings bounded by schema
-length and vocabulary policy. `card_type` must be allowed for the current
-stage. `capability_id` must resolve to a real, enabled registry entry. If there
-is no compatible real capability, the backend returns no action rather than a
-decorative button.
+`summary` is the only agent-generated display copy and is a safe English string
+bounded by schema length and vocabulary policy. `title` and `cta_label` are
+backend-derived fixed strings from the card and CTA behavior tables. `card_type`
+must be allowed for the current stage. `capability_id` must resolve to a real,
+enabled registry entry. If there is no compatible real capability, the backend
+returns no action rather than a decorative button.
 
 The backend invalidates an action when any bound projection revision, evidence
 snapshot, gate status, capability/policy/schema version, permission, selected
@@ -621,6 +672,7 @@ fail-closed at authority boundaries.
 | `IncidentProjection` read | Read canonical graph, stage, gates, evidence and actions | Query-derived; browser may not compose it |
 | `ComponentContext` read | Read the bounded pack for selected component | Priors only; no current-proof or authority use |
 | `ConversationTurn` submit | Submit a user intent to Conversation Manager | Backend validates identity, language, rate limit, and allowed intent |
+| `NodeExplanation` start/reuse | Start or resume the one scoped turn caused by an impacted-node click | Durable selection key permits projection/recorded-evidence/prior context only; no fresh read capability |
 | `NextBestAction[]` read | Return backend-validated follow-ups | No action without capability/evidence/permission/TTL |
 | `ActionSubmit` update | Submit a server-issued action ID | Backend and Temporal revalidate before Activity work |
 | `Approval` update | Grant, reject, edit, revoke a gate | Temporal records scope, TTL, and policy binding |
@@ -742,9 +794,15 @@ legacy approval endpoint to the new Owner Gate.
    motion is static and accessible.
 2. A new incident produces only the top-left toast. It does not navigate,
    send a chat message, create a conversation, invoke an agent, or collect
-   fresh evidence. Selecting it focuses the exact impacted path.
-3. Selecting a red node opens the 430 px node context; report mode expands to
-   560 px; neither mounts a persistent roster, ledger, or verification panel.
+   fresh evidence. Selecting it focuses the exact impacted path and still
+   creates no conversation or automatic turn.
+3. Selecting a red node opens the 430 px node context and creates/streams
+   exactly one idempotent, component-scoped Conversation Manager explanation;
+   it uses only canonical projection, recorded evidence, and labeled priors,
+   with no Gate 1 read tool call or fresh-diagnosis claim. Reload, duplicate
+   SSE frames, and repeated node clicks reuse that turn rather than create
+   another. Report mode expands to 560 px; neither mode mounts a persistent
+   roster, ledger, or verification panel.
 4. Gate 1 absence exposes only recorded evidence/priors and `Request
    investigation access`; a fresh tool request remains blocked. A valid grant
    enables only the scoped reads.
