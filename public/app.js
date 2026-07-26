@@ -205,6 +205,13 @@ function beginCanonicalStateRequest() {
   return canonicalStateRequestGeneration;
 }
 
+// Background state reads do not create an overlay, but once one completes the
+// foreground request it superseded can no longer become canonical. Retire only
+// a strictly older foreground token; a newer user refresh remains visible.
+function settleSupersededCanonicalLoading(requestGeneration) {
+  return canonicalStateLoading.settleSupersededBy(requestGeneration);
+}
+
 function commitCanonicalStateResponse({ requestedRunId, requestGeneration, nextState }) {
   return commitPinnedStateResponse({
     requestedRunId,
@@ -306,7 +313,7 @@ await refresh({ synchronizeIncidentStage: true });
 async function refresh({ synchronizeIncidentStage = false, topologyRefreshKey = null } = {}) {
   const requestedRunId = selectedRunId;
   const requestGeneration = beginCanonicalStateRequest();
-  const loadingToken = canonicalStateLoading.begin();
+  const loadingToken = canonicalStateLoading.begin(requestGeneration);
   let topologyRefreshSettled = false;
   const settleTopologyRefreshOwnership = (succeeded = false) => {
     if (topologyRefreshSettled) return false;
@@ -3714,9 +3721,10 @@ async function runLive() {
     showToast(`Live evaluator score ${Math.round(response.result.evaluation.score * 100)}%.`);
     render();
   } catch (error) {
+    let requestGeneration = null;
     try {
       const requestedRunId = selectedRunId;
-      const requestGeneration = beginCanonicalStateRequest();
+      requestGeneration = beginCanonicalStateRequest();
       const nextState = await request(browserStatePath(requestedRunId));
       commitCanonicalStateResponse({
         requestedRunId,
@@ -3724,6 +3732,9 @@ async function runLive() {
         nextState
       });
     } catch { /* keep the last visible projection */ }
+    finally {
+      if (requestGeneration !== null) settleSupersededCanonicalLoading(requestGeneration);
+    }
     showToast(error.message, true);
     render();
   } finally {
@@ -4588,9 +4599,10 @@ function connectAgentStream() {
     state.agent_control = projection;
     clearTimeout(streamRefreshTimer);
     streamRefreshTimer = setTimeout(async () => {
+      let requestGeneration = null;
       try {
         const requestedRunId = selectedRunId;
-        const requestGeneration = beginCanonicalStateRequest();
+        requestGeneration = beginCanonicalStateRequest();
         const nextState = await request(browserStatePath(requestedRunId));
         if (commitCanonicalStateResponse({
           requestedRunId,
@@ -4601,6 +4613,9 @@ function connectAgentStream() {
         render();
         ensureSelectedLiveComponentDetail();
       } catch { /* the stream will retry without replacing the last valid projection */ }
+      finally {
+        if (requestGeneration !== null) settleSupersededCanonicalLoading(requestGeneration);
+      }
     }, 80);
   });
   eventSource.onerror = () => {};

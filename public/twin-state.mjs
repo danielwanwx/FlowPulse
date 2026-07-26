@@ -866,28 +866,35 @@ export function settleTopologyRefresh(tracker, key, succeeded = false) {
   return succeeded === true ? tracker.succeed(key) : tracker.fail(key);
 }
 
-// Loading is intentionally independent of the canonical response generation:
-// a background refresh may supersede a foreground response, but it never owns
-// the foreground overlay.
+// A foreground loading token belongs to the canonical request generation that
+// created it. A completed background refresh may retire only an older token;
+// it can never hide a newer foreground request's overlay.
 export function createCanonicalLoadingController({ setLoading }) {
   if (typeof setLoading !== "function") throw new Error("Canonical loading requires a state setter.");
   let activeToken = null;
   let nextToken = 0;
   return {
-    begin() {
+    begin(generation) {
+      if (!Number.isSafeInteger(generation) || generation < 1) throw new Error("Canonical loading requires a request generation.");
       const wasIdle = activeToken === null;
-      activeToken = ++nextToken;
+      activeToken = { token: ++nextToken, generation };
       if (wasIdle) setLoading(true);
-      return activeToken;
+      return activeToken.token;
     },
     settle(token) {
-      if (token !== activeToken) return false;
+      if (token !== activeToken?.token) return false;
+      activeToken = null;
+      setLoading(false);
+      return true;
+    },
+    settleSupersededBy(generation) {
+      if (!Number.isSafeInteger(generation) || activeToken === null || generation <= activeToken.generation) return false;
       activeToken = null;
       setLoading(false);
       return true;
     },
     snapshot() {
-      return { active: activeToken !== null, token: activeToken };
+      return { active: activeToken !== null, token: activeToken?.token || null, generation: activeToken?.generation || null };
     }
   };
 }
