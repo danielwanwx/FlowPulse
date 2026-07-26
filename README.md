@@ -4,6 +4,17 @@
 
 It is evidence-grounded by design: models and agents can explain, investigate, and propose, but current proof, human approval, and consequential state remain outside browser and model control. **Incident is the first vertical.** Architecture, Live, and Incident are the three product views; Incident keeps the operator in one staged workspace from Investigate through Decide, Execute, and Verify.
 
+<!-- north-star-guardrails-v1
+{
+  "schema_version": "flowpulse.north-star-guardrails.v1",
+  "top_level_navigation": ["Architecture", "Live", "Incident"],
+  "incident_first_vertical": true,
+  "lifecycle_authority": "Temporal",
+  "fastapi_temporal_control_plane": "not_integrated",
+  "node_compatibility_path": "compatibility_demo"
+}
+-->
+
 FlowPulse turns bounded telemetry and change evidence into one inspectable operator workflow: observe the system, investigate a causal claim, challenge it, enforce the owner gate, execute only an allowlisted recovery, then verify the result. The browser is a read-only projection. In the checked-in compatibility/demo path, the append-only ledger and server-side policy record bounded local replay state and enforce local guardrails; they do not own incident lifecycle transitions. Temporal alone owns lifecycle transitions in the real control plane.
 
 ![FlowPulse Live incident investigation](docs/assets/flowpulse-cover.png)
