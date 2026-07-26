@@ -2,6 +2,8 @@
 
 import json
 import base64
+import hashlib
+import os
 import subprocess
 import sys
 import tempfile
@@ -19,9 +21,11 @@ from flowpulse_cp.workspace_provenance import (  # noqa: E402
     IMAGE_WORKFLOW_BLOB_LABEL,
     build_producer_attestation,
     verify_producer_attestation,
+    verify_producer_image_attestation,
     write_producer_attestation,
     write_producer_attestation_from_image,
     history_identity,
+    inspect_producer_image,
 )
 
 
@@ -82,6 +86,22 @@ class WorkspaceArchiveProvenanceTests(unittest.TestCase):
             self.assertEqual(head, written["git_sha"])
             self.assertIn("docker", command.call_args_list[0].args[0])
 
+    def test_archive_image_verification_rejects_a_different_actual_image(self):
+        attestation = build_producer_attestation(REPO, self._image())
+        other = self._image()
+        other["Id"] = "sha256:" + "b" * 64
+        with patch("flowpulse_cp.workspace_provenance.inspect_producer_image", return_value=other):
+            with self.assertRaisesRegex(RuntimeError, "producer_image_attestation_mismatch"):
+                verify_producer_image_attestation(REPO, "flowpulse-worker:local", attestation)
+
+    def test_archive_image_verification_requires_actual_docker_identity(self):
+        attestation = build_producer_attestation(REPO, self._image())
+        # ``docker image inspect`` returns a one-element list; the production
+        # inspection seam normalizes it before the immutable labels are read.
+        with patch("flowpulse_cp.workspace_provenance.inspect_producer_image", return_value=self._image()):
+            verified = verify_producer_image_attestation(REPO, "flowpulse-worker:local", attestation)
+        self.assertEqual(attestation["image_id"], verified["image_id"])
+
     def test_history_identity_is_derived_from_the_start_event_not_archive_arguments(self):
         raw_path = ROOT / "tests" / "fixtures" / "temporal_workspace_v1" / "workspace_node_explanation_degraded.json"
         raw = raw_path.read_bytes()
@@ -98,6 +118,31 @@ class WorkspaceArchiveProvenanceTests(unittest.TestCase):
         ).decode("ascii")
         with self.assertRaisesRegex(RuntimeError, "workspace_history_workflow_id_input_mismatch"):
             history_identity(json.dumps(forged).encode("utf-8"))
+
+    @unittest.skipUnless(
+        os.environ.get("FLOWPULSE_LIVE_WORKSPACE_PROVENANCE") == "1",
+        "requires the local inspected workspace producer image",
+    )
+    def test_live_inspected_image_maps_to_immutable_git_workflow_object(self):
+        """No caller-supplied SHA can make the real local image verify."""
+        image = inspect_producer_image(os.environ.get("FLOWPULSE_WORKSPACE_PRODUCER_IMAGE", "control_plane-worker:latest"))
+        labels = image["Config"]["Labels"]
+        git_sha = labels[IMAGE_GIT_LABEL]
+        blob = labels[IMAGE_WORKFLOW_BLOB_LABEL]
+        source = subprocess.check_output(["git", "-C", str(REPO), "cat-file", "-p", blob])
+        attestation = {
+            "schema_version": 1,
+            "git_sha": git_sha,
+            "image_id": image["Id"],
+            "image_revision_label": git_sha,
+            "workflow_module_repo_path": "control_plane/flowpulse_cp/workspace_workflow.py",
+            "workflow_module_git_blob_oid": blob,
+            "workflow_module_sha256": hashlib.sha256(source).hexdigest(),
+            "workflow_type": "flowpulse.incident-workspace.v1",
+        }
+        self.assertEqual(attestation, {"schema_version": 1, **verify_producer_image_attestation(
+            REPO, os.environ.get("FLOWPULSE_WORKSPACE_PRODUCER_IMAGE", "control_plane-worker:latest"), attestation,
+        )})
 
 
 if __name__ == "__main__":

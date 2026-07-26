@@ -116,11 +116,19 @@ def write_producer_attestation_from_payload(repo_root: Path, payload: Any, outpu
 
 def write_producer_attestation_from_image(repo_root: Path, image: str, output: Path) -> Dict[str, str]:
     """Ask Docker for the immutable image identity; do not accept it from a caller."""
+    payload = inspect_producer_image(image)
+    return write_producer_attestation_from_payload(repo_root, payload, output)
+
+
+def inspect_producer_image(image: str) -> Any:
+    """Return Docker's own immutable image inspection result for ``image``."""
     try:
         payload = json.loads(subprocess.check_output(["docker", "image", "inspect", image], text=True))
     except (subprocess.CalledProcessError, json.JSONDecodeError) as error:
         raise RuntimeError("producer_image_inspection_unavailable") from error
-    return write_producer_attestation_from_payload(repo_root, payload, output)
+    if not isinstance(payload, list) or len(payload) != 1 or not isinstance(payload[0], Mapping):
+        raise RuntimeError("producer_image_inspection_ambiguous")
+    return payload[0]
 
 
 def verify_producer_attestation(repo_root: Path, attestation: Mapping[str, Any]) -> Dict[str, str]:
@@ -154,3 +162,24 @@ def verify_producer_attestation(repo_root: Path, attestation: Mapping[str, Any])
     if git_blob_oid(git_source) != actual_blob or hashlib.sha256(git_source).hexdigest() != values["workflow_module_sha256"]:
         raise RuntimeError("producer_attestation_workflow_bytes_mismatch")
     return {key: str(value) for key, value in attestation.items() if key != "schema_version"}
+
+
+def verify_producer_image_attestation(
+    repo_root: Path, image: str, attestation: Mapping[str, Any],
+) -> Dict[str, str]:
+    """Bind an archive attestation to the image Docker resolves *now*.
+
+    The archive command calls this after reading its checked-in/recorded
+    attestation.  It consequently rejects a stale or caller-substituted image
+    before it fetches a Temporal history, while ``verify_producer_attestation``
+    separately maps the claimed commit to the immutable workflow Git blob.
+    """
+    verified = verify_producer_attestation(repo_root, attestation)
+    inspected = _image_identity(inspect_producer_image(image))
+    if (
+        inspected["image_id"] != verified["image_id"]
+        or inspected["image_revision_label"] != verified["image_revision_label"]
+        or inspected["image_workflow_blob_label"] != verified["workflow_module_git_blob_oid"]
+    ):
+        raise RuntimeError("producer_image_attestation_mismatch")
+    return verified

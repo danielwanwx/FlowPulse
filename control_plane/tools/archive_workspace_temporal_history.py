@@ -8,12 +8,12 @@ from pathlib import Path
 
 from temporalio.client import Client
 
-from flowpulse_cp.workspace_provenance import history_identity, verify_producer_attestation
+from flowpulse_cp.workspace_provenance import history_identity, verify_producer_image_attestation
 
 
 async def archive(args) -> None:
     attestation = json.loads(args.producer_attestation.read_text(encoding="utf-8"))
-    producer = verify_producer_attestation(args.repo_root, attestation)
+    producer = verify_producer_image_attestation(args.repo_root, args.producer_image, attestation)
     client = await Client.connect(args.address)
     history = await client.get_workflow_handle(args.workflow_id, run_id=args.workflow_run_id).fetch_history()
     raw = history.to_json().encode("utf-8")
@@ -46,6 +46,7 @@ def main() -> None:
     parser.add_argument("--workflow-run-id", required=True)
     parser.add_argument("--repo-root", type=Path, required=True)
     parser.add_argument("--producer-attestation", type=Path, required=True)
+    parser.add_argument("--producer-image", required=True)
     parser.add_argument("--output", type=Path, required=True)
     asyncio.run(archive(parser.parse_args()))
 
