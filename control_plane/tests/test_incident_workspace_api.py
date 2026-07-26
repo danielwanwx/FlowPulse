@@ -69,7 +69,7 @@ class FakeWorkspaceStarter:
         ))
         return result
 
-    async def start_or_reuse_node_explanation(self, item, command):
+    async def start_or_reuse_node_explanation(self, item, command, actor):
         selection_key = command.selection_key(item.tenant_id)
         explanation = NodeExplanation(
             **binding().dict(), explanation_id="node-a", selection_key=selection_key,

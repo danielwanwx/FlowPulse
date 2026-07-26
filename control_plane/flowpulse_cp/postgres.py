@@ -30,7 +30,7 @@ from .policy import (
     validate_claim_evidence,
     validate_evidence_admission,
 )
-from .capabilities import CapabilityAuditRecord
+from .capabilities import CapabilityAuditRecord, CapabilityInvocationContext, CapabilityScope
 from .workspace_models import IncidentEvent, IncidentProjection, IncidentRunBinding, NodeExplanation
 
 
@@ -349,16 +349,93 @@ class PostgresCaseRepository:
             return NodeExplanation.parse_obj(_decode(row["payload"])) if row else None
         return await self._tenant(tenant_id, operation)
 
-    async def append_workspace_capability_audit(self, audit: CapabilityAuditRecord) -> CapabilityAuditRecord:
-        """Append one shared capability audit to the existing tenant/RLS tool ledger."""
-        async def operation(connection: asyncpg.Connection) -> CapabilityAuditRecord:
-            await _lock_workspace_mapping(connection, _workspace_binding(audit))
+    async def _assert_capability_scope_connection(
+        self, connection: asyncpg.Connection, context: CapabilityInvocationContext,
+    ) -> None:
+        """Resolve the full public/internal scope before every adapter execution/audit."""
+        case_row = await connection.fetchrow(
+            "SELECT payload FROM incident_cases WHERE tenant_id=$1 AND case_id=$2",
+            context.tenant_id, context.case_id,
+        )
+        if case_row is None:
+            raise PolicyViolation("capability_scope_case_not_found")
+        case = IncidentCase.parse_obj(_decode(case_row["payload"]))
+        if (
+            case.case_revision != context.case_revision
+            or case.workflow_id != context.workflow_id
+            or case.workflow_run_id != context.workflow_run_id
+        ):
+            raise PolicyViolation("capability_scope_case_or_revision_mismatch")
+        if context.scope == CapabilityScope.USER_QA:
             binding_row = await connection.fetchrow(
                 "SELECT payload FROM incident_run_bindings WHERE tenant_id=$1 AND run_id=$2",
-                audit.tenant_id, audit.run_id,
+                context.tenant_id, context.run_id,
             )
-            if binding_row is None or _workspace_binding(_decode(binding_row["payload"])) != _workspace_binding(audit):
-                raise PolicyViolation("workspace_public_internal_binding_mismatch")
+            if binding_row is None or _workspace_binding(_decode(binding_row["payload"])) != _workspace_binding(context):
+                raise PolicyViolation("capability_scope_public_internal_binding_mismatch")
+            projection_row = await connection.fetchrow(
+                """SELECT payload FROM incident_projections
+                   WHERE tenant_id=$1 AND run_id=$2 AND topology_revision=$3
+                     AND case_id=$4 AND case_revision=$5 AND projection_revision=$6""",
+                context.tenant_id, context.run_id, context.topology_revision, context.case_id,
+                context.case_revision, context.projection_revision,
+            )
+            if projection_row is None:
+                raise PolicyViolation("capability_scope_projection_revision_mismatch")
+            projection = IncidentProjection.parse_obj(_decode(projection_row["payload"]))
+            if projection.evidence_revision != context.evidence_revision:
+                raise PolicyViolation("capability_scope_evidence_revision_mismatch")
+            if not set(context.component_ids).issubset({node.component_id for node in projection.graph.nodes}):
+                raise PolicyViolation("capability_scope_component_binding_mismatch")
+            for evidence_id in context.recorded_evidence_ids:
+                evidence_row = await connection.fetchrow(
+                    """SELECT payload FROM evidence_envelopes
+                       WHERE tenant_id=$1 AND case_id=$2 AND case_revision=$3
+                         AND evidence_id=$4 AND acl_subjects ? $5""",
+                    context.tenant_id, context.case_id, context.case_revision, evidence_id, context.subject_id,
+                )
+                if evidence_row is None:
+                    raise PolicyViolation("capability_scope_recorded_evidence_acl_or_lineage_denied")
+            return
+        if (
+            case.public_incident_id != context.incident_id
+            or case.public_run_id != context.run_id
+            or case.public_topology_revision != context.topology_revision
+        ):
+            raise PolicyViolation("capability_scope_autonomous_public_binding_mismatch")
+        if not set(context.component_ids).issubset(set(case.affected_entities)):
+            raise PolicyViolation("capability_scope_component_binding_mismatch")
+
+    async def assert_capability_scope(self, context: CapabilityInvocationContext) -> None:
+        async def operation(connection: asyncpg.Connection) -> None:
+            await self._assert_capability_scope_connection(connection, context)
+        await self._tenant(context.tenant_id, operation, subject_id=context.subject_id)
+
+    async def append_capability_audit(self, audit: CapabilityAuditRecord) -> CapabilityAuditRecord:
+        """Append one shared audit after its full scope was resolved authoritatively."""
+        async def operation(connection: asyncpg.Connection) -> CapabilityAuditRecord:
+            context = CapabilityInvocationContext.parse_obj({
+                **{
+                    field: getattr(audit, field)
+                    for field in IncidentRunBinding.__fields__
+                },
+                "projection_revision": audit.projection_revision,
+                "evidence_revision": audit.evidence_revision,
+                "activity_id": audit.activity_id,
+                "scope": audit.scope,
+                "subject_id": audit.subject_id,
+                "component_ids": [audit.component_id],
+                "authorized_subjects": [audit.subject_id], "subject_roles": [],
+                "data_class": audit.data_class,
+                "recorded_evidence_ids": audit.input_evidence_refs,
+                "gate1_authorized": audit.required_gate.value == "GATE1",
+                "system_authorized": audit.scope == CapabilityScope.AUTONOMOUS_DIAGNOSIS,
+            })
+            await self._assert_capability_scope_connection(connection, context)
+            await connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtext($1))",
+                "capability-audit:{}:{}:{}".format(audit.tenant_id, audit.case_id, audit.audit_id),
+            )
             existing = await connection.fetchrow(
                 "SELECT payload FROM tool_calls WHERE tenant_id=$1 AND tool_call_id=$2",
                 audit.tenant_id, audit.audit_id,
@@ -377,7 +454,9 @@ class PostgresCaseRepository:
                 audit.capability.value, audit.status, audit.request_hash, _payload(audit), audit.created_at,
             )
             return audit
-        return await self._tenant(audit.tenant_id, operation)
+        return await self._tenant(audit.tenant_id, operation, subject_id=audit.subject_id)
+
+    append_workspace_capability_audit = append_capability_audit
 
     async def create_auth_command_intent(
         self, actor: AuthContext, case: IncidentCase, proposal_id: Optional[str] = None,
@@ -484,6 +563,16 @@ class PostgresCaseRepository:
         if case is None or case.case_revision != evidence.case_revision:
             raise PolicyViolation("evidence_case_tenant_or_revision_mismatch")
         async def operation(connection: asyncpg.Connection) -> None:
+            for parent_evidence_id in evidence.parent_evidence_ids:
+                if parent_evidence_id == evidence.evidence_id:
+                    raise PolicyViolation("evidence_parent_self_reference")
+                parent = await connection.fetchrow(
+                    """SELECT evidence_id FROM evidence_envelopes
+                       WHERE tenant_id=$1 AND case_id=$2 AND case_revision=$3 AND evidence_id=$4""",
+                    evidence.tenant_id, evidence.case_id, evidence.case_revision, parent_evidence_id,
+                )
+                if parent is None:
+                    raise PolicyViolation("unknown_parent_evidence")
             await connection.execute(
                 """
                 INSERT INTO evidence_envelopes
@@ -730,3 +819,13 @@ class PostgresCaseRepository:
         async def operation(connection: asyncpg.Connection) -> DryRunReceipt:
             return await self._record_dry_run(connection, receipt)
         return await self._tenant(receipt.tenant_id, operation)
+
+
+class PostgresCapabilityScopeAuthority:
+    """Registry authority port backed by the same RLS repository as audits."""
+
+    def __init__(self, repository: PostgresCaseRepository) -> None:
+        self.repository = repository
+
+    async def assert_scope(self, invocation_context: CapabilityInvocationContext) -> None:
+        await self.repository.assert_capability_scope(invocation_context)

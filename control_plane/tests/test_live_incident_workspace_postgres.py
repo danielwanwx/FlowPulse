@@ -12,19 +12,27 @@ import asyncpg
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from flowpulse_cp.models import IncidentCase
+from flowpulse_cp.models import (
+    EvidenceAuthority,
+    EvidenceEnvelope,
+    FreshnessStatus,
+    IncidentCase,
+    ProofScope,
+    SourceKind,
+)
 from flowpulse_cp.capabilities import (
     CapabilityAudience,
-    CapabilityDescriptor,
+    CapabilityDataClass,
     CapabilityInvocationContext,
     CapabilityName,
     CapabilityRegistry,
     CapabilityRequest,
-    CapabilityResult,
+    CapabilityScope,
     ToolCallBudget,
 )
+from flowpulse_cp.capability_adapters import RecordedContextCapabilityAdapter
 from flowpulse_cp.policy import PolicyViolation
-from flowpulse_cp.postgres import PostgresCaseRepository
+from flowpulse_cp.postgres import PostgresCapabilityScopeAuthority, PostgresCaseRepository
 from flowpulse_cp.workspace_activities import WorkspaceActivityDispatcher
 from flowpulse_cp.workspace_models import (
     GraphMembership,
@@ -51,16 +59,6 @@ class LiveIncidentWorkspacePostgresTests(unittest.TestCase):
         "FLOWPULSE_TEST_POSTGRES_ADMIN_DSN",
         "postgresql://flowpulse:flowpulse@127.0.0.1:5433/postgres",
     )
-
-    class RecordedContextAdapter:
-        descriptor = CapabilityDescriptor(
-            capability=CapabilityName.RECORDED_CONTEXT, version="recorded-context.v1",
-            fresh_read=False, enabled=True,
-            audiences=[CapabilityAudience.AUTONOMOUS_DIAGNOSIS, CapabilityAudience.USER_QA],
-        )
-
-        async def invoke(self, request, invocation_context):
-            return CapabilityResult(summary="Recorded context only.", evidence_refs=[])
 
     def test_001_002_volume_upgrades_to_workspace_mapping_with_rls_and_append_only_records(self):
         async def run():
@@ -92,6 +90,17 @@ class LiveIncidentWorkspacePostgresTests(unittest.TestCase):
                         affected_entities=["checkout"], created_at=now, updated_at=now,
                     )
                     await repository.put_case(case)
+                    evidence = EvidenceEnvelope(
+                        evidence_id="workspace-evidence-{}".format(suffix), tenant_id=case.tenant_id,
+                        case_id=case.case_id, case_revision=case.case_revision,
+                        acl_subjects=["workspace-owner"], source_kind=SourceKind.METRIC,
+                        source_uri="metric://checkout/latency", source_anchor="sample:1", observed_at=now,
+                        effective_at=now, source_version="v1", content_hash="a" * 64,
+                        authority=EvidenceAuthority.T0, freshness=FreshnessStatus.CURRENT,
+                        independence_key="workspace-metric", schema_binding="metric.v1",
+                        proof_scope=ProofScope.CURRENT_OBSERVATION,
+                    )
+                    await repository.put_evidence(evidence, "workspace-owner")
                     binding = IncidentRunBinding(
                         tenant_id=case.tenant_id, incident_id="incident-{}".format(suffix),
                         run_id="run-{}".format(suffix), topology_revision="topology-v1-{}".format(suffix),
@@ -105,24 +114,29 @@ class LiveIncidentWorkspacePostgresTests(unittest.TestCase):
                             component_id="checkout", canonical_identity="service:checkout",
                             membership=GraphMembership.CONNECTED, runtime_status="unknown", impact_status="unknown",
                         )]), evidence_revision=1, gate_revision=1, action_revision=1,
-                        evidence_refs=[], degraded_code="provider_unavailable",
+                        evidence_refs=[evidence.evidence_id], degraded_code="provider_unavailable",
                     )
                     await repository.put_workspace_binding(binding)
                     await repository.put_workspace_projection(projection)
                     invocation = CapabilityInvocationContext(
                         **binding.dict(), projection_revision=projection.projection_revision,
-                        component_ids=["checkout"], activity_id="workspace-capability-audit", gate1_authorized=False,
+                        evidence_revision=projection.evidence_revision,
+                        component_ids=["checkout"], activity_id="workspace-capability-audit",
+                        scope=CapabilityScope.USER_QA, subject_id="workspace-owner", subject_roles=["owner"],
+                        authorized_subjects=["workspace-owner"], data_class=CapabilityDataClass.RECORDED_CONTEXT,
+                        recorded_evidence_ids=[evidence.evidence_id], gate1_authorized=False, system_authorized=False,
                     )
                     registry = CapabilityRegistry(
-                        descriptors=[self.RecordedContextAdapter.descriptor],
-                        adapters={CapabilityName.RECORDED_CONTEXT: self.RecordedContextAdapter()},
-                        audit_sink=repository,
+                        descriptors=[RecordedContextCapabilityAdapter.descriptor],
+                        adapters={CapabilityName.RECORDED_CONTEXT: RecordedContextCapabilityAdapter()},
+                        audit_sink=repository, scope_authority=PostgresCapabilityScopeAuthority(repository),
                     )
                     capability_result = await registry.invoke(
                         CapabilityAudience.USER_QA, invocation,
                         CapabilityRequest(
                             capability=CapabilityName.RECORDED_CONTEXT,
-                            component_id="checkout", parameters={"window": "recorded"},
+                            component_id="checkout", data_class=CapabilityDataClass.RECORDED_CONTEXT,
+                            parameters={"evidence_ids": [evidence.evidence_id]},
                         ),
                         ToolCallBudget(max_calls=1),
                     )
@@ -132,7 +146,8 @@ class LiveIncidentWorkspacePostgresTests(unittest.TestCase):
                         CapabilityAudience.USER_QA, invocation,
                         CapabilityRequest(
                             capability=CapabilityName.RECORDED_CONTEXT,
-                            component_id="checkout", parameters={"window": "recorded"},
+                            component_id="checkout", data_class=CapabilityDataClass.RECORDED_CONTEXT,
+                            parameters={"evidence_ids": [evidence.evidence_id]},
                         ),
                         ToolCallBudget(max_calls=1),
                     )
@@ -142,6 +157,22 @@ class LiveIncidentWorkspacePostgresTests(unittest.TestCase):
                             case.tenant_id, capability_result.audit.audit_id,
                         )
                     self.assertEqual(1, await repository._tenant(case.tenant_id, audit_count))
+                    with self.assertRaisesRegex(
+                        PolicyViolation, "capability_scope_recorded_evidence_acl_or_lineage_denied",
+                    ):
+                        await registry.invoke(
+                            CapabilityAudience.USER_QA,
+                            invocation.copy(update={
+                                "subject_id": "workspace-intruder",
+                                "authorized_subjects": ["workspace-intruder"],
+                            }),
+                            CapabilityRequest(
+                                capability=CapabilityName.RECORDED_CONTEXT,
+                                component_id="checkout", data_class=CapabilityDataClass.RECORDED_CONTEXT,
+                                parameters={"evidence_ids": [evidence.evidence_id]},
+                            ),
+                            ToolCallBudget(max_calls=1),
+                        )
                     event = IncidentEvent(
                         **binding.dict(), projection_revision=1, sequence=1, event_type="workspace.initialized",
                         occurred_at=now, payload={"state": "provider_unavailable"}, evidence_refs=[],

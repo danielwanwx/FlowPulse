@@ -97,7 +97,9 @@ class WorkspaceActivityDispatcher:
                 binding = IncidentRunBinding.parse_obj({
                     name: getattr(packet, name) for name in IncidentRunBinding.__fields__
                 })
-                conversation = await self.conversation_manager.explain(binding, packet.projection, command)
+                conversation = await self.conversation_manager.explain(
+                    binding, packet.projection, command, actor=packet.actor,
+                )
             explanation = NodeExplanation(
                 **{name: getattr(packet, name) for name in packet.__fields__ if name in {
                     "tenant_id", "incident_id", "run_id", "topology_revision", "case_id", "case_revision",

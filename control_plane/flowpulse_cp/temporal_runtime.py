@@ -52,7 +52,21 @@ from .repository import InMemoryCaseRepository
 from .source_readback import LocalDeterministicSourceReadback, S3SourceReadback
 from .temporal_workflow import DiagnosisTemporalWorkflow
 from .workspace_activities import WorkspaceActivityDispatcher, build_workspace_activities
-from .capabilities import CapabilityRegistry
+from .capabilities import (
+    CapabilityAudience,
+    CapabilityDataClass,
+    CapabilityInvocationContext,
+    CapabilityRegistry,
+    CapabilityRequest,
+    CapabilityScope,
+    ToolCallBudget,
+)
+from .capability_adapters import (
+    CurrentEvidenceCapabilityAdapter,
+    DomainEvidenceAdmission,
+    RecordedContextCapabilityAdapter,
+)
+from .postgres import PostgresCapabilityScopeAuthority
 from .conversation_manager import ConversationManager
 from .provider_gateway import ProviderSettings, build_conversation_provider
 from .workspace_models import (
@@ -60,6 +74,7 @@ from .workspace_models import (
     IncidentProjection,
     NodeExplanationReceipt,
     NodeExplanationStart,
+    WorkspaceNodeExplanationInvocation,
     WorkspaceIntake,
     WorkspaceWorkflowRequest,
     initial_topology_revision,
@@ -100,10 +115,17 @@ class TemporalStarter:
     async def start_case(self, intake: IncidentIntake, actor: AuthContext) -> IncidentCase:
         now = datetime.now(timezone.utc)
         workflow_id = "flowpulse.diagnosis:{}:{}".format(actor.tenant_id, intake.external_incident_id)
+        public_seed = "{}:{}".format(actor.tenant_id, intake.external_incident_id)
+        public_run_id = "diagnosis-run-{}".format(sha256(public_seed.encode("utf-8")).hexdigest()[:24])
+        public_topology_revision = "diagnosis-topology-v1-{}".format(
+            sha256((public_seed + ":topology").encode("utf-8")).hexdigest()[:24]
+        )
         case = IncidentCase(
             case_id="case-{}-{}".format(actor.tenant_id, intake.external_incident_id), tenant_id=actor.tenant_id,
             workflow_id=workflow_id, workflow_run_id="pending", severity=intake.severity,
             environment=intake.environment, affected_entities=intake.affected_entities, created_at=now, updated_at=now,
+            public_incident_id=intake.external_incident_id, public_run_id=public_run_id,
+            public_topology_revision=public_topology_revision,
         )
         evidence, claims, coverage = ([], [], [])
         if self.local_deterministic_evidence:
@@ -115,7 +137,9 @@ class TemporalStarter:
                 case=TemporalCaseDescriptor(
                     case_id=case.case_id, tenant_id=case.tenant_id, case_revision=case.case_revision,
                     workflow_id=case.workflow_id, workflow_run_id="pending", severity=case.severity, environment=case.environment,
-                    affected_entities=case.affected_entities,
+                    affected_entities=case.affected_entities, public_incident_id=case.public_incident_id,
+                    public_run_id=case.public_run_id, public_topology_revision=case.public_topology_revision,
+                    capability_scope_created_at=case.created_at,
                 ),
                 actor=actor, evidence=evidence, claims=claims, coverage=coverage,
             ).dict(),
@@ -178,12 +202,13 @@ class WorkspaceTemporalStarter:
         return projection
 
     async def start_or_reuse_node_explanation(
-        self, projection: IncidentProjection, command: NodeExplanationStart,
+        self, projection: IncidentProjection, command: NodeExplanationStart, actor: AuthContext,
     ) -> NodeExplanationReceipt:
         client = await Client.connect(self.address)
         handle = client.get_workflow_handle(projection.workflow_id, run_id=projection.workflow_run_id)
         response = await handle.execute_update(
-            IncidentWorkspaceTemporalWorkflow.start_or_reuse_node_explanation, command.dict(),
+            IncidentWorkspaceTemporalWorkflow.start_or_reuse_node_explanation,
+            WorkspaceNodeExplanationInvocation(command=command, actor=actor).dict(),
         )
         if not response.get("accepted", True):
             raise RuntimeError(response.get("reason", "workspace_node_explanation_rejected"))
@@ -196,16 +221,20 @@ class DomainActivityEngine:
     def __init__(
         self, source_readback: EvidenceReadbackPort, authorization: AuthorizationPort,
         evidence_acquirer: Optional[CurrentEvidenceAcquisitionPort] = None,
+        capability_registry: Optional[CapabilityRegistry] = None,
     ) -> None:
         self.source_readback = source_readback
         self.authorization = authorization
         self.evidence_acquirer = evidence_acquirer
+        self.capability_registry = capability_registry
 
     def _case(self, packet: TemporalActivityPacket) -> IncidentCase:
         now = datetime.now(timezone.utc)
         return IncidentCase(
             case_id=packet.case_id, tenant_id=packet.tenant_id, case_revision=packet.case_revision,
             workflow_id=packet.workflow_id, workflow_run_id=packet.workflow_run_id,
+            public_incident_id=packet.public_incident_id, public_run_id=packet.public_run_id,
+            public_topology_revision=packet.public_topology_revision,
             severity=packet.severity, environment=packet.environment, affected_entities=packet.affected_entities,
             created_at=now, updated_at=now,
         )
@@ -222,6 +251,74 @@ class DomainActivityEngine:
         for entry in packet.coverage:
             repository.put_coverage(entry)
         return repository
+
+    def _autonomous_capability_context(self, packet: TemporalActivityPacket) -> CapabilityInvocationContext:
+        if not all((packet.public_incident_id, packet.public_run_id, packet.public_topology_revision,
+                    packet.capability_scope_created_at)):
+            raise PolicyViolation("capability_scope_public_identity_missing")
+        return CapabilityInvocationContext(
+            tenant_id=packet.tenant_id, incident_id=packet.public_incident_id, run_id=packet.public_run_id,
+            topology_revision=packet.public_topology_revision, case_id=packet.case_id,
+            case_revision=packet.case_revision, workflow_id=packet.workflow_id,
+            workflow_run_id=packet.workflow_run_id, created_at=packet.capability_scope_created_at,
+            projection_revision=packet.case_revision, evidence_revision=packet.case_revision,
+            component_ids=packet.affected_entities, activity_id="{}:{}:{}".format(
+                packet.workflow_run_id, packet.stage, packet.sequence,
+            ),
+            scope=CapabilityScope.AUTONOMOUS_DIAGNOSIS, subject_id=packet.actor_subject_id,
+            subject_roles=packet.actor_roles, authorized_subjects=[packet.actor_subject_id],
+            data_class=CapabilityDataClass.CURRENT_INCIDENT, recorded_evidence_ids=[],
+            gate1_authorized=False, system_authorized=True,
+        )
+
+    async def execute_async(
+        self, packet: TemporalActivityPacket, evidence_admission: Optional[DomainEvidenceAdmission] = None,
+    ) -> ActivityOutcome:
+        """Production acquisition runs through the one shared registry/audit seam."""
+        if packet.stage != "acquire_current_evidence":
+            return self.execute(packet)
+        if self.capability_registry is None:
+            return ActivityOutcome(
+                decision=VerificationDecision.FAIL, state=CaseState.NEEDS_HUMAN,
+                identity="acquire_current_evidence:p0:domain",
+                reason_codes=["capability_registry_unconfigured"],
+            )
+        if self.evidence_acquirer is None:
+            return ActivityOutcome(
+                decision=VerificationDecision.FAIL, state=CaseState.NEEDS_HUMAN,
+                identity="acquire_current_evidence:p0:domain",
+                reason_codes=["controlled_current_evidence_port_unconfigured"],
+            )
+        try:
+            invocation_context = self._autonomous_capability_context(packet)
+            invocation = await self.capability_registry.invoke(
+                CapabilityAudience.AUTONOMOUS_DIAGNOSIS,
+                invocation_context,
+                CapabilityRequest(
+                    capability=CurrentEvidenceCapabilityAdapter.descriptor.capability,
+                    component_id=packet.affected_entities[0],
+                    data_class=CapabilityDataClass.CURRENT_INCIDENT,
+                    parameters={},
+                ),
+                ToolCallBudget(max_calls=1),
+                evidence_admission=evidence_admission or DomainEvidenceAdmission(
+                    self._repository(packet), packet.actor_subject_id,
+                ),
+            )
+            acquired = EvidenceAcquisitionResult(
+                evidence=invocation.result.evidence,
+                claims=invocation.result.claims,
+                coverage=invocation.result.coverage,
+            )
+            return ActivityOutcome(
+                decision=VerificationDecision.PASS, identity="capability:current-evidence:v1",
+                acquisition=acquired,
+            )
+        except PolicyViolation as error:
+            return ActivityOutcome(
+                decision=VerificationDecision.FAIL, state=CaseState.NEEDS_HUMAN,
+                identity="acquire_current_evidence:p0:domain", reason_codes=[str(error)],
+            )
 
     def execute(self, packet: TemporalActivityPacket) -> ActivityOutcome:
         try:
@@ -337,17 +434,25 @@ class PostgresActivityDispatcher(ControlActivityDispatcher):
     def __init__(
         self, repository: PostgresCaseRepository, artifacts: S3ObjectStore, source_readback: EvidenceReadbackPort,
         authorization: AuthorizationPort, evidence_acquirer: Optional[CurrentEvidenceAcquisitionPort] = None,
+        capability_registry: Optional[CapabilityRegistry] = None,
     ) -> None:
         self.repository = repository
         self.artifacts = artifacts
         self.authorization = authorization
-        self.engine = DomainActivityEngine(source_readback, authorization, evidence_acquirer)
+        self.engine = DomainActivityEngine(
+            source_readback, authorization, evidence_acquirer, capability_registry,
+        )
+
+    async def _persist_case_scope(self, packet: TemporalActivityPacket) -> None:
+        await self.repository.put_case(self.engine._case(packet))
 
     async def _persist_domain(self, packet: TemporalActivityPacket) -> None:
         now = datetime.now(timezone.utc)
         await self.repository.put_case(IncidentCase(
             case_id=packet.case_id, tenant_id=packet.tenant_id, case_revision=packet.case_revision,
             workflow_id=packet.workflow_id, workflow_run_id=packet.workflow_run_id,
+            public_incident_id=packet.public_incident_id, public_run_id=packet.public_run_id,
+            public_topology_revision=packet.public_topology_revision,
             severity=packet.severity, environment=packet.environment, affected_entities=packet.affected_entities,
             created_at=now, updated_at=now,
         ))
@@ -372,7 +477,12 @@ class PostgresActivityDispatcher(ControlActivityDispatcher):
         packet = TemporalActivityPacket.parse_obj(packet_data)
         if packet.stage != stage.removesuffix("_activity"):
             raise PolicyViolation("temporal_activity_stage_mismatch")
-        outcome = self.engine.execute(packet)
+        # Scope authority resolves the persisted case before a production
+        # capability adapter or its audit record can run.
+        await self._persist_case_scope(packet)
+        outcome = await self.engine.execute_async(
+            packet, DomainEvidenceAdmission(self.repository, packet.actor_subject_id),
+        )
         persisted_packet = packet
         if outcome.acquisition is not None:
             persisted_packet = packet.copy(update={
@@ -433,9 +543,18 @@ async def run_worker(
     evidence_acquirer = None if local_deterministic_evidence else S3CurrentEvidenceAcquirer(
         source_client, source_bucket, source_prefix, source_tenant_id,
     )
+    descriptors = [RecordedContextCapabilityAdapter.descriptor]
+    adapters = {RecordedContextCapabilityAdapter.descriptor.capability: RecordedContextCapabilityAdapter()}
+    if evidence_acquirer is not None:
+        descriptors.append(CurrentEvidenceCapabilityAdapter.descriptor)
+        adapters[CurrentEvidenceCapabilityAdapter.descriptor.capability] = CurrentEvidenceCapabilityAdapter(evidence_acquirer)
+    capability_registry = CapabilityRegistry(
+        descriptors=descriptors, adapters=adapters, audit_sink=repository,
+        scope_authority=PostgresCapabilityScopeAuthority(repository),
+    )
     conversation_manager = ConversationManager(
         build_conversation_provider(provider_settings or ProviderSettings()),
-        CapabilityRegistry(audit_sink=repository),
+        capability_registry,
         specialist_roles=[ConversationRole.EVIDENCE_SPECIALIST, ConversationRole.TOPOLOGY_SPECIALIST],
         max_output_tokens=(provider_settings or ProviderSettings()).max_output_tokens,
     )
@@ -448,7 +567,7 @@ async def run_worker(
         ],
         activities=(
             build_temporal_activities(PostgresActivityDispatcher(
-                repository, artifacts, source_readback, authorization, evidence_acquirer,
+                repository, artifacts, source_readback, authorization, evidence_acquirer, capability_registry,
             ))
             + build_workspace_activities(WorkspaceActivityDispatcher(repository, conversation_manager=conversation_manager))
         ),

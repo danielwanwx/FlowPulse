@@ -6,7 +6,18 @@ from typing import List, Sequence
 
 from pydantic import ValidationError
 
-from .capabilities import CapabilityAudience, CapabilityRegistry
+from .capabilities import (
+    CapabilityAudience,
+    CapabilityDataClass,
+    CapabilityInvocationContext,
+    CapabilityName,
+    CapabilityRegistry,
+    CapabilityRequest,
+    CapabilityScope,
+    ToolCallBudget,
+)
+from .models import AuthContext
+from .policy import PolicyViolation
 from .provider_gateway import ConversationProvider, ProviderGatewayError
 from .workspace_models import (
     ConversationContext,
@@ -110,6 +121,7 @@ class ConversationManager:
         provider_calls: int,
         input_tokens: int,
         output_tokens: int,
+        recorded_context_accesses: int = 0,
     ) -> ConversationTrace:
         return ConversationTrace(
             truth_label=truth_label, provider_id=provider_id, model_id=model_id,
@@ -117,6 +129,7 @@ class ConversationManager:
             context_hash=context.canonical_hash(), provider_call_count=provider_calls,
             specialist_roles=self.specialist_roles,
             available_capabilities=list(context.available_capabilities), tool_calls=0,
+            recorded_context_accesses=recorded_context_accesses,
             input_tokens=input_tokens, output_tokens=output_tokens,
         )
 
@@ -130,6 +143,7 @@ class ConversationManager:
         provider_calls: int = 0,
         input_tokens: int = 0,
         output_tokens: int = 0,
+        recorded_context_accesses: int = 0,
     ) -> ManagedConversation:
         return ManagedConversation(
             summary="Provider output is unavailable; no fresh read or diagnosis was performed.",
@@ -139,15 +153,44 @@ class ConversationManager:
                 truth_label=ProviderTruthLabel.DEGRADED, provider_id=provider_id, model_id=model_id,
                 context=context, prompt_bundles=prompt_bundles, provider_calls=provider_calls,
                 input_tokens=input_tokens, output_tokens=output_tokens,
+                recorded_context_accesses=recorded_context_accesses,
             ),
             degraded_code=code,
         )
 
     async def explain(
         self, binding: IncidentRunBinding, projection: IncidentProjection, command: NodeExplanationStart,
+        actor: AuthContext = None,
     ) -> ManagedConversation:
         """Run only server-selected roles. No capability call can occur before Gate 1."""
         context = self._context(binding, projection, command)
+        recorded_context_accesses = 0
+        if actor is not None:
+            try:
+                await self.capability_registry.invoke(
+                    CapabilityAudience.USER_QA,
+                    CapabilityInvocationContext(
+                        **binding.dict(), projection_revision=projection.projection_revision,
+                        evidence_revision=projection.evidence_revision,
+                        component_ids=[node.component_id for node in projection.graph.nodes],
+                        activity_id="workspace-node-explanation:{}".format(command.selection_key(binding.tenant_id)),
+                        scope=CapabilityScope.USER_QA, subject_id=actor.subject_id, subject_roles=actor.roles,
+                        authorized_subjects=[actor.subject_id], data_class=CapabilityDataClass.RECORDED_CONTEXT,
+                        recorded_evidence_ids=list(projection.evidence_refs), gate1_authorized=False,
+                        system_authorized=False,
+                    ),
+                    CapabilityRequest(
+                        capability=CapabilityName.RECORDED_CONTEXT, component_id=command.component_id,
+                        data_class=CapabilityDataClass.RECORDED_CONTEXT,
+                        parameters={"evidence_ids": list(projection.evidence_refs)},
+                    ),
+                    ToolCallBudget(max_calls=1),
+                )
+                recorded_context_accesses = 1
+            except PolicyViolation:
+                return self._degraded(
+                    "recorded_context_capability_denied", context, [], recorded_context_accesses=0,
+                )
         allowed_evidence = set(context.recorded_evidence_refs).union(context.knowledge_prior_refs)
         prompt_bundles: List[PromptBundle] = []
         outputs: List[ConversationProviderOutput] = []
@@ -167,7 +210,10 @@ class ConversationManager:
             try:
                 result = await self.provider.complete(request)
             except ProviderGatewayError:
-                return self._degraded("provider_request_failed", context, prompt_bundles, provider_calls=len(outputs))
+                return self._degraded(
+                    "provider_request_failed", context, prompt_bundles, provider_calls=len(outputs),
+                    recorded_context_accesses=recorded_context_accesses,
+                )
             provider_id = result.provider_id
             model_id = result.model_id
             input_tokens += result.input_tokens
@@ -177,6 +223,7 @@ class ConversationManager:
                     result.degraded_code or "provider_unavailable", context, prompt_bundles,
                     provider_id=provider_id, model_id=model_id, provider_calls=len(outputs),
                     input_tokens=input_tokens, output_tokens=output_tokens,
+                    recorded_context_accesses=recorded_context_accesses,
                 )
             try:
                 output = ConversationProviderOutput.parse_obj(result.output)
@@ -185,18 +232,21 @@ class ConversationManager:
                     "provider_output_schema_invalid", context, prompt_bundles,
                     provider_id=provider_id, model_id=model_id, provider_calls=len(outputs) + 1,
                     input_tokens=input_tokens, output_tokens=output_tokens,
+                    recorded_context_accesses=recorded_context_accesses,
                 )
             if not set(output.evidence_refs).issubset(allowed_evidence):
                 return self._degraded(
                     "provider_output_evidence_not_in_context", context, prompt_bundles,
                     provider_id=provider_id, model_id=model_id, provider_calls=len(outputs) + 1,
                     input_tokens=input_tokens, output_tokens=output_tokens,
+                    recorded_context_accesses=recorded_context_accesses,
                 )
             if truth_label is not None and result.truth_label != truth_label:
                 return self._degraded(
                     "provider_truth_label_inconsistent", context, prompt_bundles,
                     provider_id=provider_id, model_id=model_id, provider_calls=len(outputs) + 1,
                     input_tokens=input_tokens, output_tokens=output_tokens,
+                    recorded_context_accesses=recorded_context_accesses,
                 )
             truth_label = result.truth_label
             outputs.append(output)
@@ -213,5 +263,6 @@ class ConversationManager:
                 truth_label=truth_label or ProviderTruthLabel.DEGRADED,
                 provider_id=provider_id, model_id=model_id, context=context, prompt_bundles=prompt_bundles,
                 provider_calls=len(outputs), input_tokens=input_tokens, output_tokens=output_tokens,
+                recorded_context_accesses=recorded_context_accesses,
             ),
         )

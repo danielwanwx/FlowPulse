@@ -16,6 +16,7 @@ with workflow.unsafe.imports_passed_through():
         IncidentProjection,
         NodeExplanationReceipt,
         NodeExplanationStart,
+        WorkspaceNodeExplanationInvocation,
         WorkspaceActivityOutcome,
         WorkspaceActivityPacket,
         WorkspaceWorkflowRequest,
@@ -35,15 +36,20 @@ class IncidentWorkspaceTemporalWorkflow:
         self._explanations: Dict[str, Dict[str, Any]] = {}
         self._lock = asyncio.Lock()
 
-    def _packet(self, stage: str, *, command: NodeExplanationStart = None) -> WorkspaceActivityPacket:
+    def _packet(self, stage: str, *, command: NodeExplanationStart = None, actor=None) -> WorkspaceActivityPacket:
         return WorkspaceActivityPacket(
             **self._binding.dict(), stage=stage, projection=self._projection,
-            event_sequence=self._event_sequence, node_explanation=command,
+            event_sequence=self._event_sequence, node_explanation=command, actor=actor,
         )
 
-    async def _activity(self, stage: str, *, command: NodeExplanationStart = None) -> WorkspaceActivityOutcome:
+    async def _activity(self, stage: str, *, command: NodeExplanationStart = None, actor=None) -> WorkspaceActivityOutcome:
+        packet = self._packet(stage, command=command, actor=actor).dict()
+        # Keep parent workspace activity inputs byte-compatible when the old
+        # direct update form carried no trusted actor packet.
+        if packet.get("actor") is None:
+            packet.pop("actor", None)
         result = await workflow.execute_activity(
-            stage + "_activity", self._packet(stage, command=command).dict(),
+            stage + "_activity", packet,
             start_to_close_timeout=timedelta(minutes=2),
         )
         return WorkspaceActivityOutcome.parse_obj(result)
@@ -72,7 +78,15 @@ class IncidentWorkspaceTemporalWorkflow:
     @workflow.update(name="start_or_reuse_node_explanation")
     async def start_or_reuse_node_explanation(self, command_data: Dict[str, Any]) -> Dict[str, Any]:
         try:
-            command = NodeExplanationStart.parse_obj(command_data)
+            actor = None
+            try:
+                invocation = WorkspaceNodeExplanationInvocation.parse_obj(command_data)
+                command = invocation.command
+                actor = invocation.actor
+            except (ValidationError, ValueError):
+                # Existing durable update histories carry the public command
+                # alone. They retain their original activity sequence.
+                command = NodeExplanationStart.parse_obj(command_data)
             await workflow.wait_condition(lambda: self._initialized)
             async with self._lock:
                 if (
@@ -88,7 +102,7 @@ class IncidentWorkspaceTemporalWorkflow:
                 if existing is not None:
                     return NodeExplanationReceipt.parse_obj({"explanation": existing, "reused": True}).dict()
                 self._event_sequence += 1
-                outcome = await self._activity("workspace_node_explanation", command=command)
+                outcome = await self._activity("workspace_node_explanation", command=command, actor=actor)
                 if outcome.explanation is None:
                     raise ValueError("workspace_node_explanation_activity_missing_result")
                 payload = outcome.explanation.dict()

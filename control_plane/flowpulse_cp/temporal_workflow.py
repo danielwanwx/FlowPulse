@@ -36,6 +36,10 @@ class DiagnosisTemporalWorkflow:
         self._tenant_id = None
         self._workflow_id = None
         self._workflow_run_id = None
+        self._public_incident_id = None
+        self._public_run_id = None
+        self._public_topology_revision = None
+        self._capability_scope_created_at = None
         self._actor_subject_id = None
         self._actor_roles = []
         self._severity = None
@@ -75,6 +79,9 @@ class DiagnosisTemporalWorkflow:
         return TemporalActivityPacket(
             case_id=self._case_id, case_revision=self._case_revision, tenant_id=self._tenant_id,
             workflow_id=self._workflow_id, workflow_run_id=self._workflow_run_id,
+            public_incident_id=self._public_incident_id, public_run_id=self._public_run_id,
+            public_topology_revision=self._public_topology_revision,
+            capability_scope_created_at=self._capability_scope_created_at,
             actor_subject_id=self._actor_subject_id, actor_roles=self._actor_roles,
             severity=self._severity, environment=self._environment, affected_entities=self._affected_entities,
             stage=stage, specialist_role=specialist_role, sequence=self._sequence,
@@ -91,8 +98,22 @@ class DiagnosisTemporalWorkflow:
         packet = self._packet(
             stage, specialist_role, proposal, approval, witness, auth_assertion, authorized_actor, proposal_id,
         )
+        # Existing v2 histories predate the public capability binding fields.
+        # Omit only absent additions so their scheduled activity input remains
+        # byte-equivalent when current code replays the frozen workflow type.
+        payload = packet.dict()
+        if all(
+            getattr(packet, name) is None
+            for name in (
+                "public_incident_id", "public_run_id", "public_topology_revision", "capability_scope_created_at",
+            )
+        ):
+            for name in (
+                "public_incident_id", "public_run_id", "public_topology_revision", "capability_scope_created_at",
+            ):
+                payload.pop(name, None)
         result = await workflow.execute_activity(
-            "{}_activity".format(stage), packet.dict(), start_to_close_timeout=timedelta(minutes=2),
+            "{}_activity".format(stage), payload, start_to_close_timeout=timedelta(minutes=2),
         )
         return ActivityOutcome.parse_obj(result)
 
@@ -141,6 +162,10 @@ class DiagnosisTemporalWorkflow:
         self._tenant_id = request.case.tenant_id
         self._workflow_id = request.case.workflow_id
         self._workflow_run_id = workflow.info().run_id
+        self._public_incident_id = request.case.public_incident_id
+        self._public_run_id = request.case.public_run_id
+        self._public_topology_revision = request.case.public_topology_revision
+        self._capability_scope_created_at = request.case.capability_scope_created_at
         self._actor_subject_id = request.actor.subject_id
         self._actor_roles = request.actor.roles
         self._severity = request.case.severity

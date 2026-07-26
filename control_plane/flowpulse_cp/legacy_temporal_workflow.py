@@ -77,8 +77,16 @@ class LegacyDiagnosisTemporalWorkflow:
         packet = self._packet(
             stage, specialist_role, proposal, approval, witness, auth_assertion, authorized_actor, proposal_id,
         )
+        # These fields were introduced for the v2 capability boundary after
+        # the parent-v1 histories were produced.  Excluding only those absent
+        # fields preserves the parent activity command bytes during replay.
+        payload = packet.dict()
+        for name in (
+            "public_incident_id", "public_run_id", "public_topology_revision", "capability_scope_created_at",
+        ):
+            payload.pop(name, None)
         result = await workflow.execute_activity(
-            "{}_activity".format(stage), packet.dict(), start_to_close_timeout=timedelta(minutes=2),
+            "{}_activity".format(stage), payload, start_to_close_timeout=timedelta(minutes=2),
         )
         return ActivityOutcome.parse_obj(result)
 

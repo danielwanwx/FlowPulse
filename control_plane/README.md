@@ -179,10 +179,15 @@ Temporal update that selects exactly once by the public run key
 `node_explanation:{tenant}:{run}:{projection_revision}:{component}:{schema}`.
 Before Gate 1 it can only return recorded projection/evidence context and the
 same typed degraded state or a provider explanation with no fresh tools or
-fresh diagnosis. The shared capability registry omits disabled or unbound
-adapters from both autonomous and user-Q&A tool lists; it blocks every fresh
-capability before Gate 1 and appends one tenant/run-bound audit shape when a
-capability is eventually invoked. `GET /v1/incidents/{case_id}/events` is an
+fresh diagnosis. The worker constructs one shared capability registry for both
+actual autonomous diagnosis and user Q&A: the autonomous current-evidence
+adapter is system-gated, while the Q&A adapter can only use already-recorded
+context. Disabled or unbound adapters are omitted rather than advertised. Every
+invocation uses a capability-specific strict input model, an authoritative
+tenant/public-run/internal/revision/component/subject scope, a bounded budget,
+and an append-only audit record. Returned evidence is admitted through the
+tenant/ACL/lineage boundary before that record can be `COMPLETED`; recorded
+context must already be tenant/case/revision/subject-ACL bound. `GET /v1/incidents/{case_id}/events` is an
 ordered, strictly-after SSE read projection. A focus toast, hover, drawer
 open, or SSE subscription has no command route and creates no workflow/event/
 tool side effect.

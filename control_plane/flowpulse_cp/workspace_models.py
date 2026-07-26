@@ -264,6 +264,7 @@ class ConversationTrace(StrictModel):
     specialist_roles: List[ConversationRole] = Field(default_factory=list, max_items=2)
     available_capabilities: List[NonEmpty] = Field(default_factory=list)
     tool_calls: NonNegativeInt = 0
+    recorded_context_accesses: NonNegativeInt = 0
     input_tokens: NonNegativeInt = 0
     output_tokens: NonNegativeInt = 0
 
@@ -325,6 +326,13 @@ class NodeExplanationStart(StrictModel):
         )
 
 
+class WorkspaceNodeExplanationInvocation(StrictModel):
+    """Internal Temporal update packet: actor comes only from trusted FastAPI."""
+
+    command: NodeExplanationStart
+    actor: AuthContext
+
+
 class NodeExplanation(IncidentRunBinding):
     explanation_id: NonEmpty
     selection_key: NonEmpty
@@ -375,6 +383,7 @@ class WorkspaceActivityPacket(IncidentRunBinding):
     projection: IncidentProjection
     event_sequence: PositiveInt
     node_explanation: Optional[NodeExplanationStart] = None
+    actor: Optional[AuthContext] = None
 
 
 class WorkspaceActivityOutcome(StrictModel):

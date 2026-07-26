@@ -141,7 +141,7 @@ class InMemoryWorkspaceRepository:
 
     workspace_explanation = get_explanation
 
-    async def append_workspace_capability_audit(self, audit: CapabilityAuditRecord) -> CapabilityAuditRecord:
+    async def append_capability_audit(self, audit: CapabilityAuditRecord) -> CapabilityAuditRecord:
         """Append the shared capability audit under the immutable workspace binding."""
         key = _binding_key(audit)
         binding = self.bindings.get(key)
@@ -154,3 +154,5 @@ class InMemoryWorkspaceRepository:
             return existing
         self.capability_audits[audit.audit_id] = audit
         return audit
+
+    append_workspace_capability_audit = append_capability_audit

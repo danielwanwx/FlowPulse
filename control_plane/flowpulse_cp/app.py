@@ -54,7 +54,7 @@ class WorkspaceStartPort(Protocol):
         ...
 
     async def start_or_reuse_node_explanation(
-        self, projection: IncidentProjection, command: NodeExplanationStart,
+        self, projection: IncidentProjection, command: NodeExplanationStart, actor: AuthContext,
     ) -> NodeExplanationReceipt:
         ...
 
@@ -64,7 +64,7 @@ class WorkspaceUnavailableStarter:
         raise RuntimeError("workspace_temporal_start_unavailable")
 
     async def start_or_reuse_node_explanation(
-        self, projection: IncidentProjection, command: NodeExplanationStart,
+        self, projection: IncidentProjection, command: NodeExplanationStart, actor: AuthContext,
     ) -> NodeExplanationReceipt:
         raise RuntimeError("workspace_temporal_update_unavailable")
 
@@ -247,7 +247,7 @@ def create_app(
         if command.component_id not in {node.component_id for node in projection.graph.nodes}:
             raise HTTPException(status_code=409, detail="workspace_node_explanation_component_not_canonical")
         try:
-            return await workspace_starter.start_or_reuse_node_explanation(projection, command)
+            return await workspace_starter.start_or_reuse_node_explanation(projection, command, actor)
         except RuntimeError as error:
             raise HTTPException(status_code=503, detail=str(error))
 

@@ -140,6 +140,12 @@ class IncidentCase(StrictModel):
     case_revision: PositiveInt = 1
     workflow_id: NonEmpty
     workflow_run_id: NonEmpty
+    # P0 diagnosis keeps these optional for legacy/replay compatibility. New
+    # production starts supply the independently-issued public identity before
+    # any shared capability can execute.
+    public_incident_id: Optional[NonEmpty] = None
+    public_run_id: Optional[NonEmpty] = None
+    public_topology_revision: Optional[NonEmpty] = None
     state: CaseState = CaseState.RECEIVED
     severity: NonEmpty
     environment: NonEmpty
@@ -487,6 +493,10 @@ class TemporalCaseDescriptor(StrictModel):
     case_revision: PositiveInt
     workflow_id: NonEmpty
     workflow_run_id: NonEmpty
+    public_incident_id: Optional[NonEmpty] = None
+    public_run_id: Optional[NonEmpty] = None
+    public_topology_revision: Optional[NonEmpty] = None
+    capability_scope_created_at: Optional[datetime] = None
     severity: NonEmpty
     environment: NonEmpty
     affected_entities: List[NonEmpty] = Field(min_items=1)
@@ -531,6 +541,10 @@ class TemporalActivityPacket(StrictModel):
     tenant_id: NonEmpty
     workflow_id: NonEmpty
     workflow_run_id: NonEmpty
+    public_incident_id: Optional[NonEmpty] = None
+    public_run_id: Optional[NonEmpty] = None
+    public_topology_revision: Optional[NonEmpty] = None
+    capability_scope_created_at: Optional[datetime] = None
     actor_subject_id: NonEmpty
     actor_roles: List[NonEmpty] = Field(default_factory=list)
     auth_assertion: Optional[AuthAssertion] = None
