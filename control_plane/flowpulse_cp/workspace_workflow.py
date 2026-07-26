@@ -25,11 +25,12 @@ with workflow.unsafe.imports_passed_through():
         WorkspaceWorkflowRequest,
         initial_projection,
     )
+    from .workspace_versions import WORKSPACE_V2_WORKFLOW_TYPE
 
 
-@workflow.defn(name="flowpulse.incident-workspace.v1")
+@workflow.defn(name=WORKSPACE_V2_WORKFLOW_TYPE)
 class IncidentWorkspaceTemporalWorkflow:
-    """Temporal owns initialization and every durable node-explanation selection."""
+    """Authenticated v2 Temporal owner for new workspace executions."""
 
     def __init__(self) -> None:
         self._initialized = False

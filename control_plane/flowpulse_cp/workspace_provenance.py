@@ -7,6 +7,8 @@ import base64
 from pathlib import Path
 from typing import Any, Dict, Mapping
 
+from .workspace_versions import WORKSPACE_V1_WORKFLOW_TYPE, WORKSPACE_V2_WORKFLOW_TYPE
+
 
 WORKFLOW_MODULE_REPO_PATH = "control_plane/flowpulse_cp/workspace_workflow.py"
 IMAGE_GIT_LABEL = "io.flowpulse.producer_git_sha"
@@ -28,7 +30,7 @@ def history_identity(raw: bytes) -> Dict[str, str]:
     """Derive public and Temporal identities from immutable Temporal history."""
     document = json.loads(raw)
     started = document["events"][0]["workflowExecutionStartedEventAttributes"]
-    if started["workflowType"]["name"] != "flowpulse.incident-workspace.v1":
+    if started["workflowType"]["name"] != WORKSPACE_V1_WORKFLOW_TYPE:
         raise RuntimeError("unexpected_workspace_history_type")
     payloads = started["input"]["payloads"]
     if len(payloads) != 1:
@@ -93,7 +95,7 @@ def build_producer_attestation(repo_root: Path, image_inspect: Mapping[str, Any]
         "workflow_module_repo_path": WORKFLOW_MODULE_REPO_PATH,
         "workflow_module_git_blob_oid": expected_blob,
         "workflow_module_sha256": hashlib.sha256(source).hexdigest(),
-        "workflow_type": "flowpulse.incident-workspace.v1",
+        "workflow_type": WORKSPACE_V2_WORKFLOW_TYPE,
     }
 
 
@@ -146,7 +148,7 @@ def verify_producer_attestation(repo_root: Path, attestation: Mapping[str, Any])
         raise RuntimeError("producer_attestation_image_identity_invalid")
     if values["workflow_module_repo_path"] != WORKFLOW_MODULE_REPO_PATH:
         raise RuntimeError("producer_attestation_workflow_path_invalid")
-    if values["workflow_type"] != "flowpulse.incident-workspace.v1":
+    if values["workflow_type"] not in {WORKSPACE_V1_WORKFLOW_TYPE, WORKSPACE_V2_WORKFLOW_TYPE}:
         raise RuntimeError("producer_attestation_workflow_type_invalid")
     try:
         actual_blob = _git(

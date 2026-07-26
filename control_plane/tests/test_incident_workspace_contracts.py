@@ -17,7 +17,15 @@ from flowpulse_cp.workspace_models import (
     IncidentRunBinding,
     NodeExplanationStart,
     ProjectionState,
+    VersionBundle,
 )
+from flowpulse_cp.workspace_registration import (
+    WORKSPACE_V1_WORKFLOW_TYPE,
+    WORKSPACE_V2_WORKFLOW_TYPE,
+    workspace_workflow_definitions,
+)
+from flowpulse_cp.legacy_workspace_workflow import LegacyIncidentWorkspaceTemporalWorkflow
+from flowpulse_cp.workspace_workflow import IncidentWorkspaceTemporalWorkflow
 
 
 NOW = datetime(2026, 7, 26, tzinfo=timezone.utc)
@@ -82,6 +90,21 @@ class IncidentWorkspaceContractTests(unittest.TestCase):
         raw["untrusted_tool"] = "read_logs"
         with self.assertRaises(ValidationError):
             NodeExplanationStart.parse_obj(raw)
+
+    def test_new_workspaces_use_v2_and_worker_registers_only_v1_drain_plus_v2(self):
+        self.assertEqual(WORKSPACE_V2_WORKFLOW_TYPE, VersionBundle().workflow_version)
+        self.assertEqual(
+            WORKSPACE_V2_WORKFLOW_TYPE,
+            getattr(IncidentWorkspaceTemporalWorkflow, "__temporal_workflow_definition").name,
+        )
+        self.assertEqual(
+            WORKSPACE_V1_WORKFLOW_TYPE,
+            getattr(LegacyIncidentWorkspaceTemporalWorkflow, "__temporal_workflow_definition").name,
+        )
+        self.assertEqual(
+            [LegacyIncidentWorkspaceTemporalWorkflow, IncidentWorkspaceTemporalWorkflow],
+            workspace_workflow_definitions(),
+        )
 
 
 if __name__ == "__main__":

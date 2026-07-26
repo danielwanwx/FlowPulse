@@ -1,8 +1,7 @@
-"""Frozen v1 Incident Workspace decoder used only by archived-history replay.
+"""Frozen v1 replay/drain workflow for pre-authenticated Workspace executions.
 
-This module is deliberately excluded from the production worker.  It preserves
-the pre-authenticated node-update wire shape so an archived v1 history can be
-replayed without keeping its insecure decoder reachable by a live task queue.
+It replays historical v1 command history exactly, but version markers reject
+any newly delivered v1 start or node-explanation update. New work is v2.
 """
 
 import asyncio
@@ -23,6 +22,11 @@ with workflow.unsafe.imports_passed_through():
         WorkspaceWorkflowRequest,
         initial_projection,
     )
+    from .workspace_versions import WORKSPACE_V1_WORKFLOW_TYPE
+
+
+V1_DRAIN_START_PATCH = "workspace-v1-drain-reject-new-start"
+V1_DRAIN_UPDATE_PATCH = "workspace-v1-drain-reject-new-update"
 
 
 class LegacyWorkspaceNodeExplanationInvocation(StrictModel):
@@ -32,9 +36,9 @@ class LegacyWorkspaceNodeExplanationInvocation(StrictModel):
     actor: AuthContext
 
 
-@workflow.defn(name="flowpulse.incident-workspace.v1")
+@workflow.defn(name=WORKSPACE_V1_WORKFLOW_TYPE)
 class LegacyIncidentWorkspaceTemporalWorkflow:
-    """Frozen pre-auth v1 workflow definition for Replayer only."""
+    """Frozen pre-auth v1 definition, registered only to replay and drain."""
 
     def __init__(self) -> None:
         self._initialized = False
@@ -63,6 +67,11 @@ class LegacyIncidentWorkspaceTemporalWorkflow:
     @workflow.run
     async def run(self, request_data: Dict[str, Any]) -> Dict[str, Any]:
         request = WorkspaceWorkflowRequest.parse_obj(request_data)
+        # An old history has no marker and deterministically follows its
+        # historical initialization. A direct new v1 start records this marker
+        # and terminally drains instead of creating another unauthenticated run.
+        if workflow.patched(V1_DRAIN_START_PATCH):
+            return {"accepted": False, "state": "DRAINING", "reason": "workspace_v1_draining"}
         request_values = request.copy(update={"workflow_run_id": workflow.info().run_id}).dict()
         self._binding = IncidentRunBinding.parse_obj({
             field: request_values[field] for field in IncidentRunBinding.__fields__
@@ -83,6 +92,13 @@ class LegacyIncidentWorkspaceTemporalWorkflow:
     @workflow.update(name="start_or_reuse_node_explanation")
     async def start_or_reuse_node_explanation(self, command_data: Dict[str, Any]) -> Dict[str, Any]:
         try:
+            await workflow.wait_condition(lambda: self._initialized)
+            # Old update events replay with ``False`` (no historical marker),
+            # preserving their scheduled activity commands. A newly delivered
+            # update records the marker and returns a typed drain rejection;
+            # it cannot exercise the retired actor-less decoder.
+            if workflow.patched(V1_DRAIN_UPDATE_PATCH):
+                return {"accepted": False, "reason": "workspace_v1_draining"}
             actor = None
             try:
                 invocation = LegacyWorkspaceNodeExplanationInvocation.parse_obj(command_data)
@@ -90,7 +106,6 @@ class LegacyIncidentWorkspaceTemporalWorkflow:
                 actor = invocation.actor
             except (ValidationError, ValueError):
                 command = NodeExplanationStart.parse_obj(command_data)
-            await workflow.wait_condition(lambda: self._initialized)
             async with self._lock:
                 if (
                     command.incident_id != self._binding.incident_id or command.run_id != self._binding.run_id

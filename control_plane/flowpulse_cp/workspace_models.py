@@ -218,7 +218,7 @@ class VersionBundle(StrictModel):
     """Server-owned versions pinned to every completed provider conversation."""
 
     schema_version: NonEmpty = "flowpulse.version-bundle.v1"
-    workflow_version: NonEmpty = "flowpulse.incident-workspace.v1"
+    workflow_version: NonEmpty = "flowpulse.incident-workspace.v2"
     policy_version: NonEmpty = "capability-policy.v1"
     core_policy_version: NonEmpty = "conversation-core-policy.v1"
     role_prompt_version: NonEmpty = "conversation-role-prompts.v1"

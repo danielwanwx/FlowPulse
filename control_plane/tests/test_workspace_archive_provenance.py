@@ -32,6 +32,7 @@ from flowpulse_cp.workspace_provenance import (  # noqa: E402
     inspect_producer_image,
 )
 from archive_workspace_temporal_history import archive  # noqa: E402
+from flowpulse_cp.workspace_versions import WORKSPACE_V2_WORKFLOW_TYPE  # noqa: E402
 
 
 class WorkspaceArchiveProvenanceTests(unittest.TestCase):
@@ -167,7 +168,7 @@ class WorkspaceArchiveProvenanceTests(unittest.TestCase):
             "workflow_module_repo_path": "control_plane/flowpulse_cp/workspace_workflow.py",
             "workflow_module_git_blob_oid": blob,
             "workflow_module_sha256": hashlib.sha256(source).hexdigest(),
-            "workflow_type": "flowpulse.incident-workspace.v1",
+            "workflow_type": WORKSPACE_V2_WORKFLOW_TYPE,
         }
         self.assertEqual(attestation, {"schema_version": 1, **verify_producer_image_attestation(
             REPO, os.environ.get("FLOWPULSE_WORKSPACE_PRODUCER_IMAGE", "control_plane-worker:latest"), attestation,

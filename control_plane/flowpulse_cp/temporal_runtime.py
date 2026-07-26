@@ -80,6 +80,7 @@ from .workspace_models import (
     initial_topology_revision,
 )
 from .workspace_workflow import IncidentWorkspaceTemporalWorkflow
+from .workspace_registration import workspace_workflow_definitions
 
 
 class TemporalStarter:
@@ -563,7 +564,7 @@ async def run_worker(
         workflows=[
             LegacyDiagnosisTemporalWorkflow,
             DiagnosisTemporalWorkflow,
-            IncidentWorkspaceTemporalWorkflow,
+            *workspace_workflow_definitions(),
         ],
         activities=(
             build_temporal_activities(PostgresActivityDispatcher(
