@@ -1,233 +1,83 @@
-"""Replay actual parent-v1 Temporal histories against the current workflow."""
+"""Replay immutable Temporal histories produced by the exact parent worker."""
 
 import asyncio
-import os
+import hashlib
+import json
 import sys
 import unittest
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from uuid import uuid4
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from temporalio import activity
-from temporalio.client import Client, WorkflowFailureError
-from temporalio.worker import Replayer, Worker
+import temporalio
+from temporalio.client import WorkflowHistory
+from temporalio.worker import Replayer
 
-from flowpulse_cp.authorization import HmacAuthorizationAuthority
 from flowpulse_cp.legacy_temporal_workflow import LegacyDiagnosisTemporalWorkflow
-from flowpulse_cp.models import (
-    ActivityOutcome, ApprovalDecision, AuthContext, CaseState, IncidentCase,
-    OwnerApproval, OwnerGateCommand, RemediationProposal, TemporalActivityPacket,
-    TemporalCaseDescriptor, TemporalCaseRequest, VerificationDecision,
-)
-from flowpulse_cp.policy import repair_contract_hash
-from flowpulse_cp.temporal_runtime import TemporalStarter
-from flowpulse_cp.temporal_workflow import DiagnosisTemporalWorkflow
 
 
-@unittest.skipUnless(os.environ.get("FLOWPULSE_LIVE_TEMPORAL") == "1", "requires the local Compose stack")
-class LiveTemporalReplayCompatibilityTests(unittest.TestCase):
-    """History capture is an integration proof, not a synthetic unit fixture."""
+PARENT_SHA = "1e4a6c7dec90198dc472c270edf108c112ef3bdf"
+PARENT_WORKFLOW_SHA256 = "76a4cc08f0475e70f041cbfa8907533f1436bb2be2526d6fcd2d75b19346c3bb"
+FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures" / "temporal_parent_1e4a6c7"
+EXPECTED_HISTORY_NAMES = {
+    "pre_ready_rejected",
+    "owner_wait_approved",
+    "critic_terminal",
+}
+EXPECTED_OUTCOMES = {
+    "pre_ready_rejected": "rejected:owner_gate_not_ready_then_terminated",
+    "owner_wait_approved": "owner_wait_update_validation_terminal_approved",
+    "critic_terminal": "critic_terminal_needs_human_no_owner_command",
+}
 
-    address = os.environ.get("FLOWPULSE_TEMPORAL_ADDRESS", "temporal:7233")
 
-    def request(self, label):
-        now = datetime.now(timezone.utc)
-        actor = AuthContext(tenant_id="tenant-history", subject_id="owner-history", roles=["owner"])
-        case = IncidentCase(
-            case_id="case-parent-{}-{}".format(label, uuid4().hex), tenant_id=actor.tenant_id,
-            workflow_id="flowpulse.parent-history.{}".format(uuid4().hex), workflow_run_id="parent-pending",
-            severity="SEV2", environment="prod", affected_entities=["checkout"],
-            created_at=now, updated_at=now,
-        )
-        evidence, claims, coverage = TemporalStarter(
-            self.address, "unused", local_deterministic_evidence=True,
-        )._local_records(case, actor)
-        return TemporalCaseRequest(
-            case=TemporalCaseDescriptor(
-                case_id=case.case_id, tenant_id=case.tenant_id, case_revision=case.case_revision,
-                workflow_id=case.workflow_id, workflow_run_id=case.workflow_run_id,
-                severity=case.severity, environment=case.environment, affected_entities=case.affected_entities,
-            ),
-            actor=actor, evidence=evidence, claims=claims, coverage=coverage,
-        )
+class ParentHistoryReplayCompatibilityTests(unittest.TestCase):
+    """The current checkout can only consume these archived parent artifacts."""
 
-    @staticmethod
-    def case_with_run(request, run_id):
-        now = datetime.now(timezone.utc)
-        return IncidentCase(
-            case_id=request.case.case_id, tenant_id=request.case.tenant_id,
-            case_revision=request.case.case_revision, workflow_id=request.case.workflow_id,
-            workflow_run_id=run_id, severity=request.case.severity, environment=request.case.environment,
-            affected_entities=request.case.affected_entities, created_at=now, updated_at=now,
-        )
+    def archived_parent_histories(self):
+        manifest = json.loads((FIXTURE_DIR / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(1, manifest["schema_version"])
+        self.assertEqual(PARENT_SHA, manifest["producer"]["git_sha"])
+        self.assertEqual("flowpulse.diagnosis.v1", manifest["producer"]["workflow_type"])
+        self.assertEqual(PARENT_WORKFLOW_SHA256, manifest["producer"]["workflow_module_sha256"])
+        self.assertTrue(manifest["producer"]["image_id"].startswith("sha256:"))
+        self.assertEqual(EXPECTED_HISTORY_NAMES, {entry["name"] for entry in manifest["histories"]})
 
-    @staticmethod
-    def proposal(request, label):
-        now = datetime.now(timezone.utc)
-        return RemediationProposal(
-            proposal_id="proposal-parent-{}-{}".format(label, uuid4().hex), case_id=request.case.case_id,
-            case_revision=request.case.case_revision, tenant_id=request.case.tenant_id, revision=1,
-            action_type="dry-run", exact_targets=["checkout"],
-            exact_change={"template_id": "toggle", "parameters": {"enabled": "false"}},
-            canary_scope={"maximum_targets": 1, "environment": "prod"}, preconditions={},
-            supporting_claim_ids=[request.claims[0].claim_id], success_criteria=["slo"],
-            rollback={"template_id": "toggle", "parameters": {"enabled": "true"}},
-            idempotency_key="parent-history-{}".format(uuid4().hex), expires_at=now + timedelta(minutes=5),
-        )
+        histories = []
+        for entry in manifest["histories"]:
+            self.assertEqual(EXPECTED_OUTCOMES[entry["name"]], entry["expected_outcome"])
+            encoded = (FIXTURE_DIR / entry["filename"]).read_bytes()
+            self.assertEqual(entry["sha256"], hashlib.sha256(encoded).hexdigest(), entry["name"])
+            history = WorkflowHistory.from_json(entry["workflow_id"], encoded.decode("utf-8"))
+            self.assertEqual(entry["event_count"], len(history.events), entry["name"])
+            started = history.events[0].workflow_execution_started_event_attributes
+            self.assertEqual("flowpulse.diagnosis.v1", started.workflow_type.name, entry["name"])
+            self.assertEqual(entry["run_id"], started.original_execution_run_id, entry["name"])
+            self.assertEqual(entry["run_id"], started.first_execution_run_id, entry["name"])
+            histories.append(history)
+        return histories
 
-    def test_parent_v1_histories_replay_with_compatibility_registration(self):
-        """Replays pre-ready, owner-wait, and terminal histories from 1e4a6c7."""
+    def test_exact_parent_history_fixture_integrity(self):
+        self.assertEqual(3, len(self.archived_parent_histories()))
 
-        async def run():
-            client = await Client.connect(self.address)
-            queue = "flowpulse-parent-history-{}".format(uuid4().hex)
-            pre_ready_route_started = asyncio.Event()
-            pre_ready_route_release = asyncio.Event()
-            owner_wait_started = asyncio.Event()
-            pre_ready_case_id = None
-            owner_wait_case_id = None
-            terminal_case_id = None
+    @unittest.skipUnless(
+        tuple(int(part) for part in temporalio.__version__.split(".")[:2]) >= (1, 20),
+        "Temporal Python SDK >=1.20 required for archived-history replay",
+    )
+    def test_exact_parent_v1_histories_replay_with_frozen_v1(self):
+        histories = self.archived_parent_histories()
 
-            def fake_activity(name):
-                @activity.defn(name=name)
-                async def handler(packet_data):
-                    packet = TemporalActivityPacket.parse_obj(packet_data)
-                    if name == "route_case_activity" and packet.case_id == pre_ready_case_id:
-                        pre_ready_route_started.set()
-                        await pre_ready_route_release.wait()
-                    if name == "owner_wait_activity" and packet.case_id == owner_wait_case_id:
-                        owner_wait_started.set()
-                    if name == "critic_activity" and packet.case_id == terminal_case_id:
-                        return ActivityOutcome(
-                            decision=VerificationDecision.FAIL, identity="parent-v1:critic-fail",
-                            reason_codes=["parent_terminal_path"],
-                        ).dict()
-                    if name == "validate_owner_command_activity":
-                        return ActivityOutcome(
-                            decision=VerificationDecision.PASS, identity="parent-v1:auth",
-                            authenticated=AuthContext(
-                                tenant_id=packet.tenant_id, subject_id=packet.actor_subject_id, roles=["owner"],
-                            ),
-                        ).dict()
-                    return ActivityOutcome(
-                        decision=VerificationDecision.PASS,
-                        state=CaseState.APPROVED if name == "owner_gate_activity" else None,
-                        identity="parent-v1:{}".format(name),
-                    ).dict()
-                return handler
-
-            activities = [fake_activity(name) for name in (
-                "route_case_activity", "retrieve_knowledge_activity", "primary_investigator_activity",
-                "specialist_activity", "critic_activity", "independent_verify_activity", "owner_wait_activity",
-                "validate_owner_command_activity", "owner_gate_activity",
-            )]
-            async with Worker(
-                client, task_queue=queue, workflows=[LegacyDiagnosisTemporalWorkflow], activities=activities,
-            ):
-                # 1e4a6c7 rejected a command during diagnosis without an auth
-                # activity. Keep the workflow open only long enough to fetch a
-                # real server history, then terminate it deliberately.
-                pre_ready = self.request("pre-ready")
-                pre_ready_case_id = pre_ready.case.case_id
-                pre_handle = await client.start_workflow(
-                    LegacyDiagnosisTemporalWorkflow.run, pre_ready.dict(),
-                    id=pre_ready.case.workflow_id, task_queue=queue,
-                )
-                await asyncio.wait_for(pre_ready_route_started.wait(), timeout=5)
-                pre_case = self.case_with_run(pre_ready, pre_handle.result_run_id)
-                pre_proposal = self.proposal(pre_ready, "pre-ready")
-                pre_assertion = HmacAuthorizationAuthority("parent-history-secret").issue(
-                    pre_ready.actor, pre_case, pre_proposal.proposal_id,
-                )
-                pre_receipt = await pre_handle.execute_update(
-                    LegacyDiagnosisTemporalWorkflow.submit_owner_command,
-                    OwnerGateCommand(
-                        case_id=pre_case.case_id, tenant_id=pre_case.tenant_id,
-                        auth_assertion=pre_assertion, proposal=pre_proposal,
-                    ).dict(),
-                )
-                self.assertFalse(pre_receipt["accepted"], pre_receipt)
-                self.assertIn("owner_gate_not_ready", pre_receipt["phase"])
-                pre_ready_route_release.set()
-                await pre_handle.terminate(reason="parent-history-pre-ready-captured")
-                with self.assertRaises(WorkflowFailureError):
-                    await pre_handle.result()
-                pre_ready_history = await pre_handle.fetch_history()
-
-                # An owner-wait history includes the parent update/validation
-                # sequence and then closes through the owner gate.
-                owner_wait = self.request("owner-wait")
-                owner_wait_case_id = owner_wait.case.case_id
-                owner_handle = await client.start_workflow(
-                    LegacyDiagnosisTemporalWorkflow.run, owner_wait.dict(),
-                    id=owner_wait.case.workflow_id, task_queue=queue,
-                )
-                await asyncio.wait_for(owner_wait_started.wait(), timeout=5)
-                owner_case = self.case_with_run(owner_wait, owner_handle.result_run_id)
-                owner_proposal = self.proposal(owner_wait, "owner-wait")
-                authority = HmacAuthorizationAuthority("parent-history-secret")
-                proposal_receipt = await owner_handle.execute_update(
-                    LegacyDiagnosisTemporalWorkflow.submit_owner_command,
-                    OwnerGateCommand(
-                        case_id=owner_case.case_id, tenant_id=owner_case.tenant_id,
-                        auth_assertion=authority.issue(owner_wait.actor, owner_case, owner_proposal.proposal_id),
-                        proposal=owner_proposal,
-                    ).dict(),
-                )
-                self.assertTrue(proposal_receipt["accepted"], proposal_receipt)
-                now = datetime.now(timezone.utc)
-                approval = OwnerApproval(
-                    approval_id="approval-parent-{}".format(uuid4().hex), case_id=owner_case.case_id,
-                    case_revision=owner_case.case_revision, tenant_id=owner_case.tenant_id,
-                    proposal_id=owner_proposal.proposal_id, proposal_revision=owner_proposal.revision,
-                    repair_contract_hash=repair_contract_hash(owner_proposal), actor_id=owner_wait.actor.subject_id,
-                    execution_targets=owner_proposal.exact_targets, maximum_targets=1, precondition_witness={},
-                    decision=ApprovalDecision.APPROVED, decided_at=now, expires_at=now + timedelta(minutes=5),
-                )
-                approval_receipt = await owner_handle.execute_update(
-                    LegacyDiagnosisTemporalWorkflow.submit_owner_command,
-                    OwnerGateCommand(
-                        case_id=owner_case.case_id, tenant_id=owner_case.tenant_id,
-                        auth_assertion=authority.issue(
-                            owner_wait.actor, owner_case, owner_proposal.proposal_id, approval.approval_id,
-                        ),
-                        proposal_id=owner_proposal.proposal_id, approval=approval, current_witness={},
-                    ).dict(),
-                )
-                self.assertTrue(approval_receipt["accepted"], approval_receipt)
-                self.assertEqual("APPROVED", (await owner_handle.result())["state"])
-                owner_wait_history = await owner_handle.fetch_history()
-
-                # A parent terminal path has no owner update and must also
-                # remain replay safe after the update-handler patch is added.
-                terminal = self.request("terminal")
-                terminal_case_id = terminal.case.case_id
-                terminal_handle = await client.start_workflow(
-                    LegacyDiagnosisTemporalWorkflow.run, terminal.dict(),
-                    id=terminal.case.workflow_id, task_queue=queue,
-                )
-                self.assertEqual("NEEDS_HUMAN", (await terminal_handle.result())["state"])
-                terminal_history = await terminal_handle.fetch_history()
-
-            histories = [pre_ready_history, owner_wait_history, terminal_history]
-            self.assertEqual(3, len(histories))
-            self.assertTrue(all(history.events for history in histories))
-
+        async def replay_archived_parent_histories():
             async def history_iterator():
                 for history in histories:
                     yield history
 
-            replay = await Replayer(
-                workflows=[LegacyDiagnosisTemporalWorkflow, DiagnosisTemporalWorkflow],
+            return await Replayer(
+                workflows=[LegacyDiagnosisTemporalWorkflow],
             ).replay_workflows(history_iterator())
-            self.assertEqual({}, replay.replay_failures)
-            return [len(history.events) for history in histories]
 
-        event_counts = asyncio.run(run())
-        self.assertEqual(3, len(event_counts))
-        self.assertTrue(all(count > 1 for count in event_counts), event_counts)
+        replay = asyncio.run(replay_archived_parent_histories())
+        self.assertEqual({}, replay.replay_failures)
 
 
 if __name__ == "__main__":
