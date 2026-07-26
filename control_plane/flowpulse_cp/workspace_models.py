@@ -131,6 +131,16 @@ class IncidentProjection(IncidentRunBinding):
         return value
 
 
+class ComponentContext(IncidentRunBinding):
+    """Strict, read-only context for one canonical component in a projection."""
+
+    schema_version: NonEmpty = "flowpulse.component-context.v1"
+    projection_revision: PositiveInt
+    component: IncidentGraphNode
+    evidence_refs: List[NonEmpty] = Field(default_factory=list)
+    fresh_read_performed: StrictBool = False
+
+
 class WorkspaceIntake(StrictModel):
     """Browser-safe intake: tenant and actor come only from trusted auth."""
 

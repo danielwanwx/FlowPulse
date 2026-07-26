@@ -6,7 +6,8 @@ import json
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Mapping, Optional, Protocol
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Security
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.responses import StreamingResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -22,7 +23,14 @@ from .models import (
 )
 from .policy import PolicyViolation, require_authenticated_owner
 from .postgres import PostgresCaseRepository
-from .workspace_models import IncidentProjection, NodeExplanationReceipt, NodeExplanationStart, WorkspaceIntake
+from .workspace_models import (
+    ComponentContext,
+    IncidentEvent,
+    IncidentProjection,
+    NodeExplanationReceipt,
+    NodeExplanationStart,
+    WorkspaceIntake,
+)
 
 
 class TemporalStartPort(Protocol):
@@ -78,7 +86,24 @@ class FixtureTokenAuthMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
-def trusted_auth_context(request: Request) -> AuthContext:
+trusted_bearer = HTTPBearer(
+    scheme_name="FlowPulseTrustedBearer",
+    bearerFormat="opaque",
+    description="Trusted bearer authenticated by the configured FlowPulse identity boundary.",
+    auto_error=False,
+)
+
+
+def trusted_auth_context(
+    request: Request,
+    _credentials: Optional[HTTPAuthorizationCredentials] = Security(trusted_bearer),
+) -> AuthContext:
+    """Use the OpenAPI security dependency only to declare the trusted boundary.
+
+    The surrounding middleware/session implementation remains the sole source
+    of subject and tenant identity; a bearer value is never parsed into roles
+    at this route boundary.
+    """
     context = getattr(request.state, "flowpulse_auth", None)
     if not isinstance(context, AuthContext):
         raise HTTPException(status_code=401, detail="trusted_auth_context_required")
@@ -177,10 +202,13 @@ def create_app(
             raise HTTPException(status_code=404, detail="workspace_projection_not_found")
         return projection
 
-    @app.get("/v1/incidents/{case_id}/components/{component_id}/context")
+    @app.get(
+        "/v1/incidents/{case_id}/components/{component_id}/context",
+        response_model=ComponentContext,
+    )
     async def workspace_component_context(
         case_id: str, component_id: str, request: Request, actor: AuthContext = Depends(trusted_auth_context),
-    ) -> dict:
+    ) -> ComponentContext:
         projection = await _workspace_call(
             _workspace_repository(request), ("workspace_projection", "get_projection"), actor.tenant_id, case_id,
         )
@@ -189,12 +217,16 @@ def create_app(
         node = next((item for item in projection.graph.nodes if item.component_id == component_id), None)
         if node is None:
             raise HTTPException(status_code=404, detail="workspace_component_not_canonical")
-        return {
-            "schema_version": "flowpulse.component-context.v1",
-            "incident_id": projection.incident_id, "run_id": projection.run_id,
-            "topology_revision": projection.topology_revision, "component": node.dict(),
-            "evidence_refs": projection.evidence_refs, "fresh_read_performed": False,
-        }
+        return ComponentContext(
+            **{name: getattr(projection, name) for name in ComponentContext.__fields__ if name in {
+                "tenant_id", "incident_id", "run_id", "topology_revision", "case_id", "case_revision",
+                "workflow_id", "workflow_run_id", "created_at",
+            }},
+            projection_revision=projection.projection_revision,
+            component=node,
+            evidence_refs=projection.evidence_refs,
+            fresh_read_performed=False,
+        )
 
     @app.post("/v1/incidents/{case_id}/node-explanations", response_model=NodeExplanationReceipt, status_code=202)
     async def start_node_explanation(
@@ -231,7 +263,20 @@ def create_app(
             raise HTTPException(status_code=404, detail="workspace_node_explanation_not_found")
         return NodeExplanationReceipt(explanation=explanation, reused=True)
 
-    @app.get("/v1/incidents/{case_id}/events")
+    @app.get(
+        "/v1/incidents/{case_id}/events",
+        response_class=StreamingResponse,
+        responses={
+            200: {
+                "description": "Ordered IncidentEvent records in Server-Sent Events framing.",
+                "content": {
+                    "text/event-stream": {
+                        "schema": {"$ref": "#/components/schemas/IncidentEvent"},
+                    },
+                },
+            },
+        },
+    )
     async def workspace_events(
         case_id: str, request: Request, after: int = Query(0, ge=0),
         last_event_id: Optional[str] = Header(None, alias="Last-Event-ID"),
@@ -322,6 +367,22 @@ def create_app(
         except RuntimeError as error:
             raise HTTPException(status_code=409, detail=str(error))
 
+    # FastAPI cannot infer a Pydantic payload schema from a streaming response.
+    # Register the exact strict model that each SSE ``data:`` line carries and
+    # preserve the route's explicit text/event-stream media type.
+    original_openapi = app.openapi
+
+    def workspace_openapi():
+        document = original_openapi()
+        schemas = document.setdefault("components", {}).setdefault("schemas", {})
+        schemas["IncidentEvent"] = IncidentEvent.schema(ref_template="#/components/schemas/{model}")
+        event_response = document["paths"]["/v1/incidents/{case_id}/events"]["get"]["responses"]["200"]
+        event_response["content"] = {
+            "text/event-stream": {"schema": {"$ref": "#/components/schemas/IncidentEvent"}},
+        }
+        return document
+
+    app.openapi = workspace_openapi
     return app
 
 

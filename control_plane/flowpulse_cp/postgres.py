@@ -52,6 +52,25 @@ def _workspace_binding(record: Any) -> IncidentRunBinding:
     return IncidentRunBinding.parse_obj({name: getattr(record, name) for name in fields})
 
 
+async def _lock_workspace_mapping(connection: asyncpg.Connection, binding: IncidentRunBinding) -> None:
+    """Serialize every immutable identity axis before a workspace projection write.
+
+    A topology revision is a child of the public run, not a competing lock
+    namespace.  Taking each stable mapping lock in lexical order makes a
+    concurrent cross-key attempt observe the first authoritative binding
+    instead of racing through independent run/topology locks.
+    """
+    names = sorted([
+        "workspace-case:{}:{}".format(binding.tenant_id, binding.case_id),
+        "workspace-public-run:{}:{}".format(binding.tenant_id, binding.run_id),
+        "workspace-temporal:{}:{}:{}".format(
+            binding.tenant_id, binding.workflow_id, binding.workflow_run_id,
+        ),
+    ])
+    for name in names:
+        await connection.execute("SELECT pg_advisory_xact_lock(hashtext($1))", name)
+
+
 def activity_event_identity(packet: TemporalActivityPacket, activity_id: str) -> str:
     """Stable retry identity: a committed activity is never recorded twice."""
     return str(uuid5(
@@ -100,27 +119,32 @@ class PostgresCaseRepository:
         """Persist the immutable public-run to Temporal mapping from an activity only."""
         binding = _workspace_binding(binding)
         async def operation(connection: asyncpg.Connection) -> IncidentRunBinding:
-            await connection.execute(
-                "SELECT pg_advisory_xact_lock(hashtext($1))",
-                "workspace-binding:{}:{}:{}".format(binding.tenant_id, binding.run_id, binding.topology_revision),
-            )
+            await _lock_workspace_mapping(connection, binding)
             existing = await connection.fetchrow(
                 """SELECT payload FROM incident_run_bindings
-                   WHERE tenant_id=$1 AND run_id=$2 AND topology_revision=$3""",
-                binding.tenant_id, binding.run_id, binding.topology_revision,
+                   WHERE tenant_id=$1 AND run_id=$2""",
+                binding.tenant_id, binding.run_id,
             )
             if existing is not None:
                 current = _workspace_binding(_decode(existing["payload"]))
                 if current != binding:
+                    if current.topology_revision != binding.topology_revision:
+                        raise PolicyViolation("workspace_run_rebound_to_different_topology")
                     raise PolicyViolation("workspace_public_internal_binding_mismatch")
                 return current
             rebound = await connection.fetchrow(
-                """SELECT payload FROM incident_run_bindings
-                   WHERE tenant_id=$1 AND case_id=$2 AND (workflow_id <> $3 OR workflow_run_id <> $4)""",
-                binding.tenant_id, binding.case_id, binding.workflow_id, binding.workflow_run_id,
+                "SELECT payload FROM incident_run_bindings WHERE tenant_id=$1 AND case_id=$2",
+                binding.tenant_id, binding.case_id,
             )
             if rebound is not None:
                 raise PolicyViolation("workspace_case_rebound_to_different_temporal_run")
+            temporal_rebound = await connection.fetchrow(
+                """SELECT payload FROM incident_run_bindings
+                   WHERE tenant_id=$1 AND workflow_id=$2 AND workflow_run_id=$3""",
+                binding.tenant_id, binding.workflow_id, binding.workflow_run_id,
+            )
+            if temporal_rebound is not None:
+                raise PolicyViolation("workspace_temporal_run_rebound_to_different_case")
             await connection.execute(
                 """INSERT INTO incident_run_bindings
                    (tenant_id, incident_id, run_id, topology_revision, case_id, case_revision,
@@ -157,19 +181,26 @@ class PostgresCaseRepository:
 
     async def put_workspace_projection(self, projection: IncidentProjection) -> IncidentProjection:
         async def operation(connection: asyncpg.Connection) -> IncidentProjection:
-            await connection.execute(
-                "SELECT pg_advisory_xact_lock(hashtext($1))",
-                "workspace-projection:{}:{}:{}".format(
-                    projection.tenant_id, projection.run_id, projection.topology_revision,
-                ),
-            )
+            await _lock_workspace_mapping(connection, _workspace_binding(projection))
             binding_row = await connection.fetchrow(
                 """SELECT payload FROM incident_run_bindings
-                   WHERE tenant_id=$1 AND run_id=$2 AND topology_revision=$3""",
-                projection.tenant_id, projection.run_id, projection.topology_revision,
+                   WHERE tenant_id=$1 AND run_id=$2""",
+                projection.tenant_id, projection.run_id,
             )
             if binding_row is None or _workspace_binding(_decode(binding_row["payload"])) != _workspace_binding(projection):
                 raise PolicyViolation("workspace_public_internal_binding_mismatch")
+            duplicate = await connection.fetchrow(
+                """SELECT payload FROM incident_projections
+                   WHERE tenant_id=$1 AND run_id=$2 AND topology_revision=$3
+                     AND (projection_revision=$4 OR sequence=$5)
+                   ORDER BY projection_revision DESC LIMIT 1""",
+                projection.tenant_id, projection.run_id, projection.topology_revision,
+                projection.projection_revision, projection.sequence,
+            )
+            if duplicate is not None:
+                recorded = IncidentProjection.parse_obj(_decode(duplicate["payload"]))
+                if recorded == projection:
+                    return recorded
             latest = await connection.fetchrow(
                 """SELECT projection_revision, sequence FROM incident_projections
                    WHERE tenant_id=$1 AND run_id=$2 AND topology_revision=$3
@@ -211,14 +242,11 @@ class PostgresCaseRepository:
             ),
         )
         async def operation(connection: asyncpg.Connection) -> IncidentEvent:
-            await connection.execute(
-                "SELECT pg_advisory_xact_lock(hashtext($1))",
-                "workspace-event:{}:{}:{}".format(event.tenant_id, event.run_id, event.topology_revision),
-            )
+            await _lock_workspace_mapping(connection, _workspace_binding(event))
             binding_row = await connection.fetchrow(
                 """SELECT payload FROM incident_run_bindings
-                   WHERE tenant_id=$1 AND run_id=$2 AND topology_revision=$3""",
-                event.tenant_id, event.run_id, event.topology_revision,
+                   WHERE tenant_id=$1 AND run_id=$2""",
+                event.tenant_id, event.run_id,
             )
             if binding_row is None or _workspace_binding(_decode(binding_row["payload"])) != _workspace_binding(event):
                 raise PolicyViolation("workspace_public_internal_binding_mismatch")
@@ -266,14 +294,15 @@ class PostgresCaseRepository:
         self, explanation: NodeExplanation,
     ) -> Tuple[NodeExplanation, bool]:
         async def operation(connection: asyncpg.Connection) -> Tuple[NodeExplanation, bool]:
+            await _lock_workspace_mapping(connection, _workspace_binding(explanation))
             await connection.execute(
                 "SELECT pg_advisory_xact_lock(hashtext($1))",
                 "workspace-explanation:{}:{}".format(explanation.tenant_id, explanation.selection_key),
             )
             binding_row = await connection.fetchrow(
                 """SELECT payload FROM incident_run_bindings
-                   WHERE tenant_id=$1 AND run_id=$2 AND topology_revision=$3""",
-                explanation.tenant_id, explanation.run_id, explanation.topology_revision,
+                   WHERE tenant_id=$1 AND run_id=$2""",
+                explanation.tenant_id, explanation.run_id,
             )
             if binding_row is None or _workspace_binding(_decode(binding_row["payload"])) != _workspace_binding(explanation):
                 raise PolicyViolation("workspace_public_internal_binding_mismatch")

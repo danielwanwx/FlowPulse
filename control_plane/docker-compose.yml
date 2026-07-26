@@ -1,6 +1,10 @@
 services:
   api:
-    build: .
+    build:
+      context: .
+      args:
+        FLOWPULSE_PRODUCER_GIT_SHA: ${FLOWPULSE_PRODUCER_GIT_SHA:-unattested}
+        FLOWPULSE_WORKSPACE_WORKFLOW_BLOB_OID: ${FLOWPULSE_WORKSPACE_WORKFLOW_BLOB_OID:-unattested}
     command: python -m flowpulse_cp.main
     ports: ["8090:8090"]
     environment:
@@ -21,7 +25,11 @@ services:
       temporal: {condition: service_healthy}
       authz: {condition: service_healthy}
   worker:
-    build: .
+    build:
+      context: .
+      args:
+        FLOWPULSE_PRODUCER_GIT_SHA: ${FLOWPULSE_PRODUCER_GIT_SHA:-unattested}
+        FLOWPULSE_WORKSPACE_WORKFLOW_BLOB_OID: ${FLOWPULSE_WORKSPACE_WORKFLOW_BLOB_OID:-unattested}
     command: python -m flowpulse_cp.worker
     environment:
       FLOWPULSE_TEMPORAL_ADDRESS: temporal:7233
@@ -47,7 +55,11 @@ services:
       authz: {condition: service_healthy}
       minio-init: {condition: service_completed_successfully}
   authz:
-    build: .
+    build:
+      context: .
+      args:
+        FLOWPULSE_PRODUCER_GIT_SHA: ${FLOWPULSE_PRODUCER_GIT_SHA:-unattested}
+        FLOWPULSE_WORKSPACE_WORKFLOW_BLOB_OID: ${FLOWPULSE_WORKSPACE_WORKFLOW_BLOB_OID:-unattested}
     command: python -m flowpulse_cp.main
     environment:
       FLOWPULSE_COMPONENT: authz

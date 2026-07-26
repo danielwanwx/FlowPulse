@@ -1,4 +1,4 @@
-"""Archive a real workspace Temporal history with reproducible provenance."""
+"""Archive a real workspace Temporal history with verified producer provenance."""
 
 import argparse
 import asyncio
@@ -8,33 +8,26 @@ from pathlib import Path
 
 from temporalio.client import Client
 
+from flowpulse_cp.workspace_provenance import history_identity, verify_producer_attestation
+
 
 async def archive(args) -> None:
+    attestation = json.loads(args.producer_attestation.read_text(encoding="utf-8"))
+    producer = verify_producer_attestation(args.repo_root, attestation)
     client = await Client.connect(args.address)
     history = await client.get_workflow_handle(args.workflow_id, run_id=args.workflow_run_id).fetch_history()
     raw = history.to_json().encode("utf-8")
-    started = history.events[0].workflow_execution_started_event_attributes
-    if started.workflow_type.name != "flowpulse.incident-workspace.v1":
-        raise RuntimeError("unexpected_workspace_history_type")
+    identity = history_identity(raw)
+    if identity["workflow_id"] != args.workflow_id or identity["workflow_run_id"] != args.workflow_run_id:
+        raise RuntimeError("workspace_history_fetch_identity_mismatch")
     output = args.output
     output.mkdir(parents=True, exist_ok=True)
     filename = "workspace_node_explanation_degraded.json"
     history_path = output / filename
     history_path.write_bytes(raw)
     manifest = {
-        "schema_version": 1,
-        "producer": {
-            "git_sha": args.producer_git_sha,
-            "workflow_type": "flowpulse.incident-workspace.v1",
-            "workflow_id": args.workflow_id,
-            "workflow_run_id": args.workflow_run_id,
-            "public_identity": {
-                "tenant_id": args.tenant_id,
-                "incident_id": args.incident_id,
-                "run_id": args.run_id,
-                "topology_revision": args.topology_revision,
-            },
-        },
+        "schema_version": 2,
+        "producer": {**producer, **identity},
         "histories": [{
             "name": "workspace_node_explanation_degraded",
             "filename": filename,
@@ -51,11 +44,8 @@ def main() -> None:
     parser.add_argument("--address", required=True)
     parser.add_argument("--workflow-id", required=True)
     parser.add_argument("--workflow-run-id", required=True)
-    parser.add_argument("--tenant-id", required=True)
-    parser.add_argument("--incident-id", required=True)
-    parser.add_argument("--run-id", required=True)
-    parser.add_argument("--topology-revision", required=True)
-    parser.add_argument("--producer-git-sha", required=True)
+    parser.add_argument("--repo-root", type=Path, required=True)
+    parser.add_argument("--producer-attestation", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     asyncio.run(archive(parser.parse_args()))
 

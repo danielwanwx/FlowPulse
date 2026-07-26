@@ -72,6 +72,8 @@ class InMemoryWorkspaceRepository:
         if records:
             latest = records[-1]
             if projection.projection_revision <= latest.projection_revision or projection.sequence <= latest.sequence:
+                if projection == latest:
+                    return latest
                 raise PolicyViolation("workspace_projection_revision_or_sequence_not_monotonic")
         records.append(projection)
         return projection

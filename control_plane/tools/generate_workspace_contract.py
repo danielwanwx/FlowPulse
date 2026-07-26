@@ -13,6 +13,7 @@ from pathlib import Path
 
 from flowpulse_cp.app import create_app
 from flowpulse_cp.workspace_models import (
+    ComponentContext,
     GraphMembership,
     IncidentEvent,
     IncidentGraph,
@@ -69,6 +70,11 @@ def _examples():
         **binding.dict(), projection_revision=1, sequence=1, event_type="workspace.initialized",
         occurred_at=now, payload={"state": "provider_unavailable"}, evidence_refs=[],
     )
+    context = ComponentContext(
+        **binding.dict(), projection_revision=projection.projection_revision,
+        component=projection.graph.nodes[0], evidence_refs=projection.evidence_refs,
+        fresh_read_performed=False,
+    )
     return {
         "schema_version": "flowpulse.incident-workspace.examples.v1",
         "identity_note": (
@@ -87,6 +93,7 @@ def _examples():
             "IncidentProjection": projection.dict(),
             "NodeExplanationReceipt": NodeExplanationReceipt(explanation=explanation, reused=False).dict(),
             "IncidentEvent": event.dict(),
+            "ComponentContext": context.dict(),
         },
         "model_schemas": {
             "WorkspaceIntake": WorkspaceIntake.schema(),
@@ -94,6 +101,7 @@ def _examples():
             "NodeExplanationStart": NodeExplanationStart.schema(),
             "NodeExplanationReceipt": NodeExplanationReceipt.schema(),
             "IncidentEvent": IncidentEvent.schema(),
+            "ComponentContext": ComponentContext.schema(),
         },
     }
 

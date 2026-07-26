@@ -73,6 +73,33 @@ class WorkspaceProjectionTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(PolicyViolation, "workspace_public_internal_binding_mismatch"):
             await repository.put_projection(projection(forged))
 
+    async def test_workspace_initialize_lost_ack_retries_exact_projection_and_event_once(self):
+        """A Temporal retry may repeat all writes after a committed activity response is lost."""
+        repository = InMemoryWorkspaceRepository()
+        item = binding()
+        packet = WorkspaceActivityPacket(
+            **item.dict(), stage="workspace_initialize", projection=projection(item), event_sequence=1,
+        )
+        dispatcher = WorkspaceActivityDispatcher(repository)
+
+        first = await dispatcher.dispatch("workspace_initialize_activity", packet.dict())
+        retried = await dispatcher.dispatch("workspace_initialize_activity", packet.dict())
+
+        self.assertEqual(first, retried)
+        self.assertEqual(1, len(repository.projections[(item.tenant_id, item.run_id, item.topology_revision)]))
+        self.assertEqual(1, len(repository.events[(item.tenant_id, item.run_id, item.topology_revision)]))
+
+    async def test_exact_projection_duplicate_is_idempotent_but_conflicting_duplicate_fails_closed(self):
+        repository = InMemoryWorkspaceRepository()
+        item = binding()
+        current = projection(item)
+        await repository.put_binding(item)
+        self.assertEqual(current, await repository.put_projection(current))
+        self.assertEqual(current, await repository.put_projection(current))
+        conflicting = current.copy(update={"status": "forged"})
+        with self.assertRaisesRegex(PolicyViolation, "workspace_projection_revision_or_sequence_not_monotonic"):
+            await repository.put_projection(conflicting)
+
     async def test_pre_gate_node_explanation_is_durable_degraded_without_fresh_read_or_diagnosis(self):
         repository = InMemoryWorkspaceRepository()
         item = binding()

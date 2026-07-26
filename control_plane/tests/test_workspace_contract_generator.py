@@ -29,6 +29,17 @@ class WorkspaceContractGeneratorTests(unittest.TestCase):
             manifest = json.loads((output / "flowpulse-incident-workspace-v1.freeze.json").read_text())
             self.assertIn("/v1/incidents", openapi["paths"])
             self.assertIn("/v1/incidents/{case_id}/events", openapi["paths"])
+            self.assertEqual(
+                [{"FlowPulseTrustedBearer": []}],
+                openapi["paths"]["/v1/incidents"]["post"]["security"],
+            )
+            context = openapi["paths"]["/v1/incidents/{case_id}/components/{component_id}/context"]["get"]
+            self.assertEqual("#/components/schemas/ComponentContext", context["responses"]["200"]["content"]["application/json"]["schema"]["$ref"])
+            event_response = openapi["paths"]["/v1/incidents/{case_id}/events"]["get"]["responses"]["200"]
+            self.assertEqual({"text/event-stream"}, set(event_response["content"]))
+            self.assertEqual("#/components/schemas/IncidentEvent", event_response["content"]["text/event-stream"]["schema"]["$ref"])
+            self.assertFalse(openapi["components"]["schemas"]["ComponentContext"].get("additionalProperties", True))
+            self.assertFalse(openapi["components"]["schemas"]["IncidentEvent"].get("additionalProperties", True))
             self.assertEqual("run-example-01", examples["response_examples"]["IncidentProjection"]["run_id"])
             self.assertEqual("provider_unavailable", examples["response_examples"]["IncidentProjection"]["degraded_code"])
             self.assertEqual("0" * 40, manifest["producer_implementation_git_sha"])
