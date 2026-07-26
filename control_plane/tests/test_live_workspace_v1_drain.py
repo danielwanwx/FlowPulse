@@ -1,6 +1,7 @@
 """Live Temporal proof that a pre-correction v1 execution resumes only to drain."""
 
 import asyncio
+import json
 import os
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -11,19 +12,24 @@ from temporalio import workflow
 from temporalio.client import Client
 from temporalio.worker import Worker
 
-from flowpulse_cp.workspace_activities import WorkspaceActivityDispatcher, build_workspace_activities
-from flowpulse_cp.workspace_models import (
-    IncidentRunBinding,
-    NodeExplanationStart,
-    WorkspaceActivityOutcome,
-    WorkspaceActivityPacket,
-    WorkspaceWorkflowRequest,
-    initial_projection,
-)
-from flowpulse_cp.workspace_registration import WORKSPACE_V1_WORKFLOW_TYPE, workspace_workflow_definitions
-from flowpulse_cp.workspace_repository import InMemoryWorkspaceRepository
-from flowpulse_cp.models import AuthContext
-from flowpulse_cp.legacy_workspace_workflow import LegacyIncidentWorkspaceTemporalWorkflow
+# This module is itself imported by Temporal's workflow sandbox when it
+# validates ``PreCorrectionV1WorkspaceWorkflow``.  The application models and
+# activity dispatcher are deliberately shared with the host process, matching
+# the production workflow modules' import boundary.
+with workflow.unsafe.imports_passed_through():
+    from flowpulse_cp.workspace_activities import WorkspaceActivityDispatcher, build_workspace_activities
+    from flowpulse_cp.workspace_models import (
+        IncidentRunBinding,
+        NodeExplanationStart,
+        WorkspaceActivityOutcome,
+        WorkspaceActivityPacket,
+        WorkspaceWorkflowRequest,
+        initial_projection,
+    )
+    from flowpulse_cp.workspace_registration import WORKSPACE_V1_WORKFLOW_TYPE, workspace_workflow_definitions
+    from flowpulse_cp.workspace_repository import InMemoryWorkspaceRepository
+    from flowpulse_cp.models import AuthContext
+    from flowpulse_cp.legacy_workspace_workflow import LegacyIncidentWorkspaceTemporalWorkflow
 
 
 @workflow.defn(name=WORKSPACE_V1_WORKFLOW_TYPE)
@@ -118,9 +124,18 @@ class LiveWorkspaceV1DrainTests(unittest.TestCase):
                     ).dict(),
                 )
                 self.assertEqual({"accepted": False, "reason": "workspace_v1_draining"}, receipt)
-                history = (await handle.fetch_history()).to_json()
-                self.assertIn("workspace-v1-drain-reject-new-update", history)
-                self.assertNotIn("workspace_node_explanation_activity", history)
+                history = await handle.fetch_history()
+                patch_ids = []
+                for event in history.events:
+                    if not event.HasField("marker_recorded_event_attributes"):
+                        continue
+                    marker = event.marker_recorded_event_attributes
+                    if marker.marker_name != "core_patch":
+                        continue
+                    payloads = marker.details["patch-data"].payloads
+                    patch_ids.extend(json.loads(payload.data.decode("utf-8"))["id"] for payload in payloads)
+                self.assertIn("workspace-v1-drain-reject-new-update", patch_ids)
+                self.assertNotIn("workspace_node_explanation_activity", history.to_json())
                 self.assertEqual({}, repository.explanations)
                 self.assertEqual({}, repository.capability_audits)
             await handle.terminate(reason="v1_drain_coverage_complete")
