@@ -275,8 +275,11 @@ class LiveIncidentWorkspacePostgresTests(unittest.TestCase):
                             case.tenant_id, capability_result.audit.audit_id,
                         )
                     self.assertEqual(1, await repository._tenant(case.tenant_id, audit_count))
+                    # A separately durable workspace-subject grant is checked
+                    # before an empty or otherwise admissible evidence list can
+                    # reach the recorded-context capability.
                     with self.assertRaisesRegex(
-                        PolicyViolation, "capability_scope_recorded_evidence_acl_or_lineage_denied",
+                        PolicyViolation, "capability_scope_workspace_subject_acl_denied",
                     ):
                         await registry.invoke(
                             CapabilityAudience.USER_QA,
