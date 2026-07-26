@@ -17,6 +17,7 @@ from .workspace_actions import (
     NextBestAction,
     WorkspaceActionCommit,
     WorkspaceActionReceipt,
+    validate_workspace_action_commit_kind,
 )
 
 
@@ -339,6 +340,7 @@ class InMemoryWorkspaceRepository:
             if receipt is not None:
                 raise PolicyViolation("workspace_action_transition_partial")
             return None
+        validate_workspace_action_commit_kind(commit)
         if receipt != commit.receipt:
             raise PolicyViolation("workspace_action_transition_partial")
         if self.projections.get(_binding_key(commit.projection), [])[-1] != commit.projection:
@@ -367,6 +369,10 @@ class InMemoryWorkspaceRepository:
             for claim in commit.capability_result.claims:
                 if self.workspace_action_claims.get(claim.claim_id) != claim:
                     raise PolicyViolation("workspace_action_transition_partial")
+            for coverage in commit.capability_result.coverage:
+                key = (coverage.tenant_id, coverage.case_id, coverage.field, coverage.status.value)
+                if self.workspace_action_coverage.get(key) != coverage:
+                    raise PolicyViolation("workspace_action_transition_partial")
         for action in commit.actions:
             if await self.workspace_next_best_action(action.tenant_id, action.case_id, action.action_id) != action:
                 raise PolicyViolation("workspace_action_transition_partial")
@@ -374,6 +380,7 @@ class InMemoryWorkspaceRepository:
 
     async def commit_workspace_action_transition(self, commit: WorkspaceActionCommit) -> WorkspaceActionCommit:
         """Atomically append projection, optional lease/cards, receipt, event, and outbox record."""
+        validate_workspace_action_commit_kind(commit)
         key = (commit.receipt.tenant_id, commit.receipt.case_id, commit.receipt.idempotency_key)
         existing = await self.workspace_action_commit(*key)
         if existing is not None:
@@ -434,7 +441,13 @@ class InMemoryWorkspaceRepository:
                 for coverage in commit.capability_result.coverage:
                     if (coverage.tenant_id, coverage.case_id) != (commit.projection.tenant_id, commit.projection.case_id):
                         raise PolicyViolation("capability_result_coverage_scope_mismatch")
-                    self.workspace_action_coverage[(coverage.case_id, coverage.field, coverage.status.value)] = coverage
+                    coverage_key = (
+                        coverage.tenant_id, coverage.case_id, coverage.field, coverage.status.value,
+                    )
+                    existing_coverage = self.workspace_action_coverage.get(coverage_key)
+                    if existing_coverage is not None and existing_coverage != coverage:
+                        raise PolicyViolation("workspace_action_coverage_immutable")
+                    self.workspace_action_coverage[coverage_key] = coverage
                 self._action_checkpoint("after_evidence_admission")
                 await self.append_capability_audit(audit)
                 self._action_checkpoint("after_audit")

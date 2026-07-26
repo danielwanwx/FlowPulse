@@ -21,7 +21,17 @@ from flowpulse_cp.capabilities import (
     EmptyCapabilityInput,
     ToolCallBudget,
 )
-from flowpulse_cp.models import EvidenceAuthority, EvidenceEnvelope, FreshnessStatus, ProofScope, SourceKind
+from pydantic import ValidationError
+
+from flowpulse_cp.models import (
+    CoverageEntry,
+    CoverageStatus,
+    EvidenceAuthority,
+    EvidenceEnvelope,
+    FreshnessStatus,
+    ProofScope,
+    SourceKind,
+)
 from flowpulse_cp.policy import PolicyViolation
 from flowpulse_cp.workspace_actions import (
     ActionInvocationCommand,
@@ -120,7 +130,6 @@ def granted_lease(item, **changes):
         "issuance_card_version": card.card_version,
         "issuance_idempotency_key": "grant-idempotency",
     })
-    base = base.copy(update=changes)
     receipt = WorkspaceActionReceipt(
         **item.dict(), action_id=card.action_id, idempotency_key="grant-idempotency",
         status="GATE1_GRANTED", gate1_lease_id=base.lease_id, reason="fixture-grant",
@@ -133,7 +142,8 @@ def granted_lease(item, **changes):
         activity_identity="fixture-grant", command_fingerprint=base.issuance_command_fingerprint,
         projection=current, receipt=receipt, event=event, lease=base, issued_action=card,
     )
-    return base, Gate1AuthorityStore(base, grant)
+    active = base.copy(update=changes)
+    return active, Gate1AuthorityStore(active, grant)
 
 
 class MetricsAdapter:
@@ -152,7 +162,7 @@ class MetricsAdapter:
 class CurrentMetricsAdapter(MetricsAdapter):
     async def invoke(self, parsed_input, invocation_context):
         evidence = EvidenceEnvelope(
-            evidence_id="metric-evidence-a", tenant_id=invocation_context.tenant_id,
+            evidence_id="metric-evidence-{}".format(invocation_context.tenant_id), tenant_id=invocation_context.tenant_id,
             case_id=invocation_context.case_id, case_revision=invocation_context.case_revision,
             acl_subjects=[invocation_context.subject_id], source_kind=SourceKind.METRIC,
             source_uri="metric://checkout/latency", source_anchor="window:1",
@@ -161,7 +171,14 @@ class CurrentMetricsAdapter(MetricsAdapter):
             independence_key="metrics:checkout", schema_binding="metrics.v1",
             proof_scope=ProofScope.CURRENT_OBSERVATION,
         )
-        return CapabilityResult(summary="current metric", evidence=[evidence])
+        return CapabilityResult(
+            summary="current metric", evidence=[evidence],
+            coverage=[CoverageEntry(
+                tenant_id=invocation_context.tenant_id, case_id=invocation_context.case_id,
+                field="telemetry_symptom", status=CoverageStatus.FILLED,
+                evidence_ids=[evidence.evidence_id],
+            )],
+        )
 
 
 class ControlledMetricsAdapter(CurrentMetricsAdapter):
@@ -194,7 +211,187 @@ def projection(item):
     )
 
 
+async def complete_fresh_read(repository, item, *, idempotency_prefix):
+    """Exercise the public action seam and return its immutable transitions."""
+    now = datetime.now(timezone.utc)
+    current = projection(item)
+    await repository.put_binding(item)
+    await repository.put_projection(current)
+    registry = CapabilityRegistry(
+        descriptors=[MetricsAdapter.descriptor], adapters={CapabilityName.METRICS: CurrentMetricsAdapter()},
+        scope_authority=AcceptingScope(), gate1_authority=Gate1LeaseAuthority(repository, now=lambda: now),
+    )
+    gate_card = NextBestActionGenerator(registry).generate(current, now)[0]
+    await repository.append_next_best_action(gate_card)
+    dispatcher = WorkspaceActivityDispatcher(repository, capability_registry=registry)
+    grant_command = ActionInvocationCommand(
+        incident_id=item.incident_id, run_id=item.run_id, topology_revision=item.topology_revision,
+        projection_revision=current.projection_revision, action_id=gate_card.action_id,
+        idempotency_key="{}-grant".format(idempotency_prefix),
+    )
+    granted = await dispatcher.dispatch("workspace_execute_action_activity", WorkspaceActionPacket(
+        **item.dict(), projection=current, event_sequence=2, command=grant_command,
+        actor_tenant_id=item.tenant_id, actor_subject_id="subject-a", actor_roles=["viewer"],
+    ).dict())
+    grant = await repository.workspace_action_commit(item.tenant_id, item.case_id, grant_command.idempotency_key)
+    read_card = next(
+        card for card in await repository.workspace_next_best_actions(item.tenant_id, item.case_id)
+        if card.cta.value == "run_read_capability"
+    )
+    read_command = ActionInvocationCommand(
+        incident_id=item.incident_id, run_id=item.run_id, topology_revision=item.topology_revision,
+        projection_revision=read_card.projection_revision, action_id=read_card.action_id,
+        idempotency_key="{}-read".format(idempotency_prefix),
+    )
+    completed = await dispatcher.dispatch("workspace_execute_action_activity", WorkspaceActionPacket(
+        **item.dict(), projection=IncidentProjection.parse_obj(granted["projection"]), event_sequence=3,
+        command=read_command, actor_tenant_id=item.tenant_id, actor_subject_id="subject-a", actor_roles=["viewer"],
+    ).dict())
+    fresh = await repository.workspace_action_commit(item.tenant_id, item.case_id, read_command.idempotency_key)
+    return grant, fresh, completed
+
+
 class Gate1CapabilityTests(unittest.IsolatedAsyncioTestCase):
+    async def test_action_commit_transition_kinds_require_complete_authoritative_artifacts(self):
+        item = binding()
+        current = projection(item)
+        event = IncidentEvent(
+            **item.dict(), projection_revision=1, sequence=2, event_type="workspace.action.fresh_read_completed",
+            occurred_at=NOW, payload={}, evidence_refs=[],
+        )
+        receipt = WorkspaceActionReceipt(
+            **item.dict(), action_id="read-card", idempotency_key="invalid-fresh",
+            status="FRESH_READ_COMPLETED", gate1_lease_id="lease-a", reason="invalid-fixture",
+        )
+        consumed = lease(item).copy(update={
+            "status": Gate1LeaseStatus.CONSUMED, "lease_revision": 2,
+            "consumed_by_activity_id": "activity-invalid",
+            "consumed_command_fingerprint": "c" * 64,
+            "consumed_evidence_set_hash": canonical_evidence_set_hash(["evidence-a", "evidence-b"]),
+            "consumed_evidence_revision": 1,
+        })
+        with self.assertRaisesRegex(ValidationError, "fresh_read_transition_artifacts_required"):
+            WorkspaceActionCommit(
+                activity_identity="activity-invalid", command_fingerprint="c" * 64,
+                projection=current, receipt=receipt, event=event, lease=consumed,
+            )
+
+        repository = InMemoryWorkspaceRepository()
+        grant, fresh, _ = await complete_fresh_read(repository, item, idempotency_prefix="kind")
+        self.assertEqual("GATE1_GRANTED", grant.receipt.status)
+        self.assertEqual("FRESH_READ_COMPLETED", fresh.receipt.status)
+        with self.assertRaisesRegex(PolicyViolation, "fresh_read_transition_artifacts_required"):
+            await repository.commit_workspace_action_transition(fresh.copy(update={
+                "capability_result": None, "capability_audit": None,
+            }))
+        with self.assertRaisesRegex(PolicyViolation, "gate1_grant_issued_card_required"):
+            await repository.commit_workspace_action_transition(grant.copy(update={"issued_action": None}))
+        with self.assertRaisesRegex(PolicyViolation, "gate1_grant_lease_issuance_binding_invalid"):
+            await repository.commit_workspace_action_transition(grant.copy(update={
+                "lease": grant.lease.copy(update={"issuance_action_id": "other-card"}),
+            }))
+
+    async def test_action_coverage_is_tenant_bound_verified_and_conflicts_retry_fail_closed(self):
+        repository = InMemoryWorkspaceRepository()
+        first_item = binding("tenant-a")
+        second_item = binding("tenant-b")
+        _, first_fresh, _ = await complete_fresh_read(repository, first_item, idempotency_prefix="coverage-a")
+        _, second_fresh, _ = await complete_fresh_read(repository, second_item, idempotency_prefix="coverage-b")
+        first_coverage = first_fresh.capability_result.coverage[0]
+        second_coverage = second_fresh.capability_result.coverage[0]
+        self.assertNotEqual(first_coverage.tenant_id, second_coverage.tenant_id)
+        self.assertEqual(2, len(repository.workspace_action_coverage))
+        self.assertEqual(
+            first_coverage,
+            repository.workspace_action_coverage[(
+                first_coverage.tenant_id, first_coverage.case_id,
+                first_coverage.field, first_coverage.status.value,
+            )],
+        )
+        self.assertEqual(
+            second_coverage,
+            repository.workspace_action_coverage[(
+                second_coverage.tenant_id, second_coverage.case_id,
+                second_coverage.field, second_coverage.status.value,
+            )],
+        )
+
+        coverage_key = (
+            first_coverage.tenant_id, first_coverage.case_id,
+            first_coverage.field, first_coverage.status.value,
+        )
+        del repository.workspace_action_coverage[coverage_key]
+        with self.assertRaisesRegex(PolicyViolation, "workspace_action_transition_partial"):
+            await repository.workspace_action_commit(
+                first_item.tenant_id, first_item.case_id, first_fresh.receipt.idempotency_key,
+            )
+        repository.workspace_action_coverage[coverage_key] = first_coverage.copy(update={"note": "conflict"})
+        with self.assertRaisesRegex(PolicyViolation, "workspace_action_transition_partial"):
+            await repository.workspace_action_commit(
+                first_item.tenant_id, first_item.case_id, first_fresh.receipt.idempotency_key,
+            )
+        repository.workspace_action_coverage[coverage_key] = first_coverage
+        retried = await repository.workspace_action_commit(
+            first_item.tenant_id, first_item.case_id, first_fresh.receipt.idempotency_key,
+        )
+        self.assertEqual(first_fresh, retried)
+
+    async def test_conflicting_coverage_rolls_back_before_lease_consumption_then_retries_once(self):
+        item = binding()
+        now = datetime.now(timezone.utc)
+        repository = InMemoryWorkspaceRepository()
+        current = projection(item)
+        await repository.put_binding(item)
+        await repository.put_projection(current)
+        registry = CapabilityRegistry(
+            descriptors=[MetricsAdapter.descriptor], adapters={CapabilityName.METRICS: CurrentMetricsAdapter()},
+            scope_authority=AcceptingScope(), gate1_authority=Gate1LeaseAuthority(repository, now=lambda: now),
+        )
+        gate_card = NextBestActionGenerator(registry).generate(current, now)[0]
+        await repository.append_next_best_action(gate_card)
+        dispatcher = WorkspaceActivityDispatcher(repository, capability_registry=registry)
+        grant_command = ActionInvocationCommand(
+            incident_id=item.incident_id, run_id=item.run_id, topology_revision=item.topology_revision,
+            projection_revision=1, action_id=gate_card.action_id, idempotency_key="coverage-conflict-grant",
+        )
+        granted = await dispatcher.dispatch("workspace_execute_action_activity", WorkspaceActionPacket(
+            **item.dict(), projection=current, event_sequence=2, command=grant_command,
+            actor_tenant_id=item.tenant_id, actor_subject_id="subject-a", actor_roles=["viewer"],
+        ).dict())
+        read_card = next(
+            card for card in await repository.workspace_next_best_actions(item.tenant_id, item.case_id)
+            if card.cta.value == "run_read_capability"
+        )
+        read_command = ActionInvocationCommand(
+            incident_id=item.incident_id, run_id=item.run_id, topology_revision=item.topology_revision,
+            projection_revision=read_card.projection_revision, action_id=read_card.action_id,
+            idempotency_key="coverage-conflict-read",
+        )
+        read_packet = WorkspaceActionPacket(
+            **item.dict(), projection=IncidentProjection.parse_obj(granted["projection"]), event_sequence=3,
+            command=read_command, actor_tenant_id=item.tenant_id, actor_subject_id="subject-a", actor_roles=["viewer"],
+        )
+        expected = CoverageEntry(
+            tenant_id=item.tenant_id, case_id=item.case_id, field="telemetry_symptom",
+            status=CoverageStatus.FILLED, evidence_ids=["metric-evidence-tenant-a"],
+        )
+        coverage_key = (expected.tenant_id, expected.case_id, expected.field, expected.status.value)
+        repository.workspace_action_coverage[coverage_key] = expected.copy(update={"note": "conflicting"})
+        with self.assertRaisesRegex(PolicyViolation, "workspace_action_coverage_immutable"):
+            await dispatcher.dispatch("workspace_execute_action_activity", read_packet.dict())
+        active = await repository.workspace_gate1_lease(
+            item.tenant_id, item.case_id, granted["receipt"]["gate1_lease_id"],
+        )
+        self.assertEqual((Gate1LeaseStatus.ACTIVE, 1), (active.status, active.lease_revision))
+        self.assertEqual(0, len(repository.capability_audits))
+        self.assertEqual(1, len(repository.workspace_action_commits))
+
+        del repository.workspace_action_coverage[coverage_key]
+        accepted = await dispatcher.dispatch("workspace_execute_action_activity", read_packet.dict())
+        retried = await dispatcher.dispatch("workspace_execute_action_activity", read_packet.dict())
+        self.assertEqual(accepted["receipt"], retried["receipt"])
+        self.assertEqual(expected, repository.workspace_action_coverage[coverage_key])
+        self.assertEqual(2, len(repository.workspace_action_commits))
     async def test_lease_validates_full_command_and_exact_evidence_set_without_consuming(self):
         item = binding()
         active, store = granted_lease(item)
@@ -288,7 +485,7 @@ class Gate1CapabilityTests(unittest.IsolatedAsyncioTestCase):
             CapabilityAudience.USER_QA, context(item, gate1_lease_id=active.lease_id), request, ToolCallBudget(max_calls=1),
             evidence_admission=AcceptingAdmission(),
         )
-        self.assertEqual(["metric-evidence-a"], first.audit.evidence_refs)
+        self.assertEqual(["metric-evidence-tenant-a"], first.audit.evidence_refs)
         self.assertEqual(1, len(registry.audit_records))
         self.assertEqual(Gate1LeaseStatus.ACTIVE, active.status)
 

@@ -1,6 +1,7 @@
 """Postgres transaction proof for Gate 1 projection/outbox retries."""
 
 import asyncio
+import json
 import os
 import sys
 import unittest
@@ -21,7 +22,8 @@ from flowpulse_cp.capabilities import (
     CapabilityResult,
     EmptyCapabilityInput,
 )
-from flowpulse_cp.models import IncidentCase
+from flowpulse_cp.models import CoverageEntry, CoverageStatus, IncidentCase
+from flowpulse_cp.policy import PolicyViolation
 from flowpulse_cp.postgres import PostgresCaseRepository
 from flowpulse_cp.workspace_actions import (
     Gate1Lease,
@@ -91,6 +93,7 @@ class LiveWorkspaceActionAtomicityTests(unittest.TestCase):
                 updated = initial.copy(update={
                     "projection_revision": 2, "sequence": 2, "gate_revision": 2, "action_revision": 2,
                 })
+                gate_card = NextBestActionGenerator(registry).generate(initial, now)[0]
                 command_hash = sha256((suffix + ":command").encode("utf-8")).hexdigest()
                 lease = Gate1Lease(
                     **binding.dict(), lease_id="gate1-" + command_hash, lease_revision=1, subject_id="owner-{}".format(suffix),
@@ -99,12 +102,16 @@ class LiveWorkspaceActionAtomicityTests(unittest.TestCase):
                     projection_revision=2, evidence_revision=1, capability_registry_revision=registry.policy_version,
                     precondition_version="workspace-precondition.v1",
                     precondition_hash=NextBestActionGenerator._precondition_hash(updated),
-                    issuance_command_fingerprint=command_hash, evidence_set_hash=canonical_evidence_set_hash([]),
+                    issuance_command_fingerprint=command_hash,
+                    issuance_action_id=gate_card.action_id,
+                    issuance_card_version=gate_card.card_version,
+                    issuance_idempotency_key="idem-{}".format(suffix),
+                    evidence_set_hash=canonical_evidence_set_hash([]),
                     issued_at=now, expires_at=now + timedelta(minutes=30), status=Gate1LeaseStatus.ACTIVE,
                 )
                 cards = NextBestActionGenerator(registry).generate_after_gate1(updated, lease, now)
                 receipt = WorkspaceActionReceipt(
-                    **binding.dict(), action_id="gate-request-{}".format(suffix), idempotency_key="idem-{}".format(suffix),
+                    **binding.dict(), action_id=gate_card.action_id, idempotency_key="idem-{}".format(suffix),
                     status="GATE1_GRANTED", gate1_lease_id=lease.lease_id, reason="test-atomic",
                 )
                 event = IncidentEvent(
@@ -115,6 +122,7 @@ class LiveWorkspaceActionAtomicityTests(unittest.TestCase):
                 commit = WorkspaceActionCommit(
                     activity_identity="activity-{}".format(suffix), command_fingerprint=command_hash,
                     projection=updated, receipt=receipt, event=event, lease=lease, actions=cards,
+                    issued_action=gate_card,
                 )
 
                 def fail(checkpoint, target=boundary):
@@ -132,6 +140,7 @@ class LiveWorkspaceActionAtomicityTests(unittest.TestCase):
                     ))
                     await repository.put_workspace_binding(binding)
                     await repository.put_workspace_projection(initial)
+                    await repository.append_next_best_action(gate_card)
                     with self.subTest(boundary=boundary), self.assertRaisesRegex(RuntimeError, "injected:" + boundary):
                         await repository.commit_workspace_action_transition(commit)
 
@@ -146,16 +155,86 @@ class LiveWorkspaceActionAtomicityTests(unittest.TestCase):
                                  (SELECT count(*) FROM workspace_action_transitions WHERE tenant_id=$1 AND case_id=$2) AS transition""",
                             tenant, binding.case_id,
                         )
-                    self.assertEqual((0, 0, 0, 0, 0, 0), tuple(await repository._tenant(tenant, partial_counts)))
+                    self.assertEqual((0, 0, 1, 0, 0, 0), tuple(await repository._tenant(tenant, partial_counts)))
 
                     repository.failure_injector = None
                     accepted = await repository.commit_workspace_action_transition(commit)
                     self.assertEqual(commit, accepted)
                     retried = await repository.commit_workspace_action_transition(commit)
                     self.assertEqual(commit, retried)
-                    self.assertEqual((1, 1, 1, 1, 1, 1), tuple(await repository._tenant(tenant, partial_counts)))
+                    self.assertEqual((1, 1, 2, 1, 1, 1), tuple(await repository._tenant(tenant, partial_counts)))
                 finally:
                     await repository.close()
+        asyncio.run(run())
+
+    def test_postgres_transition_kind_and_coverage_conflicts_fail_closed(self):
+        async def run():
+            now = datetime.now(timezone.utc)
+            suffix = uuid4().hex
+            tenant = "tenant-coverage-{}".format(suffix)
+            binding = IncidentRunBinding(
+                tenant_id=tenant, incident_id="incident-{}".format(suffix), run_id="run-{}".format(suffix),
+                topology_revision="topology-{}".format(suffix), case_id="case-{}".format(suffix),
+                case_revision=1, workflow_id="workspace-{}".format(suffix), workflow_run_id="temporal-{}".format(suffix),
+                created_at=now,
+            )
+            repository = PostgresCaseRepository(self.dsn)
+            await repository.connect()
+            try:
+                await repository.put_case(IncidentCase(
+                    case_id=binding.case_id, tenant_id=binding.tenant_id, case_revision=1,
+                    workflow_id=binding.workflow_id, workflow_run_id=binding.workflow_run_id,
+                    severity="SEV2", environment="local", affected_entities=["checkout"],
+                    created_at=now, updated_at=now,
+                ))
+                coverage = CoverageEntry(
+                    tenant_id=tenant, case_id=binding.case_id, field="telemetry_symptom",
+                    status=CoverageStatus.FILLED, evidence_ids=["evidence-{}".format(suffix)],
+                )
+                await repository.put_coverage(coverage)
+                await repository.put_coverage(coverage)
+                with self.assertRaisesRegex(PolicyViolation, "workspace_action_coverage_immutable"):
+                    await repository.put_coverage(coverage.copy(update={"note": "conflicting"}))
+                await repository.put_coverage(coverage)
+
+                async def coverage_rows(connection):
+                    return await connection.fetch(
+                        """SELECT entry_id, payload FROM coverage_entries
+                           WHERE tenant_id=$1 AND case_id=$2 AND field=$3 AND status=$4""",
+                        coverage.tenant_id, coverage.case_id, coverage.field, coverage.status.value,
+                    )
+                rows = await repository._tenant(tenant, coverage_rows)
+                self.assertEqual(1, len(rows))
+                payload = rows[0]["payload"]
+                self.assertEqual(coverage, CoverageEntry.parse_obj(
+                    json.loads(payload) if isinstance(payload, str) else payload,
+                ))
+
+                command_hash = sha256((suffix + ":invalid").encode("utf-8")).hexdigest()
+                active = Gate1Lease(
+                    **binding.dict(), lease_id="gate1-" + command_hash, lease_revision=2,
+                    subject_id="owner-{}".format(suffix), required_permission="incident:read",
+                    component_id="checkout", capability=CapabilityName.METRICS.value,
+                    data_class=CapabilityDataClass.CURRENT_INCIDENT.value, tool_schema_version="metrics-input.v1",
+                    projection_revision=1, evidence_revision=1, capability_registry_revision="capability-policy.v2",
+                    precondition_version="workspace-precondition.v1", precondition_hash="a" * 64,
+                    issuance_command_fingerprint=command_hash, evidence_set_hash=canonical_evidence_set_hash([]),
+                    issued_at=now, expires_at=now + timedelta(minutes=30), status=Gate1LeaseStatus.CONSUMED,
+                    consumed_by_activity_id="invalid-activity", consumed_command_fingerprint=command_hash,
+                    consumed_evidence_set_hash=canonical_evidence_set_hash([]), consumed_evidence_revision=1,
+                )
+                receipt = WorkspaceActionReceipt(
+                    **binding.dict(), action_id="read-card-{}".format(suffix), idempotency_key="invalid-{}".format(suffix),
+                    status="FRESH_READ_COMPLETED", gate1_lease_id=active.lease_id, reason="invalid-probe",
+                )
+                bypassed = WorkspaceActionCommit.construct(
+                    receipt=receipt, lease=active, actions=[], issued_action=None,
+                    capability_result=None, capability_audit=None,
+                )
+                with self.assertRaisesRegex(PolicyViolation, "fresh_read_transition_artifacts_required"):
+                    await repository.commit_workspace_action_transition(bypassed)
+            finally:
+                await repository.close()
         asyncio.run(run())
 
 

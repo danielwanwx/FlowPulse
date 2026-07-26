@@ -47,6 +47,7 @@ from .workspace_actions import (
     WorkspaceActionCommit,
     WorkspaceActionReceipt,
     validate_gate1_issuance_binding,
+    validate_workspace_action_commit_kind,
 )
 
 
@@ -67,6 +68,16 @@ def _workspace_binding(record: Any) -> IncidentRunBinding:
     if isinstance(record, Mapping):
         return IncidentRunBinding.parse_obj({name: record[name] for name in fields})
     return IncidentRunBinding.parse_obj({name: getattr(record, name) for name in fields})
+
+
+def _coverage_entry_id(entry: CoverageEntry):
+    """Stable coverage identity includes the tenant before it reaches the global PK."""
+    return uuid5(
+        NAMESPACE_URL,
+        "coverage:{}:{}:{}:{}".format(
+            entry.tenant_id, entry.case_id, entry.field, entry.status.value,
+        ),
+    )
 
 
 async def _lock_workspace_mapping(connection: asyncpg.Connection, binding: IncidentRunBinding) -> None:
@@ -553,6 +564,42 @@ class PostgresCaseRepository:
             return WorkspaceActionReceipt.parse_obj(_decode(row["payload"])) if row else None
         return await self._tenant(tenant_id, operation)
 
+    async def _persist_coverage_entry(
+        self, connection: asyncpg.Connection, entry: CoverageEntry,
+    ) -> CoverageEntry:
+        """Append one tenant-bound coverage record or prove an exact prior append.
+
+        Coverage is part of the action evidence ledger.  The primary key is
+        globally unique, so its deterministic material must include tenant;
+        the scoped natural-key lookup also recognizes an exact legacy row but
+        rejects any conflicting payload instead of silently dropping it.
+        """
+        entry_id = _coverage_entry_id(entry)
+        await connection.execute(
+            "SELECT pg_advisory_xact_lock(hashtext($1))",
+            "workspace-coverage:{}:{}:{}:{}".format(
+                entry.tenant_id, entry.case_id, entry.field, entry.status.value,
+            ),
+        )
+        rows = await connection.fetch(
+            """SELECT entry_id, payload FROM coverage_entries
+               WHERE tenant_id=$1 AND case_id=$2 AND field=$3 AND status=$4""",
+            entry.tenant_id, entry.case_id, entry.field, entry.status.value,
+        )
+        if rows:
+            if len(rows) != 1:
+                raise PolicyViolation("workspace_action_coverage_ambiguous")
+            existing = CoverageEntry.parse_obj(_decode(rows[0]["payload"]))
+            if existing != entry:
+                raise PolicyViolation("workspace_action_coverage_immutable")
+            return existing
+        await connection.execute(
+            """INSERT INTO coverage_entries (entry_id, case_id, tenant_id, field, status, payload)
+               VALUES ($1,$2,$3,$4,$5,$6::jsonb)""",
+            entry_id, entry.case_id, entry.tenant_id, entry.field, entry.status.value, _payload(entry),
+        )
+        return entry
+
     async def _persist_workspace_action_capability(
         self, connection: asyncpg.Connection, commit: WorkspaceActionCommit,
     ) -> None:
@@ -662,14 +709,7 @@ class PostgresCaseRepository:
         for coverage in result.coverage:
             if (coverage.tenant_id, coverage.case_id) != (commit.projection.tenant_id, commit.projection.case_id):
                 raise PolicyViolation("capability_result_coverage_scope_mismatch")
-            await connection.execute(
-                """INSERT INTO coverage_entries (entry_id, case_id, tenant_id, field, status, payload)
-                   VALUES ($1,$2,$3,$4,$5,$6::jsonb) ON CONFLICT DO NOTHING""",
-                uuid5(NAMESPACE_URL, "coverage:{}:{}:{}".format(
-                    coverage.case_id, coverage.field, coverage.status.value,
-                )),
-                coverage.case_id, coverage.tenant_id, coverage.field, coverage.status.value, _payload(coverage),
-            )
+            await self._persist_coverage_entry(connection, coverage)
         await self._action_checkpoint("after_evidence_admission")
         existing_audit = await connection.fetchrow(
             "SELECT payload FROM tool_calls WHERE tenant_id=$1 AND tool_call_id=$2",
@@ -693,6 +733,7 @@ class PostgresCaseRepository:
         self, connection: asyncpg.Connection, commit: WorkspaceActionCommit,
     ) -> None:
         """Verify a stored outbox record still has its complete ledger set."""
+        validate_workspace_action_commit_kind(commit)
         projection = await connection.fetchrow(
             """SELECT payload FROM incident_projections
                WHERE tenant_id=$1 AND run_id=$2 AND topology_revision=$3 AND projection_revision=$4""",
@@ -764,6 +805,17 @@ class PostgresCaseRepository:
                 )
                 if row is None or ClaimRecord.parse_obj(_decode(row["payload"])) != claim:
                     raise PolicyViolation("workspace_action_transition_partial")
+            for coverage in commit.capability_result.coverage:
+                rows = await connection.fetch(
+                    """SELECT payload FROM coverage_entries
+                       WHERE tenant_id=$1 AND case_id=$2 AND field=$3 AND status=$4""",
+                    coverage.tenant_id, coverage.case_id, coverage.field, coverage.status.value,
+                )
+                if (
+                    len(rows) != 1
+                    or CoverageEntry.parse_obj(_decode(rows[0]["payload"])) != coverage
+                ):
+                    raise PolicyViolation("workspace_action_transition_partial")
 
     async def workspace_action_commit(
         self, tenant_id: str, case_id: str, idempotency_key: str,
@@ -790,12 +842,21 @@ class PostgresCaseRepository:
                 or commit.receipt.idempotency_key != idempotency_key
             ):
                 raise PolicyViolation("workspace_action_transition_partial")
+            # The transition carries the only authoritative capability actor;
+            # re-establish that subject-local ACL before verifying its evidence
+            # ledger.  A caller cannot choose this value on the read API.
+            if commit.capability_audit is not None:
+                await connection.execute(
+                    "SELECT set_config('app.subject_id', $1, true)",
+                    commit.capability_audit.subject_id,
+                )
             await self._verify_workspace_action_commit(connection, commit)
             return commit
         return await self._tenant(tenant_id, operation)
 
     async def commit_workspace_action_transition(self, commit: WorkspaceActionCommit) -> WorkspaceActionCommit:
         """Append every Gate 1 result in one transaction or persist none of it."""
+        validate_workspace_action_commit_kind(commit)
         binding = _workspace_binding(commit.projection)
         if (
             _workspace_binding(commit.receipt) != binding
@@ -1391,12 +1452,7 @@ class PostgresCaseRepository:
 
     async def put_coverage(self, entry: CoverageEntry) -> None:
         async def operation(connection: asyncpg.Connection) -> None:
-            await connection.execute(
-                """INSERT INTO coverage_entries (entry_id, case_id, tenant_id, field, status, payload)
-                   VALUES ($1,$2,$3,$4,$5,$6::jsonb) ON CONFLICT DO NOTHING""",
-                uuid5(NAMESPACE_URL, "coverage:{}:{}:{}".format(entry.case_id, entry.field, entry.status.value)),
-                entry.case_id, entry.tenant_id, entry.field, entry.status.value, _payload(entry),
-            )
+            await self._persist_coverage_entry(connection, entry)
         await self._tenant(entry.tenant_id, operation)
 
     async def put_assignment(self, assignment: InvestigatorAssignment) -> None:

@@ -136,13 +136,14 @@ class LiveWorkspaceGate1ProductionTests(unittest.TestCase):
         status, cards = self.request("GET", "/v1/incidents/{}/actions".format(projection["case_id"]))
         self.assertEqual(200, status, cards)
         read = next(card for card in cards if card["cta"] == "run_read_capability")
+        read_idempotency_key = "read-compose-{}".format(uuid4().hex)
         status, completed = self.request("POST", "/v1/incidents/{}/actions/{}".format(
             projection["case_id"], read["action_id"],
         ), {
             "incident_id": projection["incident_id"], "run_id": projection["run_id"],
             "topology_revision": projection["topology_revision"],
             "projection_revision": read["projection_revision"], "action_id": read["action_id"],
-            "idempotency_key": "read-compose-{}".format(uuid4().hex),
+            "idempotency_key": read_idempotency_key,
         })
         self.assertEqual(202, status, completed)
         self.assertEqual("FRESH_READ_COMPLETED", completed["status"])
@@ -156,6 +157,7 @@ class LiveWorkspaceGate1ProductionTests(unittest.TestCase):
                         """SELECT
                              (SELECT count(*) FROM evidence_envelopes WHERE tenant_id='tenant-minio' AND case_id=$1) AS evidence,
                              (SELECT count(*) FROM tool_calls WHERE tenant_id='tenant-minio' AND case_id=$1 AND status='COMPLETED') AS audits,
+                             (SELECT count(*) FROM coverage_entries WHERE tenant_id='tenant-minio' AND case_id=$1) AS coverage,
                              (SELECT count(*) FROM workspace_action_transitions WHERE tenant_id='tenant-minio' AND case_id=$1) AS transitions,
                              (SELECT count(*) FROM incident_projection_events WHERE tenant_id='tenant-minio' AND case_id=$1) AS events""",
                         projection["case_id"],
@@ -166,12 +168,18 @@ class LiveWorkspaceGate1ProductionTests(unittest.TestCase):
                         projection["case_id"],
                     )
                     return rows, lease["payload"]
-                return await repository._tenant("tenant-minio", operation, subject_id="owner-minio")
+                rows, lease = await repository._tenant("tenant-minio", operation, subject_id="owner-minio")
+                commit = await repository.workspace_action_commit(
+                    "tenant-minio", projection["case_id"], read_idempotency_key,
+                )
+                return rows, lease, commit
             finally:
                 await repository.close()
 
-        rows, lease_payload = asyncio.run(counts())
-        self.assertEqual((1, 1, 2, 3), tuple(rows))
+        rows, lease_payload, committed_read = asyncio.run(counts())
+        self.assertEqual((1, 1, 1, 2, 3), tuple(rows))
+        self.assertIsNotNone(committed_read)
+        self.assertEqual(1, len(committed_read.capability_result.coverage))
         payload = lease_payload if isinstance(lease_payload, dict) else json.loads(lease_payload)
         self.assertEqual("CONSUMED", payload["status"])
         self.assertEqual(canonical_evidence_set_hash([]), payload["evidence_set_hash"])

@@ -341,11 +341,79 @@ class WorkspaceActionCommit(StrictModel):
 
     @root_validator(allow_reuse=True)
     def capability_records_are_complete(cls, values):
-        result = values.get("capability_result")
-        audit = values.get("capability_audit")
-        if (result is None) != (audit is None):
-            raise ValueError("workspace_action_capability_result_and_audit_must_match")
+        error = _workspace_action_commit_kind_error(
+            values.get("receipt"), values.get("lease"), values.get("actions", []),
+            values.get("issued_action"), values.get("capability_result"), values.get("capability_audit"),
+            values.get("command_fingerprint"),
+        )
+        if error is not None:
+            raise ValueError(error)
         return values
+
+
+def _workspace_action_commit_kind_error(
+    receipt: Optional[WorkspaceActionReceipt], lease: Optional[Gate1Lease], actions: List[NextBestAction],
+    issued_action: Optional[NextBestAction], capability_result: Optional[CapabilityResult],
+    capability_audit: Optional[CapabilityAuditRecord], command_fingerprint: Optional[str],
+) -> Optional[str]:
+    """Return the one permitted artifact shape for each authoritative action transition.
+
+    This deliberately treats the transition kind as a persistence invariant,
+    not an activity convention.  Repository entry points call the public
+    wrapper below too, so ``BaseModel.construct`` cannot bypass it.
+    """
+    if not isinstance(receipt, WorkspaceActionReceipt):
+        return "workspace_action_receipt_required"
+    if lease is not None and not isinstance(lease, Gate1Lease):
+        return "workspace_action_lease_invalid"
+    if issued_action is not None and not isinstance(issued_action, NextBestAction):
+        return "workspace_action_issued_card_invalid"
+    if (capability_result is None) != (capability_audit is None):
+        return "workspace_action_capability_result_and_audit_must_match"
+    lease_status = getattr(getattr(lease, "status", None), "value", getattr(lease, "status", None))
+    lease_revision = getattr(lease, "lease_revision", None)
+    if lease is None or receipt.gate1_lease_id != getattr(lease, "lease_id", None):
+        return "workspace_action_receipt_lease_binding_required"
+    if receipt.status == "FRESH_READ_COMPLETED":
+        if lease_status != Gate1LeaseStatus.CONSUMED.value:
+            return "fresh_read_transition_consumed_lease_required"
+        if capability_result is None or capability_audit is None:
+            return "fresh_read_transition_artifacts_required"
+        if issued_action is not None or actions:
+            return "fresh_read_transition_incompatible_artifacts"
+        return None
+    if receipt.status == "GATE1_GRANTED":
+        if lease_status != Gate1LeaseStatus.ACTIVE.value or lease_revision != 1:
+            return "gate1_grant_active_revision_one_lease_required"
+        if issued_action is None:
+            return "gate1_grant_issued_card_required"
+        if capability_result is not None or capability_audit is not None:
+            return "gate1_grant_capability_artifacts_forbidden"
+        if issued_action.action_id != receipt.action_id or issued_action.cta != NextBestActionCta.REQUEST_GATE1:
+            return "gate1_grant_issued_card_binding_invalid"
+        if issued_action.gate1_lease_id is not None:
+            return "gate1_grant_issued_card_must_be_pre_lease"
+        if (
+            lease.issuance_action_id != issued_action.action_id
+            or lease.issuance_card_version != issued_action.card_version
+            or lease.issuance_idempotency_key != receipt.idempotency_key
+            or lease.issuance_command_fingerprint != command_fingerprint
+        ):
+            return "gate1_grant_lease_issuance_binding_invalid"
+        return None
+    return "workspace_action_transition_kind_unsupported"
+
+
+def validate_workspace_action_commit_kind(commit: WorkspaceActionCommit) -> None:
+    """Fail closed at repository boundaries even for constructed model instances."""
+    error = _workspace_action_commit_kind_error(
+        getattr(commit, "receipt", None), getattr(commit, "lease", None),
+        getattr(commit, "actions", []), getattr(commit, "issued_action", None),
+        getattr(commit, "capability_result", None), getattr(commit, "capability_audit", None),
+        getattr(commit, "command_fingerprint", None),
+    )
+    if error is not None:
+        raise PolicyViolation(error)
 
 
 class Gate1LeaseStore(Protocol):
