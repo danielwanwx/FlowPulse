@@ -616,11 +616,77 @@ class Gate1CapabilityTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(1, len(repository.workspace_action_commits))
                 self.assertEqual(0, len(repository.capability_audits))
 
+    async def test_fresh_read_derives_the_only_lifecycle_projection_receipt_and_event_successor(self):
+        """A row-shaped fresh result cannot invent lifecycle or success truth."""
+        item = binding()
+
+        async def assert_rejected(label, commit):
+            repository, grant, fresh = await staged_fresh_transition(
+                item, idempotency_prefix="lifecycle-" + label,
+            )
+            with self.assertRaisesRegex(PolicyViolation, "fresh_read_(projection|receipt|event)_successor_invalid"):
+                await repository.commit_workspace_action_transition(commit(fresh))
+            active = await repository.workspace_gate1_lease(item.tenant_id, item.case_id, grant.lease.lease_id)
+            self.assertEqual((Gate1LeaseStatus.ACTIVE, 1), (active.status, active.lease_revision))
+            self.assertEqual(1, len(repository.workspace_action_commits))
+            self.assertEqual(0, len(repository.capability_audits))
+
+        for field, value in {
+            "lifecycle_state": ProjectionState.AWAITING_OWNER,
+            "status": "forged-lifecycle-truth",
+            "degraded_code": "forged-degraded-code",
+            "impacted_path": ["checkout"],
+            "projection_revision": 99,
+            "sequence": 99,
+            "gate_revision": 99,
+            "action_revision": 99,
+        }.items():
+            with self.subTest(projection_field=field):
+                await assert_rejected(
+                    "projection-" + field,
+                    lambda fresh, field=field, value=value: fresh.copy(update={
+                        "projection": fresh.projection.copy(update={field: value}),
+                    }),
+                )
+
+        await assert_rejected(
+            "unknown-projection-field",
+            lambda fresh: fresh.copy(update={
+                "projection": fresh.projection.copy(update={"diagnosis_summary": "forged diagnosis"}),
+            }),
+        )
+        await assert_rejected(
+            "receipt",
+            lambda fresh: fresh.copy(update={
+                "receipt": fresh.receipt.copy(update={"reason": "forged success"}),
+            }),
+        )
+        await assert_rejected(
+            "event",
+            lambda fresh: fresh.copy(update={
+                "event": fresh.event.copy(update={"payload": {"forged": "success"}}),
+            }),
+        )
+        await assert_rejected(
+            "constructed",
+            lambda fresh: WorkspaceActionCommit.construct(**{
+                **fresh.__dict__,
+                "projection": fresh.projection.copy(update={"status": "forged-lifecycle-truth"}),
+            }),
+        )
+
     async def test_expiry_after_source_result_and_before_atomic_commit_leaves_lease_active_then_retries_once(self):
         """The authoritative commit clock, not only pre-read validation, gates consumption."""
         item = binding()
         repository, grant, fresh = await staged_fresh_transition(item, idempotency_prefix="expiry-before-commit")
-        repository._now = lambda: fresh.lease.expires_at + timedelta(microseconds=1)
+        clock = [fresh.lease.issued_at + timedelta(seconds=1)]
+        repository._now = lambda: clock[0]
+
+        def expire_after_admission(checkpoint):
+            if checkpoint == "after_audit":
+                clock[0] = fresh.lease.expires_at + timedelta(microseconds=1)
+
+        repository.failure_injector = expire_after_admission
         with self.assertRaisesRegex(PolicyViolation, "gate1_(authoritative_read_card|consumed_lease)_expired"):
             await repository.commit_workspace_action_transition(fresh)
         active = await repository.workspace_gate1_lease(item.tenant_id, item.case_id, grant.lease.lease_id)
@@ -628,7 +694,8 @@ class Gate1CapabilityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, len(repository.workspace_action_commits))
         self.assertEqual(0, len(repository.capability_audits))
 
-        repository._now = lambda: fresh.lease.issued_at + timedelta(seconds=1)
+        repository.failure_injector = None
+        clock[0] = fresh.lease.issued_at + timedelta(seconds=1)
         self.assertEqual(fresh, await repository.commit_workspace_action_transition(fresh))
         self.assertEqual(fresh, await repository.commit_workspace_action_transition(fresh))
 

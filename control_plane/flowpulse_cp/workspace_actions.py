@@ -100,11 +100,12 @@ def workspace_permissions_for_roles(roles: List[str]) -> List[str]:
 
 
 class WorkspaceSubjectGrant(StrictModel):
-    """Append-only subject capability grant attached to one durable case binding."""
+    """Latest immutable scoped successor of a durable subject membership grant."""
 
     tenant_id: NonEmpty
     case_id: NonEmpty
     subject_id: NonEmpty
+    scope_revision: PositiveInt = 1
     roles: List[NonEmpty] = Field(default_factory=list, max_items=16)
     permissions: List[NonEmpty] = Field(default_factory=list, max_items=16)
     created_at: datetime
@@ -815,6 +816,93 @@ def validate_authoritative_gate1_read_card(
     ):
         raise PolicyViolation("gate1_authoritative_read_card_mismatch")
     return card
+
+
+def validate_authoritative_fresh_read_transition(
+    prior_projection: IncidentProjection, active_lease: Gate1Lease,
+    grant: Optional[WorkspaceActionCommit], commit: WorkspaceActionCommit,
+    now: Optional[datetime] = None,
+) -> NextBestAction:
+    """Derive the only fresh-read successor from locked Gate 1 authority.
+
+    The activity may acquire source data, but it is not allowed to author a
+    lifecycle result.  This check deliberately reconstructs every
+    non-evidence artifact from the locked projection, immutable grant, and
+    read card.  Both repositories invoke it before any mutation and again at
+    the final commit boundary, so ``copy`` or ``construct`` callers cannot
+    smuggle a plausible projection, receipt, event, or outbox payload through
+    after the source phase has completed.
+    """
+    if (
+        not isinstance(prior_projection, IncidentProjection)
+        or not isinstance(commit.projection, IncidentProjection)
+        or not isinstance(commit.receipt, WorkspaceActionReceipt)
+        or not isinstance(commit.event, IncidentEvent)
+        or commit.receipt.status != "FRESH_READ_COMPLETED"
+        or commit.capability_result is None
+        or commit.capability_audit is None
+    ):
+        raise PolicyViolation("fresh_read_projection_successor_invalid")
+    # ``BaseModel.copy``/``construct`` can carry an undeclared field even
+    # though ordinary request parsing has ``extra=forbid``.  A fresh-read
+    # successor is exactly the declared projection model; it may not include
+    # a caller-authored diagnosis/verifier/success field.
+    if set(commit.projection.__dict__) != set(IncidentProjection.__fields__):
+        raise PolicyViolation("fresh_read_projection_successor_invalid")
+    if _workspace_binding_tuple(prior_projection) != _workspace_binding_tuple(active_lease):
+        raise PolicyViolation("fresh_read_projection_successor_invalid")
+    read_card = validate_authoritative_gate1_read_card(active_lease, grant, commit, now)
+    validate_consumed_gate1_lease_transition(
+        active_lease, commit.lease, command_fingerprint=commit.command_fingerprint,
+        capability_audit=commit.capability_audit, receipt=commit.receipt,
+        activity_identity=commit.activity_identity, capability_result=commit.capability_result,
+        read_card=read_card, now=now,
+    )
+    evidence_refs = list(prior_projection.evidence_refs)
+    for evidence in commit.capability_result.evidence:
+        if evidence.evidence_id not in evidence_refs:
+            evidence_refs.append(evidence.evidence_id)
+    expected_projection = prior_projection.copy(update={
+        "projection_revision": prior_projection.projection_revision + 1,
+        "sequence": prior_projection.sequence + 1,
+        "evidence_revision": prior_projection.evidence_revision + 1,
+        "action_revision": prior_projection.action_revision + 1,
+        # The transition timestamp is not lifecycle truth.  It is retained
+        # only as the activity's append timestamp while every semantic field
+        # is copied from the locked predecessor.
+        "generated_at": commit.projection.generated_at,
+        "evidence_refs": evidence_refs,
+    })
+    if commit.projection != expected_projection:
+        raise PolicyViolation("fresh_read_projection_successor_invalid")
+    expected_receipt = WorkspaceActionReceipt(
+        **{name: getattr(prior_projection, name) for name in IncidentRunBinding.__fields__},
+        action_id=read_card.action_id,
+        idempotency_key=commit.receipt.idempotency_key,
+        status="FRESH_READ_COMPLETED",
+        gate1_lease_id=active_lease.lease_id,
+        reason="temporal_gate1_bound_read_completed",
+        external_write_performed=False,
+    )
+    if commit.receipt != expected_receipt:
+        raise PolicyViolation("fresh_read_receipt_successor_invalid")
+    expected_event = IncidentEvent(
+        **{name: getattr(prior_projection, name) for name in IncidentRunBinding.__fields__},
+        projection_revision=expected_projection.projection_revision,
+        sequence=expected_projection.sequence,
+        event_type="workspace.action.fresh_read_completed",
+        occurred_at=commit.event.occurred_at,
+        payload={
+            "action_id": expected_receipt.action_id,
+            "idempotency_key": expected_receipt.idempotency_key,
+            "command_fingerprint": commit.command_fingerprint,
+            "activity_identity": commit.activity_identity,
+        },
+        evidence_refs=evidence_refs,
+    )
+    if commit.event != expected_event:
+        raise PolicyViolation("fresh_read_event_successor_invalid")
+    return read_card
 
 
 def validate_authoritative_gate1_grant_transition(

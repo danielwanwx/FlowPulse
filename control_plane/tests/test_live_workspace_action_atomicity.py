@@ -398,7 +398,8 @@ class LiveWorkspaceActionAtomicityTests(unittest.TestCase):
             })
             receipt = WorkspaceActionReceipt(
                 **binding.dict(), action_id=read_card.action_id, idempotency_key=fresh_idempotency,
-                status="FRESH_READ_COMPLETED", gate1_lease_id=lease.lease_id, reason="test-fresh",
+                status="FRESH_READ_COMPLETED", gate1_lease_id=lease.lease_id,
+                reason="temporal_gate1_bound_read_completed",
             )
             fresh = WorkspaceActionCommit(
                 activity_identity=transition_activity_id, command_fingerprint=fresh_fingerprint,
@@ -559,6 +560,38 @@ class LiveWorkspaceActionAtomicityTests(unittest.TestCase):
                         "lease": forged_lease, "capability_audit": forged_audit,
                     }))
 
+                # Even an internally consistent payload cannot decide a new
+                # lifecycle/status/revision truth.  The locked grant
+                # projection is the only parent of a fresh-read successor.
+                for field, value in {
+                    "lifecycle_state": ProjectionState.AWAITING_OWNER,
+                    "status": "forged-lifecycle-truth",
+                    "impacted_path": ["checkout"],
+                    "projection_revision": 99,
+                    "sequence": 99,
+                    "gate_revision": 99,
+                    "action_revision": 99,
+                }.items():
+                    with self.subTest(forged_projection_field=field):
+                        forged = fresh.copy(update={
+                            "projection": fresh.projection.copy(update={field: value}),
+                        })
+                        with self.assertRaisesRegex(PolicyViolation, "fresh_read_projection_successor_invalid"):
+                            await repository.commit_workspace_action_transition(forged)
+                        bypassed = WorkspaceActionCommit.construct(**{
+                            **fresh.__dict__, "projection": fresh.projection.copy(update={field: value}),
+                        })
+                        with self.assertRaisesRegex(PolicyViolation, "fresh_read_projection_successor_invalid"):
+                            await repository.commit_workspace_action_transition(bypassed)
+                with self.assertRaisesRegex(PolicyViolation, "fresh_read_receipt_successor_invalid"):
+                    await repository.commit_workspace_action_transition(fresh.copy(update={
+                        "receipt": fresh.receipt.copy(update={"reason": "forged-success"}),
+                    }))
+                with self.assertRaisesRegex(PolicyViolation, "fresh_read_event_successor_invalid"):
+                    await repository.commit_workspace_action_transition(fresh.copy(update={
+                        "event": fresh.event.copy(update={"payload": {"forged": "success"}}),
+                    }))
+
                 async def counts(connection):
                     return await connection.fetchrow(
                         """SELECT
@@ -575,12 +608,21 @@ class LiveWorkspaceActionAtomicityTests(unittest.TestCase):
                 self.assertEqual((Gate1LeaseStatus.ACTIVE, 1), (active.status, active.lease_revision))
 
                 original_clock = repository._workspace_transition_now
-                async def expired_commit_clock(connection):
-                    return lease.expires_at + timedelta(microseconds=1)
-                repository._workspace_transition_now = expired_commit_clock
+                clock = [lease.issued_at + timedelta(seconds=1)]
+
+                async def commit_clock(connection):
+                    return clock[0]
+
+                async def expire_after_audit(checkpoint):
+                    if checkpoint == "after_audit":
+                        clock[0] = lease.expires_at + timedelta(microseconds=1)
+
+                repository._workspace_transition_now = commit_clock
+                repository.failure_injector = expire_after_audit
                 with self.assertRaisesRegex(PolicyViolation, "gate1_(authoritative_read_card|consumed_lease)_expired"):
                     await repository.commit_workspace_action_transition(fresh)
                 repository._workspace_transition_now = original_clock
+                repository.failure_injector = None
                 self.assertEqual((1, 0, 0, 0, 0, 1), tuple(await repository._tenant(tenant, counts, subject_id=subject)))
                 active = await repository.workspace_gate1_lease(tenant, binding.case_id, lease.lease_id)
                 self.assertEqual((Gate1LeaseStatus.ACTIVE, 1), (active.status, active.lease_revision))

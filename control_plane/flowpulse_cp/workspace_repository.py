@@ -18,9 +18,8 @@ from .workspace_actions import (
     WorkspaceSubjectGrant,
     WorkspaceActionCommit,
     WorkspaceActionReceipt,
-    validate_authoritative_gate1_read_card,
+    validate_authoritative_fresh_read_transition,
     validate_authoritative_gate1_grant_transition,
-    validate_consumed_gate1_lease_transition,
     validate_fresh_read_evidence_admission,
     validate_workspace_action_commit_kind,
 )
@@ -446,6 +445,8 @@ class InMemoryWorkspaceRepository:
             "capability_audits": copy.deepcopy(self.capability_audits),
         }
         try:
+            fresh_prior_projection = None
+            fresh_active_lease = None
             if commit.issued_action is not None:
                 if _binding_key(commit.issued_action) != _binding_key(commit.projection):
                     raise PolicyViolation("workspace_action_transition_binding_mismatch")
@@ -479,13 +480,16 @@ class InMemoryWorkspaceRepository:
                 )
                 if active is None:
                     raise PolicyViolation("gate1_lease_not_found")
-                read_card = validate_authoritative_gate1_read_card(active, grant, commit, self._now())
-                validate_consumed_gate1_lease_transition(
-                    active, commit.lease, command_fingerprint=commit.command_fingerprint,
-                    capability_audit=commit.capability_audit, receipt=commit.receipt,
-                    activity_identity=commit.activity_identity, capability_result=commit.capability_result,
-                    read_card=read_card, now=self._now(),
+                prior_projection = await self.get_projection(
+                    commit.projection.tenant_id, commit.projection.case_id,
                 )
+                if prior_projection is None:
+                    raise PolicyViolation("fresh_read_projection_not_found")
+                validate_authoritative_fresh_read_transition(
+                    prior_projection, active, grant, commit, self._now(),
+                )
+                fresh_prior_projection = prior_projection
+                fresh_active_lease = active
             if commit.capability_result is not None:
                 audit = commit.capability_audit
                 if audit is None or _binding_key(audit) != _binding_key(commit.projection):
@@ -545,6 +549,20 @@ class InMemoryWorkspaceRepository:
             self._action_checkpoint("after_receipt")
             await self.append_workspace_event(commit.event)
             self._action_checkpoint("after_event")
+            # Recheck at the last in-memory transaction boundary.  The
+            # source/admission/audit path may cross the short Gate 1 TTL.
+            if fresh_active_lease is not None:
+                revisions = self.gate1_leases.get((
+                    fresh_active_lease.tenant_id, fresh_active_lease.case_id, fresh_active_lease.lease_id,
+                ), [])
+                if len(revisions) < 2 or revisions[-2] != fresh_active_lease:
+                    raise PolicyViolation("gate1_authoritative_read_card_missing")
+                final_grant = await self.workspace_gate1_grant_transition(
+                    fresh_active_lease.tenant_id, fresh_active_lease.case_id, fresh_active_lease.lease_id,
+                )
+                validate_authoritative_fresh_read_transition(
+                    fresh_prior_projection, revisions[-2], final_grant, commit, self._now(),
+                )
             self.workspace_action_commits[key] = commit
             self._action_checkpoint("after_transition")
             return commit

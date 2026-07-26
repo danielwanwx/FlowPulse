@@ -15,7 +15,23 @@ from uuid import uuid4
 
 import asyncpg
 
+from flowpulse_cp.capabilities import (
+    CapabilityAudience,
+    CapabilityDataClass,
+    CapabilityDescriptor,
+    CapabilityGate,
+    CapabilityName,
+    CapabilityRegistry,
+    CapabilityResult,
+    EmptyCapabilityInput,
+)
+from flowpulse_cp.models import IncidentCase
 from flowpulse_cp.postgres import PostgresCaseRepository
+from flowpulse_cp.workspace_actions import (
+    ActionInvocationCommand,
+    NextBestActionGenerator,
+    WorkspaceActionPacket,
+)
 from flowpulse_cp.workspace_activities import WorkspaceActivityDispatcher
 from flowpulse_cp.workspace_models import (
     GraphMembership,
@@ -31,6 +47,22 @@ from flowpulse_cp.workspace_models import (
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATIONS = ROOT / "migrations"
 SUPPORTED_001_002_BASELINE_SHA = "b7541d17f9f662bc23912c9dbd55244a336274a7"
+
+
+class LegacyScopeAdapter:
+    """Bound adapter only for proving a post-upgrade Gate 1 grant."""
+
+    descriptor = CapabilityDescriptor(
+        capability=CapabilityName.METRICS, version="legacy-scope-metrics.v1",
+        fresh_read=True, enabled=True, audiences=[CapabilityAudience.USER_QA],
+        data_classes=[CapabilityDataClass.CURRENT_INCIDENT],
+        required_gate=CapabilityGate.GATE1, input_schema="legacy-scope-metrics-input.v1",
+    )
+    input_model = EmptyCapabilityInput
+    result_model = CapabilityResult
+
+    async def invoke(self, parsed_input, invocation_context):
+        return CapabilityResult(summary="not used by Gate 1 grant")
 
 
 @unittest.skipUnless(
@@ -90,7 +122,7 @@ class LiveWorkspaceMigrationRunnerTests(unittest.TestCase):
             cwd=ROOT, env=environment, text=True, capture_output=True, timeout=90,
         )
 
-    def test_actual_runner_upgrades_legacy_001_and_crash_recovery_never_records_partial_009(self):
+    def test_actual_runner_upgrades_legacy_001_and_crash_recovery_never_records_partial_010(self):
         async def run():
             database = "flowpulse_runner_{}".format(uuid4().hex)
             target_admin_dsn = self.admin_dsn.rsplit("/", 1)[0] + "/" + database
@@ -120,16 +152,17 @@ class LiveWorkspaceMigrationRunnerTests(unittest.TestCase):
                                 "003_incident_workspace_projection.sql", "004_workspace_binding_integrity.sql",
                                 "005_workspace_subject_grants.sql", "006_workspace_gate1_actions.sql",
                                 "007_workspace_action_transitions.sql", "008_workspace_gate1_authority.sql",
+                                "009_workspace_subject_scope_grants.sql",
                             ],
                             [row["filename"] for row in rows],
                         )
                     finally:
                         await check.close()
 
-                    # 008 is an established workspace migration.  The
+                    # 009 is an established workspace migration.  The
                     # temporary crash/recovery fixture must be the next
-                    # contiguous migration, not a competing 008 prefix.
-                    crash = copied / "009_runner_crash_recovery.sql"
+                    # contiguous migration, not a competing 009 prefix.
+                    crash = copied / "010_runner_crash_recovery.sql"
                     crash.write_text(
                         "CREATE TABLE runner_crash_marker (id integer PRIMARY KEY);\nSELECT 1 / 0;\n",
                         encoding="utf-8",
@@ -140,7 +173,7 @@ class LiveWorkspaceMigrationRunnerTests(unittest.TestCase):
                     try:
                         self.assertIsNone(await check.fetchval("SELECT to_regclass('public.runner_crash_marker')"))
                         self.assertIsNone(await check.fetchval(
-                            "SELECT checksum_sha256 FROM schema_migrations WHERE filename='009_runner_crash_recovery.sql'"
+                            "SELECT checksum_sha256 FROM schema_migrations WHERE filename='010_runner_crash_recovery.sql'"
                         ))
                     finally:
                         await check.close()
@@ -154,7 +187,7 @@ class LiveWorkspaceMigrationRunnerTests(unittest.TestCase):
                             "SELECT to_regclass('public.runner_crash_marker')::text"
                         ))
                         self.assertIsNotNone(await check.fetchval(
-                            "SELECT checksum_sha256 FROM schema_migrations WHERE filename='009_runner_crash_recovery.sql'"
+                            "SELECT checksum_sha256 FROM schema_migrations WHERE filename='010_runner_crash_recovery.sql'"
                         ))
                     finally:
                         await check.close()
@@ -225,6 +258,23 @@ class LiveWorkspaceMigrationRunnerTests(unittest.TestCase):
                             "008_workspace_gate1_authority.sql",
                             hashlib.sha256((MIGRATIONS / "008_workspace_gate1_authority.sql").read_bytes()).hexdigest(),
                         )
+                        await connection.execute("DELETE FROM schema_migrations WHERE filename='009_workspace_subject_scope_grants.sql'")
+                    finally:
+                        await connection.close()
+                    unrecorded_subject_scope = self._runner(database, copied)
+                    self.assertNotEqual(0, unrecorded_subject_scope.returncode)
+                    self.assertIn(
+                        "migration_partial_schema_unrecorded:009_workspace_subject_scope_grants.sql",
+                        unrecorded_subject_scope.stderr + unrecorded_subject_scope.stdout,
+                    )
+
+                    connection = await asyncpg.connect(target_admin_dsn)
+                    try:
+                        await connection.execute(
+                            "INSERT INTO schema_migrations (filename, checksum_sha256) VALUES ($1,$2)",
+                            "009_workspace_subject_scope_grants.sql",
+                            hashlib.sha256((MIGRATIONS / "009_workspace_subject_scope_grants.sql").read_bytes()).hexdigest(),
+                        )
                         await connection.execute("DELETE FROM schema_migrations WHERE filename='003_incident_workspace_projection.sql'")
                     finally:
                         await connection.close()
@@ -273,6 +323,187 @@ class LiveWorkspaceMigrationRunnerTests(unittest.TestCase):
                 await admin.execute("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname=$1", database)
                 await admin.execute("DROP DATABASE IF EXISTS " + database)
                 await admin.close()
+        asyncio.run(run())
+
+    def test_actual_runner_upgrades_legacy_001_007_subject_grant_to_append_only_scope_then_authorizes_gate1(self):
+        """A 005 membership survives 008/009 and gains only a trusted successor scope."""
+        async def run():
+            database = "flowpulse_runner_legacy_scope_{}".format(uuid4().hex)
+            target_admin_dsn = self.admin_dsn.rsplit("/", 1)[0] + "/" + database
+            target_app_dsn = (
+                "postgresql://flowpulse_cp_app:flowpulse-cp-local-only@127.0.0.1:5433/" + database
+            )
+            now = datetime.now(timezone.utc)
+            suffix = uuid4().hex
+            tenant = "tenant-legacy-scope-{}".format(suffix)
+            subject = "legacy-subject-{}".format(suffix)
+            binding = IncidentRunBinding(
+                tenant_id=tenant, incident_id="legacy-incident-{}".format(suffix),
+                run_id="legacy-run-public-{}".format(suffix), topology_revision="topology-v1",
+                case_id="legacy-case-{}".format(suffix), case_revision=1,
+                workflow_id="legacy-workflow-{}".format(suffix), workflow_run_id="legacy-temporal-{}".format(suffix),
+                created_at=now,
+            )
+            case = IncidentCase(
+                case_id=binding.case_id, tenant_id=tenant, case_revision=1,
+                workflow_id=binding.workflow_id, workflow_run_id=binding.workflow_run_id,
+                public_incident_id=binding.incident_id, public_run_id=binding.run_id,
+                public_topology_revision=binding.topology_revision,
+                severity="SEV2", environment="legacy", affected_entities=["checkout"],
+                created_at=now, updated_at=now,
+            )
+            projection = IncidentProjection(
+                **binding.dict(), projection_revision=1, sequence=1,
+                lifecycle_state=ProjectionState.DEGRADED, status="provider_unavailable", generated_at=now,
+                graph=IncidentGraph(nodes=[IncidentGraphNode(
+                    component_id="checkout", canonical_identity="service:checkout",
+                    membership=GraphMembership.CONNECTED, runtime_status="unknown", impact_status="unknown",
+                )]), evidence_revision=1, gate_revision=1, action_revision=1,
+            )
+            admin = await asyncpg.connect(self.admin_dsn)
+            try:
+                await admin.execute("CREATE DATABASE " + database)
+            finally:
+                await admin.close()
+            try:
+                connection = await asyncpg.connect(target_admin_dsn)
+                try:
+                    legacy_names = [
+                        "001_control_plane.sql", "002_authorization_intents.sql",
+                        "003_incident_workspace_projection.sql", "004_workspace_binding_integrity.sql",
+                        "005_workspace_subject_grants.sql", "006_workspace_gate1_actions.sql",
+                        "007_workspace_action_transitions.sql",
+                    ]
+                    for name in legacy_names:
+                        await connection.execute((MIGRATIONS / name).read_text(encoding="utf-8"))
+                    await connection.execute(
+                        """CREATE TABLE schema_migrations (
+                             filename TEXT PRIMARY KEY, checksum_sha256 CHAR(64) NOT NULL,
+                             applied_at TIMESTAMPTZ NOT NULL DEFAULT now())"""
+                    )
+                    for name in legacy_names:
+                        await connection.execute(
+                            "INSERT INTO schema_migrations (filename, checksum_sha256) VALUES ($1,$2)",
+                            name, hashlib.sha256((MIGRATIONS / name).read_bytes()).hexdigest(),
+                        )
+                    await connection.execute(
+                        """INSERT INTO incident_cases
+                           (case_id, tenant_id, case_revision, workflow_id, workflow_run_id, state, payload, created_at, updated_at)
+                           VALUES ($1,$2,$3,$4,$5,'RECEIVED',$6::jsonb,$7,$7)""",
+                        case.case_id, case.tenant_id, case.case_revision, case.workflow_id, case.workflow_run_id,
+                        case.json(), now,
+                    )
+                    await connection.execute(
+                        """INSERT INTO incident_run_bindings
+                           (tenant_id, incident_id, run_id, topology_revision, case_id, case_revision,
+                            workflow_id, workflow_run_id, created_at, payload)
+                           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)""",
+                        binding.tenant_id, binding.incident_id, binding.run_id, binding.topology_revision,
+                        binding.case_id, binding.case_revision, binding.workflow_id, binding.workflow_run_id,
+                        binding.created_at, binding.json(),
+                    )
+                    await connection.execute(
+                        """INSERT INTO incident_projections
+                           (tenant_id, incident_id, run_id, topology_revision, case_id, case_revision,
+                            workflow_id, workflow_run_id, projection_revision, sequence, payload, created_at)
+                           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12)""",
+                        binding.tenant_id, binding.incident_id, binding.run_id, binding.topology_revision,
+                        binding.case_id, binding.case_revision, binding.workflow_id, binding.workflow_run_id,
+                        projection.projection_revision, projection.sequence, projection.json(), projection.generated_at,
+                    )
+                    await connection.execute(
+                        """INSERT INTO workspace_subject_grants (tenant_id, case_id, subject_id, created_at)
+                           VALUES ($1,$2,$3,$4)""",
+                        tenant, binding.case_id, subject, now,
+                    )
+                finally:
+                    await connection.close()
+
+                with tempfile.TemporaryDirectory(prefix="flowpulse-legacy-scope-migrations-") as directory:
+                    copied = Path(directory)
+                    for source in MIGRATIONS.iterdir():
+                        if source.is_file():
+                            shutil.copy2(source, copied / source.name)
+                    self.assertEqual(0, self._runner(database, copied).returncode)
+                    self.assertEqual(0, self._runner(database, copied).returncode)
+
+                check = await asyncpg.connect(target_admin_dsn)
+                try:
+                    legacy = await check.fetchrow(
+                        """SELECT roles, permissions FROM workspace_subject_grants
+                           WHERE tenant_id=$1 AND case_id=$2 AND subject_id=$3""",
+                        tenant, binding.case_id, subject,
+                    )
+                    self.assertEqual([], json.loads(legacy["roles"]) if isinstance(legacy["roles"], str) else legacy["roles"])
+                    self.assertEqual(
+                        [], json.loads(legacy["permissions"])
+                        if isinstance(legacy["permissions"], str) else legacy["permissions"],
+                    )
+                    self.assertEqual(0, await check.fetchval(
+                        """SELECT count(*) FROM workspace_subject_scope_grants
+                           WHERE tenant_id=$1 AND case_id=$2 AND subject_id=$3""",
+                        tenant, binding.case_id, subject,
+                    ))
+                finally:
+                    await check.close()
+
+                registry = CapabilityRegistry(
+                    descriptors=[LegacyScopeAdapter.descriptor],
+                    adapters={CapabilityName.METRICS: LegacyScopeAdapter()},
+                )
+                repository = PostgresCaseRepository(target_app_dsn)
+                repository.configure_workspace_capability_registry(registry)
+                await repository.connect()
+                try:
+                    await repository.grant_workspace_subject(binding, subject, ["viewer"], ["incident:read"])
+                    await repository.grant_workspace_subject(binding, subject, ["owner"], ["incident:read"])
+                    scoped = await repository.workspace_subject_grant(tenant, binding.case_id, subject)
+                    self.assertEqual((2, ["owner"], ["incident:read"]), (
+                        scoped.scope_revision, scoped.roles, scoped.permissions,
+                    ))
+                    gate_card = NextBestActionGenerator(registry).generate(projection, now)[0]
+                    await repository.append_next_best_action(gate_card)
+                    command = ActionInvocationCommand(
+                        incident_id=binding.incident_id, run_id=binding.run_id,
+                        topology_revision=binding.topology_revision,
+                        projection_revision=projection.projection_revision,
+                        action_id=gate_card.action_id, idempotency_key="legacy-scope-gate-{}".format(suffix),
+                    )
+                    outcome = await WorkspaceActivityDispatcher(
+                        repository, capability_registry=registry,
+                    ).dispatch("workspace_execute_action_activity", WorkspaceActionPacket(
+                        **binding.dict(), projection=projection, event_sequence=2, command=command,
+                        actor_tenant_id=tenant, actor_subject_id=subject, actor_roles=["owner"],
+                    ).dict())
+                    self.assertEqual("GATE1_GRANTED", outcome["receipt"]["status"])
+                    self.assertTrue(await repository.workspace_subject_authorized(tenant, binding.case_id, subject))
+                finally:
+                    await repository.close()
+
+                check = await asyncpg.connect(target_admin_dsn)
+                try:
+                    revisions = await check.fetch(
+                        """SELECT scope_revision, roles, permissions FROM workspace_subject_scope_grants
+                           WHERE tenant_id=$1 AND case_id=$2 AND subject_id=$3 ORDER BY scope_revision""",
+                        tenant, binding.case_id, subject,
+                    )
+                    self.assertEqual([(1, ["viewer"], ["incident:read"]), (2, ["owner"], ["incident:read"])], [
+                        (
+                            row["scope_revision"],
+                            json.loads(row["roles"]) if isinstance(row["roles"], str) else row["roles"],
+                            json.loads(row["permissions"])
+                            if isinstance(row["permissions"], str) else row["permissions"],
+                        ) for row in revisions
+                    ])
+                    with self.assertRaisesRegex(asyncpg.exceptions.RaiseError, "append_only"):
+                        await check.execute(
+                            "UPDATE workspace_subject_scope_grants SET roles='[]'::jsonb WHERE tenant_id=$1",
+                            tenant,
+                        )
+                finally:
+                    await check.close()
+            finally:
+                await self._drop_database(database)
         asyncio.run(run())
 
     def test_actual_runner_adopts_exact_b754_001_002_with_data_and_retry_idempotency(self):
@@ -332,6 +563,7 @@ class LiveWorkspaceMigrationRunnerTests(unittest.TestCase):
                             "003_incident_workspace_projection.sql", "004_workspace_binding_integrity.sql",
                             "005_workspace_subject_grants.sql", "006_workspace_gate1_actions.sql",
                             "007_workspace_action_transitions.sql", "008_workspace_gate1_authority.sql",
+                            "009_workspace_subject_scope_grants.sql",
                         ],
                         [row["filename"] for row in rows],
                     )
