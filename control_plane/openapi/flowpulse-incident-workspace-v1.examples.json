@@ -368,6 +368,12 @@
           "title": "Provider Id",
           "type": "string"
         },
+        "recorded_context_accesses": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Recorded Context Accesses",
+          "type": "integer"
+        },
         "schema_version": {
           "default": "flowpulse.conversation-trace.v1",
           "minLength": 1,
@@ -848,6 +854,12 @@
               "minLength": 1,
               "title": "Provider Id",
               "type": "string"
+            },
+            "recorded_context_accesses": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Recorded Context Accesses",
+              "type": "integer"
             },
             "schema_version": {
               "default": "flowpulse.conversation-trace.v1",

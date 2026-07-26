@@ -223,6 +223,12 @@
             "title": "Provider Id",
             "type": "string"
           },
+          "recorded_context_accesses": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Recorded Context Accesses",
+            "type": "integer"
+          },
           "schema_version": {
             "default": "flowpulse.conversation-trace.v1",
             "minLength": 1,
@@ -342,6 +348,21 @@
           },
           "human_question": {
             "title": "Human Question",
+            "type": "string"
+          },
+          "public_incident_id": {
+            "minLength": 1,
+            "title": "Public Incident Id",
+            "type": "string"
+          },
+          "public_run_id": {
+            "minLength": 1,
+            "title": "Public Run Id",
+            "type": "string"
+          },
+          "public_topology_revision": {
+            "minLength": 1,
+            "title": "Public Topology Revision",
             "type": "string"
           },
           "severity": {
