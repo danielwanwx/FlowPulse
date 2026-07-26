@@ -46,6 +46,7 @@ from .workspace_actions import (
     NextBestAction,
     WorkspaceActionCommit,
     WorkspaceActionReceipt,
+    validate_consumed_gate1_lease_transition,
     validate_gate1_issuance_binding,
     validate_workspace_action_commit_kind,
 )
@@ -604,6 +605,9 @@ class PostgresCaseRepository:
         self, connection: asyncpg.Connection, commit: WorkspaceActionCommit,
     ) -> None:
         """Admit fresh evidence and append its audit in the action transaction."""
+        # Keep this private persistence seam fail-closed even if a future
+        # caller reaches it without the public transition method.
+        validate_workspace_action_commit_kind(commit)
         result = commit.capability_result
         audit = commit.capability_audit
         if result is None and audit is None:
@@ -927,24 +931,10 @@ class PostgresCaseRepository:
                     active_lease,
                     WorkspaceActionCommit.parse_obj(_decode(grant_row["payload"])) if grant_row is not None else None,
                 )
-                expected_active = commit.lease.copy(update={
-                    "lease_revision": active_lease.lease_revision,
-                    "status": active_lease.status,
-                    "consumed_by_activity_id": None,
-                    "consumed_command_fingerprint": None,
-                    "consumed_evidence_set_hash": None,
-                    "consumed_evidence_revision": None,
-                })
-                if (
-                    active_lease.status.value != "ACTIVE"
-                    or commit.lease.lease_revision != active_lease.lease_revision + 1
-                    or expected_active != active_lease
-                    or commit.lease.consumed_command_fingerprint != commit.command_fingerprint
-                    or commit.lease.consumed_evidence_set_hash != active_lease.evidence_set_hash
-                    or commit.lease.consumed_evidence_revision != active_lease.evidence_revision
-                    or not commit.lease.consumed_by_activity_id
-                ):
-                    raise PolicyViolation("gate1_lease_not_active")
+                validate_consumed_gate1_lease_transition(
+                    active_lease, commit.lease, command_fingerprint=commit.command_fingerprint,
+                    capability_audit=commit.capability_audit,
+                )
 
             # This happens before every action projection write but remains in
             # the same transaction.  A source/admission/audit/checkpoint

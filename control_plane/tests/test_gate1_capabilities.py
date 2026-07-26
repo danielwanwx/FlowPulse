@@ -24,6 +24,7 @@ from flowpulse_cp.capabilities import (
 from pydantic import ValidationError
 
 from flowpulse_cp.models import (
+    ClaimRecord,
     CoverageEntry,
     CoverageStatus,
     EvidenceAuthority,
@@ -43,6 +44,7 @@ from flowpulse_cp.workspace_actions import (
     WorkspaceActionReceipt,
     WorkspaceActionPacket,
     canonical_evidence_set_hash,
+    validate_consumed_gate1_lease_transition,
 )
 from flowpulse_cp.workspace_models import (
     GraphMembership,
@@ -173,6 +175,13 @@ class CurrentMetricsAdapter(MetricsAdapter):
         )
         return CapabilityResult(
             summary="current metric", evidence=[evidence],
+            claims=[ClaimRecord(
+                claim_id="metric-claim-{}".format(invocation_context.tenant_id),
+                tenant_id=invocation_context.tenant_id, case_id=invocation_context.case_id,
+                case_revision=invocation_context.case_revision, claim_type="symptom",
+                statement="Current checkout latency is elevated.", evidence_ids=[evidence.evidence_id],
+                created_by="test:current-metrics",
+            )],
             coverage=[CoverageEntry(
                 tenant_id=invocation_context.tenant_id, case_id=invocation_context.case_id,
                 field="telemetry_symptom", status=CoverageStatus.FILLED,
@@ -251,6 +260,24 @@ async def complete_fresh_read(repository, item, *, idempotency_prefix):
     return grant, fresh, completed
 
 
+async def staged_fresh_transition(item, *, idempotency_prefix):
+    """Return a target repository with only the authoritative Gate 1 grant.
+
+    The fresh transition is produced against an identical isolated source and
+    then offered to the target before it has any read-side artifacts.  That
+    gives every malformed ``copy``/``construct`` probe a real active lease to
+    protect, rather than relying on an already-completed idempotency record.
+    """
+    source = InMemoryWorkspaceRepository()
+    grant, fresh, _ = await complete_fresh_read(source, item, idempotency_prefix=idempotency_prefix)
+    target = InMemoryWorkspaceRepository()
+    await target.put_binding(item)
+    await target.put_projection(projection(item))
+    await target.append_next_best_action(grant.issued_action)
+    await target.commit_workspace_action_transition(grant)
+    return target, grant, fresh
+
+
 class Gate1CapabilityTests(unittest.IsolatedAsyncioTestCase):
     async def test_action_commit_transition_kinds_require_complete_authoritative_artifacts(self):
         item = binding()
@@ -290,6 +317,113 @@ class Gate1CapabilityTests(unittest.IsolatedAsyncioTestCase):
             await repository.commit_workspace_action_transition(grant.copy(update={
                 "lease": grant.lease.copy(update={"issuance_action_id": "other-card"}),
             }))
+
+    async def test_fresh_read_requires_complete_current_domain_artifacts_even_when_models_are_bypassed(self):
+        """An empty result may never consume a lease or masquerade as a fresh read."""
+        item = binding()
+        repository, grant, fresh = await staged_fresh_transition(item, idempotency_prefix="complete-artifacts")
+        self.assertEqual((1, 1, 1), (
+            len(fresh.capability_result.evidence), len(fresh.capability_result.claims),
+            len(fresh.capability_result.coverage),
+        ))
+        counts_before = (
+            len(repository.workspace_action_commits), len(repository.capability_audits),
+            len(repository.gate1_leases[(item.tenant_id, item.case_id, fresh.lease.lease_id)]),
+        )
+        for field in ("evidence", "claims", "coverage"):
+            with self.subTest(field=field):
+                incomplete_result = fresh.capability_result.copy(update={field: []})
+                payload = fresh.dict()
+                payload["capability_result"] = incomplete_result.dict()
+                with self.assertRaisesRegex(ValidationError, "fresh_read_current_evidence_artifacts_required"):
+                    WorkspaceActionCommit(**payload)
+
+                copied = fresh.copy(update={"capability_result": incomplete_result})
+                with self.assertRaisesRegex(PolicyViolation, "fresh_read_current_evidence_artifacts_required"):
+                    await repository.commit_workspace_action_transition(copied)
+
+                constructed = WorkspaceActionCommit.construct(
+                    **{**fresh.__dict__, "capability_result": incomplete_result},
+                )
+                with self.assertRaisesRegex(PolicyViolation, "fresh_read_current_evidence_artifacts_required"):
+                    await repository.commit_workspace_action_transition(constructed)
+                self.assertEqual(counts_before, (
+                    len(repository.workspace_action_commits), len(repository.capability_audits),
+                    len(repository.gate1_leases[(item.tenant_id, item.case_id, fresh.lease.lease_id)]),
+                ))
+                active = await repository.workspace_gate1_lease(item.tenant_id, item.case_id, grant.lease.lease_id)
+                self.assertEqual((Gate1LeaseStatus.ACTIVE, 1), (active.status, active.lease_revision))
+
+        accepted = await repository.commit_workspace_action_transition(fresh)
+        self.assertEqual(fresh, accepted)
+        self.assertEqual(fresh, await repository.commit_workspace_action_transition(fresh))
+        self.assertEqual((Gate1LeaseStatus.CONSUMED, 2), (
+            (await repository.workspace_gate1_lease(item.tenant_id, item.case_id, fresh.lease.lease_id)).status,
+            (await repository.workspace_gate1_lease(item.tenant_id, item.case_id, fresh.lease.lease_id)).lease_revision,
+        ))
+
+    async def test_fresh_read_audit_and_consumed_lease_must_match_the_exact_gate1_command(self):
+        item = binding()
+        repository, grant, fresh = await staged_fresh_transition(item, idempotency_prefix="audit-binding")
+        self.assertEqual(Gate1LeaseStatus.ACTIVE, grant.lease.status)
+        self.assertEqual(Gate1LeaseStatus.CONSUMED, fresh.lease.status)
+        audit = fresh.capability_audit
+        for field, value in {
+            "subject_id": "intruder",
+            "activity_id": "workspace-gate1:other-run:other-card:other-idempotency",
+            "tenant_id": "tenant-b",
+            "run_id": "run-public-b",
+            "capability": CapabilityName.LOGS,
+            "component_id": "payments",
+            "data_class": CapabilityDataClass.KNOWLEDGE_REFERENCE,
+            "required_gate": CapabilityGate.NONE,
+            "scope": CapabilityScope.AUTONOMOUS_DIAGNOSIS,
+            "input_evidence_refs": ["other-evidence"],
+            "evidence_refs": [],
+        }.items():
+            with self.subTest(audit_field=field):
+                tampered = fresh.copy(update={"capability_audit": audit.copy(update={field: value})})
+                with self.assertRaisesRegex(PolicyViolation, "fresh_read_audit_(binding_invalid|result_evidence_mismatch)"):
+                    await repository.commit_workspace_action_transition(tampered)
+
+        for field, value in {
+            "precondition_hash": "e" * 64,
+            "issuance_action_id": "other-action",
+            "lease_revision": fresh.lease.lease_revision + 1,
+        }.items():
+            with self.subTest(consumed_lease_field=field):
+                with self.assertRaisesRegex(PolicyViolation, "gate1_consumed_lease_transition_invalid"):
+                    await repository.commit_workspace_action_transition(
+                        fresh.copy(update={"lease": fresh.lease.copy(update={field: value})})
+                    )
+                constructed = WorkspaceActionCommit.construct(**{
+                    **fresh.__dict__, "lease": fresh.lease.copy(update={field: value}),
+                })
+                with self.assertRaisesRegex(PolicyViolation, "gate1_consumed_lease_transition_invalid"):
+                    await repository.commit_workspace_action_transition(constructed)
+
+        for field, value in {
+            "lease_id": "gate1-" + ("f" * 64),
+            "consumed_by_activity_id": "other-activity",
+            "consumed_command_fingerprint": "f" * 64,
+            "consumed_evidence_set_hash": "f" * 64,
+            "consumed_evidence_revision": fresh.lease.consumed_evidence_revision + 1,
+        }.items():
+            with self.subTest(pure_consumed_lease_field=field):
+                with self.assertRaisesRegex(PolicyViolation, "gate1_consumed_lease_transition_invalid"):
+                    validate_consumed_gate1_lease_transition(
+                        grant.lease, fresh.lease.copy(update={field: value}),
+                        command_fingerprint=fresh.command_fingerprint, capability_audit=audit,
+                    )
+
+        with self.assertRaisesRegex(PolicyViolation, "gate1_consumed_lease_transition_invalid"):
+            validate_consumed_gate1_lease_transition(
+                grant.lease.copy(update={"consumed_by_activity_id": "stale-activity"}), fresh.lease,
+                command_fingerprint=fresh.command_fingerprint, capability_audit=audit,
+            )
+
+        active = await repository.workspace_gate1_lease(item.tenant_id, item.case_id, grant.lease.lease_id)
+        self.assertEqual((Gate1LeaseStatus.ACTIVE, 1), (active.status, active.lease_revision))
 
     async def test_action_coverage_is_tenant_bound_verified_and_conflicts_retry_fail_closed(self):
         repository = InMemoryWorkspaceRepository()

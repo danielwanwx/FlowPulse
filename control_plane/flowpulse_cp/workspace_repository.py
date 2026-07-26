@@ -17,6 +17,8 @@ from .workspace_actions import (
     NextBestAction,
     WorkspaceActionCommit,
     WorkspaceActionReceipt,
+    validate_consumed_gate1_lease_transition,
+    validate_gate1_issuance_binding,
     validate_workspace_action_commit_kind,
 )
 
@@ -413,11 +415,16 @@ class InMemoryWorkspaceRepository:
                 active = await self.workspace_gate1_lease(
                     commit.lease.tenant_id, commit.lease.case_id, commit.lease.lease_id,
                 )
-                if (
-                    active is None or active.status.value != "ACTIVE"
-                    or commit.lease.lease_revision != active.lease_revision + 1
-                ):
-                    raise PolicyViolation("gate1_lease_not_active")
+                grant = await self.workspace_gate1_grant_transition(
+                    commit.lease.tenant_id, commit.lease.case_id, commit.lease.lease_id,
+                )
+                if active is None:
+                    raise PolicyViolation("gate1_lease_not_found")
+                validate_gate1_issuance_binding(active, grant)
+                validate_consumed_gate1_lease_transition(
+                    active, commit.lease, command_fingerprint=commit.command_fingerprint,
+                    capability_audit=commit.capability_audit,
+                )
             if commit.capability_result is not None:
                 audit = commit.capability_audit
                 if audit is None or _binding_key(audit) != _binding_key(commit.projection):

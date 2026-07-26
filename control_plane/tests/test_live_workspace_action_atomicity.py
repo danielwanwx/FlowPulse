@@ -14,15 +14,27 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from flowpulse_cp.capabilities import (
     CapabilityAudience,
+    CapabilityAuditRecord,
     CapabilityDataClass,
     CapabilityDescriptor,
     CapabilityGate,
     CapabilityName,
     CapabilityRegistry,
     CapabilityResult,
+    CapabilityScope,
     EmptyCapabilityInput,
 )
-from flowpulse_cp.models import CoverageEntry, CoverageStatus, IncidentCase
+from flowpulse_cp.models import (
+    ClaimRecord,
+    CoverageEntry,
+    CoverageStatus,
+    EvidenceAuthority,
+    EvidenceEnvelope,
+    FreshnessStatus,
+    IncidentCase,
+    ProofScope,
+    SourceKind,
+)
 from flowpulse_cp.policy import PolicyViolation
 from flowpulse_cp.postgres import PostgresCaseRepository
 from flowpulse_cp.workspace_actions import (
@@ -233,6 +245,178 @@ class LiveWorkspaceActionAtomicityTests(unittest.TestCase):
                 )
                 with self.assertRaisesRegex(PolicyViolation, "fresh_read_transition_artifacts_required"):
                     await repository.commit_workspace_action_transition(bypassed)
+            finally:
+                await repository.close()
+        asyncio.run(run())
+
+    def test_postgres_fresh_read_rejects_empty_or_rebound_artifacts_before_consuming(self):
+        """The Postgres boundary repeats the in-memory fresh-read invariants."""
+        async def run():
+            now = datetime.now(timezone.utc)
+            suffix = uuid4().hex
+            tenant = "tenant-fresh-{}".format(suffix)
+            subject = "owner-{}".format(suffix)
+            binding = IncidentRunBinding(
+                tenant_id=tenant, incident_id="incident-{}".format(suffix), run_id="run-{}".format(suffix),
+                topology_revision="topology-{}".format(suffix), case_id="case-{}".format(suffix),
+                case_revision=1, workflow_id="workspace-{}".format(suffix), workflow_run_id="temporal-{}".format(suffix),
+                created_at=now,
+            )
+            registry = CapabilityRegistry(
+                descriptors=[MetricsAdapter.descriptor], adapters={CapabilityName.METRICS: MetricsAdapter()},
+            )
+            initial = IncidentProjection(
+                **binding.dict(), projection_revision=1, sequence=1, lifecycle_state=ProjectionState.DEGRADED,
+                status="provider_unavailable", generated_at=now,
+                graph=IncidentGraph(nodes=[IncidentGraphNode(
+                    component_id="checkout", canonical_identity="service:checkout", membership=GraphMembership.CONNECTED,
+                    runtime_status="unknown", impact_status="unknown",
+                )]), evidence_revision=1, gate_revision=1, action_revision=1,
+            )
+            granted_projection = initial.copy(update={
+                "projection_revision": 2, "sequence": 2, "gate_revision": 2, "action_revision": 2,
+            })
+            gate_card = NextBestActionGenerator(registry).generate(initial, now)[0]
+            grant_fingerprint = sha256((suffix + ":grant").encode("utf-8")).hexdigest()
+            lease = Gate1Lease(
+                **binding.dict(), lease_id="gate1-" + grant_fingerprint, lease_revision=1, subject_id=subject,
+                required_permission="incident:read", component_id="checkout", capability=CapabilityName.METRICS.value,
+                data_class=CapabilityDataClass.CURRENT_INCIDENT.value, tool_schema_version="metrics-input.v1",
+                projection_revision=2, evidence_revision=1, capability_registry_revision=registry.policy_version,
+                precondition_version="workspace-precondition.v1",
+                precondition_hash=NextBestActionGenerator._precondition_hash(granted_projection),
+                issuance_command_fingerprint=grant_fingerprint, issuance_action_id=gate_card.action_id,
+                issuance_card_version=gate_card.card_version, issuance_idempotency_key="grant-{}".format(suffix),
+                evidence_set_hash=canonical_evidence_set_hash([]), issued_at=now,
+                expires_at=now + timedelta(minutes=30), status=Gate1LeaseStatus.ACTIVE,
+            )
+            read_card = NextBestActionGenerator(registry).generate_after_gate1(granted_projection, lease, now)[0]
+            grant_receipt = WorkspaceActionReceipt(
+                **binding.dict(), action_id=gate_card.action_id, idempotency_key=lease.issuance_idempotency_key,
+                status="GATE1_GRANTED", gate1_lease_id=lease.lease_id, reason="test-grant",
+            )
+            grant = WorkspaceActionCommit(
+                activity_identity="grant-{}".format(suffix), command_fingerprint=grant_fingerprint,
+                projection=granted_projection, receipt=grant_receipt, lease=lease, actions=[read_card],
+                issued_action=gate_card, event=IncidentEvent(
+                    **binding.dict(), projection_revision=2, sequence=2, event_type="workspace.action.gate1_granted",
+                    occurred_at=now, payload={
+                        "action_id": gate_card.action_id, "idempotency_key": grant_receipt.idempotency_key,
+                        "command_fingerprint": grant_fingerprint, "activity_identity": "grant-{}".format(suffix),
+                    }, evidence_refs=[],
+                ),
+            )
+            evidence = EvidenceEnvelope(
+                evidence_id="evidence-{}".format(suffix), tenant_id=tenant, case_id=binding.case_id, case_revision=1,
+                acl_subjects=[subject], source_kind=SourceKind.METRIC, source_uri="metric://checkout/latency",
+                source_anchor="window:1", observed_at=now, effective_at=now, source_version="v1",
+                content_hash=sha256((suffix + ":evidence").encode("utf-8")).hexdigest(),
+                authority=EvidenceAuthority.T1, freshness=FreshnessStatus.CURRENT,
+                independence_key="metrics:{}".format(suffix), schema_binding="metrics.v1",
+                proof_scope=ProofScope.CURRENT_OBSERVATION,
+            )
+            result = CapabilityResult(
+                summary="current checkout latency", evidence=[evidence],
+                claims=[ClaimRecord(
+                    claim_id="claim-{}".format(suffix), tenant_id=tenant, case_id=binding.case_id,
+                    case_revision=1, claim_type="symptom", statement="Current checkout latency is elevated.",
+                    evidence_ids=[evidence.evidence_id], created_by="test:postgres-fresh",
+                )],
+                coverage=[CoverageEntry(
+                    tenant_id=tenant, case_id=binding.case_id, field="telemetry_symptom",
+                    status=CoverageStatus.FILLED, evidence_ids=[evidence.evidence_id],
+                )],
+            )
+            fresh_fingerprint = sha256((suffix + ":fresh").encode("utf-8")).hexdigest()
+            fresh_idempotency = "fresh-{}".format(suffix)
+            activity_id = "workspace-gate1:{}:{}:{}".format(
+                binding.workflow_run_id, read_card.action_id, fresh_idempotency,
+            )
+            audit = CapabilityAuditRecord(
+                **binding.dict(), audit_id=uuid4(), projection_revision=2, evidence_revision=1,
+                activity_id=activity_id, scope=CapabilityScope.USER_QA, subject_id=subject,
+                audience=CapabilityAudience.USER_QA, capability=CapabilityName.METRICS,
+                component_id="checkout", capability_version="metrics.v1",
+                data_class=CapabilityDataClass.CURRENT_INCIDENT, required_gate=CapabilityGate.GATE1,
+                policy_version=registry.policy_version, request_hash=sha256((suffix + ":request").encode("utf-8")).hexdigest(),
+                input_evidence_refs=[], evidence_refs=[evidence.evidence_id],
+            )
+            consumed = lease.copy(update={
+                "lease_revision": 2, "status": Gate1LeaseStatus.CONSUMED,
+                "consumed_by_activity_id": activity_id, "consumed_command_fingerprint": fresh_fingerprint,
+                "consumed_evidence_set_hash": canonical_evidence_set_hash([]), "consumed_evidence_revision": 1,
+            })
+            fresh_projection = granted_projection.copy(update={
+                "projection_revision": 3, "sequence": 3, "evidence_revision": 2, "action_revision": 3,
+                "evidence_refs": [evidence.evidence_id], "generated_at": now,
+            })
+            receipt = WorkspaceActionReceipt(
+                **binding.dict(), action_id=read_card.action_id, idempotency_key=fresh_idempotency,
+                status="FRESH_READ_COMPLETED", gate1_lease_id=lease.lease_id, reason="test-fresh",
+            )
+            fresh = WorkspaceActionCommit(
+                activity_identity="fresh-{}".format(suffix), command_fingerprint=fresh_fingerprint,
+                projection=fresh_projection, receipt=receipt, lease=consumed,
+                capability_result=result, capability_audit=audit, event=IncidentEvent(
+                    **binding.dict(), projection_revision=3, sequence=3, event_type="workspace.action.fresh_read_completed",
+                    occurred_at=now, payload={
+                        "action_id": read_card.action_id, "idempotency_key": fresh_idempotency,
+                        "command_fingerprint": fresh_fingerprint, "activity_identity": "fresh-{}".format(suffix),
+                    }, evidence_refs=[evidence.evidence_id],
+                ),
+            )
+            repository = PostgresCaseRepository(self.dsn)
+            await repository.connect()
+            try:
+                await repository.put_case(IncidentCase(
+                    case_id=binding.case_id, tenant_id=tenant, case_revision=1,
+                    workflow_id=binding.workflow_id, workflow_run_id=binding.workflow_run_id,
+                    severity="SEV2", environment="local", affected_entities=["checkout"],
+                    created_at=now, updated_at=now,
+                ))
+                await repository.put_workspace_binding(binding)
+                await repository.put_workspace_projection(initial)
+                await repository.grant_workspace_subject(binding, subject)
+                await repository.append_next_best_action(gate_card)
+                await repository.commit_workspace_action_transition(grant)
+
+                for field in ("evidence", "claims", "coverage"):
+                    with self.subTest(empty_domain_field=field):
+                        incomplete = WorkspaceActionCommit.construct(**{
+                            **fresh.__dict__,
+                            "capability_result": fresh.capability_result.copy(update={field: []}),
+                        })
+                        with self.assertRaisesRegex(PolicyViolation, "fresh_read_current_evidence_artifacts_required"):
+                            await repository.commit_workspace_action_transition(incomplete)
+                for label, changed in {
+                    "subject": {"capability_audit": audit.copy(update={"subject_id": "intruder"})},
+                    "activity": {"capability_audit": audit.copy(update={"activity_id": "other-activity"})},
+                    "evidence_refs": {"capability_audit": audit.copy(update={"evidence_refs": []})},
+                    "issuance": {"lease": consumed.copy(update={"issuance_action_id": "other-card"})},
+                    "precondition": {"lease": consumed.copy(update={"precondition_hash": "e" * 64})},
+                }.items():
+                    with self.subTest(rebound=label):
+                        with self.assertRaisesRegex(PolicyViolation, "fresh_read_audit_|gate1_consumed_lease_transition_invalid"):
+                            await repository.commit_workspace_action_transition(fresh.copy(update=changed))
+
+                async def counts(connection):
+                    return await connection.fetchrow(
+                        """SELECT
+                             (SELECT count(*) FROM workspace_gate1_leases WHERE tenant_id=$1 AND case_id=$2) AS leases,
+                             (SELECT count(*) FROM evidence_envelopes WHERE tenant_id=$1 AND case_id=$2) AS evidence,
+                             (SELECT count(*) FROM claim_records WHERE tenant_id=$1 AND case_id=$2) AS claims,
+                             (SELECT count(*) FROM coverage_entries WHERE tenant_id=$1 AND case_id=$2) AS coverage,
+                             (SELECT count(*) FROM tool_calls WHERE tenant_id=$1 AND case_id=$2) AS audits,
+                             (SELECT count(*) FROM workspace_action_transitions WHERE tenant_id=$1 AND case_id=$2) AS transitions""",
+                        tenant, binding.case_id,
+                    )
+                self.assertEqual((1, 0, 0, 0, 0, 1), tuple(await repository._tenant(tenant, counts, subject_id=subject)))
+                active = await repository.workspace_gate1_lease(tenant, binding.case_id, lease.lease_id)
+                self.assertEqual((Gate1LeaseStatus.ACTIVE, 1), (active.status, active.lease_revision))
+
+                self.assertEqual(fresh, await repository.commit_workspace_action_transition(fresh))
+                self.assertEqual(fresh, await repository.commit_workspace_action_transition(fresh))
+                self.assertEqual((2, 1, 1, 1, 1, 2), tuple(await repository._tenant(tenant, counts, subject_id=subject)))
             finally:
                 await repository.close()
         asyncio.run(run())

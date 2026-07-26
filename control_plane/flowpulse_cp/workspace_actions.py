@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional, Protocol
 
-from pydantic import Field, root_validator
+from pydantic import Field, ValidationError, root_validator
 
 from .capabilities import (
     CapabilityAudience,
@@ -25,6 +25,8 @@ from .capabilities import (
     CapabilityRegistry,
     CapabilityRequest,
     CapabilityResult,
+    CapabilityScope,
+    CurrentEvidenceCapabilityResult,
 )
 from .models import AuthAssertion, Hash, NonEmpty, PositiveInt, StrictBool, StrictModel
 from .policy import PolicyViolation
@@ -381,7 +383,9 @@ def _workspace_action_commit_kind_error(
             return "fresh_read_transition_artifacts_required"
         if issued_action is not None or actions:
             return "fresh_read_transition_incompatible_artifacts"
-        return None
+        return _fresh_read_artifact_binding_error(
+            receipt, lease, capability_result, capability_audit, command_fingerprint,
+        )
     if receipt.status == "GATE1_GRANTED":
         if lease_status != Gate1LeaseStatus.ACTIVE.value or lease_revision != 1:
             return "gate1_grant_active_revision_one_lease_required"
@@ -404,6 +408,76 @@ def _workspace_action_commit_kind_error(
     return "workspace_action_transition_kind_unsupported"
 
 
+def _fresh_read_artifact_binding_error(
+    receipt: WorkspaceActionReceipt, lease: Gate1Lease, capability_result: CapabilityResult,
+    capability_audit: CapabilityAuditRecord, command_fingerprint: Optional[str],
+) -> Optional[str]:
+    """Validate the complete domain result and the immutable Gate 1 audit binding.
+
+    ``CapabilityResult`` remains the common adapter return type.  A Gate 1
+    fresh read, however, has the narrower current-evidence contract: an
+    admitted envelope, a cited claim, and a coverage entry must all exist.
+    The audit is deliberately checked against the consumed lease rather than
+    merely against the final projection, so a copied audit cannot be paired
+    with a different command or source result.
+    """
+    if not isinstance(capability_result, CapabilityResult):
+        return "fresh_read_current_evidence_artifacts_required"
+    try:
+        CurrentEvidenceCapabilityResult.parse_obj(capability_result.dict())
+    except (AttributeError, TypeError, ValidationError):
+        return "fresh_read_current_evidence_artifacts_required"
+    if not isinstance(capability_audit, CapabilityAuditRecord):
+        return "fresh_read_audit_binding_invalid"
+    if _workspace_binding_tuple(capability_audit) != _workspace_binding_tuple(lease):
+        return "fresh_read_audit_binding_invalid"
+    try:
+        capability = CapabilityName(lease.capability)
+        data_class = CapabilityDataClass(lease.data_class)
+    except ValueError:
+        return "fresh_read_audit_binding_invalid"
+    if (
+        capability_audit.subject_id != lease.subject_id
+        or capability_audit.audience != CapabilityAudience.USER_QA
+        or capability_audit.scope != CapabilityScope.USER_QA
+        or capability_audit.capability != capability
+        or capability_audit.component_id != lease.component_id
+        or capability_audit.data_class != data_class
+        or capability_audit.required_gate != CapabilityGate.GATE1
+        or capability_audit.policy_version != lease.capability_registry_revision
+        or capability_audit.projection_revision != lease.projection_revision
+        or capability_audit.evidence_revision != lease.evidence_revision
+        or capability_audit.status != "COMPLETED"
+    ):
+        return "fresh_read_audit_binding_invalid"
+    try:
+        input_evidence_hash = canonical_evidence_set_hash(list(capability_audit.input_evidence_refs))
+    except (PolicyViolation, TypeError):
+        return "fresh_read_audit_binding_invalid"
+    if (
+        input_evidence_hash != lease.evidence_set_hash
+        or lease.consumed_evidence_set_hash != input_evidence_hash
+        or lease.consumed_evidence_revision != capability_audit.evidence_revision
+        or lease.consumed_command_fingerprint != command_fingerprint
+    ):
+        return "fresh_read_audit_binding_invalid"
+    expected_activity_id = "workspace-gate1:{}:{}:{}".format(
+        lease.workflow_run_id, receipt.action_id, receipt.idempotency_key,
+    )
+    if (
+        capability_audit.activity_id != expected_activity_id
+        or lease.consumed_by_activity_id != expected_activity_id
+    ):
+        return "fresh_read_audit_binding_invalid"
+    expected_evidence_refs = list(capability_audit.input_evidence_refs)
+    for evidence in capability_result.evidence:
+        if evidence.evidence_id not in expected_evidence_refs:
+            expected_evidence_refs.append(evidence.evidence_id)
+    if capability_audit.evidence_refs != expected_evidence_refs:
+        return "fresh_read_audit_result_evidence_mismatch"
+    return None
+
+
 def validate_workspace_action_commit_kind(commit: WorkspaceActionCommit) -> None:
     """Fail closed at repository boundaries even for constructed model instances."""
     error = _workspace_action_commit_kind_error(
@@ -414,6 +488,46 @@ def validate_workspace_action_commit_kind(commit: WorkspaceActionCommit) -> None
     )
     if error is not None:
         raise PolicyViolation(error)
+
+
+def validate_consumed_gate1_lease_transition(
+    active_lease: Gate1Lease, consumed_lease: Gate1Lease, *, command_fingerprint: str,
+    capability_audit: CapabilityAuditRecord,
+) -> None:
+    """Prove a proposed consumption is the one legal successor of the active lease.
+
+    This pure check is used by both storage implementations while their
+    authoritative active lease row is locked.  Building the expected record
+    from that row prevents ``copy``/``construct`` callers from rebinding any
+    immutable issuance, scope, evidence-set, or revision field.
+    """
+    if (
+        not isinstance(active_lease, Gate1Lease)
+        or not isinstance(consumed_lease, Gate1Lease)
+        or not isinstance(capability_audit, CapabilityAuditRecord)
+        or active_lease.status != Gate1LeaseStatus.ACTIVE
+        or active_lease.consumed_by_activity_id is not None
+        or active_lease.consumed_command_fingerprint is not None
+        or active_lease.consumed_evidence_set_hash is not None
+        or active_lease.consumed_evidence_revision is not None
+    ):
+        raise PolicyViolation("gate1_consumed_lease_transition_invalid")
+    try:
+        evidence_set_hash = canonical_evidence_set_hash(list(capability_audit.input_evidence_refs))
+    except (PolicyViolation, TypeError):
+        raise PolicyViolation("gate1_consumed_lease_transition_invalid")
+    if evidence_set_hash != active_lease.evidence_set_hash:
+        raise PolicyViolation("gate1_consumed_lease_transition_invalid")
+    expected = active_lease.copy(update={
+        "lease_revision": active_lease.lease_revision + 1,
+        "status": Gate1LeaseStatus.CONSUMED,
+        "consumed_by_activity_id": capability_audit.activity_id,
+        "consumed_command_fingerprint": command_fingerprint,
+        "consumed_evidence_set_hash": evidence_set_hash,
+        "consumed_evidence_revision": active_lease.evidence_revision,
+    })
+    if consumed_lease != expected:
+        raise PolicyViolation("gate1_consumed_lease_transition_invalid")
 
 
 class Gate1LeaseStore(Protocol):
