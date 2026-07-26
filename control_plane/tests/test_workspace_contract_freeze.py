@@ -10,7 +10,7 @@ from pathlib import Path
 CONTROL_PLANE = Path(__file__).resolve().parents[1]
 REPO = CONTROL_PLANE.parent
 ARTIFACT_DIR = CONTROL_PLANE / "openapi"
-PRODUCER_SHA = "341033f531a2afa2786cab4fcba37167e6f3d483"
+PRODUCER_SHA = "28c94613749bbadc18d0c1b8c09686f59343b324"
 
 
 class WorkspaceContractFreezeTests(unittest.TestCase):
@@ -26,6 +26,12 @@ class WorkspaceContractFreezeTests(unittest.TestCase):
         self.assertIn("workflow_run_id", boundary["internal_correlation"])
         self.assertIn("/v1/incidents/{case_id}/node-explanations", openapi["paths"])
         self.assertNotIn("/v1/incidents/{case_id}/actions/{action_id}", openapi["paths"])
+        self.assertEqual(
+            [{"FlowPulseTrustedBearer": []}],
+            openapi["paths"]["/v1/incidents"]["post"]["security"],
+        )
+        event_response = openapi["paths"]["/v1/incidents/{case_id}/events"]["get"]["responses"]["200"]
+        self.assertEqual({"text/event-stream"}, set(event_response["content"]))
 
     def test_plan_and_contract_record_exact_bundle_hashes_before_frontend_integration(self):
         plan = (REPO / "docs" / "plans" / "2026-07-25-agent-led-incident-control-plane-integration.md").read_text()

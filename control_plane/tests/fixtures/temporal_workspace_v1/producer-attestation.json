@@ -1,0 +1,10 @@
+{
+  "git_sha": "28c94613749bbadc18d0c1b8c09686f59343b324",
+  "image_id": "sha256:8e7b93eb00b69fe7139b3dbbc3ab27e036e1674fbe8219dbbe3dd2b0710a5999",
+  "image_revision_label": "28c94613749bbadc18d0c1b8c09686f59343b324",
+  "schema_version": 1,
+  "workflow_module_git_blob_oid": "4374ba749f7e43e8b02c33067b22a89fae14ace5",
+  "workflow_module_repo_path": "control_plane/flowpulse_cp/workspace_workflow.py",
+  "workflow_module_sha256": "0c8670401019de2f799bf085362786f00aee0c4a7e84a94007f18ba4383c92fb",
+  "workflow_type": "flowpulse.incident-workspace.v1"
+}

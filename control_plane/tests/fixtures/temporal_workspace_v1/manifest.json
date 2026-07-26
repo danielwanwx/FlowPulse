@@ -5,20 +5,23 @@
       "expected_outcome": "degraded_node_explanation_without_fresh_read_or_diagnosis",
       "filename": "workspace_node_explanation_degraded.json",
       "name": "workspace_node_explanation_degraded",
-      "sha256": "b31f876b94fcdb598db82bd393337f62a50a5e6094b79b6c18d7d907f1ed5010"
+      "sha256": "d5a5e9db6f84c76f5545c4a5627a340e2e8aa59ccb615bb5042b6be50a0e3b37"
     }
   ],
   "producer": {
-    "git_sha": "341033f531a2afa2786cab4fcba37167e6f3d483",
-    "public_identity": {
-      "incident_id": "workspace-http-741ad29873de48d1b95c068fe26407d2",
-      "run_id": "run-6fc584ad015041119d1f6aaf21fe3f32",
-      "tenant_id": "tenant-http",
-      "topology_revision": "topology-v1-e6270dcba6e0d59cf5cd"
-    },
-    "workflow_id": "flowpulse.incident-workspace:tenant-http:run-6fc584ad015041119d1f6aaf21fe3f32",
-    "workflow_run_id": "325a5034-254a-40f1-8d73-0a13573b393c",
+    "git_sha": "28c94613749bbadc18d0c1b8c09686f59343b324",
+    "image_id": "sha256:8e7b93eb00b69fe7139b3dbbc3ab27e036e1674fbe8219dbbe3dd2b0710a5999",
+    "image_revision_label": "28c94613749bbadc18d0c1b8c09686f59343b324",
+    "incident_id": "workspace-http-09cf6773c74c44409c74891aab06b652",
+    "run_id": "run-612668f884f843b3803354e38a95cc04",
+    "tenant_id": "tenant-http",
+    "topology_revision": "topology-v1-3fc7e76951fee9ac39c7",
+    "workflow_id": "flowpulse.incident-workspace:tenant-http:run-612668f884f843b3803354e38a95cc04",
+    "workflow_module_git_blob_oid": "4374ba749f7e43e8b02c33067b22a89fae14ace5",
+    "workflow_module_repo_path": "control_plane/flowpulse_cp/workspace_workflow.py",
+    "workflow_module_sha256": "0c8670401019de2f799bf085362786f00aee0c4a7e84a94007f18ba4383c92fb",
+    "workflow_run_id": "847cdbf3-ef66-48c3-af49-615149010621",
     "workflow_type": "flowpulse.incident-workspace.v1"
   },
-  "schema_version": 1
+  "schema_version": 2
 }

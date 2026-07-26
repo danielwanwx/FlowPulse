@@ -1,6 +1,162 @@
 {
   "identity_note": "run_id and topology_revision are backend-owned public identities; case_id, workflow_id, and workflow_run_id are internal correlations. run_id is never derived from a Temporal ID.",
   "model_schemas": {
+    "ComponentContext": {
+      "additionalProperties": false,
+      "definitions": {
+        "ClassifiedNodeReason": {
+          "description": "An enumeration.",
+          "enum": [
+            "External dependency",
+            "Data store",
+            "Control plane",
+            "Observed boundary",
+            "Relationship unavailable"
+          ],
+          "title": "ClassifiedNodeReason",
+          "type": "string"
+        },
+        "GraphMembership": {
+          "description": "An enumeration.",
+          "enum": [
+            "CONNECTED",
+            "CLASSIFIED"
+          ],
+          "title": "GraphMembership",
+          "type": "string"
+        },
+        "IncidentGraphNode": {
+          "additionalProperties": false,
+          "properties": {
+            "canonical_identity": {
+              "minLength": 1,
+              "title": "Canonical Identity",
+              "type": "string"
+            },
+            "classification_reason": {
+              "$ref": "#/definitions/ClassifiedNodeReason"
+            },
+            "component_id": {
+              "minLength": 1,
+              "title": "Component Id",
+              "type": "string"
+            },
+            "impact_status": {
+              "minLength": 1,
+              "title": "Impact Status",
+              "type": "string"
+            },
+            "membership": {
+              "$ref": "#/definitions/GraphMembership"
+            },
+            "runtime_status": {
+              "minLength": 1,
+              "title": "Runtime Status",
+              "type": "string"
+            }
+          },
+          "required": [
+            "component_id",
+            "canonical_identity",
+            "membership",
+            "runtime_status",
+            "impact_status"
+          ],
+          "title": "IncidentGraphNode",
+          "type": "object"
+        }
+      },
+      "description": "Strict, read-only context for one canonical component in a projection.",
+      "properties": {
+        "case_id": {
+          "minLength": 1,
+          "title": "Case Id",
+          "type": "string"
+        },
+        "case_revision": {
+          "minimum": 1,
+          "title": "Case Revision",
+          "type": "integer"
+        },
+        "component": {
+          "$ref": "#/definitions/IncidentGraphNode"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "evidence_refs": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "fresh_read_performed": {
+          "default": false,
+          "title": "Fresh Read Performed",
+          "type": "boolean"
+        },
+        "incident_id": {
+          "minLength": 1,
+          "title": "Incident Id",
+          "type": "string"
+        },
+        "projection_revision": {
+          "minimum": 1,
+          "title": "Projection Revision",
+          "type": "integer"
+        },
+        "run_id": {
+          "minLength": 1,
+          "title": "Run Id",
+          "type": "string"
+        },
+        "schema_version": {
+          "default": "flowpulse.component-context.v1",
+          "minLength": 1,
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "tenant_id": {
+          "minLength": 1,
+          "title": "Tenant Id",
+          "type": "string"
+        },
+        "topology_revision": {
+          "minLength": 1,
+          "title": "Topology Revision",
+          "type": "string"
+        },
+        "workflow_id": {
+          "minLength": 1,
+          "title": "Workflow Id",
+          "type": "string"
+        },
+        "workflow_run_id": {
+          "minLength": 1,
+          "title": "Workflow Run Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tenant_id",
+        "incident_id",
+        "run_id",
+        "topology_revision",
+        "case_id",
+        "case_revision",
+        "workflow_id",
+        "workflow_run_id",
+        "created_at",
+        "projection_revision",
+        "component"
+      ],
+      "title": "ComponentContext",
+      "type": "object"
+    },
     "IncidentEvent": {
       "additionalProperties": false,
       "description": "Public run identity and its immutable internal Temporal correlation.",
@@ -668,6 +824,29 @@
     }
   },
   "response_examples": {
+    "ComponentContext": {
+      "case_id": "workspace-case-example",
+      "case_revision": 1,
+      "component": {
+        "canonical_identity": "service:checkout",
+        "classification_reason": null,
+        "component_id": "checkout",
+        "impact_status": "unknown",
+        "membership": "CONNECTED",
+        "runtime_status": "unknown"
+      },
+      "created_at": "2026-07-26 00:00:00+00:00",
+      "evidence_refs": [],
+      "fresh_read_performed": false,
+      "incident_id": "incident-example",
+      "projection_revision": 1,
+      "run_id": "run-example-01",
+      "schema_version": "flowpulse.component-context.v1",
+      "tenant_id": "tenant-example",
+      "topology_revision": "topology-v1-example",
+      "workflow_id": "flowpulse.incident-workspace:tenant-example:run-example-01",
+      "workflow_run_id": "temporal-run-example"
+    },
     "IncidentEvent": {
       "case_id": "workspace-case-example",
       "case_revision": 1,
