@@ -8,7 +8,7 @@ from typing import Dict, List, Optional
 
 from pydantic import Field, StrictBool, StrictStr, root_validator, validator
 
-from .models import AuthContext, Hash, NonEmpty, NonNegativeInt, PositiveInt, StrictModel
+from .models import AuthAssertion, AuthContext, Hash, NonEmpty, NonNegativeInt, PositiveInt, StrictModel
 
 
 class GraphMembership(str, Enum):
@@ -325,11 +325,30 @@ class NodeExplanationStart(StrictModel):
             self.conversation_schema_version,
         )
 
+    def canonical_hash(self) -> str:
+        """Exact browser command binding for a one-time server assertion."""
+        encoded = self.json(sort_keys=True, separators=(",", ":")).encode("utf-8")
+        return sha256(encoded).hexdigest()
+
 
 class WorkspaceNodeExplanationInvocation(StrictModel):
-    """Internal Temporal update packet: actor comes only from trusted FastAPI."""
+    """Authenticated Temporal update packet; the browser never supplies an actor."""
 
     command: NodeExplanationStart
+    authorization: AuthAssertion
+
+
+class WorkspaceNodeExplanationAuthorizationPacket(IncidentRunBinding):
+    """Typed worker-only validation packet before any provider activity may run."""
+
+    command: NodeExplanationStart
+    authorization: AuthAssertion
+    projection_revision: PositiveInt
+
+
+class WorkspaceNodeExplanationAuthorizationOutcome(StrictModel):
+    """Identity resolved by the trusted authorization service, never by the update payload."""
+
     actor: AuthContext
 
 

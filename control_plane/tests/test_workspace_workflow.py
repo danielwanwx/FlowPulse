@@ -14,10 +14,11 @@ from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
 
 from flowpulse_cp.workspace_activities import WorkspaceActivityDispatcher, build_workspace_activities
-from flowpulse_cp.workspace_models import NodeExplanationStart, WorkspaceWorkflowRequest
+from flowpulse_cp.workspace_models import NodeExplanationStart, WorkspaceNodeExplanationInvocation, WorkspaceWorkflowRequest
 from flowpulse_cp.workspace_repository import InMemoryWorkspaceRepository
 from flowpulse_cp.workspace_workflow import IncidentWorkspaceTemporalWorkflow
 from flowpulse_cp.models import AuthContext
+from flowpulse_cp.authorization import HmacAuthorizationAuthority
 
 
 NOW = datetime(2026, 7, 26, tzinfo=timezone.utc)
@@ -41,12 +42,13 @@ def request():
 class WorkspaceWorkflowTests(unittest.IsolatedAsyncioTestCase):
     async def test_same_key_node_updates_reuse_one_degraded_read_only_explanation(self):
         repository = InMemoryWorkspaceRepository()
+        authority = HmacAuthorizationAuthority("workspace-workflow-test-secret")
         async with await WorkflowEnvironment.start_time_skipping() as environment:
             task_queue = "workspace-contract-test"
             async with Worker(
                 environment.client, task_queue=task_queue,
                 workflows=[IncidentWorkspaceTemporalWorkflow],
-                activities=build_workspace_activities(WorkspaceActivityDispatcher(repository)),
+                activities=build_workspace_activities(WorkspaceActivityDispatcher(repository, authorization=authority)),
             ):
                 handle = await environment.client.start_workflow(
                     IncidentWorkspaceTemporalWorkflow.run, request().dict(), id="workspace-test-a", task_queue=task_queue,
@@ -61,9 +63,21 @@ class WorkspaceWorkflowTests(unittest.IsolatedAsyncioTestCase):
                     incident_id="incident-a", run_id="run-public-a", topology_revision="topology-v1-a",
                     projection_revision=1, component_id="checkout", idempotency_key="click-a",
                 )
+                first_assertion = authority.issue_workspace_node_explanation_intent(
+                    await repository.create_workspace_node_explanation_intent(request().actor, projection, command)
+                )
+                second_assertion = authority.issue_workspace_node_explanation_intent(
+                    await repository.create_workspace_node_explanation_intent(request().actor, projection, command)
+                )
                 first, second = await asyncio.gather(
-                    handle.execute_update(IncidentWorkspaceTemporalWorkflow.start_or_reuse_node_explanation, command.dict()),
-                    handle.execute_update(IncidentWorkspaceTemporalWorkflow.start_or_reuse_node_explanation, command.dict()),
+                    handle.execute_update(
+                        IncidentWorkspaceTemporalWorkflow.start_or_reuse_node_explanation,
+                        WorkspaceNodeExplanationInvocation(command=command, authorization=first_assertion).dict(),
+                    ),
+                    handle.execute_update(
+                        IncidentWorkspaceTemporalWorkflow.start_or_reuse_node_explanation,
+                        WorkspaceNodeExplanationInvocation(command=command, authorization=second_assertion).dict(),
+                    ),
                 )
                 self.assertEqual(first["explanation"]["explanation_id"], second["explanation"]["explanation_id"])
                 self.assertIn(first["reused"], (True, False))

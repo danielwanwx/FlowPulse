@@ -388,6 +388,19 @@ class AuthContext(StrictModel):
     roles: List[NonEmpty]
 
 
+class AuthCommandKind(str, Enum):
+    """The server-selected command a one-time assertion is allowed to carry."""
+
+    OWNER_GATE = "OWNER_GATE"
+    WORKSPACE_NODE_EXPLANATION = "WORKSPACE_NODE_EXPLANATION"
+
+
+_WORKSPACE_COMMAND_SCOPE_FIELDS = (
+    "workspace_incident_id", "workspace_run_id", "workspace_topology_revision",
+    "workspace_projection_revision", "workspace_component_id", "workspace_command_hash",
+)
+
+
 class AuthAssertion(StrictModel):
     """Short-lived authorization proof minted by the trusted HTTP boundary."""
     assertion_id: NonEmpty
@@ -407,6 +420,28 @@ class AuthAssertion(StrictModel):
     issued_at: datetime
     expires_at: datetime
     signature: Hash
+    # The original owner-gate assertion format remains byte-compatible: this
+    # scope is omitted from its signed material unless it is a workspace command.
+    command_kind: AuthCommandKind = AuthCommandKind.OWNER_GATE
+    workspace_incident_id: Optional[NonEmpty] = None
+    workspace_run_id: Optional[NonEmpty] = None
+    workspace_topology_revision: Optional[NonEmpty] = None
+    workspace_projection_revision: Optional[PositiveInt] = None
+    workspace_component_id: Optional[NonEmpty] = None
+    workspace_command_hash: Optional[Hash] = None
+
+    @root_validator(allow_reuse=True)
+    def workspace_scope_is_complete_and_isolated(cls, values):
+        scoped = [values.get(field) for field in _WORKSPACE_COMMAND_SCOPE_FIELDS]
+        kind = values.get("command_kind")
+        if kind == AuthCommandKind.WORKSPACE_NODE_EXPLANATION:
+            if any(value is None for value in scoped):
+                raise ValueError("workspace_auth_assertion_scope_incomplete")
+            if values.get("proposal_id") is not None or values.get("approval_id") is not None:
+                raise ValueError("workspace_auth_assertion_owner_scope_forbidden")
+        elif any(value is not None for value in scoped):
+            raise ValueError("owner_auth_assertion_workspace_scope_forbidden")
+        return values
 
 
 class AuthCommandIntent(StrictModel):
@@ -422,6 +457,26 @@ class AuthCommandIntent(StrictModel):
     roles: List[NonEmpty]
     created_at: datetime
     expires_at: datetime
+    command_kind: AuthCommandKind = AuthCommandKind.OWNER_GATE
+    workspace_incident_id: Optional[NonEmpty] = None
+    workspace_run_id: Optional[NonEmpty] = None
+    workspace_topology_revision: Optional[NonEmpty] = None
+    workspace_projection_revision: Optional[PositiveInt] = None
+    workspace_component_id: Optional[NonEmpty] = None
+    workspace_command_hash: Optional[Hash] = None
+
+    @root_validator(allow_reuse=True)
+    def workspace_scope_is_complete_and_isolated(cls, values):
+        scoped = [values.get(field) for field in _WORKSPACE_COMMAND_SCOPE_FIELDS]
+        kind = values.get("command_kind")
+        if kind == AuthCommandKind.WORKSPACE_NODE_EXPLANATION:
+            if any(value is None for value in scoped):
+                raise ValueError("workspace_auth_intent_scope_incomplete")
+            if values.get("proposal_id") is not None or values.get("approval_id") is not None:
+                raise ValueError("workspace_auth_intent_owner_scope_forbidden")
+        elif any(value is not None for value in scoped):
+            raise ValueError("owner_auth_intent_workspace_scope_forbidden")
+        return values
 
     def actor(self) -> AuthContext:
         return AuthContext(tenant_id=self.tenant_id, subject_id=self.subject_id, roles=self.roles)

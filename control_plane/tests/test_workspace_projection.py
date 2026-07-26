@@ -21,6 +21,7 @@ from flowpulse_cp.workspace_models import (
 )
 from flowpulse_cp.workspace_repository import InMemoryWorkspaceRepository
 from flowpulse_cp.workspace_activities import WorkspaceActivityDispatcher
+from flowpulse_cp.models import AuthContext
 
 
 NOW = datetime(2026, 7, 26, tzinfo=timezone.utc)
@@ -107,6 +108,7 @@ class WorkspaceProjectionTests(unittest.IsolatedAsyncioTestCase):
         dispatcher = WorkspaceActivityDispatcher(repository)
         initialized = WorkspaceActivityPacket(
             **item.dict(), stage="workspace_initialize", projection=current, event_sequence=1,
+            actor=AuthContext(tenant_id="tenant-a", subject_id="subject-a", roles=["viewer"]),
         )
         await dispatcher.dispatch("workspace_initialize_activity", initialized.dict())
         command = NodeExplanationStart(

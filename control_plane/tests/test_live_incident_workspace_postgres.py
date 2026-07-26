@@ -90,6 +90,7 @@ class LiveIncidentWorkspacePostgresTests(unittest.TestCase):
                     for name in [
                         "001_control_plane.sql", "002_authorization_intents.sql",
                         "003_incident_workspace_projection.sql", "004_workspace_binding_integrity.sql",
+                        "005_workspace_subject_grants.sql",
                     ]:
                         await bootstrap.execute((migration_dir / name).read_text(encoding="utf-8"))
                 finally:
@@ -189,6 +190,7 @@ class LiveIncidentWorkspacePostgresTests(unittest.TestCase):
                     for name in [
                         "001_control_plane.sql", "002_authorization_intents.sql",
                         "003_incident_workspace_projection.sql", "004_workspace_binding_integrity.sql",
+                        "005_workspace_subject_grants.sql",
                     ]:
                         await bootstrap.execute((migration_dir / name).read_text(encoding="utf-8"))
                 finally:
@@ -232,6 +234,7 @@ class LiveIncidentWorkspacePostgresTests(unittest.TestCase):
                         evidence_refs=[evidence.evidence_id], degraded_code="provider_unavailable",
                     )
                     await repository.put_workspace_binding(binding)
+                    await repository.grant_workspace_subject(binding, "workspace-owner")
                     await repository.put_workspace_projection(projection)
                     invocation = CapabilityInvocationContext(
                         **binding.dict(), projection_revision=projection.projection_revision,

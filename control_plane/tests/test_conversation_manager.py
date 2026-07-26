@@ -8,7 +8,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from flowpulse_cp.capabilities import CapabilityRegistry
+from flowpulse_cp.capabilities import CapabilityName, CapabilityRegistry
+from flowpulse_cp.capability_adapters import RecordedContextCapabilityAdapter
+from flowpulse_cp.models import AuthContext
+from flowpulse_cp.policy import PolicyViolation
 from flowpulse_cp.conversation_manager import ConversationManager
 from flowpulse_cp.provider_gateway import ProviderGatewayResult
 from flowpulse_cp.workspace_activities import WorkspaceActivityDispatcher
@@ -83,6 +86,20 @@ class UntrustedRawOutputProvider:
         )
 
 
+class BoundScopeAuthority:
+    async def assert_scope(self, context):
+        if context.tenant_id != "tenant-a" or context.subject_id != "subject-a":
+            raise PolicyViolation("workspace_subject_scope_denied")
+
+
+def registry():
+    return CapabilityRegistry(
+        descriptors=[RecordedContextCapabilityAdapter.descriptor],
+        adapters={CapabilityName.RECORDED_CONTEXT: RecordedContextCapabilityAdapter()},
+        scope_authority=BoundScopeAuthority(),
+    )
+
+
 class ConversationManagerTests(unittest.IsolatedAsyncioTestCase):
     async def _explanation(self, manager):
         repository = InMemoryWorkspaceRepository()
@@ -91,6 +108,7 @@ class ConversationManagerTests(unittest.IsolatedAsyncioTestCase):
         dispatcher = WorkspaceActivityDispatcher(repository, conversation_manager=manager)
         initial = WorkspaceActivityPacket(
             **item.dict(), stage="workspace_initialize", projection=current, event_sequence=1,
+            actor=AuthContext(tenant_id="tenant-a", subject_id="subject-a", roles=["viewer"]),
         )
         await dispatcher.dispatch("workspace_initialize_activity", initial.dict())
         command = NodeExplanationStart(
@@ -107,7 +125,7 @@ class ConversationManagerTests(unittest.IsolatedAsyncioTestCase):
     async def test_prompt_layers_context_hash_and_roles_are_server_pinned_and_bounded(self):
         provider = RecordingProvider()
         manager = ConversationManager(
-            provider, CapabilityRegistry(),
+            provider, registry(),
             specialist_roles=[ConversationRole.EVIDENCE_SPECIALIST, ConversationRole.TOPOLOGY_SPECIALIST],
         )
         explanation = await self._explanation(manager)
@@ -116,7 +134,7 @@ class ConversationManagerTests(unittest.IsolatedAsyncioTestCase):
         trace = explanation["conversation_trace"]
         self.assertEqual("flowpulse.version-bundle.v1", trace["version_bundle"]["schema_version"])
         self.assertEqual(64, len(trace["context_hash"]))
-        self.assertEqual([], trace["available_capabilities"])
+        self.assertEqual(["RECORDED_CONTEXT"], trace["available_capabilities"])
         self.assertEqual(0, trace["tool_calls"])
         self.assertFalse(explanation["fresh_read_performed"])
         self.assertFalse(explanation["fresh_diagnosis_claimed"])
@@ -132,14 +150,14 @@ class ConversationManagerTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(request.context.component.component_id == "checkout" for request in provider.requests))
 
     async def test_provider_citation_outside_recorded_context_degrades_before_projection(self):
-        manager = ConversationManager(RecordingProvider(evidence_refs=["forged-evidence"]), CapabilityRegistry())
+        manager = ConversationManager(RecordingProvider(evidence_refs=["forged-evidence"]), registry())
         explanation = await self._explanation(manager)
         self.assertEqual("DEGRADED", explanation["state"])
         self.assertEqual("provider_output_evidence_not_in_context", explanation["degraded_code"])
         self.assertEqual("DEGRADED", explanation["truth_label"])
 
     async def test_provider_output_schema_is_validated_before_projection(self):
-        explanation = await self._explanation(ConversationManager(UntrustedRawOutputProvider(), CapabilityRegistry()))
+        explanation = await self._explanation(ConversationManager(UntrustedRawOutputProvider(), registry()))
         self.assertEqual("DEGRADED", explanation["state"])
         self.assertEqual("provider_output_schema_invalid", explanation["degraded_code"])
         self.assertFalse(explanation["fresh_read_performed"])
@@ -155,6 +173,24 @@ class ConversationManagerTests(unittest.IsolatedAsyncioTestCase):
                     ConversationRole.EVIDENCE_SPECIALIST,
                 ],
             )
+
+    async def test_missing_or_cross_tenant_actor_cannot_reach_provider(self):
+        provider = RecordingProvider()
+        manager = ConversationManager(provider, registry())
+        item = binding()
+        current = projection(item)
+        command = NodeExplanationStart(
+            incident_id=item.incident_id, run_id=item.run_id, topology_revision=item.topology_revision,
+            projection_revision=1, component_id="checkout", idempotency_key="click-a",
+        )
+        with self.assertRaisesRegex(PolicyViolation, "actor_required"):
+            await manager.explain(item, current, command)
+        with self.assertRaisesRegex(PolicyViolation, "actor_tenant_mismatch"):
+            await manager.explain(
+                item, current, command,
+                actor=AuthContext(tenant_id="tenant-b", subject_id="subject-a", roles=["viewer"]),
+            )
+        self.assertEqual([], provider.requests)
 
 
 if __name__ == "__main__":

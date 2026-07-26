@@ -13,6 +13,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from .authorization import AuthorizationPort, UnavailableAuthorizationPort
 from .models import (
+    AuthAssertion,
     AuthContext,
     DryRunRequest,
     IncidentCase,
@@ -54,7 +55,7 @@ class WorkspaceStartPort(Protocol):
         ...
 
     async def start_or_reuse_node_explanation(
-        self, projection: IncidentProjection, command: NodeExplanationStart, actor: AuthContext,
+        self, projection: IncidentProjection, command: NodeExplanationStart, authorization: AuthAssertion,
     ) -> NodeExplanationReceipt:
         ...
 
@@ -64,7 +65,7 @@ class WorkspaceUnavailableStarter:
         raise RuntimeError("workspace_temporal_start_unavailable")
 
     async def start_or_reuse_node_explanation(
-        self, projection: IncidentProjection, command: NodeExplanationStart, actor: AuthContext,
+        self, projection: IncidentProjection, command: NodeExplanationStart, authorization: AuthAssertion,
     ) -> NodeExplanationReceipt:
         raise RuntimeError("workspace_temporal_update_unavailable")
 
@@ -247,7 +248,14 @@ def create_app(
         if command.component_id not in {node.component_id for node in projection.graph.nodes}:
             raise HTTPException(status_code=409, detail="workspace_node_explanation_component_not_canonical")
         try:
-            return await workspace_starter.start_or_reuse_node_explanation(projection, command, actor)
+            intent = await _workspace_call(
+                _workspace_repository(request), ("create_workspace_node_explanation_intent",),
+                actor, projection, command,
+            )
+            assertion = await _resolve(authorization.issue_workspace_node_explanation_intent(intent))
+            return await workspace_starter.start_or_reuse_node_explanation(projection, command, assertion)
+        except PolicyViolation as error:
+            raise HTTPException(status_code=403, detail=str(error))
         except RuntimeError as error:
             raise HTTPException(status_code=503, detail=str(error))
 

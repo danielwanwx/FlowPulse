@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from flowpulse_cp.app import create_app, trusted_auth_context
+from flowpulse_cp.authorization import HmacAuthorizationAuthority
 from flowpulse_cp.models import AuthContext
 from flowpulse_cp.workspace_models import (
     GraphMembership,
@@ -62,6 +63,7 @@ class FakeWorkspaceStarter:
         item = binding()
         result = projection(item)
         await self.repository.put_binding(item)
+        await self.repository.grant_workspace_subject(item, actor.subject_id)
         await self.repository.put_projection(result)
         await self.repository.append_event(IncidentEvent(
             **item.dict(), projection_revision=1, sequence=1, event_type="workspace.initialized",
@@ -69,7 +71,7 @@ class FakeWorkspaceStarter:
         ))
         return result
 
-    async def start_or_reuse_node_explanation(self, item, command, actor):
+    async def start_or_reuse_node_explanation(self, item, command, authorization):
         selection_key = command.selection_key(item.tenant_id)
         explanation = NodeExplanation(
             **binding().dict(), explanation_id="node-a", selection_key=selection_key,
@@ -88,6 +90,7 @@ class IncidentWorkspaceApiTests(unittest.TestCase):
         self.app = create_app(
             workspace_repository=self.workspace,
             workspace_starter=FakeWorkspaceStarter(self.workspace),
+            authorization=HmacAuthorizationAuthority("test-secret"),
         )
         self.app.dependency_overrides[trusted_auth_context] = lambda: AuthContext(
             tenant_id="tenant-a", subject_id="subject-a", roles=["viewer"],

@@ -118,6 +118,7 @@ class LiveWorkspaceMigrationRunnerTests(unittest.TestCase):
                             [
                                 "001_control_plane.sql", "002_authorization_intents.sql",
                                 "003_incident_workspace_projection.sql", "004_workspace_binding_integrity.sql",
+                                "005_workspace_subject_grants.sql",
                             ],
                             [row["filename"] for row in rows],
                         )
@@ -305,7 +306,11 @@ class LiveWorkspaceMigrationRunnerTests(unittest.TestCase):
                 try:
                     rows = await connection.fetch("SELECT filename, checksum_sha256 FROM schema_migrations ORDER BY filename")
                     self.assertEqual(
-                        ["001_control_plane.sql", "002_authorization_intents.sql", "003_incident_workspace_projection.sql", "004_workspace_binding_integrity.sql"],
+                        [
+                            "001_control_plane.sql", "002_authorization_intents.sql",
+                            "003_incident_workspace_projection.sql", "004_workspace_binding_integrity.sql",
+                            "005_workspace_subject_grants.sql",
+                        ],
                         [row["filename"] for row in rows],
                     )
                     self.assertEqual(

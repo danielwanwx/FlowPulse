@@ -202,13 +202,13 @@ class WorkspaceTemporalStarter:
         return projection
 
     async def start_or_reuse_node_explanation(
-        self, projection: IncidentProjection, command: NodeExplanationStart, actor: AuthContext,
+        self, projection: IncidentProjection, command: NodeExplanationStart, authorization,
     ) -> NodeExplanationReceipt:
         client = await Client.connect(self.address)
         handle = client.get_workflow_handle(projection.workflow_id, run_id=projection.workflow_run_id)
         response = await handle.execute_update(
             IncidentWorkspaceTemporalWorkflow.start_or_reuse_node_explanation,
-            WorkspaceNodeExplanationInvocation(command=command, actor=actor).dict(),
+            WorkspaceNodeExplanationInvocation(command=command, authorization=authorization).dict(),
         )
         if not response.get("accepted", True):
             raise RuntimeError(response.get("reason", "workspace_node_explanation_rejected"))
@@ -569,7 +569,9 @@ async def run_worker(
             build_temporal_activities(PostgresActivityDispatcher(
                 repository, artifacts, source_readback, authorization, evidence_acquirer, capability_registry,
             ))
-            + build_workspace_activities(WorkspaceActivityDispatcher(repository, conversation_manager=conversation_manager))
+            + build_workspace_activities(WorkspaceActivityDispatcher(
+                repository, conversation_manager=conversation_manager, authorization=authorization,
+            ))
         ),
     ):
         try:

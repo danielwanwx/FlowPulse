@@ -1,12 +1,15 @@
 """Append-only workspace projections used by Temporal activities and API reads."""
 
 from collections import defaultdict
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
+from uuid import uuid4
 
 from .capabilities import CapabilityAuditRecord
+from .models import AuthCommandIntent, AuthCommandKind, AuthContext
 
 from .policy import PolicyViolation
-from .workspace_models import IncidentEvent, IncidentProjection, IncidentRunBinding, NodeExplanation
+from .workspace_models import IncidentEvent, IncidentProjection, IncidentRunBinding, NodeExplanation, NodeExplanationStart
 
 
 BindingKey = Tuple[str, str, str]
@@ -36,6 +39,8 @@ class InMemoryWorkspaceRepository:
         self.explanations: Dict[str, NodeExplanation] = {}
         self.explanation_by_selection: Dict[str, str] = {}
         self.capability_audits: Dict[object, CapabilityAuditRecord] = {}
+        self.workspace_subject_grants = set()
+        self.workspace_auth_intents: Dict[str, AuthCommandIntent] = {}
 
     async def put_binding(self, binding: IncidentRunBinding) -> IncidentRunBinding:
         key = _binding_key(binding)
@@ -53,6 +58,15 @@ class InMemoryWorkspaceRepository:
         return binding
 
     put_workspace_binding = put_binding
+
+    async def grant_workspace_subject(self, binding: IncidentRunBinding, subject_id: str) -> None:
+        stored = await self.get_binding(binding.tenant_id, binding.case_id)
+        if stored != binding:
+            raise PolicyViolation("workspace_subject_grant_binding_mismatch")
+        self.workspace_subject_grants.add((binding.tenant_id, binding.case_id, subject_id))
+
+    async def workspace_subject_authorized(self, tenant_id: str, case_id: str, subject_id: str) -> bool:
+        return (tenant_id, case_id, subject_id) in self.workspace_subject_grants
 
     async def get_binding(self, tenant_id: str, case_id: str) -> Optional[IncidentRunBinding]:
         for item in self.bindings.values():
@@ -91,6 +105,38 @@ class InMemoryWorkspaceRepository:
         return records[-1] if records else None
 
     workspace_projection = get_projection
+
+    async def create_workspace_node_explanation_intent(
+        self, actor: AuthContext, projection: IncidentProjection, command: NodeExplanationStart,
+    ) -> AuthCommandIntent:
+        binding = await self.get_binding(actor.tenant_id, projection.case_id)
+        if binding is None or not _same_binding(binding, projection):
+            raise PolicyViolation("workspace_authorization_binding_not_authoritative")
+        current = await self.get_projection(actor.tenant_id, projection.case_id)
+        if current != projection:
+            raise PolicyViolation("workspace_authorization_projection_not_authoritative")
+        if (
+            command.incident_id != binding.incident_id or command.run_id != binding.run_id
+            or command.topology_revision != binding.topology_revision
+            or command.projection_revision != projection.projection_revision
+            or command.component_id not in {node.component_id for node in projection.graph.nodes}
+        ):
+            raise PolicyViolation("workspace_authorization_command_scope_mismatch")
+        if not await self.workspace_subject_authorized(actor.tenant_id, projection.case_id, actor.subject_id):
+            raise PolicyViolation("workspace_authorization_subject_acl_denied")
+        now = datetime.now(timezone.utc)
+        intent = AuthCommandIntent(
+            intent_id="workspace-intent-{}".format(uuid4().hex), tenant_id=actor.tenant_id,
+            case_id=binding.case_id, case_revision=binding.case_revision, workflow_run_id=binding.workflow_run_id,
+            subject_id=actor.subject_id, roles=actor.roles, created_at=now, expires_at=now + timedelta(minutes=1),
+            command_kind=AuthCommandKind.WORKSPACE_NODE_EXPLANATION,
+            workspace_incident_id=binding.incident_id, workspace_run_id=binding.run_id,
+            workspace_topology_revision=binding.topology_revision,
+            workspace_projection_revision=projection.projection_revision,
+            workspace_component_id=command.component_id, workspace_command_hash=command.canonical_hash(),
+        )
+        self.workspace_auth_intents[intent.intent_id] = intent
+        return intent
 
     async def append_event(self, event: IncidentEvent) -> IncidentEvent:
         key = _binding_key(event)

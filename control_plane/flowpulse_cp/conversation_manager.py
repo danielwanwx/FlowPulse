@@ -163,34 +163,40 @@ class ConversationManager:
         actor: AuthContext = None,
     ) -> ManagedConversation:
         """Run only server-selected roles. No capability call can occur before Gate 1."""
+        # ``actor`` is supplied only by the preceding authorization activity.
+        # A direct or legacy command is rejected by the workflow before this
+        # method is reached; retain this defense at the provider boundary.
+        if actor is None:
+            raise PolicyViolation("workspace_node_explanation_actor_required")
+        if actor.tenant_id != binding.tenant_id:
+            raise PolicyViolation("workspace_node_explanation_actor_tenant_mismatch")
         context = self._context(binding, projection, command)
         recorded_context_accesses = 0
-        if actor is not None:
-            try:
-                await self.capability_registry.invoke(
-                    CapabilityAudience.USER_QA,
-                    CapabilityInvocationContext(
-                        **binding.dict(), projection_revision=projection.projection_revision,
-                        evidence_revision=projection.evidence_revision,
-                        component_ids=[node.component_id for node in projection.graph.nodes],
-                        activity_id="workspace-node-explanation:{}".format(command.selection_key(binding.tenant_id)),
-                        scope=CapabilityScope.USER_QA, subject_id=actor.subject_id, subject_roles=actor.roles,
-                        authorized_subjects=[actor.subject_id], data_class=CapabilityDataClass.RECORDED_CONTEXT,
-                        recorded_evidence_ids=list(projection.evidence_refs), gate1_authorized=False,
-                        system_authorized=False,
-                    ),
-                    CapabilityRequest(
-                        capability=CapabilityName.RECORDED_CONTEXT, component_id=command.component_id,
-                        data_class=CapabilityDataClass.RECORDED_CONTEXT,
-                        parameters={"evidence_ids": list(projection.evidence_refs)},
-                    ),
-                    ToolCallBudget(max_calls=1),
-                )
-                recorded_context_accesses = 1
-            except PolicyViolation:
-                return self._degraded(
-                    "recorded_context_capability_denied", context, [], recorded_context_accesses=0,
-                )
+        try:
+            await self.capability_registry.invoke(
+                CapabilityAudience.USER_QA,
+                CapabilityInvocationContext(
+                    **binding.dict(), projection_revision=projection.projection_revision,
+                    evidence_revision=projection.evidence_revision,
+                    component_ids=[node.component_id for node in projection.graph.nodes],
+                    activity_id="workspace-node-explanation:{}".format(command.selection_key(binding.tenant_id)),
+                    scope=CapabilityScope.USER_QA, subject_id=actor.subject_id, subject_roles=actor.roles,
+                    authorized_subjects=[actor.subject_id], data_class=CapabilityDataClass.RECORDED_CONTEXT,
+                    recorded_evidence_ids=list(projection.evidence_refs), gate1_authorized=False,
+                    system_authorized=False,
+                ),
+                CapabilityRequest(
+                    capability=CapabilityName.RECORDED_CONTEXT, component_id=command.component_id,
+                    data_class=CapabilityDataClass.RECORDED_CONTEXT,
+                    parameters={"evidence_ids": list(projection.evidence_refs)},
+                ),
+                ToolCallBudget(max_calls=1),
+            )
+            recorded_context_accesses = 1
+        except PolicyViolation:
+            return self._degraded(
+                "recorded_context_capability_denied", context, [], recorded_context_accesses=0,
+            )
         allowed_evidence = set(context.recorded_evidence_refs).union(context.knowledge_prior_refs)
         prompt_bundles: List[PromptBundle] = []
         outputs: List[ConversationProviderOutput] = []

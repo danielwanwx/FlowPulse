@@ -11,6 +11,7 @@ from .models import (
     ActivityOutcome,
     AuthContext,
     AuthCommandIntent,
+    AuthCommandKind,
     CaseState,
     ClaimRecord,
     CoverageEntry,
@@ -31,7 +32,13 @@ from .policy import (
     validate_evidence_admission,
 )
 from .capabilities import CapabilityAuditRecord, CapabilityInvocationContext, CapabilityScope
-from .workspace_models import IncidentEvent, IncidentProjection, IncidentRunBinding, NodeExplanation
+from .workspace_models import (
+    IncidentEvent,
+    IncidentProjection,
+    IncidentRunBinding,
+    NodeExplanation,
+    NodeExplanationStart,
+)
 
 
 T = TypeVar("T")
@@ -179,6 +186,34 @@ class PostgresCaseRepository:
             )
             return _workspace_binding(_decode(row["payload"])) if row else None
         return await self._tenant(tenant_id, operation)
+
+    async def grant_workspace_subject(self, binding: IncidentRunBinding, subject_id: str) -> None:
+        """Append the initializer's trusted subject grant independently of evidence ACLs."""
+        async def operation(connection: asyncpg.Connection) -> None:
+            row = await connection.fetchrow(
+                """SELECT payload FROM incident_run_bindings
+                   WHERE tenant_id=$1 AND case_id=$2""",
+                binding.tenant_id, binding.case_id,
+            )
+            if row is None or _workspace_binding(_decode(row["payload"])) != _workspace_binding(binding):
+                raise PolicyViolation("workspace_subject_grant_binding_mismatch")
+            await connection.execute(
+                """INSERT INTO workspace_subject_grants (tenant_id, case_id, subject_id, created_at)
+                   VALUES ($1,$2,$3,$4) ON CONFLICT (tenant_id, case_id, subject_id) DO NOTHING""",
+                binding.tenant_id, binding.case_id, subject_id, binding.created_at,
+            )
+        await self._tenant(binding.tenant_id, operation, subject_id=subject_id)
+
+    async def workspace_subject_authorized(self, tenant_id: str, case_id: str, subject_id: str) -> bool:
+        async def operation(connection: asyncpg.Connection) -> bool:
+            return bool(await connection.fetchval(
+                """SELECT EXISTS(
+                       SELECT 1 FROM workspace_subject_grants
+                       WHERE tenant_id=$1 AND case_id=$2 AND subject_id=$3
+                   )""",
+                tenant_id, case_id, subject_id,
+            ))
+        return await self._tenant(tenant_id, operation, subject_id=subject_id)
 
     async def put_workspace_projection(self, projection: IncidentProjection) -> IncidentProjection:
         async def operation(connection: asyncpg.Connection) -> IncidentProjection:
@@ -387,6 +422,14 @@ class PostgresCaseRepository:
                 raise PolicyViolation("capability_scope_evidence_revision_mismatch")
             if not set(context.component_ids).issubset({node.component_id for node in projection.graph.nodes}):
                 raise PolicyViolation("capability_scope_component_binding_mismatch")
+            if not await connection.fetchval(
+                """SELECT EXISTS(
+                       SELECT 1 FROM workspace_subject_grants
+                       WHERE tenant_id=$1 AND case_id=$2 AND subject_id=$3
+                   )""",
+                context.tenant_id, context.case_id, context.subject_id,
+            ):
+                raise PolicyViolation("capability_scope_workspace_subject_acl_denied")
             for evidence_id in context.recorded_evidence_ids:
                 evidence_row = await connection.fetchrow(
                     """SELECT payload FROM evidence_envelopes
@@ -475,6 +518,11 @@ class PostgresCaseRepository:
             workflow_run_id=authoritative.workflow_run_id, proposal_id=proposal_id, approval_id=approval_id,
             subject_id=actor.subject_id, roles=actor.roles, created_at=now, expires_at=now + timedelta(minutes=1),
         )
+        await self._put_auth_command_intent(intent)
+        return intent
+
+    async def _put_auth_command_intent(self, intent: AuthCommandIntent) -> None:
+        """Store an immutable server-issued scope; public workspace fields live in its typed payload."""
         async def operation(connection: asyncpg.Connection) -> None:
             await connection.execute(
                 """INSERT INTO auth_command_intents
@@ -485,10 +533,49 @@ class PostgresCaseRepository:
                 intent.proposal_id, intent.approval_id, intent.subject_id, json.dumps(intent.roles),
                 intent.expires_at, _payload(intent),
             )
-        await self._tenant(actor.tenant_id, operation)
+        await self._tenant(intent.tenant_id, operation, subject_id=intent.subject_id)
+
+    async def create_workspace_node_explanation_intent(
+        self, actor: AuthContext, projection: IncidentProjection, command: NodeExplanationStart,
+    ) -> AuthCommandIntent:
+        """Create the sole mintable scope after authoritative binding, revision, and subject checks."""
+        binding = await self.workspace_binding(actor.tenant_id, projection.case_id)
+        if binding is None or binding != _workspace_binding(projection):
+            raise PolicyViolation("workspace_authorization_binding_not_authoritative")
+        authoritative = await self.workspace_projection(actor.tenant_id, projection.case_id)
+        if authoritative is None or authoritative != projection:
+            raise PolicyViolation("workspace_authorization_projection_not_authoritative")
+        if (
+            command.incident_id != binding.incident_id or command.run_id != binding.run_id
+            or command.topology_revision != binding.topology_revision
+            or command.projection_revision != projection.projection_revision
+            or command.component_id not in {node.component_id for node in projection.graph.nodes}
+        ):
+            raise PolicyViolation("workspace_authorization_command_scope_mismatch")
+        if not await self.workspace_subject_authorized(actor.tenant_id, projection.case_id, actor.subject_id):
+            raise PolicyViolation("workspace_authorization_subject_acl_denied")
+        case = await self.get_case(actor.tenant_id, projection.case_id)
+        if case is None or (
+            case.case_revision != binding.case_revision or case.workflow_run_id != binding.workflow_run_id
+        ):
+            raise PolicyViolation("workspace_authorization_case_not_authoritative")
+        now = datetime.now(timezone.utc)
+        intent = AuthCommandIntent(
+            intent_id="workspace-intent-{}".format(uuid4().hex), tenant_id=actor.tenant_id,
+            case_id=binding.case_id, case_revision=binding.case_revision, workflow_run_id=binding.workflow_run_id,
+            subject_id=actor.subject_id, roles=actor.roles, created_at=now, expires_at=now + timedelta(minutes=1),
+            command_kind=AuthCommandKind.WORKSPACE_NODE_EXPLANATION,
+            workspace_incident_id=binding.incident_id, workspace_run_id=binding.run_id,
+            workspace_topology_revision=binding.topology_revision,
+            workspace_projection_revision=projection.projection_revision,
+            workspace_component_id=command.component_id, workspace_command_hash=command.canonical_hash(),
+        )
+        await self._put_auth_command_intent(intent)
         return intent
 
-    async def consume_auth_command_intent(self, tenant_id: str, intent_id: str) -> AuthCommandIntent:
+    async def consume_auth_command_intent(
+        self, tenant_id: str, intent_id: str, expected_kind: AuthCommandKind = AuthCommandKind.OWNER_GATE,
+    ) -> AuthCommandIntent:
         """Mint once from the authoritative projection; body claims cannot change scope."""
         async def operation(connection: asyncpg.Connection) -> AuthCommandIntent:
             row = await connection.fetchrow(
@@ -500,6 +587,8 @@ class PostgresCaseRepository:
             if row is None:
                 raise PolicyViolation("authorization_intent_unknown_expired_or_consumed")
             intent = AuthCommandIntent.parse_obj(_decode(row["payload"]))
+            if intent.command_kind != expected_kind:
+                raise PolicyViolation("authorization_intent_command_kind_mismatch")
             case_row = await connection.fetchrow(
                 """SELECT payload FROM incident_cases
                    WHERE tenant_id=$1 AND case_id=$2 AND case_revision=$3 AND workflow_run_id=$4""",
@@ -513,6 +602,11 @@ class PostgresCaseRepository:
             )
             return intent
         return await self._tenant(tenant_id, operation)
+
+    async def consume_workspace_node_explanation_intent(self, tenant_id: str, intent_id: str) -> AuthCommandIntent:
+        return await self.consume_auth_command_intent(
+            tenant_id, intent_id, AuthCommandKind.WORKSPACE_NODE_EXPLANATION,
+        )
 
     async def put_case(self, case: IncidentCase) -> None:
         async def operation(connection: asyncpg.Connection) -> None:

@@ -14,7 +14,7 @@ import temporalio
 from temporalio.client import WorkflowHistory
 from temporalio.worker import Replayer
 
-from flowpulse_cp.workspace_workflow import IncidentWorkspaceTemporalWorkflow
+from flowpulse_cp.legacy_workspace_workflow import LegacyIncidentWorkspaceTemporalWorkflow
 from flowpulse_cp.workspace_provenance import history_identity, verify_producer_attestation
 
 
@@ -58,13 +58,16 @@ class WorkspaceHistoryReplayTests(unittest.TestCase):
         return history
 
     def test_archived_history_integrity_and_provenance(self):
-        self.archived_history()
+        # Production images intentionally omit Git. The host provenance suite
+        # maps this checked-in attestation to immutable Git objects; the image
+        # seam verifies the archived bytes, manifest, and replay only.
+        self.archived_history(verify_git=False)
 
     @unittest.skipUnless(
         tuple(int(part) for part in temporalio.__version__.split(".")[:2]) >= (1, 20),
         "Temporal Python SDK >=1.20 required for archived-history replay",
     )
-    def test_archived_history_replays_with_current_workspace_workflow(self):
+    def test_archived_history_replays_only_with_frozen_legacy_workspace_workflow(self):
         # A production image intentionally excludes Git metadata.  The host
         # integrity test above maps provenance to immutable Git objects; this
         # image-safe Replayer path consumes only those checked-in artifacts.
@@ -73,7 +76,7 @@ class WorkspaceHistoryReplayTests(unittest.TestCase):
         async def replay_archived_history():
             async def iterator():
                 yield history
-            return await Replayer(workflows=[IncidentWorkspaceTemporalWorkflow]).replay_workflows(iterator())
+            return await Replayer(workflows=[LegacyIncidentWorkspaceTemporalWorkflow]).replay_workflows(iterator())
 
         replay = asyncio.run(replay_archived_history())
         self.assertEqual({}, replay.replay_failures)
