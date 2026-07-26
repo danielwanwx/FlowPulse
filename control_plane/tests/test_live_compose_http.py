@@ -6,6 +6,7 @@ import os
 import sys
 import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.error import HTTPError
@@ -26,7 +27,10 @@ class LiveComposeHttpTests(unittest.TestCase):
         "FLOWPULSE_TEST_POSTGRES_DSN",
         "postgresql://flowpulse_cp_app:flowpulse-cp-local-only@127.0.0.1:5433/flowpulse",
     )
-    headers = {"x-flowpulse-test-tenant": "tenant-http", "x-flowpulse-test-subject": "owner-http"}
+    headers = {
+        "x-flowpulse-test-tenant": "tenant-http", "x-flowpulse-test-subject": "owner-http",
+        "x-flowpulse-test-roles": "owner",
+    }
 
     def request(self, method, path, payload=None, headers=None):
         body = json.dumps(payload).encode("utf-8") if payload is not None else None
@@ -90,6 +94,18 @@ class LiveComposeHttpTests(unittest.TestCase):
             finally:
                 await repository.close()
         return asyncio.run(run())
+
+
+    def test_observed_awaiting_owner_is_immediately_command_ready_under_concurrency(self):
+        def submit_after_projection(_):
+            now, case = self.intake_and_wait()
+            proposal = self.proposal(now, case)
+            status, body = self.request("POST", "/v1/proposals", json.loads(proposal.json()))
+            self.assertEqual(202, status, body)
+            self.assertEqual("proposal_submitted", body["phase"])
+
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            list(pool.map(submit_after_projection, range(18)))
 
     def test_http_commands_resume_temporal_and_persist_authoritative_acceptance(self):
         now, case = self.intake_and_wait()

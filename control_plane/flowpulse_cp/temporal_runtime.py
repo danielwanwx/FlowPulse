@@ -11,7 +11,7 @@ from temporalio.client import Client
 from temporalio.worker import Worker
 
 from .activities import ControlActivityDispatcher, build_temporal_activities
-from .authorization import AuthorizationPort, HmacAuthorizationAuthority
+from .authorization import AuthorizationPort, HttpAuthorizationClient
 from .evidence_acquisition import CurrentEvidenceAcquisitionPort, S3CurrentEvidenceAcquirer
 from .integrity import (
     DeterministicCritic,
@@ -206,6 +206,23 @@ class DomainActivityEngine:
                     decision=VerificationDecision.PASS, state=CaseState.AWAITING_OWNER,
                     identity="owner-wait:p0:temporal-durable",
                 )
+            if packet.stage == "validate_owner_command":
+                if packet.auth_assertion is None:
+                    raise PolicyViolation("owner_auth_assertion_required")
+                proposal_id = packet.proposal.proposal_id if packet.proposal is not None else packet.proposal_id
+                approval_id = packet.approval.approval_id if packet.approval is not None else None
+                authenticated = self.authorization.resolve(
+                    packet.auth_assertion, self._case(packet), proposal_id, approval_id,
+                )
+                if packet.approval is not None:
+                    if packet.approval.actor_id != authenticated.subject_id:
+                        raise PolicyViolation("approval_actor_not_authenticated_subject")
+                    if "owner" not in authenticated.roles:
+                        raise PolicyViolation("owner_role_required")
+                return ActivityOutcome(
+                    decision=VerificationDecision.PASS, identity="owner-command-authz:p0:trusted",
+                    authenticated=authenticated,
+                )
             if packet.stage == "owner_gate":
                 if packet.proposal is None:
                     return ActivityOutcome(
@@ -217,11 +234,9 @@ class DomainActivityEngine:
                         decision=VerificationDecision.AMBIGUOUS, state=CaseState.AWAITING_OWNER,
                         identity="owner-gate:p0:exact", reason_codes=["owner_approval_required"],
                     )
-                if packet.auth_assertion is None:
-                    raise PolicyViolation("owner_auth_assertion_required")
-                authenticated = self.authorization.resolve(
-                    packet.auth_assertion, self._case(packet), packet.proposal.proposal_id,
-                )
+                authenticated = packet.authorized_actor
+                if authenticated is None:
+                    raise PolicyViolation("owner_authorization_not_validated")
                 if packet.approval.actor_id != authenticated.subject_id:
                     raise PolicyViolation("approval_actor_not_authenticated_subject")
                 validate_owner_gate(
@@ -292,12 +307,7 @@ class PostgresActivityDispatcher(ControlActivityDispatcher):
             })
         await self._persist_domain(persisted_packet)
         if packet.stage == "owner_gate":
-            authenticated = None
-            if outcome.decision == VerificationDecision.PASS and packet.auth_assertion is not None and packet.proposal is not None:
-                authenticated = self.authorization.resolve(
-                    packet.auth_assertion, self.engine._case(packet), packet.proposal.proposal_id,
-                )
-            outcome = await self.repository.record_owner_gate(packet, outcome, authenticated)
+            outcome = await self.repository.record_owner_gate(packet, outcome, packet.authorized_actor)
         elif outcome.state is not None:
             await self.repository.project_case_state(packet, outcome.state, outcome.reason_codes)
         encoded = persisted_packet.json(sort_keys=True).encode("utf-8")
@@ -326,14 +336,14 @@ def _s3_store(endpoint: str, bucket: str, access_key: str, secret_key: str) -> S
 async def run_worker(
     address: str, task_queue: str, postgres_dsn: str, object_endpoint: str, object_bucket: str,
     object_access_key: str, object_secret_key: str, source_endpoint: str, source_bucket: str, source_prefix: str,
-    source_access_key: str, source_secret_key: str, auth_assertion_signing_secret: str,
+    source_access_key: str, source_secret_key: str, authorization_service_url: str,
     local_deterministic_evidence: bool = False,
 ) -> None:
     client = await Client.connect(address)
     repository = PostgresCaseRepository(postgres_dsn)
     await repository.connect()
     artifacts = _s3_store(object_endpoint, object_bucket, object_access_key, object_secret_key)
-    authorization = HmacAuthorizationAuthority(auth_assertion_signing_secret)
+    authorization = HttpAuthorizationClient(authorization_service_url)
     source_client = boto3.client(
         "s3", endpoint_url=source_endpoint, aws_access_key_id=source_access_key,
         aws_secret_access_key=source_secret_key, region_name="us-east-1",

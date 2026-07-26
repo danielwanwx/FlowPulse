@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from temporalio.client import Client
 
-from flowpulse_cp.authorization import HmacAuthorizationAuthority
+from flowpulse_cp.authorization import DEFAULT_AUDIENCE, HmacAuthorizationAuthority, HttpAuthorizationClient
 from flowpulse_cp.models import (
     ApprovalDecision, AuthContext, IncidentCase, OwnerApproval, OwnerGateCommand,
     RemediationProposal, TemporalCaseDescriptor, TemporalCaseRequest,
@@ -26,7 +26,7 @@ from flowpulse_cp.temporal_workflow import DiagnosisTemporalWorkflow
 class LiveTemporalNegativePathTests(unittest.TestCase):
     address = os.environ.get("FLOWPULSE_TEMPORAL_ADDRESS", "127.0.0.1:7233")
     queue = os.environ.get("FLOWPULSE_TEMPORAL_TASK_QUEUE", "flowpulse-diagnosis-p0")
-    authority = HmacAuthorizationAuthority(os.environ.get("FLOWPULSE_AUTH_ASSERTION_SECRET", "flowpulse-auth-local-only"))
+    authority = HttpAuthorizationClient(os.environ.get("FLOWPULSE_AUTHORIZATION_SERVICE_URL", "http://127.0.0.1:8091"))
 
     def request(self, *, coverage=True, readable=True):
         now = datetime.now(timezone.utc)
@@ -117,7 +117,7 @@ class LiveTemporalNegativePathTests(unittest.TestCase):
                 self.fail("workflow never reached durable owner wait")
             await handle.execute_update(DiagnosisTemporalWorkflow.submit_owner_command, OwnerGateCommand(
                 case_id=seed.case.case_id, tenant_id=seed.case.tenant_id,
-                auth_assertion=self.authority.issue(actor, current_case, proposal.proposal_id),
+                auth_assertion=self.authority.issue(actor, current_case, proposal.proposal_id, approval.approval_id),
                 proposal_id=proposal.proposal_id, approval=approval, current_witness={"deploy": "d1"},
             ).dict())
             return await handle.result()
@@ -155,7 +155,7 @@ class LiveTemporalNegativePathTests(unittest.TestCase):
                 environment="prod", affected_entities=["checkout"], created_at=now, updated_at=now,
             )
             valid = self.authority.issue(seed.actor, current_case, proposal.proposal_id)
-            for _ in range(40):
+            for _ in range(80):
                 receipt = await handle.execute_update(DiagnosisTemporalWorkflow.submit_owner_command, OwnerGateCommand(
                     case_id=current_case.case_id, tenant_id=current_case.tenant_id, auth_assertion=valid, proposal=proposal,
                 ).dict())
@@ -165,16 +165,25 @@ class LiveTemporalNegativePathTests(unittest.TestCase):
             else:
                 self.fail("workflow never reached durable owner wait")
             forged_actor = AuthContext(tenant_id=current_case.tenant_id, subject_id="attacker", roles=["owner"])
-            forged = HmacAuthorizationAuthority("attacker-secret").issue(
-                forged_actor, current_case, proposal.proposal_id,
-            )
-            await handle.execute_update(DiagnosisTemporalWorkflow.submit_owner_command, OwnerGateCommand(
+            forged = HmacAuthorizationAuthority(
+                {"local-k2": "attacker-secret"}, "flowpulse-local-authz", DEFAULT_AUDIENCE, "local-k2",
+            ).issue(forged_actor, current_case, proposal.proposal_id, approval.approval_id)
+            rejected = await handle.execute_update(DiagnosisTemporalWorkflow.submit_owner_command, OwnerGateCommand(
                 case_id=current_case.case_id, tenant_id=current_case.tenant_id, auth_assertion=forged,
                 proposal_id=proposal.proposal_id, approval=approval, current_witness={},
             ).dict())
+            self.assertFalse(rejected["accepted"], rejected)
+            self.assertIn("signature_invalid", rejected["phase"])
+            accepted = approval.copy(update={"actor_id": seed.actor.subject_id})
+            receipt = await handle.execute_update(DiagnosisTemporalWorkflow.submit_owner_command, OwnerGateCommand(
+                case_id=current_case.case_id, tenant_id=current_case.tenant_id,
+                auth_assertion=self.authority.issue(seed.actor, current_case, proposal.proposal_id, accepted.approval_id),
+                proposal_id=proposal.proposal_id, approval=accepted, current_witness={},
+            ).dict())
+            self.assertTrue(receipt["accepted"], receipt)
             return await handle.result()
 
-        self.assertEqual("BLOCKED", asyncio.run(run())["state"])
+        self.assertEqual("APPROVED", asyncio.run(run())["state"])
 
     def test_update_before_first_workflow_task_is_race_safe_under_load(self):
         async def one(index):
@@ -218,6 +227,80 @@ class LiveTemporalNegativePathTests(unittest.TestCase):
         receipts = asyncio.run(stress())
         self.assertEqual(12, len(receipts))
         self.assertTrue(all(item["accepted"] for item in receipts))
+
+
+    def test_assertion_protocol_rejects_audience_issuer_key_and_replay_before_mutation(self):
+        seed = self.request()
+        now = datetime.now(timezone.utc)
+        proposal = RemediationProposal(
+            proposal_id="proposal-assertion-{}".format(uuid4().hex), case_id=seed.case.case_id,
+            case_revision=1, tenant_id=seed.case.tenant_id, revision=1, action_type="dry-run",
+            exact_targets=["checkout"], exact_change={"template_id": "toggle", "parameters": {"enabled": "false"}},
+            canary_scope={"maximum_targets": 1, "environment": "prod"}, preconditions={},
+            supporting_claim_ids=[seed.claims[0].claim_id], success_criteria=["slo"],
+            rollback={"template_id": "toggle", "parameters": {"enabled": "true"}},
+            idempotency_key="assertion-{}".format(uuid4().hex), expires_at=now + timedelta(minutes=5),
+        )
+        approval = OwnerApproval(
+            approval_id="approval-assertion-{}".format(uuid4().hex), case_id=proposal.case_id, case_revision=1,
+            tenant_id=proposal.tenant_id, proposal_id=proposal.proposal_id, proposal_revision=1,
+            repair_contract_hash=repair_contract_hash(proposal), actor_id=seed.actor.subject_id,
+            execution_targets=["checkout"], maximum_targets=1, precondition_witness={}, decision=ApprovalDecision.APPROVED,
+            decided_at=now, expires_at=now + timedelta(minutes=5),
+        )
+
+        async def run():
+            client = await Client.connect(self.address)
+            handle = await client.start_workflow(
+                DiagnosisTemporalWorkflow.run, seed.dict(), id=seed.case.workflow_id, task_queue=self.queue,
+            )
+            current_case = IncidentCase(
+                case_id=seed.case.case_id, tenant_id=seed.case.tenant_id, case_revision=1,
+                workflow_id=seed.case.workflow_id, workflow_run_id=handle.result_run_id, severity="SEV2",
+                environment="prod", affected_entities=["checkout"], created_at=now, updated_at=now,
+            )
+            invalid_authorities = [
+                ("audience_invalid", HmacAuthorizationAuthority(
+                    {"local-k2": "flowpulse-active-local-only"}, "flowpulse-local-authz", "wrong-audience", "local-k2",
+                )),
+                ("issuer_invalid", HmacAuthorizationAuthority(
+                    {"local-k2": "flowpulse-active-local-only"}, "wrong-issuer", DEFAULT_AUDIENCE, "local-k2",
+                )),
+                ("key_unknown", HmacAuthorizationAuthority(
+                    {"wrong-k9": "attacker-secret"}, "flowpulse-local-authz", DEFAULT_AUDIENCE, "wrong-k9",
+                )),
+            ]
+            for expected, authority in invalid_authorities:
+                forged = authority.issue(seed.actor, current_case, proposal.proposal_id)
+                for _ in range(80):
+                    receipt = await handle.execute_update(DiagnosisTemporalWorkflow.submit_owner_command, OwnerGateCommand(
+                        case_id=current_case.case_id, tenant_id=current_case.tenant_id, auth_assertion=forged,
+                        proposal=proposal,
+                    ).dict())
+                    if "owner_gate_not_ready" not in receipt["phase"] and "workflow_not_initialized" not in receipt["phase"]:
+                        break
+                    await asyncio.sleep(0.05)
+                self.assertFalse(receipt["accepted"], receipt)
+                self.assertIn(expected, receipt["phase"])
+            valid = self.authority.issue(seed.actor, current_case, proposal.proposal_id)
+            accepted = await handle.execute_update(DiagnosisTemporalWorkflow.submit_owner_command, OwnerGateCommand(
+                case_id=current_case.case_id, tenant_id=current_case.tenant_id, auth_assertion=valid, proposal=proposal,
+            ).dict())
+            self.assertTrue(accepted["accepted"], accepted)
+            replay = await handle.execute_update(DiagnosisTemporalWorkflow.submit_owner_command, OwnerGateCommand(
+                case_id=current_case.case_id, tenant_id=current_case.tenant_id, auth_assertion=valid, proposal=proposal,
+            ).dict())
+            self.assertFalse(replay["accepted"], replay)
+            self.assertIn("auth_assertion_replayed", replay["phase"])
+            accepted_approval = await handle.execute_update(DiagnosisTemporalWorkflow.submit_owner_command, OwnerGateCommand(
+                case_id=current_case.case_id, tenant_id=current_case.tenant_id,
+                auth_assertion=self.authority.issue(seed.actor, current_case, proposal.proposal_id, approval.approval_id),
+                proposal_id=proposal.proposal_id, approval=approval, current_witness={},
+            ).dict())
+            self.assertTrue(accepted_approval["accepted"], accepted_approval)
+            return await handle.result()
+
+        self.assertEqual("APPROVED", asyncio.run(run())["state"])
 
 
 if __name__ == "__main__":

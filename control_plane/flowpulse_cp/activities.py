@@ -65,6 +65,7 @@ def temporal_activity_surface() -> List[str]:
         "critic_activity",
         "independent_verify_activity",
         "owner_wait_activity",
+        "validate_owner_command_activity",
         "owner_gate_activity",
     ]
 

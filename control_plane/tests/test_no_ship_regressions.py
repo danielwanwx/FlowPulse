@@ -227,7 +227,7 @@ class NoShipRegressionTests(unittest.TestCase):
         item = proposal()
         self.repo.put_proposal(item)
         starter = FakeStarter()
-        app = create_app(self.repo, temporal_starter=starter)
+        app = create_app(self.repo, temporal_starter=starter, authorization=HmacAuthorizationAuthority("test-auth-secret"))
         app.dependency_overrides[trusted_auth_context] = lambda: AuthContext(
             tenant_id="tenant-a", subject_id="owner-a", roles=["owner"]
         )

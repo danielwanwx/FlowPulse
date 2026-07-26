@@ -385,11 +385,17 @@ class AuthContext(StrictModel):
 class AuthAssertion(StrictModel):
     """Short-lived authorization proof minted by the trusted HTTP boundary."""
     assertion_id: NonEmpty
+    issuer: NonEmpty
+    audience: NonEmpty
+    key_id: NonEmpty
+    jti: NonEmpty
+    nonce: NonEmpty
     tenant_id: NonEmpty
     case_id: NonEmpty
     case_revision: PositiveInt
     workflow_run_id: NonEmpty
     proposal_id: Optional[NonEmpty] = None
+    approval_id: Optional[NonEmpty] = None
     subject_id: NonEmpty
     roles: List[NonEmpty]
     issued_at: datetime
@@ -432,6 +438,10 @@ class OwnerGateCommand(StrictModel):
             raise ValueError("owner_command_approval_id_mismatch")
         if assertion is not None and approval is not None and assertion.proposal_id != approval.proposal_id:
             raise ValueError("owner_command_assertion_proposal_scope_mismatch")
+        if assertion is not None and approval is not None and assertion.approval_id != approval.approval_id:
+            raise ValueError("owner_command_assertion_approval_scope_mismatch")
+        if assertion is not None and approval is None and assertion.approval_id is not None:
+            raise ValueError("owner_command_unexpected_assertion_approval_scope")
         if proposal is None and approval is None:
             raise ValueError("owner_command_requires_proposal_or_approval")
         return values
@@ -498,6 +508,7 @@ class TemporalActivityPacket(StrictModel):
     actor_subject_id: NonEmpty
     actor_roles: List[NonEmpty] = Field(default_factory=list)
     auth_assertion: Optional[AuthAssertion] = None
+    authorized_actor: Optional[AuthContext] = None
     severity: NonEmpty
     environment: NonEmpty
     affected_entities: List[NonEmpty] = Field(min_items=1)
@@ -521,6 +532,7 @@ class ActivityOutcome(StrictModel):
     critic: Optional[CriticDecision] = None
     verification: Optional[VerificationReport] = None
     acquisition: Optional["EvidenceAcquisitionResult"] = None
+    authenticated: Optional[AuthContext] = None
 
 
 class EvidenceAcquisitionResult(StrictModel):

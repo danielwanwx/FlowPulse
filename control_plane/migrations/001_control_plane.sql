@@ -133,6 +133,12 @@ CREATE TABLE verification_reports (
   decision TEXT NOT NULL, payload JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   FOREIGN KEY (tenant_id, case_id, case_revision) REFERENCES incident_cases (tenant_id, case_id, case_revision)
 );
+CREATE TABLE auth_assertion_consumptions (
+  jti TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, issuer TEXT NOT NULL, audience TEXT NOT NULL,
+  key_id TEXT NOT NULL, case_id TEXT NOT NULL, case_revision INTEGER NOT NULL,
+  workflow_run_id TEXT NOT NULL, proposal_id TEXT, approval_id TEXT, subject_id TEXT NOT NULL,
+  roles JSONB NOT NULL, expires_at TIMESTAMPTZ NOT NULL, consumed_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 CREATE TABLE action_executions (
   execution_id TEXT PRIMARY KEY, case_id TEXT NOT NULL, tenant_id TEXT NOT NULL, proposal_id TEXT NOT NULL,
   repair_contract_hash CHAR(64) NOT NULL, idempotency_key TEXT NOT NULL, result TEXT NOT NULL,
@@ -153,7 +159,7 @@ BEGIN
   FOREACH table_name IN ARRAY ARRAY[
     'incident_cases','case_events','evidence_envelopes','claim_records','claim_evidence_links','hypothesis_records',
     'coverage_entries','conflict_records','investigator_assignments','tool_calls','knowledge_revisions','remediation_proposals',
-    'owner_approvals','owner_approval_candidates','verification_reports','action_executions'
+    'owner_approvals','owner_approval_candidates','verification_reports','auth_assertion_consumptions','action_executions'
   ] LOOP
     EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', table_name);
     EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', table_name);

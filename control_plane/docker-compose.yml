@@ -3,34 +3,59 @@ services:
     build: .
     command: python -m flowpulse_cp.main
     ports: ["8090:8090"]
-    environment: &flowpulse_env
+    environment:
       FLOWPULSE_TEMPORAL_ADDRESS: temporal:7233
       FLOWPULSE_POSTGRES_DSN: postgresql://flowpulse_cp_app:flowpulse-cp-local-only@postgres:5432/flowpulse
-      FLOWPULSE_OBJECT_STORE_ENDPOINT: http://minio:9000
-      FLOWPULSE_OBJECT_STORE_BUCKET: flowpulse-evidence
-      FLOWPULSE_OBJECT_STORE_ACCESS_KEY: flowpulse-local
-      FLOWPULSE_OBJECT_STORE_SECRET_KEY: flowpulse-local-only
-      FLOWPULSE_SOURCE_READ_ENDPOINT: http://minio:9000
-      FLOWPULSE_SOURCE_READ_BUCKET: flowpulse-sources
-      FLOWPULSE_SOURCE_READ_PREFIX: controlled
-      FLOWPULSE_SOURCE_READ_ACCESS_KEY: flowpulse-source-reader-local
-      FLOWPULSE_SOURCE_READ_SECRET_KEY: flowpulse-source-reader-local-only
-      FLOWPULSE_AUTH_ASSERTION_SECRET: flowpulse-auth-local-only
+      FLOWPULSE_AUTHORIZATION_SERVICE_URL: http://authz:8091
       FLOWPULSE_TEMPORAL_TASK_QUEUE: flowpulse-diagnosis-p0
       FLOWPULSE_LOCAL_TEST_AUTH: "1"
       FLOWPULSE_LOCAL_DETERMINISTIC_EVIDENCE: "1"
     depends_on:
       postgres: {condition: service_healthy}
       temporal: {condition: service_healthy}
-      minio: {condition: service_healthy}
+      authz: {condition: service_healthy}
   worker:
     build: .
     command: python -m flowpulse_cp.worker
-    environment: *flowpulse_env
+    environment:
+      FLOWPULSE_TEMPORAL_ADDRESS: temporal:7233
+      FLOWPULSE_POSTGRES_DSN: postgresql://flowpulse_cp_app:flowpulse-cp-local-only@postgres:5432/flowpulse
+      FLOWPULSE_AUTHORIZATION_SERVICE_URL: http://authz:8091
+      FLOWPULSE_TEMPORAL_TASK_QUEUE: flowpulse-diagnosis-p0
+      FLOWPULSE_OBJECT_STORE_ENDPOINT: http://minio:9000
+      FLOWPULSE_OBJECT_STORE_BUCKET: flowpulse-evidence
+      FLOWPULSE_OBJECT_STORE_ACCESS_KEY: flowpulse-artifact-writer-local
+      FLOWPULSE_OBJECT_STORE_SECRET_KEY: flowpulse-artifact-writer-local-only
+      FLOWPULSE_SOURCE_READ_ENDPOINT: http://minio:9000
+      FLOWPULSE_SOURCE_READ_BUCKET: flowpulse-sources
+      FLOWPULSE_SOURCE_READ_PREFIX: controlled
+      FLOWPULSE_SOURCE_READ_ACCESS_KEY: flowpulse-source-reader-local
+      FLOWPULSE_SOURCE_READ_SECRET_KEY: flowpulse-source-reader-local-only
+      FLOWPULSE_LOCAL_DETERMINISTIC_EVIDENCE: "1"
     depends_on:
       postgres: {condition: service_healthy}
       temporal: {condition: service_healthy}
-      minio: {condition: service_healthy}
+      authz: {condition: service_healthy}
+      minio-init: {condition: service_completed_successfully}
+  authz:
+    build: .
+    command: python -m flowpulse_cp.main
+    ports: ["8091:8091"]
+    environment:
+      FLOWPULSE_COMPONENT: authz
+      PORT: "8091"
+      FLOWPULSE_POSTGRES_DSN: postgresql://flowpulse_cp_app:flowpulse-cp-local-only@postgres:5432/flowpulse
+      FLOWPULSE_AUTH_ASSERTION_ISSUER: flowpulse-local-authz
+      FLOWPULSE_AUTH_ASSERTION_AUDIENCE: flowpulse.temporal-owner-gate.v1
+      FLOWPULSE_AUTH_ASSERTION_ACTIVE_KEY_ID: local-k2
+      FLOWPULSE_AUTH_ASSERTION_KEYRING_JSON: '{"local-k1":"flowpulse-retired-local-only","local-k2":"flowpulse-active-local-only"}'
+    depends_on:
+      postgres: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8091/healthz')"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
   postgres:
     image: postgres:16-alpine
     environment:
@@ -45,7 +70,6 @@ services:
       interval: 2s
       timeout: 3s
       retries: 20
-    # Avoid the developer machine's conventional local Postgres listener.
     ports: ["5433:5432"]
   temporal:
     image: temporalio/auto-setup:1.25.2
@@ -67,8 +91,8 @@ services:
     image: minio/minio:RELEASE.2024-06-29T01-20-47Z
     command: server /data --console-address :9001
     environment:
-      MINIO_ROOT_USER: flowpulse-local
-      MINIO_ROOT_PASSWORD: flowpulse-local-only
+      MINIO_ROOT_USER: flowpulse-local-root
+      MINIO_ROOT_PASSWORD: flowpulse-local-root-only
     volumes:
       - minio_data:/data
     ports: ["9000:9000", "9001:9001"]
@@ -77,6 +101,25 @@ services:
       interval: 2s
       timeout: 3s
       retries: 20
+  minio-init:
+    image: minio/mc:RELEASE.2024-06-12T14-34-03Z
+    entrypoint: ["/bin/sh", "/bootstrap.sh"]
+    environment:
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ROOT_USER: flowpulse-local-root
+      MINIO_ROOT_PASSWORD: flowpulse-local-root-only
+      FLOWPULSE_OBJECT_STORE_BUCKET: flowpulse-evidence
+      FLOWPULSE_OBJECT_STORE_ACCESS_KEY: flowpulse-artifact-writer-local
+      FLOWPULSE_OBJECT_STORE_SECRET_KEY: flowpulse-artifact-writer-local-only
+      FLOWPULSE_SOURCE_READ_BUCKET: flowpulse-sources
+      FLOWPULSE_SOURCE_READ_ACCESS_KEY: flowpulse-source-reader-local
+      FLOWPULSE_SOURCE_READ_SECRET_KEY: flowpulse-source-reader-local-only
+    volumes:
+      - ./minio/bootstrap.sh:/bootstrap.sh:ro
+      - ./minio/policies:/policies:ro
+      - ./minio/fixtures:/fixtures:ro
+    depends_on:
+      minio: {condition: service_healthy}
 
 volumes:
   minio_data:

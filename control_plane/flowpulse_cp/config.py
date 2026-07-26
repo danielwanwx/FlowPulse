@@ -1,11 +1,37 @@
-"""Explicit configuration; no production credential or endpoint defaults."""
+"""Fail-closed process-specific configuration."""
 
 from dataclasses import dataclass
+import json
 import os
+from typing import Dict
+
+
+def required(name: str) -> str:
+    value = os.environ.get(name)
+    if not value:
+        raise RuntimeError("required_environment_missing:" + name)
+    return value
 
 
 @dataclass(frozen=True)
-class Settings:
+class ApiSettings:
+    temporal_address: str
+    postgres_dsn: str
+    authorization_service_url: str
+    temporal_task_queue: str
+
+    @classmethod
+    def from_environment(cls) -> "ApiSettings":
+        return cls(
+            temporal_address=required("FLOWPULSE_TEMPORAL_ADDRESS"),
+            postgres_dsn=required("FLOWPULSE_POSTGRES_DSN"),
+            authorization_service_url=required("FLOWPULSE_AUTHORIZATION_SERVICE_URL"),
+            temporal_task_queue=required("FLOWPULSE_TEMPORAL_TASK_QUEUE"),
+        )
+
+
+@dataclass(frozen=True)
+class WorkerSettings:
     temporal_address: str
     postgres_dsn: str
     object_store_endpoint: str
@@ -17,23 +43,48 @@ class Settings:
     source_read_prefix: str
     source_read_access_key: str
     source_read_secret_key: str
-    auth_assertion_signing_secret: str
+    authorization_service_url: str
     temporal_task_queue: str
 
     @classmethod
-    def from_environment(cls) -> "Settings":
+    def from_environment(cls) -> "WorkerSettings":
         return cls(
-            temporal_address=os.environ.get("FLOWPULSE_TEMPORAL_ADDRESS", "temporal:7233"),
-            postgres_dsn=os.environ.get("FLOWPULSE_POSTGRES_DSN", "postgresql://flowpulse:flowpulse@postgres:5432/flowpulse"),
-            object_store_endpoint=os.environ.get("FLOWPULSE_OBJECT_STORE_ENDPOINT", "http://minio:9000"),
-            object_store_bucket=os.environ.get("FLOWPULSE_OBJECT_STORE_BUCKET", "flowpulse-evidence"),
-            object_store_access_key=os.environ.get("FLOWPULSE_OBJECT_STORE_ACCESS_KEY", "flowpulse-local"),
-            object_store_secret_key=os.environ.get("FLOWPULSE_OBJECT_STORE_SECRET_KEY", "flowpulse-local-only"),
-            source_read_endpoint=os.environ.get("FLOWPULSE_SOURCE_READ_ENDPOINT", "http://minio:9000"),
-            source_read_bucket=os.environ.get("FLOWPULSE_SOURCE_READ_BUCKET", "flowpulse-sources"),
-            source_read_prefix=os.environ.get("FLOWPULSE_SOURCE_READ_PREFIX", "controlled"),
-            source_read_access_key=os.environ.get("FLOWPULSE_SOURCE_READ_ACCESS_KEY", "flowpulse-source-reader-local"),
-            source_read_secret_key=os.environ.get("FLOWPULSE_SOURCE_READ_SECRET_KEY", "flowpulse-source-reader-local-only"),
-            auth_assertion_signing_secret=os.environ.get("FLOWPULSE_AUTH_ASSERTION_SECRET", "flowpulse-auth-local-only"),
-            temporal_task_queue=os.environ.get("FLOWPULSE_TEMPORAL_TASK_QUEUE", "flowpulse-diagnosis-p0"),
+            temporal_address=required("FLOWPULSE_TEMPORAL_ADDRESS"),
+            postgres_dsn=required("FLOWPULSE_POSTGRES_DSN"),
+            object_store_endpoint=required("FLOWPULSE_OBJECT_STORE_ENDPOINT"),
+            object_store_bucket=required("FLOWPULSE_OBJECT_STORE_BUCKET"),
+            object_store_access_key=required("FLOWPULSE_OBJECT_STORE_ACCESS_KEY"),
+            object_store_secret_key=required("FLOWPULSE_OBJECT_STORE_SECRET_KEY"),
+            source_read_endpoint=required("FLOWPULSE_SOURCE_READ_ENDPOINT"),
+            source_read_bucket=required("FLOWPULSE_SOURCE_READ_BUCKET"),
+            source_read_prefix=required("FLOWPULSE_SOURCE_READ_PREFIX"),
+            source_read_access_key=required("FLOWPULSE_SOURCE_READ_ACCESS_KEY"),
+            source_read_secret_key=required("FLOWPULSE_SOURCE_READ_SECRET_KEY"),
+            authorization_service_url=required("FLOWPULSE_AUTHORIZATION_SERVICE_URL"),
+            temporal_task_queue=required("FLOWPULSE_TEMPORAL_TASK_QUEUE"),
+        )
+
+
+@dataclass(frozen=True)
+class AuthzSettings:
+    postgres_dsn: str
+    issuer: str
+    audience: str
+    active_key_id: str
+    keyring: Dict[str, str]
+
+    @classmethod
+    def from_environment(cls) -> "AuthzSettings":
+        try:
+            keyring = json.loads(required("FLOWPULSE_AUTH_ASSERTION_KEYRING_JSON"))
+        except json.JSONDecodeError as error:
+            raise RuntimeError("auth_assertion_keyring_json_invalid") from error
+        if not isinstance(keyring, dict) or not all(isinstance(key, str) and isinstance(value, str) and value for key, value in keyring.items()):
+            raise RuntimeError("auth_assertion_keyring_invalid")
+        return cls(
+            postgres_dsn=required("FLOWPULSE_POSTGRES_DSN"),
+            issuer=required("FLOWPULSE_AUTH_ASSERTION_ISSUER"),
+            audience=required("FLOWPULSE_AUTH_ASSERTION_AUDIENCE"),
+            active_key_id=required("FLOWPULSE_AUTH_ASSERTION_ACTIVE_KEY_ID"),
+            keyring=keyring,
         )

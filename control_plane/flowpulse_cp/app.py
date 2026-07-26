@@ -7,7 +7,7 @@ from typing import Any, Optional, Protocol
 from fastapi import Depends, FastAPI, HTTPException, Request
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from .authorization import AuthorizationPort, HmacAuthorizationAuthority
+from .authorization import AuthorizationPort, UnavailableAuthorizationPort
 from .models import (
     AuthContext,
     DryRunRequest,
@@ -100,7 +100,7 @@ def create_app(
     if allow_local_test_auth:
         app.add_middleware(LocalTestAuthMiddleware)
     temporal_starter = temporal_starter or TemporalUnavailableStarter()
-    authorization = authorization or HmacAuthorizationAuthority("flowpulse-auth-test-only")
+    authorization = authorization or UnavailableAuthorizationPort()
 
     @app.get("/healthz")
     async def healthz(request: Request) -> dict:
@@ -161,7 +161,7 @@ def create_app(
                 raise PolicyViolation("unknown_case")
             return await temporal_starter.submit_owner_command(case, OwnerGateCommand(
                 case_id=case.case_id, tenant_id=case.tenant_id,
-                auth_assertion=authorization.issue(actor, case, proposal_id), proposal_id=proposal_id,
+                auth_assertion=authorization.issue(actor, case, proposal_id, approval.approval_id), proposal_id=proposal_id,
                 approval=approval, current_witness=body.current_witness,
             ))
         except PolicyViolation as error:

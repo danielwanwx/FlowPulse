@@ -18,8 +18,8 @@ The suite uses a deterministic fake Temporal adapter and frozen source readback.
 
 ## Service and integration wiring
 
-The local Compose path starts the API (`0.0.0.0:8090`), Temporal, a Temporal
-worker, Postgres, and MinIO. The worker registers `flowpulse.diagnosis.v1` and
+The local Compose path starts the API (`0.0.0.0:8090`), an isolated assertion
+issuer (`0.0.0.0:8091`), Temporal, a Temporal worker, Postgres, and MinIO. The worker registers `flowpulse.diagnosis.v1` and
 all seven activity definitions; its Postgres adapter persists append-only
 activity/verification records, while the MinIO/S3 content-addressed artifact
 store persists the typed activity packet under a tenant prefix. Compose's
@@ -36,6 +36,8 @@ FLOWPULSE_LIVE_COMPOSE=1 .venv/bin/python -m unittest \
   discover -s tests -p 'test_live_compose_http.py' -v
 FLOWPULSE_LIVE_POSTGRES=1 .venv/bin/python -m unittest \
   discover -s tests -p 'test_live_postgres_idempotency.py' -v
+FLOWPULSE_LIVE_MINIO=1 .venv/bin/python -m unittest \
+  discover -s tests -p 'test_live_minio_iam.py' -v
 ```
 
 The opt-in live suite starts workflows through the registered worker and
@@ -72,9 +74,20 @@ neither workflow intake nor activity packets accept caller-provided readback
 evidence.
 
 Temporal owner commands carry a short-lived HMAC-signed authorization
-assertion minted only by the trusted HTTP auth boundary. The Owner Gate worker
-resolves that assertion against its configured authorization authority; roles
-inside a direct Temporal payload are not trusted.
+assertion minted by the isolated authorization service. Assertions are bound to
+issuer, audience, key ID, nonce/JTI, expiry, tenant, case/revision/run,
+proposal, approval, authenticated subject, and roles; JTI consumption is
+durable and one-time. The API and worker have no signing key. The Owner Gate
+worker resolves the assertion through the authorization service before any
+proposal/approval mutation; roles inside a direct Temporal payload are not
+trusted.
+
+Compose bootstraps separate MinIO identities: the artifact writer can access
+only the evidence bucket, while the verifier/current-source reader is read-only
+under the configured controlled source prefix. Neither identity is injected
+into the API. The live IAM test proves readback succeeds with the reader and
+that reader writes, writer source reads, cross-bucket reads, and a wrong
+tenant/key/bucket binding all fail.
 
 The migration is mounted into the local Postgres initializer. A deployment
 migration runner must apply the equivalent migration before any worker connects.
