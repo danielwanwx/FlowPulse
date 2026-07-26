@@ -8,8 +8,15 @@ Pydantic contracts returned by those routes.
 import argparse
 import hashlib
 import json
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
+
+# Run against the checkout's FastAPI/Pydantic contracts even when a developer
+# has an older non-editable package installed in the selected interpreter.
+SOURCE_ROOT = Path(__file__).resolve().parents[1]
+if str(SOURCE_ROOT) not in sys.path:
+    sys.path.insert(0, str(SOURCE_ROOT))
 
 from flowpulse_cp.app import create_app
 from flowpulse_cp.workspace_models import (

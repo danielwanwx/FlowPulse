@@ -42,6 +42,10 @@ class WorkspaceContractGeneratorTests(unittest.TestCase):
             self.assertFalse(openapi["components"]["schemas"]["IncidentEvent"].get("additionalProperties", True))
             self.assertEqual("run-example-01", examples["response_examples"]["IncidentProjection"]["run_id"])
             self.assertEqual("provider_unavailable", examples["response_examples"]["IncidentProjection"]["degraded_code"])
+            self.assertEqual(
+                "flowpulse.incident-workspace.v2",
+                openapi["components"]["schemas"]["VersionBundle"]["properties"]["workflow_version"]["default"],
+            )
             self.assertEqual("0" * 40, manifest["producer_implementation_git_sha"])
             for filename, checksum in manifest["artifacts"].items():
                 self.assertEqual(checksum, reported[filename])
