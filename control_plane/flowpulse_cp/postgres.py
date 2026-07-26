@@ -39,6 +39,7 @@ from .workspace_models import (
     NodeExplanation,
     NodeExplanationStart,
 )
+from .workspace_actions import ActionInvocationCommand, Gate1Lease, NextBestAction, WorkspaceActionReceipt
 
 
 T = TypeVar("T")
@@ -384,6 +385,141 @@ class PostgresCaseRepository:
             return NodeExplanation.parse_obj(_decode(row["payload"])) if row else None
         return await self._tenant(tenant_id, operation)
 
+    async def append_gate1_lease(self, lease: Gate1Lease) -> Gate1Lease:
+        """Append one Temporal-derived lease revision under the immutable binding."""
+        async def operation(connection: asyncpg.Connection) -> Gate1Lease:
+            await _lock_workspace_mapping(connection, _workspace_binding(lease))
+            binding = await connection.fetchrow(
+                "SELECT payload FROM incident_run_bindings WHERE tenant_id=$1 AND run_id=$2",
+                lease.tenant_id, lease.run_id,
+            )
+            if binding is None or _workspace_binding(_decode(binding["payload"])) != _workspace_binding(lease):
+                raise PolicyViolation("workspace_public_internal_binding_mismatch")
+            prior = await connection.fetchrow(
+                """SELECT payload FROM workspace_gate1_leases
+                   WHERE tenant_id=$1 AND lease_id=$2 ORDER BY lease_revision DESC LIMIT 1""",
+                lease.tenant_id, lease.lease_id,
+            )
+            if prior is not None:
+                recorded = Gate1Lease.parse_obj(_decode(prior["payload"]))
+                if lease.lease_revision <= recorded.lease_revision:
+                    if lease == recorded:
+                        return recorded
+                    raise PolicyViolation("gate1_lease_revision_not_monotonic")
+            await connection.execute(
+                """INSERT INTO workspace_gate1_leases
+                   (tenant_id, incident_id, run_id, topology_revision, case_id, case_revision, workflow_id,
+                    workflow_run_id, lease_id, lease_revision, status, consumed_by_activity_id, expires_at, payload, created_at)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15)""",
+                lease.tenant_id, lease.incident_id, lease.run_id, lease.topology_revision, lease.case_id,
+                lease.case_revision, lease.workflow_id, lease.workflow_run_id, lease.lease_id, lease.lease_revision,
+                lease.status.value, lease.consumed_by_activity_id, lease.expires_at, _payload(lease), lease.created_at,
+            )
+            return lease
+        return await self._tenant(lease.tenant_id, operation, subject_id=lease.subject_id)
+
+    async def workspace_gate1_lease(
+        self, tenant_id: str, case_id: str, lease_id: str,
+    ) -> Optional[Gate1Lease]:
+        async def operation(connection: asyncpg.Connection) -> Optional[Gate1Lease]:
+            row = await connection.fetchrow(
+                """SELECT payload FROM workspace_gate1_leases
+                   WHERE tenant_id=$1 AND case_id=$2 AND lease_id=$3
+                   ORDER BY lease_revision DESC LIMIT 1""",
+                tenant_id, case_id, lease_id,
+            )
+            return Gate1Lease.parse_obj(_decode(row["payload"])) if row else None
+        return await self._tenant(tenant_id, operation)
+
+    async def append_next_best_action(self, action: NextBestAction) -> NextBestAction:
+        async def operation(connection: asyncpg.Connection) -> NextBestAction:
+            await _lock_workspace_mapping(connection, _workspace_binding(action))
+            binding = await connection.fetchrow(
+                "SELECT payload FROM incident_run_bindings WHERE tenant_id=$1 AND run_id=$2",
+                action.tenant_id, action.run_id,
+            )
+            if binding is None or _workspace_binding(_decode(binding["payload"])) != _workspace_binding(action):
+                raise PolicyViolation("workspace_public_internal_binding_mismatch")
+            prior = await connection.fetchrow(
+                "SELECT payload FROM next_best_actions WHERE tenant_id=$1 AND action_id=$2",
+                action.tenant_id, action.action_id,
+            )
+            if prior is not None:
+                recorded = NextBestAction.parse_obj(_decode(prior["payload"]))
+                if recorded != action:
+                    raise PolicyViolation("next_best_action_immutable")
+                return recorded
+            await connection.execute(
+                """INSERT INTO next_best_actions
+                   (tenant_id, incident_id, run_id, topology_revision, case_id, case_revision, workflow_id,
+                    workflow_run_id, action_id, card_version, projection_revision, action_revision, expires_at,
+                    payload, created_at)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15)""",
+                action.tenant_id, action.incident_id, action.run_id, action.topology_revision, action.case_id,
+                action.case_revision, action.workflow_id, action.workflow_run_id, action.action_id, action.card_version,
+                action.projection_revision, action.action_revision, action.expires_at, _payload(action), action.created_at,
+            )
+            return action
+        return await self._tenant(action.tenant_id, operation)
+
+    async def workspace_next_best_action(
+        self, tenant_id: str, case_id: str, action_id: str,
+    ) -> Optional[NextBestAction]:
+        async def operation(connection: asyncpg.Connection) -> Optional[NextBestAction]:
+            row = await connection.fetchrow(
+                "SELECT payload FROM next_best_actions WHERE tenant_id=$1 AND case_id=$2 AND action_id=$3",
+                tenant_id, case_id, action_id,
+            )
+            return NextBestAction.parse_obj(_decode(row["payload"])) if row else None
+        return await self._tenant(tenant_id, operation)
+
+    async def workspace_next_best_actions(self, tenant_id: str, case_id: str) -> List[NextBestAction]:
+        async def operation(connection: asyncpg.Connection) -> List[NextBestAction]:
+            rows = await connection.fetch(
+                """SELECT payload FROM next_best_actions
+                   WHERE tenant_id=$1 AND case_id=$2 ORDER BY (payload->>'display_order')::integer ASC""",
+                tenant_id, case_id,
+            )
+            return [NextBestAction.parse_obj(_decode(row["payload"])) for row in rows]
+        return await self._tenant(tenant_id, operation)
+
+    async def record_workspace_action_receipt(self, receipt: WorkspaceActionReceipt) -> WorkspaceActionReceipt:
+        async def operation(connection: asyncpg.Connection) -> WorkspaceActionReceipt:
+            await _lock_workspace_mapping(connection, _workspace_binding(receipt))
+            existing = await connection.fetchrow(
+                """SELECT payload FROM workspace_action_receipts
+                   WHERE tenant_id=$1 AND case_id=$2 AND idempotency_key=$3""",
+                receipt.tenant_id, receipt.case_id, receipt.idempotency_key,
+            )
+            if existing is not None:
+                prior = WorkspaceActionReceipt.parse_obj(_decode(existing["payload"]))
+                if prior != receipt:
+                    raise PolicyViolation("workspace_action_idempotency_conflict")
+                return prior
+            await connection.execute(
+                """INSERT INTO workspace_action_receipts
+                   (tenant_id, incident_id, run_id, topology_revision, case_id, case_revision, workflow_id,
+                    workflow_run_id, action_id, idempotency_key, status, payload, created_at)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13)""",
+                receipt.tenant_id, receipt.incident_id, receipt.run_id, receipt.topology_revision, receipt.case_id,
+                receipt.case_revision, receipt.workflow_id, receipt.workflow_run_id, receipt.action_id,
+                receipt.idempotency_key, receipt.status, _payload(receipt), receipt.created_at,
+            )
+            return receipt
+        return await self._tenant(receipt.tenant_id, operation)
+
+    async def workspace_action_receipt(
+        self, tenant_id: str, case_id: str, idempotency_key: str,
+    ) -> Optional[WorkspaceActionReceipt]:
+        async def operation(connection: asyncpg.Connection) -> Optional[WorkspaceActionReceipt]:
+            row = await connection.fetchrow(
+                """SELECT payload FROM workspace_action_receipts
+                   WHERE tenant_id=$1 AND case_id=$2 AND idempotency_key=$3""",
+                tenant_id, case_id, idempotency_key,
+            )
+            return WorkspaceActionReceipt.parse_obj(_decode(row["payload"])) if row else None
+        return await self._tenant(tenant_id, operation)
+
     async def _assert_capability_scope_connection(
         self, connection: asyncpg.Connection, context: CapabilityInvocationContext,
     ) -> None:
@@ -573,6 +709,47 @@ class PostgresCaseRepository:
         await self._put_auth_command_intent(intent)
         return intent
 
+    async def create_workspace_action_intent(
+        self, actor: AuthContext, projection: IncidentProjection, command: ActionInvocationCommand,
+    ) -> AuthCommandIntent:
+        """Mint only a reloaded, current server card into an action assertion."""
+        binding = await self.workspace_binding(actor.tenant_id, projection.case_id)
+        if binding is None or binding != _workspace_binding(projection):
+            raise PolicyViolation("workspace_action_binding_not_authoritative")
+        authoritative = await self.workspace_projection(actor.tenant_id, projection.case_id)
+        if authoritative is None or authoritative != projection:
+            raise PolicyViolation("workspace_action_projection_not_authoritative")
+        action = await self.workspace_next_best_action(actor.tenant_id, projection.case_id, command.action_id)
+        if action is None:
+            raise PolicyViolation("workspace_action_not_found")
+        if not await self.workspace_subject_authorized(actor.tenant_id, projection.case_id, actor.subject_id):
+            raise PolicyViolation("workspace_action_subject_acl_denied")
+        permissions = (
+            ["incident:read"]
+            if set(actor.roles).intersection({"viewer", "owner", "local-test-owner"})
+            else []
+        )
+        from .workspace_actions import validate_current_action_card
+        validate_current_action_card(action, projection, command, permissions, datetime.now(timezone.utc))
+        case = await self.get_case(actor.tenant_id, projection.case_id)
+        if case is None or (
+            case.case_revision != binding.case_revision or case.workflow_run_id != binding.workflow_run_id
+        ):
+            raise PolicyViolation("workspace_action_case_not_authoritative")
+        now = datetime.now(timezone.utc)
+        intent = AuthCommandIntent(
+            intent_id="workspace-action-intent-{}".format(uuid4().hex), tenant_id=actor.tenant_id,
+            case_id=binding.case_id, case_revision=binding.case_revision, workflow_run_id=binding.workflow_run_id,
+            subject_id=actor.subject_id, roles=actor.roles, created_at=now, expires_at=now + timedelta(minutes=1),
+            command_kind=AuthCommandKind.WORKSPACE_ACTION,
+            workspace_incident_id=binding.incident_id, workspace_run_id=binding.run_id,
+            workspace_topology_revision=binding.topology_revision,
+            workspace_projection_revision=projection.projection_revision,
+            workspace_action_id=action.action_id, workspace_action_command_hash=command.canonical_hash(),
+        )
+        await self._put_auth_command_intent(intent)
+        return intent
+
     async def consume_auth_command_intent(
         self, tenant_id: str, intent_id: str, expected_kind: AuthCommandKind = AuthCommandKind.OWNER_GATE,
     ) -> AuthCommandIntent:
@@ -606,6 +783,11 @@ class PostgresCaseRepository:
     async def consume_workspace_node_explanation_intent(self, tenant_id: str, intent_id: str) -> AuthCommandIntent:
         return await self.consume_auth_command_intent(
             tenant_id, intent_id, AuthCommandKind.WORKSPACE_NODE_EXPLANATION,
+        )
+
+    async def consume_workspace_action_intent(self, tenant_id: str, intent_id: str) -> AuthCommandIntent:
+        return await self.consume_auth_command_intent(
+            tenant_id, intent_id, AuthCommandKind.WORKSPACE_ACTION,
         )
 
     async def put_case(self, case: IncidentCase) -> None:

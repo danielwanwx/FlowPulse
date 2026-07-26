@@ -105,14 +105,19 @@ class CapabilityInvocationContext(IncidentRunBinding):
     scope: CapabilityScope
     subject_id: NonEmpty
     subject_roles: List[NonEmpty] = Field(default_factory=list)
+    subject_permissions: List[NonEmpty] = Field(default_factory=list)
     authorized_subjects: List[NonEmpty] = Field(min_items=1)
     data_class: CapabilityDataClass
     recorded_evidence_ids: List[NonEmpty] = Field(default_factory=list, max_items=64)
     max_tool_calls: NonNegativeInt = 1
+    capability_registry_revision: NonEmpty = "capability-registry.v2"
+    precondition_version: NonEmpty = "workspace-precondition.v1"
+    precondition_hash: Hash = "0" * 64
+    gate1_lease_id: Optional[NonEmpty] = None
     gate1_authorized: StrictBool = False
     system_authorized: StrictBool = False
 
-    @validator("component_ids", "authorized_subjects", "recorded_evidence_ids", allow_reuse=True)
+    @validator("component_ids", "authorized_subjects", "subject_permissions", "recorded_evidence_ids", allow_reuse=True)
     def scope_values_are_unique(cls, value):
         if len(value) != len(set(value)):
             raise ValueError("capability_scope_values_must_be_unique")
@@ -236,6 +241,7 @@ class CapabilityRegistry:
         policy_version: str = "capability-policy.v2",
         audit_sink: Optional[CapabilityAuditSink] = None,
         scope_authority: Optional[CapabilityScopeAuthority] = None,
+        gate1_authority: Optional[Any] = None,
     ) -> None:
         self._descriptors = {}
         for descriptor in descriptors:
@@ -254,6 +260,7 @@ class CapabilityRegistry:
         self.policy_version = policy_version
         self.audit_sink = audit_sink
         self.scope_authority = scope_authority
+        self.gate1_authority = gate1_authority
         self.audit_records: Dict[UUID, CapabilityAuditRecord] = {}
 
     def available(self, audience: CapabilityAudience) -> List[CapabilityDescriptor]:
@@ -330,8 +337,13 @@ class CapabilityRegistry:
             raise PolicyViolation("capability_tool_budget_exceeds_authoritative_scope")
         if request.data_class != invocation_context.data_class or request.data_class not in descriptor.data_classes:
             raise PolicyViolation("capability_data_class_not_allowed")
-        if descriptor.required_gate == CapabilityGate.GATE1 and not invocation_context.gate1_authorized:
-            raise PolicyViolation("capability_gate1_required")
+        if descriptor.required_gate == CapabilityGate.GATE1:
+            # A Boolean in a packet is never a capability. The authoritative
+            # lease validates the exact tenant/public/internal/revision/tool
+            # binding immediately before the adapter can receive its input.
+            if self.gate1_authority is None:
+                raise PolicyViolation("capability_gate1_authority_unconfigured")
+            await _maybe_await(self.gate1_authority.assert_active(invocation_context, request, descriptor))
         if descriptor.required_gate == CapabilityGate.SYSTEM_DIAGNOSIS and not (
             invocation_context.scope == CapabilityScope.AUTONOMOUS_DIAGNOSIS and invocation_context.system_authorized
         ):
@@ -351,6 +363,8 @@ class CapabilityRegistry:
             result = adapter.result_model.parse_obj(raw_result)
         except Exception as error:
             raise PolicyViolation("capability_result_schema_invalid") from error
+        if descriptor.fresh_read and not result.evidence:
+            raise PolicyViolation("fresh_capability_evidence_required")
         self._validate_result_evidence(result, invocation_context)
         if result.evidence:
             if evidence_admission is None:

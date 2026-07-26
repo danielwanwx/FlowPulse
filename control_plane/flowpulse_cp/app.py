@@ -4,6 +4,7 @@ import hmac
 import inspect
 import json
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Mapping, Optional, Protocol
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Security
@@ -32,6 +33,12 @@ from .workspace_models import (
     NodeExplanationStart,
     WorkspaceIntake,
 )
+from .workspace_actions import (
+    ActionInvocationCommand,
+    NextBestAction,
+    WorkspaceActionReceipt,
+    validate_current_action_card,
+)
 
 
 class TemporalStartPort(Protocol):
@@ -59,6 +66,11 @@ class WorkspaceStartPort(Protocol):
     ) -> NodeExplanationReceipt:
         ...
 
+    async def invoke_next_best_action(
+        self, projection: IncidentProjection, command: ActionInvocationCommand, authorization: AuthAssertion,
+    ) -> WorkspaceActionReceipt:
+        ...
+
 
 class WorkspaceUnavailableStarter:
     async def start_workspace(self, intake: WorkspaceIntake, actor: AuthContext) -> IncidentProjection:
@@ -67,6 +79,11 @@ class WorkspaceUnavailableStarter:
     async def start_or_reuse_node_explanation(
         self, projection: IncidentProjection, command: NodeExplanationStart, authorization: AuthAssertion,
     ) -> NodeExplanationReceipt:
+        raise RuntimeError("workspace_temporal_update_unavailable")
+
+    async def invoke_next_best_action(
+        self, projection: IncidentProjection, command: ActionInvocationCommand, authorization: AuthAssertion,
+    ) -> WorkspaceActionReceipt:
         raise RuntimeError("workspace_temporal_update_unavailable")
 
 
@@ -114,6 +131,13 @@ def trusted_auth_context(
 def tenant_match(value: str, actor: AuthContext) -> None:
     if value != actor.tenant_id:
         raise HTTPException(status_code=403, detail="body_tenant_does_not_match_authenticated_tenant")
+
+
+def workspace_permissions(actor: AuthContext):
+    """Map only trusted identity roles to server-owned capability permissions."""
+    if set(actor.roles).intersection({"viewer", "owner", "local-test-owner"}):
+        return ["incident:read"]
+    return []
 
 
 async def _resolve(value: Any) -> Any:
@@ -271,6 +295,62 @@ def create_app(
             raise HTTPException(status_code=404, detail="workspace_node_explanation_not_found")
         return NodeExplanationReceipt(explanation=explanation, reused=True)
 
+    @app.get("/v1/incidents/{case_id}/actions", response_model=list[NextBestAction])
+    async def list_workspace_actions(
+        case_id: str, request: Request, actor: AuthContext = Depends(trusted_auth_context),
+    ) -> list[NextBestAction]:
+        """Read only server-generated recommendation cards for one projection."""
+        projection = await _workspace_call(
+            _workspace_repository(request), ("workspace_projection", "get_projection"), actor.tenant_id, case_id,
+        )
+        if projection is None:
+            raise HTTPException(status_code=404, detail="workspace_projection_not_found")
+        cards = await _workspace_call(
+            _workspace_repository(request), ("workspace_next_best_actions", "get_next_best_actions"),
+            actor.tenant_id, case_id,
+        )
+        # A generated card is only visible while it still binds the current
+        # projection and authenticated capability permission.  Older cards
+        # remain append-only audit records but never become active UI choices.
+        now = datetime.now(timezone.utc)
+        return [
+            card for card in cards
+            if _card_visible(card, projection, workspace_permissions(actor), now)
+        ]
+
+    @app.post(
+        "/v1/incidents/{case_id}/actions/{action_id}", response_model=WorkspaceActionReceipt, status_code=202,
+    )
+    async def invoke_workspace_action(
+        case_id: str, action_id: str, command: ActionInvocationCommand, request: Request,
+        actor: AuthContext = Depends(trusted_auth_context),
+    ) -> WorkspaceActionReceipt:
+        """Submit one revalidated server card command; never write approval/action state here."""
+        if command.action_id != action_id:
+            raise HTTPException(status_code=409, detail="workspace_action_path_identity_mismatch")
+        projection = await _workspace_call(
+            _workspace_repository(request), ("workspace_projection", "get_projection"), actor.tenant_id, case_id,
+        )
+        if projection is None:
+            raise HTTPException(status_code=404, detail="workspace_projection_not_found")
+        card = await _workspace_call(
+            _workspace_repository(request), ("workspace_next_best_action", "get_next_best_action"),
+            actor.tenant_id, case_id, action_id,
+        )
+        if card is None:
+            raise HTTPException(status_code=404, detail="workspace_action_not_found")
+        try:
+            validate_current_action_card(card, projection, command, workspace_permissions(actor), datetime.now(timezone.utc))
+            intent = await _workspace_call(
+                _workspace_repository(request), ("create_workspace_action_intent",), actor, projection, command,
+            )
+            assertion = await _resolve(authorization.issue_workspace_action_intent(intent))
+            return await workspace_starter.invoke_next_best_action(projection, command, assertion)
+        except PolicyViolation as error:
+            raise HTTPException(status_code=409, detail=str(error))
+        except RuntimeError as error:
+            raise HTTPException(status_code=503, detail=str(error))
+
     @app.get(
         "/v1/incidents/{case_id}/events",
         response_class=StreamingResponse,
@@ -392,6 +472,19 @@ def create_app(
 
     app.openapi = workspace_openapi
     return app
+
+
+def _card_visible(card: NextBestAction, projection: IncidentProjection, permissions, now) -> bool:
+    try:
+        command = ActionInvocationCommand(
+            incident_id=card.incident_id, run_id=card.run_id,
+            topology_revision=card.topology_revision, projection_revision=card.projection_revision,
+            action_id=card.action_id, idempotency_key="read-only-card-visibility",
+        )
+        validate_current_action_card(card, projection, command, permissions, now)
+        return True
+    except PolicyViolation:
+        return False
 
 
 app = create_app()

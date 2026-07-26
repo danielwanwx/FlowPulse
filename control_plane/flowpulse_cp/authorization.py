@@ -24,10 +24,12 @@ from .models import (
 from .policy import PolicyViolation, canonical_json
 from .postgres import PostgresCaseRepository
 from .workspace_models import IncidentRunBinding, NodeExplanationStart
+from .workspace_actions import ActionInvocationCommand
 
 
 DEFAULT_AUDIENCE = "flowpulse.temporal-owner-gate.v1"
 WORKSPACE_NODE_EXPLANATION_AUDIENCE = "flowpulse.temporal-workspace-node-explanation.v1"
+WORKSPACE_ACTION_AUDIENCE = "flowpulse.temporal-workspace-action.v1"
 
 
 class AuthorizationPort(Protocol):
@@ -48,6 +50,14 @@ class AuthorizationPort(Protocol):
     ) -> AuthContext:
         """Verify/consume the exact public binding and command before provider work."""
 
+    def issue_workspace_action_intent(self, intent: AuthCommandIntent) -> AuthAssertion:
+        """Mint a one-time generic action command from a server-created intent."""
+
+    def resolve_workspace_action(
+        self, assertion: AuthAssertion, binding: IncidentRunBinding, command: ActionInvocationCommand,
+    ) -> AuthContext:
+        """Verify/consume an exact action identity without browser-selected scope."""
+
 
 class HmacAuthorizationAuthority:
     """Key-id aware HMAC issuer/verifier used only by the auth service/tests."""
@@ -56,10 +66,11 @@ class HmacAuthorizationAuthority:
         self, keyring, issuer: str = "flowpulse.authz.test", audience: str = DEFAULT_AUDIENCE,
         active_key_id: str = "test-k1", ttl_seconds: int = 300,
         workspace_node_explanation_audience: str = WORKSPACE_NODE_EXPLANATION_AUDIENCE,
+        workspace_action_audience: str = WORKSPACE_ACTION_AUDIENCE,
     ) -> None:
         if isinstance(keyring, str):
             keyring = {active_key_id: keyring}
-        if not keyring or not issuer or not audience or not workspace_node_explanation_audience or active_key_id not in keyring:
+        if not keyring or not issuer or not audience or not workspace_node_explanation_audience or not workspace_action_audience or active_key_id not in keyring:
             raise ValueError("auth_assertion_keyring_issuer_audience_required")
         self._keys = {key_id: secret.encode("utf-8") for key_id, secret in keyring.items() if secret}
         if active_key_id not in self._keys:
@@ -67,6 +78,7 @@ class HmacAuthorizationAuthority:
         self.issuer = issuer
         self.audience = audience
         self.workspace_node_explanation_audience = workspace_node_explanation_audience
+        self.workspace_action_audience = workspace_action_audience
         self.active_key_id = active_key_id
         self._ttl_seconds = ttl_seconds
         self._consumed = set()
@@ -102,6 +114,15 @@ class HmacAuthorizationAuthority:
                 "projection_revision": assertion.workspace_projection_revision,
                 "component_id": assertion.workspace_component_id,
                 "command_hash": assertion.workspace_command_hash,
+            }
+        elif assertion.command_kind == AuthCommandKind.WORKSPACE_ACTION:
+            material["workspace_action"] = {
+                "incident_id": assertion.workspace_incident_id,
+                "run_id": assertion.workspace_run_id,
+                "topology_revision": assertion.workspace_topology_revision,
+                "projection_revision": assertion.workspace_projection_revision,
+                "action_id": assertion.workspace_action_id,
+                "command_hash": assertion.workspace_action_command_hash,
             }
         return canonical_json(material)
 
@@ -151,6 +172,28 @@ class HmacAuthorizationAuthority:
             workspace_projection_revision=intent.workspace_projection_revision,
             workspace_component_id=intent.workspace_component_id,
             workspace_command_hash=intent.workspace_command_hash,
+        )
+        return unsigned.copy(update={"signature": self._signature(unsigned)})
+
+    def issue_workspace_action_intent(self, intent: AuthCommandIntent) -> AuthAssertion:
+        if intent.command_kind != AuthCommandKind.WORKSPACE_ACTION:
+            raise PolicyViolation("authorization_intent_command_kind_mismatch")
+        now = datetime.now(timezone.utc)
+        if intent.expires_at.astimezone(timezone.utc) <= now:
+            raise PolicyViolation("authorization_intent_expired")
+        jti = "workspace-action-authz-{}".format(uuid4().hex)
+        unsigned = AuthAssertion(
+            assertion_id=jti, issuer=self.issuer, audience=self.workspace_action_audience,
+            key_id=self.active_key_id, jti=jti, nonce="nonce-{}".format(uuid4().hex),
+            tenant_id=intent.tenant_id, case_id=intent.case_id, case_revision=intent.case_revision,
+            workflow_run_id=intent.workflow_run_id, subject_id=intent.subject_id, roles=intent.roles,
+            issued_at=now, expires_at=min(intent.expires_at, now + timedelta(seconds=self._ttl_seconds)),
+            signature="0" * 64, command_kind=AuthCommandKind.WORKSPACE_ACTION,
+            workspace_incident_id=intent.workspace_incident_id, workspace_run_id=intent.workspace_run_id,
+            workspace_topology_revision=intent.workspace_topology_revision,
+            workspace_projection_revision=intent.workspace_projection_revision,
+            workspace_action_id=intent.workspace_action_id,
+            workspace_action_command_hash=intent.workspace_action_command_hash,
         )
         return unsigned.copy(update={"signature": self._signature(unsigned)})
 
@@ -215,6 +258,30 @@ class HmacAuthorizationAuthority:
             self._consumed.add(assertion.jti)
         return AuthContext(tenant_id=assertion.tenant_id, subject_id=assertion.subject_id, roles=assertion.roles)
 
+    def resolve_workspace_action(
+        self, assertion: AuthAssertion, binding: IncidentRunBinding, command: ActionInvocationCommand,
+        now: datetime = None, consume: bool = True,
+    ) -> AuthContext:
+        now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        if assertion.command_kind != AuthCommandKind.WORKSPACE_ACTION:
+            raise PolicyViolation("workspace_action_auth_assertion_command_kind_mismatch")
+        if (
+            assertion.tenant_id != binding.tenant_id or assertion.case_id != binding.case_id
+            or assertion.case_revision != binding.case_revision or assertion.workflow_run_id != binding.workflow_run_id
+            or assertion.workspace_incident_id != binding.incident_id or assertion.workspace_run_id != binding.run_id
+            or assertion.workspace_topology_revision != binding.topology_revision
+            or assertion.workspace_projection_revision != command.projection_revision
+            or assertion.workspace_action_id != command.action_id
+            or assertion.workspace_action_command_hash != command.canonical_hash()
+        ):
+            raise PolicyViolation("workspace_action_auth_assertion_scope_mismatch")
+        self._verify_signature_and_time(assertion, self.workspace_action_audience, now)
+        if consume:
+            if assertion.jti in self._consumed:
+                raise PolicyViolation("auth_assertion_replayed")
+            self._consumed.add(assertion.jti)
+        return AuthContext(tenant_id=assertion.tenant_id, subject_id=assertion.subject_id, roles=assertion.roles)
+
 
 class UnavailableAuthorizationPort:
     def issue_intent(self, *args, **kwargs):
@@ -227,6 +294,12 @@ class UnavailableAuthorizationPort:
         raise PolicyViolation("authorization_service_unavailable")
 
     def resolve_workspace_node_explanation(self, *args, **kwargs):
+        raise PolicyViolation("authorization_service_unavailable")
+
+    def issue_workspace_action_intent(self, *args, **kwargs):
+        raise PolicyViolation("authorization_service_unavailable")
+
+    def resolve_workspace_action(self, *args, **kwargs):
         raise PolicyViolation("authorization_service_unavailable")
 
 
@@ -292,6 +365,18 @@ class HttpAuthorizationClient:
             "assertion": assertion.dict(), "binding": binding.dict(), "command": command.dict(),
         }))
 
+    def issue_workspace_action_intent(self, intent: AuthCommandIntent) -> AuthAssertion:
+        return AuthAssertion.parse_obj(self._post("/v1/workspace-actions/assertions/mint", {
+            "tenant_id": intent.tenant_id, "intent_id": intent.intent_id,
+        }))
+
+    def resolve_workspace_action(
+        self, assertion: AuthAssertion, binding: IncidentRunBinding, command: ActionInvocationCommand,
+    ) -> AuthContext:
+        return AuthContext.parse_obj(self._post("/v1/workspace-actions/assertions/verify-consume", {
+            "assertion": assertion.dict(), "binding": binding.dict(), "command": command.dict(),
+        }))
+
 
 class AuthMintRequest(StrictModel):
     tenant_id: NonEmpty
@@ -308,6 +393,12 @@ class WorkspaceAuthVerifyRequest(StrictModel):
     assertion: AuthAssertion
     binding: IncidentRunBinding
     command: NodeExplanationStart
+
+
+class WorkspaceActionAuthVerifyRequest(StrictModel):
+    assertion: AuthAssertion
+    binding: IncidentRunBinding
+    command: ActionInvocationCommand
 
 
 class AssertionReplayRepository:
@@ -424,6 +515,42 @@ def create_authz_app(
             ):
                 raise PolicyViolation("workspace_auth_assertion_subject_acl_denied")
             context = authority.resolve_workspace_node_explanation(
+                assertion, authoritative_binding, request.command, consume=False,
+            )
+            await replay.consume(assertion)
+            return context
+        except PolicyViolation as error:
+            raise HTTPException(status_code=403, detail=str(error))
+
+    @app.post("/v1/workspace-actions/assertions/mint", response_model=AuthAssertion)
+    async def mint_workspace_action(request: AuthMintRequest, http_request: Request) -> AuthAssertion:
+        require_service(http_request, "api")
+        try:
+            intent = await repository.consume_auth_command_intent(
+                request.tenant_id, request.intent_id, AuthCommandKind.WORKSPACE_ACTION,
+            )
+            return authority.issue_workspace_action_intent(intent)
+        except PolicyViolation as error:
+            raise HTTPException(status_code=403, detail=str(error))
+
+    @app.post("/v1/workspace-actions/assertions/verify-consume", response_model=AuthContext)
+    async def verify_consume_workspace_action(
+        request: WorkspaceActionAuthVerifyRequest, http_request: Request,
+    ) -> AuthContext:
+        require_service(http_request, "worker")
+        try:
+            assertion = request.assertion
+            authoritative_binding = await repository.workspace_binding(assertion.tenant_id, assertion.case_id)
+            if authoritative_binding is None or authoritative_binding != request.binding:
+                raise PolicyViolation("workspace_action_auth_assertion_binding_not_authoritative")
+            projection = await repository.workspace_projection(assertion.tenant_id, assertion.case_id)
+            if projection is None or projection.projection_revision != request.command.projection_revision:
+                raise PolicyViolation("workspace_action_auth_assertion_projection_not_authoritative")
+            if not await repository.workspace_subject_authorized(
+                assertion.tenant_id, assertion.case_id, assertion.subject_id,
+            ):
+                raise PolicyViolation("workspace_action_auth_assertion_subject_acl_denied")
+            context = authority.resolve_workspace_action(
                 assertion, authoritative_binding, request.command, consume=False,
             )
             await replay.consume(assertion)

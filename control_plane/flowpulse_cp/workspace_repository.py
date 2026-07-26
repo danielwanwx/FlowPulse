@@ -10,6 +10,7 @@ from .models import AuthCommandIntent, AuthCommandKind, AuthContext
 
 from .policy import PolicyViolation
 from .workspace_models import IncidentEvent, IncidentProjection, IncidentRunBinding, NodeExplanation, NodeExplanationStart
+from .workspace_actions import ActionInvocationCommand, Gate1Lease, NextBestAction, WorkspaceActionReceipt
 
 
 BindingKey = Tuple[str, str, str]
@@ -41,6 +42,10 @@ class InMemoryWorkspaceRepository:
         self.capability_audits: Dict[object, CapabilityAuditRecord] = {}
         self.workspace_subject_grants = set()
         self.workspace_auth_intents: Dict[str, AuthCommandIntent] = {}
+        self.gate1_leases: Dict[Tuple[str, str, str], List[Gate1Lease]] = defaultdict(list)
+        self.next_best_actions: Dict[Tuple[str, str, str], NextBestAction] = {}
+        self.workspace_action_receipts: Dict[Tuple[str, str, str], WorkspaceActionReceipt] = {}
+        self.workspace_action_idempotency: Dict[Tuple[str, str, str], str] = {}
 
     async def put_binding(self, binding: IncidentRunBinding) -> IncidentRunBinding:
         key = _binding_key(binding)
@@ -186,6 +191,108 @@ class InMemoryWorkspaceRepository:
         return explanation
 
     workspace_explanation = get_explanation
+
+    async def append_gate1_lease(self, lease: Gate1Lease) -> Gate1Lease:
+        """Append a Temporal-derived lease revision; never overwrite a grant."""
+        binding = self.bindings.get(_binding_key(lease))
+        if binding is None or not _same_binding(binding, lease):
+            raise PolicyViolation("workspace_public_internal_binding_mismatch")
+        key = (lease.tenant_id, lease.case_id, lease.lease_id)
+        records = self.gate1_leases[key]
+        if records:
+            latest = records[-1]
+            if lease.lease_revision <= latest.lease_revision:
+                if lease == latest:
+                    return latest
+                raise PolicyViolation("gate1_lease_revision_not_monotonic")
+        records.append(lease)
+        return lease
+
+    async def workspace_gate1_lease(
+        self, tenant_id: str, case_id: str, lease_id: str,
+    ) -> Optional[Gate1Lease]:
+        records = self.gate1_leases.get((tenant_id, case_id, lease_id), [])
+        return records[-1] if records else None
+
+    async def append_next_best_action(self, action: NextBestAction) -> NextBestAction:
+        binding = self.bindings.get(_binding_key(action))
+        if binding is None or not _same_binding(binding, action):
+            raise PolicyViolation("workspace_public_internal_binding_mismatch")
+        key = (action.tenant_id, action.case_id, action.action_id)
+        existing = self.next_best_actions.get(key)
+        if existing is not None and existing != action:
+            raise PolicyViolation("next_best_action_immutable")
+        self.next_best_actions[key] = action
+        return action
+
+    async def workspace_next_best_action(
+        self, tenant_id: str, case_id: str, action_id: str,
+    ) -> Optional[NextBestAction]:
+        return self.next_best_actions.get((tenant_id, case_id, action_id))
+
+    async def workspace_next_best_actions(self, tenant_id: str, case_id: str) -> List[NextBestAction]:
+        return sorted(
+            [item for (item_tenant, item_case, _), item in self.next_best_actions.items()
+             if (item_tenant, item_case) == (tenant_id, case_id)],
+            key=lambda item: item.display_order,
+        )
+
+    async def create_workspace_action_intent(
+        self, actor: AuthContext, projection: IncidentProjection, command: ActionInvocationCommand,
+    ) -> AuthCommandIntent:
+        binding = await self.get_binding(actor.tenant_id, projection.case_id)
+        action = await self.workspace_next_best_action(actor.tenant_id, projection.case_id, command.action_id)
+        if binding is None or not _same_binding(binding, projection):
+            raise PolicyViolation("workspace_action_binding_not_authoritative")
+        current = await self.get_projection(actor.tenant_id, projection.case_id)
+        if current != projection:
+            raise PolicyViolation("workspace_action_projection_not_authoritative")
+        if action is None:
+            raise PolicyViolation("workspace_action_not_found")
+        if not await self.workspace_subject_authorized(actor.tenant_id, projection.case_id, actor.subject_id):
+            raise PolicyViolation("workspace_action_subject_acl_denied")
+        if (
+            command.incident_id != binding.incident_id or command.run_id != binding.run_id
+            or command.topology_revision != binding.topology_revision
+            or command.projection_revision != projection.projection_revision
+        ):
+            raise PolicyViolation("workspace_action_command_scope_mismatch")
+        now = datetime.now(timezone.utc)
+        intent = AuthCommandIntent(
+            intent_id="workspace-action-intent-{}".format(uuid4().hex), tenant_id=actor.tenant_id,
+            case_id=binding.case_id, case_revision=binding.case_revision, workflow_run_id=binding.workflow_run_id,
+            subject_id=actor.subject_id, roles=actor.roles, created_at=now, expires_at=now + timedelta(minutes=1),
+            command_kind=AuthCommandKind.WORKSPACE_ACTION,
+            workspace_incident_id=binding.incident_id, workspace_run_id=binding.run_id,
+            workspace_topology_revision=binding.topology_revision,
+            workspace_projection_revision=projection.projection_revision,
+            workspace_action_id=action.action_id, workspace_action_command_hash=command.canonical_hash(),
+        )
+        self.workspace_auth_intents[intent.intent_id] = intent
+        return intent
+
+    async def record_workspace_action_receipt(self, receipt: WorkspaceActionReceipt) -> WorkspaceActionReceipt:
+        binding = self.bindings.get(_binding_key(receipt))
+        if binding is None or not _same_binding(binding, receipt):
+            raise PolicyViolation("workspace_public_internal_binding_mismatch")
+        identity_key = (receipt.tenant_id, receipt.case_id, receipt.idempotency_key)
+        action_id = self.workspace_action_idempotency.get(identity_key)
+        if action_id is not None and action_id != receipt.action_id:
+            raise PolicyViolation("workspace_action_idempotency_conflict")
+        key = (receipt.tenant_id, receipt.case_id, receipt.idempotency_key)
+        existing = self.workspace_action_receipts.get(key)
+        if existing is not None:
+            if existing != receipt:
+                raise PolicyViolation("workspace_action_receipt_immutable")
+            return existing
+        self.workspace_action_idempotency[identity_key] = receipt.action_id
+        self.workspace_action_receipts[key] = receipt
+        return receipt
+
+    async def workspace_action_receipt(
+        self, tenant_id: str, case_id: str, idempotency_key: str,
+    ) -> Optional[WorkspaceActionReceipt]:
+        return self.workspace_action_receipts.get((tenant_id, case_id, idempotency_key))
 
     async def append_capability_audit(self, audit: CapabilityAuditRecord) -> CapabilityAuditRecord:
         """Append the shared capability audit under the immutable workspace binding."""

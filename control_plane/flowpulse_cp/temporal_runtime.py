@@ -79,6 +79,12 @@ from .workspace_models import (
     WorkspaceWorkflowRequest,
     initial_topology_revision,
 )
+from .workspace_actions import (
+    ActionInvocationCommand,
+    Gate1LeaseAuthority,
+    WorkspaceActionInvocation,
+    WorkspaceActionReceipt,
+)
 from .workspace_workflow import IncidentWorkspaceTemporalWorkflow
 from .workspace_registration import workspace_workflow_definitions
 
@@ -214,6 +220,19 @@ class WorkspaceTemporalStarter:
         if not response.get("accepted", True):
             raise RuntimeError(response.get("reason", "workspace_node_explanation_rejected"))
         return NodeExplanationReceipt.parse_obj(response)
+
+    async def invoke_next_best_action(
+        self, projection: IncidentProjection, command: ActionInvocationCommand, authorization,
+    ) -> WorkspaceActionReceipt:
+        client = await Client.connect(self.address)
+        handle = client.get_workflow_handle(projection.workflow_id, run_id=projection.workflow_run_id)
+        response = await handle.execute_update(
+            IncidentWorkspaceTemporalWorkflow.invoke_next_best_action,
+            WorkspaceActionInvocation(command=command, authorization=authorization).dict(),
+        )
+        if not response.get("accepted", True):
+            raise PolicyViolation(response.get("reason", "workspace_action_rejected"))
+        return WorkspaceActionReceipt.parse_obj(response)
 
 
 class DomainActivityEngine:
@@ -552,6 +571,7 @@ async def run_worker(
     capability_registry = CapabilityRegistry(
         descriptors=descriptors, adapters=adapters, audit_sink=repository,
         scope_authority=PostgresCapabilityScopeAuthority(repository),
+        gate1_authority=Gate1LeaseAuthority(repository),
     )
     conversation_manager = ConversationManager(
         build_conversation_provider(provider_settings or ProviderSettings()),
@@ -572,6 +592,7 @@ async def run_worker(
             ))
             + build_workspace_activities(WorkspaceActivityDispatcher(
                 repository, conversation_manager=conversation_manager, authorization=authorization,
+                capability_registry=capability_registry,
             ))
         ),
     ):

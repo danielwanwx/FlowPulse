@@ -393,11 +393,16 @@ class AuthCommandKind(str, Enum):
 
     OWNER_GATE = "OWNER_GATE"
     WORKSPACE_NODE_EXPLANATION = "WORKSPACE_NODE_EXPLANATION"
+    WORKSPACE_ACTION = "WORKSPACE_ACTION"
 
 
 _WORKSPACE_COMMAND_SCOPE_FIELDS = (
     "workspace_incident_id", "workspace_run_id", "workspace_topology_revision",
     "workspace_projection_revision", "workspace_component_id", "workspace_command_hash",
+)
+_WORKSPACE_ACTION_SCOPE_FIELDS = (
+    "workspace_incident_id", "workspace_run_id", "workspace_topology_revision",
+    "workspace_projection_revision", "workspace_action_id", "workspace_action_command_hash",
 )
 
 
@@ -429,17 +434,29 @@ class AuthAssertion(StrictModel):
     workspace_projection_revision: Optional[PositiveInt] = None
     workspace_component_id: Optional[NonEmpty] = None
     workspace_command_hash: Optional[Hash] = None
+    workspace_action_id: Optional[NonEmpty] = None
+    workspace_action_command_hash: Optional[Hash] = None
 
     @root_validator(allow_reuse=True)
     def workspace_scope_is_complete_and_isolated(cls, values):
         scoped = [values.get(field) for field in _WORKSPACE_COMMAND_SCOPE_FIELDS]
         kind = values.get("command_kind")
+        action_scoped = [values.get(field) for field in _WORKSPACE_ACTION_SCOPE_FIELDS]
         if kind == AuthCommandKind.WORKSPACE_NODE_EXPLANATION:
             if any(value is None for value in scoped):
                 raise ValueError("workspace_auth_assertion_scope_incomplete")
-            if values.get("proposal_id") is not None or values.get("approval_id") is not None:
+            if any(value is not None for value in action_scoped[-2:]) or (
+                values.get("proposal_id") is not None or values.get("approval_id") is not None
+            ):
                 raise ValueError("workspace_auth_assertion_owner_scope_forbidden")
-        elif any(value is not None for value in scoped):
+        elif kind == AuthCommandKind.WORKSPACE_ACTION:
+            if any(value is None for value in action_scoped):
+                raise ValueError("workspace_action_auth_assertion_scope_incomplete")
+            if values.get("workspace_component_id") is not None or values.get("workspace_command_hash") is not None or (
+                values.get("proposal_id") is not None or values.get("approval_id") is not None
+            ):
+                raise ValueError("workspace_action_auth_assertion_scope_forbidden")
+        elif any(value is not None for value in scoped) or any(value is not None for value in action_scoped[-2:]):
             raise ValueError("owner_auth_assertion_workspace_scope_forbidden")
         return values
 
@@ -464,17 +481,29 @@ class AuthCommandIntent(StrictModel):
     workspace_projection_revision: Optional[PositiveInt] = None
     workspace_component_id: Optional[NonEmpty] = None
     workspace_command_hash: Optional[Hash] = None
+    workspace_action_id: Optional[NonEmpty] = None
+    workspace_action_command_hash: Optional[Hash] = None
 
     @root_validator(allow_reuse=True)
     def workspace_scope_is_complete_and_isolated(cls, values):
         scoped = [values.get(field) for field in _WORKSPACE_COMMAND_SCOPE_FIELDS]
         kind = values.get("command_kind")
+        action_scoped = [values.get(field) for field in _WORKSPACE_ACTION_SCOPE_FIELDS]
         if kind == AuthCommandKind.WORKSPACE_NODE_EXPLANATION:
             if any(value is None for value in scoped):
                 raise ValueError("workspace_auth_intent_scope_incomplete")
-            if values.get("proposal_id") is not None or values.get("approval_id") is not None:
+            if any(value is not None for value in action_scoped[-2:]) or (
+                values.get("proposal_id") is not None or values.get("approval_id") is not None
+            ):
                 raise ValueError("workspace_auth_intent_owner_scope_forbidden")
-        elif any(value is not None for value in scoped):
+        elif kind == AuthCommandKind.WORKSPACE_ACTION:
+            if any(value is None for value in action_scoped):
+                raise ValueError("workspace_action_auth_intent_scope_incomplete")
+            if values.get("workspace_component_id") is not None or values.get("workspace_command_hash") is not None or (
+                values.get("proposal_id") is not None or values.get("approval_id") is not None
+            ):
+                raise ValueError("workspace_action_auth_intent_scope_forbidden")
+        elif any(value is not None for value in scoped) or any(value is not None for value in action_scoped[-2:]):
             raise ValueError("owner_auth_intent_workspace_scope_forbidden")
         return values
 

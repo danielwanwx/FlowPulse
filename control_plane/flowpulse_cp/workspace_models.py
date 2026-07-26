@@ -226,7 +226,7 @@ class VersionBundle(StrictModel):
     capability_registry_version: NonEmpty = "capability-registry.v1"
     tool_schema_version: NonEmpty = "capability-tool-schema.v1"
     evidence_schema_version: NonEmpty = "flowpulse.evidence-envelope.v1"
-    card_schema_version: NonEmpty = "next-best-action.not-configured.v1"
+    card_schema_version: NonEmpty = "flowpulse.next-best-action.v1"
     model_policy_version: NonEmpty = "provider-policy.v1"
 
 

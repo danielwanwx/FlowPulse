@@ -25,7 +25,21 @@ with workflow.unsafe.imports_passed_through():
         WorkspaceWorkflowRequest,
         initial_projection,
     )
+    from .workspace_actions import (
+        ActionInvocationCommand,
+        WorkspaceActionAuthorizationOutcome,
+        WorkspaceActionAuthorizationPacket,
+        WorkspaceActionGenerationOutcome,
+        WorkspaceActionGenerationPacket,
+        WorkspaceActionInvocation,
+        WorkspaceActionOutcome,
+        WorkspaceActionPacket,
+        WorkspaceActionReceipt,
+    )
     from .workspace_versions import WORKSPACE_V2_WORKFLOW_TYPE
+
+
+WORKSPACE_V2_ACTIONS_PATCH = "workspace-v2-gate1-next-best-actions"
 
 
 @workflow.defn(name=WORKSPACE_V2_WORKFLOW_TYPE)
@@ -38,6 +52,8 @@ class IncidentWorkspaceTemporalWorkflow:
         self._projection = None
         self._event_sequence = 0
         self._explanations: Dict[str, Dict[str, Any]] = {}
+        self._actions: Dict[str, Dict[str, Any]] = {}
+        self._action_receipts: Dict[str, Dict[str, Any]] = {}
         self._lock = asyncio.Lock()
 
     def _packet(self, stage: str, *, command: NodeExplanationStart = None, actor=None) -> WorkspaceActivityPacket:
@@ -58,6 +74,11 @@ class IncidentWorkspaceTemporalWorkflow:
         )
         return WorkspaceActivityOutcome.parse_obj(result)
 
+    async def _action_activity(self, name: str, packet: Dict[str, Any]) -> Dict[str, Any]:
+        return await workflow.execute_activity(
+            name, packet, start_to_close_timeout=timedelta(minutes=2),
+        )
+
     @workflow.run
     async def run(self, request_data: Dict[str, Any]) -> Dict[str, Any]:
         request = WorkspaceWorkflowRequest.parse_obj(request_data)
@@ -71,6 +92,16 @@ class IncidentWorkspaceTemporalWorkflow:
         # its durable workspace-subject grant before the projection is readable.
         initialized = await self._activity("workspace_initialize", actor=request.actor)
         self._projection = initialized.projection or self._projection
+        # Existing v2 histories have no marker and replay their frozen
+        # initializer exactly. New starts record the marker before Gate 1/card
+        # activities become part of their command history.
+        if workflow.patched(WORKSPACE_V2_ACTIONS_PATCH):
+            generated = await self._action_activity(
+                "workspace_generate_actions_activity",
+                WorkspaceActionGenerationPacket(**self._binding.dict(), projection=self._projection).dict(),
+            )
+            actions = WorkspaceActionGenerationOutcome.parse_obj(generated).actions
+            self._actions = {action.action_id: action.dict() for action in actions}
         self._initialized = True
         await workflow.wait_condition(lambda: False)
         return {"state": "unreachable"}
@@ -132,3 +163,58 @@ class IncidentWorkspaceTemporalWorkflow:
             raise ValueError("workspace_node_explanation_identity_or_revision_mismatch")
         if command.component_id not in {node.component_id for node in self._projection.graph.nodes}:
             raise ValueError("workspace_node_explanation_component_not_canonical")
+
+    @workflow.update(name="invoke_next_best_action")
+    async def invoke_next_best_action(self, command_data: Dict[str, Any]) -> Dict[str, Any]:
+        """The sole live CTA update: asserted, revalidated, and Temporal-owned."""
+        try:
+            invocation = WorkspaceActionInvocation.parse_obj(command_data)
+            command = invocation.command
+            await workflow.wait_condition(lambda: self._initialized)
+            self._validate_action_command(command)
+            authorized = await self._action_activity(
+                "workspace_authorize_action_activity",
+                WorkspaceActionAuthorizationPacket(
+                    **self._binding.dict(), command=command, authorization=invocation.authorization,
+                    projection_revision=self._projection.projection_revision,
+                ).dict(),
+            )
+            actor = WorkspaceActionAuthorizationOutcome.parse_obj(authorized)
+            if actor.actor_tenant_id != self._binding.tenant_id:
+                raise ValueError("workspace_action_authorization_actor_tenant_mismatch")
+            async with self._lock:
+                existing = self._action_receipts.get(command.idempotency_key)
+                if existing is not None:
+                    receipt = WorkspaceActionReceipt.parse_obj(existing)
+                    if receipt.action_id != command.action_id:
+                        raise ValueError("workspace_action_idempotency_conflict")
+                    return receipt.dict()
+                self._validate_action_command(command)
+                if command.action_id not in self._actions:
+                    raise ValueError("workspace_action_not_current")
+                self._event_sequence += 1
+                outcome_data = await self._action_activity(
+                    "workspace_execute_action_activity",
+                    WorkspaceActionPacket(
+                        **self._binding.dict(), projection=self._projection, event_sequence=self._event_sequence,
+                        command=command, actor_tenant_id=actor.actor_tenant_id,
+                        actor_subject_id=actor.actor_subject_id, actor_roles=actor.actor_roles,
+                    ).dict(),
+                )
+                outcome = WorkspaceActionOutcome.parse_obj(outcome_data)
+                if outcome.projection is not None:
+                    self._projection = outcome.projection
+                for action in outcome.actions:
+                    self._actions[action.action_id] = action.dict()
+                self._action_receipts[command.idempotency_key] = outcome.receipt.dict()
+                return outcome.receipt.dict()
+        except (ValidationError, ValueError) as error:
+            return {"accepted": False, "reason": str(error)}
+
+    def _validate_action_command(self, command: ActionInvocationCommand) -> None:
+        if (
+            command.incident_id != self._binding.incident_id or command.run_id != self._binding.run_id
+            or command.topology_revision != self._binding.topology_revision
+            or command.projection_revision != self._projection.projection_revision
+        ):
+            raise ValueError("workspace_action_identity_or_revision_mismatch")
