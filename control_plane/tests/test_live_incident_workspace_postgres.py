@@ -13,13 +13,19 @@ import asyncpg
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from flowpulse_cp.models import (
+    ClaimRecord,
+    CoverageEntry,
+    CoverageStatus,
     EvidenceAuthority,
     EvidenceEnvelope,
     FreshnessStatus,
     IncidentCase,
     ProofScope,
     SourceKind,
+    TemporalActivityPacket,
 )
+from flowpulse_cp.capability_adapters import CurrentEvidenceCapabilityAdapter, DomainEvidenceAdmission
+from flowpulse_cp.integrity import FrozenSourceReadback
 from flowpulse_cp.capabilities import (
     CapabilityAudience,
     CapabilityDataClass,
@@ -33,6 +39,7 @@ from flowpulse_cp.capabilities import (
 from flowpulse_cp.capability_adapters import RecordedContextCapabilityAdapter
 from flowpulse_cp.policy import PolicyViolation
 from flowpulse_cp.postgres import PostgresCapabilityScopeAuthority, PostgresCaseRepository
+from flowpulse_cp.temporal_runtime import DomainActivityEngine
 from flowpulse_cp.workspace_activities import WorkspaceActivityDispatcher
 from flowpulse_cp.workspace_models import (
     GraphMembership,
@@ -59,6 +66,109 @@ class LiveIncidentWorkspacePostgresTests(unittest.TestCase):
         "FLOWPULSE_TEST_POSTGRES_ADMIN_DSN",
         "postgresql://flowpulse:flowpulse@127.0.0.1:5433/postgres",
     )
+
+    def test_autonomous_current_evidence_uses_production_registry_admission_then_durable_audit(self):
+        class ControlledAcquirer:
+            def __init__(self, result):
+                self.result = result
+                self.calls = 0
+
+            def acquire(self, case, subject_id):
+                self.calls += 1
+                return self.result
+
+        async def run():
+            database = "flowpulse_capability_{}".format(uuid4().hex)
+            target_dsn = self.dsn.rsplit("/", 1)[0] + "/" + database
+            target_admin_dsn = self.admin_dsn.rsplit("/", 1)[0] + "/" + database
+            migration_dir = Path(__file__).resolve().parents[1] / "migrations"
+            admin = await asyncpg.connect(self.admin_dsn)
+            try:
+                await admin.execute("CREATE DATABASE " + database)
+                bootstrap = await asyncpg.connect(target_admin_dsn)
+                try:
+                    for name in [
+                        "001_control_plane.sql", "002_authorization_intents.sql",
+                        "003_incident_workspace_projection.sql", "004_workspace_binding_integrity.sql",
+                    ]:
+                        await bootstrap.execute((migration_dir / name).read_text(encoding="utf-8"))
+                finally:
+                    await bootstrap.close()
+                repository = PostgresCaseRepository(target_dsn)
+                await repository.connect()
+                try:
+                    now = datetime.now(timezone.utc)
+                    suffix = uuid4().hex
+                    case = IncidentCase(
+                        case_id="capability-case-{}".format(suffix), tenant_id="tenant-capability",
+                        workflow_id="diagnosis-workflow-{}".format(suffix), workflow_run_id="temporal-{}".format(suffix),
+                        public_incident_id="incident-{}".format(suffix), public_run_id="run-{}".format(suffix),
+                        public_topology_revision="topology-v1-{}".format(suffix), severity="SEV2", environment="local",
+                        affected_entities=["checkout"], created_at=now, updated_at=now,
+                    )
+                    await repository.put_case(case)
+                    evidence = EvidenceEnvelope(
+                        evidence_id="capability-evidence-{}".format(suffix), tenant_id=case.tenant_id,
+                        case_id=case.case_id, case_revision=case.case_revision, acl_subjects=["owner-capability"],
+                        source_kind=SourceKind.METRIC, source_uri="metric://checkout/latency", source_anchor="sample:1",
+                        observed_at=now, effective_at=now, source_version="v1", content_hash="b" * 64,
+                        authority=EvidenceAuthority.T0, freshness=FreshnessStatus.CURRENT,
+                        independence_key="capability-metric", schema_binding="metric.v1",
+                        proof_scope=ProofScope.CURRENT_OBSERVATION,
+                    )
+                    acquired = type("Acquisition", (), {
+                        "evidence": [evidence], "claims": [ClaimRecord(
+                            claim_id="capability-claim-{}".format(suffix), tenant_id=case.tenant_id,
+                            case_id=case.case_id, case_revision=case.case_revision, claim_type="root",
+                            statement="Current controlled source.", evidence_ids=[evidence.evidence_id], created_by="primary",
+                        )], "coverage": [CoverageEntry(
+                            tenant_id=case.tenant_id, case_id=case.case_id, field="telemetry_symptom",
+                            status=CoverageStatus.FILLED,
+                        )],
+                    })()
+                    acquirer = ControlledAcquirer(acquired)
+                    registry = CapabilityRegistry(
+                        descriptors=[CurrentEvidenceCapabilityAdapter.descriptor],
+                        adapters={
+                            CapabilityName.CURRENT_EVIDENCE: CurrentEvidenceCapabilityAdapter(acquirer),
+                        },
+                        audit_sink=repository, scope_authority=PostgresCapabilityScopeAuthority(repository),
+                    )
+                    packet = TemporalActivityPacket(
+                        case_id=case.case_id, case_revision=case.case_revision, tenant_id=case.tenant_id,
+                        workflow_id=case.workflow_id, workflow_run_id=case.workflow_run_id,
+                        public_incident_id=case.public_incident_id, public_run_id=case.public_run_id,
+                        public_topology_revision=case.public_topology_revision, capability_scope_created_at=case.created_at,
+                        actor_subject_id="owner-capability", actor_roles=["owner"], severity=case.severity,
+                        environment=case.environment, affected_entities=case.affected_entities,
+                        stage="acquire_current_evidence", sequence=1,
+                    )
+                    outcome = await DomainActivityEngine(
+                        FrozenSourceReadback([]), authorization=None, evidence_acquirer=acquirer,
+                        capability_registry=registry,
+                    ).execute_async(packet, DomainEvidenceAdmission(repository, "owner-capability"))
+                    self.assertEqual("PASS", outcome.decision.value)
+                    self.assertEqual("capability:current-evidence:v1", outcome.identity)
+                    self.assertEqual(1, acquirer.calls)
+                    async def counts(connection):
+                        return await connection.fetchrow(
+                            """SELECT
+                                 (SELECT count(*) FROM evidence_envelopes WHERE case_id=$1) AS evidence,
+                                 (SELECT count(*) FROM claim_records WHERE case_id=$1) AS claims,
+                                 (SELECT count(*) FROM tool_calls WHERE case_id=$1 AND status='COMPLETED') AS audits""",
+                            case.case_id,
+                        )
+                    count = await repository._tenant(case.tenant_id, counts, subject_id="owner-capability")
+                    self.assertEqual((1, 1, 1), (count["evidence"], count["claims"], count["audits"]))
+                finally:
+                    await repository.close()
+            finally:
+                await admin.execute(
+                    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname=$1", database,
+                )
+                await admin.execute("DROP DATABASE IF EXISTS " + database)
+                await admin.close()
+        asyncio.run(run())
 
     def test_001_002_volume_upgrades_to_workspace_mapping_with_rls_and_append_only_records(self):
         async def run():
