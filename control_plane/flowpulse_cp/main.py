@@ -32,7 +32,7 @@ def main() -> None:
         ),
         trusted_fixture_identities=(
             {settings.trusted_fixture_token: settings.trusted_fixture_context}
-            if settings.trusted_fixture_token and settings.trusted_fixture_context else None
+            if settings.trusted_fixture_enabled and settings.trusted_fixture_context else None
         ),
     )
     uvicorn.run(application, host="0.0.0.0", port=8090)

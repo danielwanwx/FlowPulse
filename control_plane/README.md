@@ -21,8 +21,9 @@ The suite uses a deterministic fake Temporal adapter and frozen source readback.
 The local Compose path starts the API (`0.0.0.0:8090`), an internally reachable
 assertion issuer, Temporal, a Temporal worker, Postgres, and MinIO. Only the
 API, Postgres, and local MinIO fixture are published to the host: assertion
-minting and Temporal are Compose-network-only. The worker registers `flowpulse.diagnosis.v1` and
-all seven activity definitions; its Postgres adapter persists append-only
+minting and Temporal are Compose-network-only. The worker registers frozen
+`flowpulse.diagnosis.v1` compatibility plus current `flowpulse.diagnosis.v2`
+with all seven activity definitions; its Postgres adapter persists append-only
 activity/verification records, while the MinIO/S3 content-addressed artifact
 store persists the typed activity packet under a tenant prefix. Compose's
 non-owner application role uses `FORCE RLS` tenant and evidence-subject ACL
@@ -52,6 +53,8 @@ docker compose exec -T authz env \
   FLOWPULSE_AUTHZ_WORKER_SERVICE_TOKEN=flowpulse-worker-authz-local-only \
   FLOWPULSE_TEST_POSTGRES_DSN=postgresql://flowpulse_cp_app:flowpulse-cp-local-only@postgres:5432/flowpulse \
   python -m unittest discover -s tests -p 'test_live_temporal_negative_paths.py' -v
+docker compose exec -T authz env FLOWPULSE_LIVE_TEMPORAL=1 \
+  python -m unittest tests.test_live_temporal_replay_compat -v
 ```
 
 The opt-in live suite starts workflows through the registered worker and
@@ -69,8 +72,10 @@ local Postgres. Service-to-service connections continue to use `postgres:5432`.
 For the host-published Compose API, an explicit, caller-supplied-at-startup
 fixture bearer credential maps to one server-configured owner identity. The
 credential itself is not committed; Compose refuses to start without
-`FLOWPULSE_TEST_OWNER_TOKEN`. `x-flowpulse-test-*` headers are ignored and
-cannot select a tenant, subject, or role. Production must inject
+`FLOWPULSE_TEST_OWNER_TOKEN` and sets `FLOWPULSE_RUNTIME_MODE=local`.
+`x-flowpulse-test-*` headers are ignored and cannot select a tenant, subject,
+or role. Fixture values are rejected at process startup unless the runtime mode
+is explicitly `local` or `test`; production must inject
 `request.state.flowpulse_auth` from trusted authentication middleware.
 `POST /v1/cases` calls `Client.start_workflow`; it does not fall back to an
 in-memory workflow. Proposal and dry-run endpoints only submit typed Temporal
@@ -108,6 +113,12 @@ inside Temporal for the durable `OWNER_WAIT` phase, then validates normally;
 it is not rejected on a transient readiness field. The workflow revalidates
 case/run, phase, proposal/approval immutability, and expected proposal ID after
 the awaited authorization activity and immediately before mutation.
+
+`flowpulse.diagnosis.v1` is frozen to the pre-9d88a7e immediate-rejection
+command sequence, while new intakes start `flowpulse.diagnosis.v2` and use the
+durable owner-wait command path. The opt-in live replay test records
+parent-`1e4a6c7` pre-ready, owner-wait, and terminal histories and replays all
+three through the production v1 compatibility registration.
 
 Compose bootstraps separate MinIO identities: the artifact writer can access
 only the evidence bucket, while the verifier/current-source reader is read-only

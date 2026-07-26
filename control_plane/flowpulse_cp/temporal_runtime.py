@@ -20,6 +20,7 @@ from .integrity import (
     IndependentEvidenceVerifier,
     REQUIRED_COVERAGE,
 )
+from .legacy_temporal_workflow import LegacyDiagnosisTemporalWorkflow
 from .models import (
     ActivityOutcome,
     AuthContext,
@@ -364,7 +365,8 @@ async def run_worker(
         source_client, source_bucket, source_prefix, source_tenant_id,
     )
     async with Worker(
-        client, task_queue=task_queue, workflows=[DiagnosisTemporalWorkflow],
+        client, task_queue=task_queue,
+        workflows=[LegacyDiagnosisTemporalWorkflow, DiagnosisTemporalWorkflow],
         activities=build_temporal_activities(PostgresActivityDispatcher(
             repository, artifacts, source_readback, authorization, evidence_acquirer,
         )),

@@ -1,9 +1,11 @@
 import hashlib
 import json
+import os
 import sys
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -13,6 +15,7 @@ from pydantic import ValidationError
 from flowpulse_cp.actions import DryRunActionService
 from flowpulse_cp.app import create_app, trusted_auth_context
 from flowpulse_cp.authorization import HmacAuthorizationAuthority
+from flowpulse_cp.config import ApiSettings
 from flowpulse_cp.integrity import EvidenceGateway, FrozenSourceReadback, IndependentEvidenceVerifier
 from flowpulse_cp.knowledge import KnowledgePlane
 from flowpulse_cp.models import (
@@ -335,6 +338,34 @@ class NoShipRegressionTests(unittest.TestCase):
         workflow._proposal = proposal("proposal-competing", idempotency_key="idem-competing")
         with self.assertRaisesRegex(PolicyViolation, "proposal_immutable"):
             workflow._validate_authoritative_command_state(command)
+
+    def test_trusted_fixture_requires_explicit_local_or_test_runtime_mode(self):
+        base = {
+            "FLOWPULSE_TEMPORAL_ADDRESS": "temporal:7233",
+            "FLOWPULSE_POSTGRES_DSN": "postgresql://example",
+            "FLOWPULSE_AUTHORIZATION_SERVICE_URL": "http://authz:8091",
+            "FLOWPULSE_AUTHORIZATION_SERVICE_TOKEN": "test-service-token",
+            "FLOWPULSE_TEMPORAL_TASK_QUEUE": "test-queue",
+            "FLOWPULSE_TRUSTED_AUTH_FIXTURE_TOKEN": "fixture-token",
+            "FLOWPULSE_TRUSTED_AUTH_FIXTURE_CONTEXT_JSON": (
+                '{"tenant_id":"tenant-a","subject_id":"owner-a","roles":["owner"]}'
+            ),
+        }
+        for mode in ("local", "test"):
+            with patch.dict(os.environ, {**base, "FLOWPULSE_RUNTIME_MODE": mode}, clear=True):
+                local = ApiSettings.from_environment()
+            self.assertTrue(local.trusted_fixture_enabled)
+            self.assertEqual("owner-a", local.trusted_fixture_context.subject_id)
+
+        with patch.dict(os.environ, base, clear=True):
+            with self.assertRaisesRegex(RuntimeError, "forbidden_outside_local_or_test"):
+                ApiSettings.from_environment()
+        with patch.dict(os.environ, {**base, "FLOWPULSE_RUNTIME_MODE": "production"}, clear=True):
+            with self.assertRaisesRegex(RuntimeError, "forbidden_outside_local_or_test"):
+                ApiSettings.from_environment()
+        with patch.dict(os.environ, {**base, "FLOWPULSE_RUNTIME_MODE": "staging"}, clear=True):
+            with self.assertRaisesRegex(RuntimeError, "runtime_mode_invalid"):
+                ApiSettings.from_environment()
 
 
 if __name__ == "__main__":

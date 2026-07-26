@@ -229,7 +229,9 @@ class LiveTemporalNegativePathTests(unittest.TestCase):
                 proposal_id=proposal.proposal_id, approval=accepted, current_witness={},
             ).dict())
             self.assertTrue(receipt["accepted"], receipt)
-            return await handle.result()
+            result = await handle.result()
+            self.assertIn("flowpulse.diagnosis.v2", (await handle.fetch_history()).to_json())
+            return result
 
         self.assertEqual("APPROVED", asyncio.run(run())["state"])
 

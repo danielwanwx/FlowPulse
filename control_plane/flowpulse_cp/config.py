@@ -19,6 +19,7 @@ def required(name: str) -> str:
 
 @dataclass(frozen=True)
 class ApiSettings:
+    runtime_mode: str
     temporal_address: str
     postgres_dsn: str
     authorization_service_url: str
@@ -27,12 +28,23 @@ class ApiSettings:
     trusted_fixture_token: Optional[str]
     trusted_fixture_context: Optional[AuthContext]
 
+    @property
+    def trusted_fixture_enabled(self) -> bool:
+        return self.runtime_mode in {"local", "test"} and self.trusted_fixture_token is not None
+
     @classmethod
     def from_environment(cls) -> "ApiSettings":
+        # Default to production so a fixture can never be activated merely by
+        # copying its two values into a non-test process environment.
+        runtime_mode = os.environ.get("FLOWPULSE_RUNTIME_MODE", "production")
+        if runtime_mode not in {"local", "test", "production"}:
+            raise RuntimeError("flowpulse_runtime_mode_invalid")
         fixture_token = os.environ.get("FLOWPULSE_TRUSTED_AUTH_FIXTURE_TOKEN")
         fixture_context_json = os.environ.get("FLOWPULSE_TRUSTED_AUTH_FIXTURE_CONTEXT_JSON")
         if bool(fixture_token) != bool(fixture_context_json):
             raise RuntimeError("trusted_auth_fixture_token_and_context_must_be_configured_together")
+        if fixture_token and runtime_mode not in {"local", "test"}:
+            raise RuntimeError("trusted_auth_fixture_forbidden_outside_local_or_test")
         fixture_context = None
         if fixture_context_json:
             try:
@@ -40,6 +52,7 @@ class ApiSettings:
             except (json.JSONDecodeError, ValidationError) as error:
                 raise RuntimeError("trusted_auth_fixture_context_invalid") from error
         return cls(
+            runtime_mode=runtime_mode,
             temporal_address=required("FLOWPULSE_TEMPORAL_ADDRESS"),
             postgres_dsn=required("FLOWPULSE_POSTGRES_DSN"),
             authorization_service_url=required("FLOWPULSE_AUTHORIZATION_SERVICE_URL"),

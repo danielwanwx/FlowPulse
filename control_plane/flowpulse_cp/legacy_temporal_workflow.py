@@ -1,11 +1,16 @@
-"""The sole durable workflow definition for FlowPulse P0."""
+"""Frozen ``flowpulse.diagnosis.v1`` implementation for historical runs.
+
+The durable owner-command semantics are served exclusively by v2.  This module
+retains the exact pre-9d88a7e activity/update command sequence for existing v1
+histories, including their immediate pre-owner-wait rejection behavior.
+"""
 
 import asyncio
 from datetime import timedelta
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
-from temporalio import workflow
 from pydantic import ValidationError
+from temporalio import workflow
 
 from .models import (
     ActivityOutcome,
@@ -19,17 +24,11 @@ from .models import (
 from .policy import PolicyViolation
 
 
-def temporal_available() -> bool:
-    return True
-
-
-@workflow.defn(name="flowpulse.diagnosis.v2")
-class DiagnosisTemporalWorkflow:
-    """Temporal owns both owner-command readiness and state mutation."""
+@workflow.defn(name="flowpulse.diagnosis.v1")
+class LegacyDiagnosisTemporalWorkflow:
+    """Production registration for replaying and draining parent-v1 runs."""
 
     def __init__(self) -> None:
-        # Updates can arrive before ``run`` has its first workflow task. Every
-        # field is therefore total, and early commands return a typed receipt.
         self._initialized = False
         self._case_id = None
         self._case_revision = None
@@ -50,13 +49,8 @@ class DiagnosisTemporalWorkflow:
         self._current_witness = {}
         self._owner_assertion = None
         self._owner_authenticated = None
-        # A workflow-history phase, not a transient readiness bit. Updates
-        # wait for this durable phase instead of racing an activity projection.
-        self._owner_phase = "INITIALIZING"
+        self._owner_wait_ready = False
         self._command_count = 0
-        # Update handlers may await an auth activity. Serialize each
-        # workflow-state check/commit section; the recheck after the await
-        # closes the gap between them.
         self._owner_command_lock = asyncio.Lock()
 
     def _packet(
@@ -97,34 +91,6 @@ class DiagnosisTemporalWorkflow:
             accepted=False, phase="rejected:" + str(error),
         ).dict()
 
-    def _validate_authoritative_command_state(self, command: OwnerGateCommand):
-        """Validate the current workflow state immediately before mutation."""
-        if not self._initialized:
-            raise PolicyViolation("workflow_not_initialized")
-        if self._owner_phase != "OWNER_WAIT":
-            raise PolicyViolation("owner_gate_phase_not_accepting_commands")
-        if command.case_id != self._case_id or command.tenant_id != self._tenant_id:
-            raise PolicyViolation("owner_command_case_or_tenant_mismatch")
-        if (
-            command.auth_assertion.case_revision != self._case_revision
-            or command.auth_assertion.workflow_run_id != self._workflow_run_id
-        ):
-            raise PolicyViolation("owner_command_assertion_run_or_revision_mismatch")
-        proposed = command.proposal or self._proposal
-        expected_proposal_id = proposed.proposal_id if proposed is not None else None
-        if command.proposal is not None and self._proposal is not None and self._proposal != command.proposal:
-            raise PolicyViolation("owner_command_proposal_immutable")
-        if command.proposal_id not in {None, expected_proposal_id}:
-            raise PolicyViolation("owner_command_proposal_id_mismatch")
-        if command.approval is not None:
-            if expected_proposal_id is None or command.approval.proposal_id != expected_proposal_id:
-                raise PolicyViolation("owner_command_unknown_or_mismatched_proposal")
-            if self._approval is not None and (
-                self._approval != command.approval or self._current_witness != command.current_witness
-            ):
-                raise PolicyViolation("owner_command_approval_immutable")
-        return proposed, expected_proposal_id
-
     @workflow.run
     async def run(self, request_data: Dict[str, Any]) -> Dict[str, Any]:
         request = TemporalCaseRequest.parse_obj(request_data)
@@ -147,14 +113,13 @@ class DiagnosisTemporalWorkflow:
         self._current_witness = {}
         self._owner_assertion = None
         self._owner_authenticated = None
-        self._owner_phase = "DIAGNOSING"
+        self._owner_wait_ready = False
         self._command_count = 0
         self._initialized = True
 
         if not self._evidence:
             acquisition = await self._activity("acquire_current_evidence")
             if acquisition.decision != VerificationDecision.PASS or acquisition.acquisition is None:
-                self._owner_phase = "TERMINAL"
                 return {"state": CaseState.NEEDS_HUMAN.value, "acquisition": acquisition.dict()}
             self._evidence = acquisition.acquisition.evidence
             self._claims = acquisition.acquisition.claims
@@ -167,26 +132,19 @@ class DiagnosisTemporalWorkflow:
             await self._activity("specialist", role)
         critic = await self._activity("critic")
         if critic.decision != VerificationDecision.PASS:
-            self._owner_phase = "TERMINAL"
             return {"state": CaseState.NEEDS_HUMAN.value, "critic": critic.dict()}
         verification = await self._activity("independent_verify")
         if verification.decision != VerificationDecision.PASS:
-            self._owner_phase = "TERMINAL"
             return {"state": CaseState.ABSTAINED.value, "verification": verification.dict()}
 
-        # Persist this workflow phase in the same task that schedules the
-        # owner-wait activity. The activity projection therefore cannot be
-        # externally visible before an update is permitted to proceed.
-        self._owner_phase = "OWNER_WAIT"
+        self._owner_wait_ready = True
         await self._activity("owner_wait")
         await workflow.wait_condition(lambda: self._approval is not None)
-        self._owner_phase = "OWNER_GATE"
         owner = await self._activity(
             "owner_gate", proposal=self._proposal, approval=self._approval,
             witness=self._current_witness, auth_assertion=self._owner_assertion,
             authorized_actor=self._owner_authenticated,
         )
-        self._owner_phase = "TERMINAL"
         return {
             "state": (owner.state or CaseState.BLOCKED).value,
             "verification": verification.dict(),
@@ -195,38 +153,35 @@ class DiagnosisTemporalWorkflow:
 
     @workflow.update(name="submit_owner_command")
     async def submit_owner_command(self, command_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Validate/consume auth before durable proposal or approval mutation."""
         try:
-            command = OwnerGateCommand.parse_obj(command_data)
-            # An early update is held in Temporal until either a durable owner
-            # wait or a terminal outcome exists; it is never rejected merely
-            # because a normal in-memory flag has not been set yet.
-            await workflow.wait_condition(lambda: self._initialized)
             async with self._owner_command_lock:
-                await workflow.wait_condition(
-                    lambda: self._owner_phase in {"OWNER_WAIT", "OWNER_GATE", "TERMINAL"}
+                command = OwnerGateCommand.parse_obj(command_data)
+                if not self._initialized:
+                    raise PolicyViolation("workflow_not_initialized")
+                if command.case_id != self._case_id or command.tenant_id != self._tenant_id:
+                    raise PolicyViolation("owner_command_case_or_tenant_mismatch")
+                if not self._owner_wait_ready:
+                    raise PolicyViolation("owner_gate_not_ready")
+                proposed = command.proposal or self._proposal
+                expected_proposal_id = proposed.proposal_id if proposed is not None else None
+                if command.proposal is not None and self._proposal is not None and self._proposal != command.proposal:
+                    raise PolicyViolation("owner_command_proposal_immutable")
+                if command.approval is not None:
+                    if expected_proposal_id is None or command.approval.proposal_id != expected_proposal_id:
+                        raise PolicyViolation("owner_command_unknown_or_mismatched_proposal")
+                    if command.proposal_id not in {None, expected_proposal_id}:
+                        raise PolicyViolation("owner_command_proposal_id_mismatch")
+                    if self._approval is not None and (
+                        self._approval != command.approval or self._current_witness != command.current_witness
+                    ):
+                        raise PolicyViolation("owner_command_approval_immutable")
+                validation = await self._activity(
+                    "validate_owner_command", proposal=command.proposal, approval=command.approval,
+                    witness=command.current_witness, auth_assertion=command.auth_assertion,
+                    proposal_id=expected_proposal_id,
                 )
-                proposed, expected_proposal_id = self._validate_authoritative_command_state(command)
-            # Authorization can suspend the update handler. Do not hold the
-            # command lock across that external boundary: another command or
-            # the run itself may advance the workflow while it is in flight.
-            # The second lock acquisition and full revalidation below make
-            # that race fail closed instead of committing stale intent.
-            validation = await self._activity(
-                "validate_owner_command", proposal=command.proposal, approval=command.approval,
-                witness=command.current_witness, auth_assertion=command.auth_assertion,
-                proposal_id=expected_proposal_id,
-            )
-            if validation.decision != VerificationDecision.PASS or validation.authenticated is None:
-                raise PolicyViolation((validation.reason_codes or ["owner_command_authorization_rejected"])[0])
-            async with self._owner_command_lock:
-                # The activity awaited above is an external boundary. Re-read
-                # all workflow-authoritative state before committing anything.
-                revalidated, revalidated_proposal_id = self._validate_authoritative_command_state(command)
-                if revalidated != proposed or revalidated_proposal_id != expected_proposal_id:
-                    raise PolicyViolation("owner_command_authoritative_state_changed")
-                # No field below is changed until auth verified issuer/audience/
-                # key/scope and the same state passed a second authoritative check.
+                if validation.decision != VerificationDecision.PASS or validation.authenticated is None:
+                    raise PolicyViolation((validation.reason_codes or ["owner_command_authorization_rejected"])[0])
                 self._proposal = proposed
                 if command.approval is not None:
                     self._approval = command.approval

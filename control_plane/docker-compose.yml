@@ -4,6 +4,7 @@ services:
     command: python -m flowpulse_cp.main
     ports: ["8090:8090"]
     environment:
+      FLOWPULSE_RUNTIME_MODE: local
       FLOWPULSE_TEMPORAL_ADDRESS: temporal:7233
       FLOWPULSE_POSTGRES_DSN: postgresql://flowpulse_cp_app:flowpulse-cp-local-only@postgres:5432/flowpulse
       FLOWPULSE_AUTHORIZATION_SERVICE_URL: http://authz:8091
