@@ -13,6 +13,16 @@ import asyncpg
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from flowpulse_cp.models import IncidentCase
+from flowpulse_cp.capabilities import (
+    CapabilityAudience,
+    CapabilityDescriptor,
+    CapabilityInvocationContext,
+    CapabilityName,
+    CapabilityRegistry,
+    CapabilityRequest,
+    CapabilityResult,
+    ToolCallBudget,
+)
 from flowpulse_cp.policy import PolicyViolation
 from flowpulse_cp.postgres import PostgresCaseRepository
 from flowpulse_cp.workspace_activities import WorkspaceActivityDispatcher
@@ -41,6 +51,16 @@ class LiveIncidentWorkspacePostgresTests(unittest.TestCase):
         "FLOWPULSE_TEST_POSTGRES_ADMIN_DSN",
         "postgresql://flowpulse:flowpulse@127.0.0.1:5433/postgres",
     )
+
+    class RecordedContextAdapter:
+        descriptor = CapabilityDescriptor(
+            capability=CapabilityName.RECORDED_CONTEXT, version="recorded-context.v1",
+            fresh_read=False, enabled=True,
+            audiences=[CapabilityAudience.AUTONOMOUS_DIAGNOSIS, CapabilityAudience.USER_QA],
+        )
+
+        async def invoke(self, request, invocation_context):
+            return CapabilityResult(summary="Recorded context only.", evidence_refs=[])
 
     def test_001_002_volume_upgrades_to_workspace_mapping_with_rls_and_append_only_records(self):
         async def run():
@@ -89,6 +109,39 @@ class LiveIncidentWorkspacePostgresTests(unittest.TestCase):
                     )
                     await repository.put_workspace_binding(binding)
                     await repository.put_workspace_projection(projection)
+                    invocation = CapabilityInvocationContext(
+                        **binding.dict(), projection_revision=projection.projection_revision,
+                        component_ids=["checkout"], activity_id="workspace-capability-audit", gate1_authorized=False,
+                    )
+                    registry = CapabilityRegistry(
+                        descriptors=[self.RecordedContextAdapter.descriptor],
+                        adapters={CapabilityName.RECORDED_CONTEXT: self.RecordedContextAdapter()},
+                        audit_sink=repository,
+                    )
+                    capability_result = await registry.invoke(
+                        CapabilityAudience.USER_QA, invocation,
+                        CapabilityRequest(
+                            capability=CapabilityName.RECORDED_CONTEXT,
+                            component_id="checkout", parameters={"window": "recorded"},
+                        ),
+                        ToolCallBudget(max_calls=1),
+                    )
+                    # The retry uses the same immutable audit identity and is
+                    # accepted without replacing the original ledger record.
+                    await registry.invoke(
+                        CapabilityAudience.USER_QA, invocation,
+                        CapabilityRequest(
+                            capability=CapabilityName.RECORDED_CONTEXT,
+                            component_id="checkout", parameters={"window": "recorded"},
+                        ),
+                        ToolCallBudget(max_calls=1),
+                    )
+                    async def audit_count(connection):
+                        return await connection.fetchval(
+                            "SELECT count(*) FROM tool_calls WHERE tenant_id=$1 AND tool_call_id=$2",
+                            case.tenant_id, capability_result.audit.audit_id,
+                        )
+                    self.assertEqual(1, await repository._tenant(case.tenant_id, audit_count))
                     event = IncidentEvent(
                         **binding.dict(), projection_revision=1, sequence=1, event_type="workspace.initialized",
                         occurred_at=now, payload={"state": "provider_unavailable"}, evidence_refs=[],

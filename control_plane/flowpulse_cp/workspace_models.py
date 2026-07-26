@@ -8,7 +8,7 @@ from typing import Dict, List, Optional
 
 from pydantic import Field, StrictBool, StrictStr, root_validator, validator
 
-from .models import AuthContext, NonEmpty, PositiveInt, StrictModel
+from .models import AuthContext, Hash, NonEmpty, NonNegativeInt, PositiveInt, StrictModel
 
 
 class GraphMembership(str, Enum):
@@ -37,6 +37,23 @@ class NodeExplanationState(str, Enum):
     DEGRADED = "DEGRADED"
     COMPLETED = "COMPLETED"
     BLOCKED = "BLOCKED"
+
+
+class ProviderTruthLabel(str, Enum):
+    """Truth label surfaced with every conversation result, never inferred by a client."""
+
+    DEGRADED = "DEGRADED"
+    TEST_DETERMINISTIC = "TEST_DETERMINISTIC"
+    DEMO = "DEMO"
+    LIVE = "LIVE"
+
+
+class ConversationRole(str, Enum):
+    """Server-selected roles; provider output never carries one of these values."""
+
+    CONVERSATION_MANAGER = "CONVERSATION_MANAGER"
+    EVIDENCE_SPECIALIST = "EVIDENCE_SPECIALIST"
+    TOPOLOGY_SPECIALIST = "TOPOLOGY_SPECIALIST"
 
 
 class IncidentGraphNode(StrictModel):
@@ -141,6 +158,130 @@ class ComponentContext(IncidentRunBinding):
     fresh_read_performed: StrictBool = False
 
 
+class ConversationContext(IncidentRunBinding):
+    """Pinned, read-only provider context assembled by the Temporal activity."""
+
+    schema_version: NonEmpty = "flowpulse.conversation-context.v1"
+    projection_revision: PositiveInt
+    component: IncidentGraphNode
+    graph: IncidentGraph
+    recorded_evidence_refs: List[NonEmpty] = Field(default_factory=list)
+    knowledge_prior_refs: List[NonEmpty] = Field(default_factory=list)
+    available_capabilities: List[NonEmpty] = Field(default_factory=list)
+    max_tool_calls: NonNegativeInt = 0
+
+    @root_validator(allow_reuse=True)
+    def conversation_component_is_canonical_and_priors_are_labeled(cls, values):
+        graph = values.get("graph")
+        component = values.get("component")
+        if graph is not None and component is not None:
+            known = {node.component_id: node for node in graph.nodes}
+            if known.get(component.component_id) != component:
+                raise ValueError("conversation_component_not_canonical")
+        if set(values.get("recorded_evidence_refs", [])).intersection(values.get("knowledge_prior_refs", [])):
+            raise ValueError("conversation_reference_evidence_must_be_labeled_once")
+        return values
+
+    def canonical_hash(self) -> str:
+        encoded = self.json(sort_keys=True, exclude_none=True, separators=(",", ":")).encode("utf-8")
+        return sha256(encoded).hexdigest()
+
+
+class ConversationProviderOutput(StrictModel):
+    """The only model-controlled data accepted before a projection is written."""
+
+    schema_version: NonEmpty = "flowpulse.conversation-provider-output.v1"
+    summary: NonEmpty
+    evidence_refs: List[NonEmpty] = Field(default_factory=list)
+    abstained: StrictBool = False
+
+
+class ConversationProviderRequest(StrictModel):
+    """Temporal activity packet for one provider role; identity remains server-owned."""
+
+    role: ConversationRole
+    context: ConversationContext
+    prompt_bundle_version: NonEmpty
+    prompt_hash: Hash
+    context_hash: Hash
+    max_output_tokens: PositiveInt
+
+    @root_validator(allow_reuse=True)
+    def context_hash_is_bound_to_server_context(cls, values):
+        context = values.get("context")
+        if context is not None and values.get("context_hash") != context.canonical_hash():
+            raise ValueError("conversation_context_hash_mismatch")
+        return values
+
+
+class VersionBundle(StrictModel):
+    """Server-owned versions pinned to every completed provider conversation."""
+
+    schema_version: NonEmpty = "flowpulse.version-bundle.v1"
+    workflow_version: NonEmpty = "flowpulse.incident-workspace.v1"
+    policy_version: NonEmpty = "capability-policy.v1"
+    core_policy_version: NonEmpty = "conversation-core-policy.v1"
+    role_prompt_version: NonEmpty = "conversation-role-prompts.v1"
+    context_pack_version: NonEmpty = "conversation-context-pack.v1"
+    capability_registry_version: NonEmpty = "capability-registry.v1"
+    tool_schema_version: NonEmpty = "capability-tool-schema.v1"
+    evidence_schema_version: NonEmpty = "flowpulse.evidence-envelope.v1"
+    card_schema_version: NonEmpty = "next-best-action.not-configured.v1"
+    model_policy_version: NonEmpty = "provider-policy.v1"
+
+
+class PromptLayer(StrictModel):
+    layer: NonEmpty
+    version: NonEmpty
+    content_hash: Hash
+
+
+class PromptBundle(StrictModel):
+    schema_version: NonEmpty = "flowpulse.prompt-bundle.v1"
+    role: ConversationRole
+    layers: List[PromptLayer] = Field(min_items=2, max_items=3)
+    prompt_hash: Hash
+
+    @validator("layers", allow_reuse=True)
+    def prompt_layers_are_unique(cls, value):
+        names = [item.layer for item in value]
+        if len(names) != len(set(names)):
+            raise ValueError("prompt_layers_must_be_unique")
+        return value
+
+
+class ConversationTrace(StrictModel):
+    """Safe durable metadata; raw prompts, credentials, and model payloads stay out."""
+
+    schema_version: NonEmpty = "flowpulse.conversation-trace.v1"
+    truth_label: ProviderTruthLabel
+    provider_id: NonEmpty
+    model_id: Optional[StrictStr] = None
+    version_bundle: VersionBundle
+    prompt_bundles: List[PromptBundle] = Field(min_items=1, max_items=3)
+    context_hash: Hash
+    provider_call_count: NonNegativeInt
+    specialist_roles: List[ConversationRole] = Field(default_factory=list, max_items=2)
+    available_capabilities: List[NonEmpty] = Field(default_factory=list)
+    tool_calls: NonNegativeInt = 0
+    input_tokens: NonNegativeInt = 0
+    output_tokens: NonNegativeInt = 0
+
+    @root_validator(allow_reuse=True)
+    def trace_truth_and_budget_are_consistent(cls, values):
+        truth = values.get("truth_label")
+        calls = values.get("provider_call_count")
+        prompts = values.get("prompt_bundles", [])
+        roles = values.get("specialist_roles", [])
+        if calls > len(prompts):
+            raise ValueError("conversation_provider_call_count_exceeds_prompt_bundles")
+        if truth != ProviderTruthLabel.DEGRADED and calls != len(prompts):
+            raise ValueError("conversation_provider_call_count_mismatch")
+        if len(roles) != len(set(roles)):
+            raise ValueError("conversation_specialist_roles_must_be_unique")
+        return values
+
+
 class WorkspaceIntake(StrictModel):
     """Browser-safe intake: tenant and actor come only from trusted auth."""
 
@@ -195,6 +336,8 @@ class NodeExplanation(IncidentRunBinding):
     evidence_refs: List[NonEmpty] = Field(default_factory=list)
     fresh_read_performed: StrictBool = False
     fresh_diagnosis_claimed: StrictBool = False
+    truth_label: ProviderTruthLabel = ProviderTruthLabel.DEGRADED
+    conversation_trace: Optional[ConversationTrace] = None
     degraded_code: Optional[StrictStr] = None
     created_at: datetime
 
@@ -204,6 +347,11 @@ class NodeExplanation(IncidentRunBinding):
             raise ValueError("node_explanation_fresh_read_forbidden_before_gate1")
         if values.get("fresh_diagnosis_claimed"):
             raise ValueError("node_explanation_fresh_diagnosis_forbidden_before_gate1")
+        trace = values.get("conversation_trace")
+        if trace is not None and trace.truth_label != values.get("truth_label"):
+            raise ValueError("node_explanation_truth_label_trace_mismatch")
+        if values.get("truth_label") != ProviderTruthLabel.DEGRADED and trace is None:
+            raise ValueError("node_explanation_non_degraded_requires_conversation_trace")
         return values
 
 

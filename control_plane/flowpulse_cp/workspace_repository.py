@@ -3,6 +3,8 @@
 from collections import defaultdict
 from typing import Dict, List, Optional, Tuple
 
+from .capabilities import CapabilityAuditRecord
+
 from .policy import PolicyViolation
 from .workspace_models import IncidentEvent, IncidentProjection, IncidentRunBinding, NodeExplanation
 
@@ -33,6 +35,7 @@ class InMemoryWorkspaceRepository:
         self.events: Dict[BindingKey, List[IncidentEvent]] = defaultdict(list)
         self.explanations: Dict[str, NodeExplanation] = {}
         self.explanation_by_selection: Dict[str, str] = {}
+        self.capability_audits: Dict[object, CapabilityAuditRecord] = {}
 
     async def put_binding(self, binding: IncidentRunBinding) -> IncidentRunBinding:
         key = _binding_key(binding)
@@ -137,3 +140,17 @@ class InMemoryWorkspaceRepository:
         return explanation
 
     workspace_explanation = get_explanation
+
+    async def append_workspace_capability_audit(self, audit: CapabilityAuditRecord) -> CapabilityAuditRecord:
+        """Append the shared capability audit under the immutable workspace binding."""
+        key = _binding_key(audit)
+        binding = self.bindings.get(key)
+        if binding is None or not _same_binding(binding, audit):
+            raise PolicyViolation("workspace_public_internal_binding_mismatch")
+        existing = self.capability_audits.get(audit.audit_id)
+        if existing is not None:
+            if existing != audit:
+                raise PolicyViolation("workspace_capability_audit_immutable")
+            return existing
+        self.capability_audits[audit.audit_id] = audit
+        return audit

@@ -166,17 +166,44 @@ Temporal identifier. The immutable binding also records internal `case_id`,
 Temporal. Every workspace projection, event, and NodeExplanation carries that
 binding and its relevant projection/evidence/gate/action revisions.
 
-The initial v1 workflow has no configured Conversation Manager, provider, or
-fresh-read capability. `POST /v1/incidents` therefore returns a durable typed
-`DEGRADED` projection (`provider_unavailable`), rather than fabricated model
-output. `POST /v1/incidents/{case_id}/node-explanations` is a Temporal update
-that selects exactly once by the public run key
+The v1 workflow uses a Conversation Manager only inside its Temporal node
+explanation activity. Standard mode configures no provider, so
+`POST /v1/incidents` still returns a durable typed `DEGRADED` projection
+(`provider_unavailable`) rather than fabricated model output. A configured
+provider result is schema-validated before its NodeExplanation projection is
+written; the durable explanation stores only versioned prompt/context hashes,
+safe token counters, capability names, and a truthful `DEGRADED`,
+`TEST_DETERMINISTIC`, or `LIVE` label. It never stores prompts, credentials,
+or raw model payloads. `POST /v1/incidents/{case_id}/node-explanations` is a
+Temporal update that selects exactly once by the public run key
 `node_explanation:{tenant}:{run}:{projection_revision}:{component}:{schema}`.
 Before Gate 1 it can only return recorded projection/evidence context and the
-same typed degraded state: no fresh tools, fresh diagnosis, or side effect.
-`GET /v1/incidents/{case_id}/events` is an ordered, strictly-after SSE read
-projection. A focus toast, hover, drawer open, or SSE subscription has no
-command route and creates no workflow/event/tool side effect.
+same typed degraded state or a provider explanation with no fresh tools or
+fresh diagnosis. The shared capability registry omits disabled or unbound
+adapters from both autonomous and user-Q&A tool lists; it blocks every fresh
+capability before Gate 1 and appends one tenant/run-bound audit shape when a
+capability is eventually invoked. `GET /v1/incidents/{case_id}/events` is an
+ordered, strictly-after SSE read projection. A focus toast, hover, drawer
+open, or SSE subscription has no command route and creates no workflow/event/
+tool side effect.
+
+The deterministic conversation provider is constructible only by explicit
+test-mode dependency injection. It is never selected from normal worker
+configuration, including local Compose. Demo mode has no implicit provider and
+therefore remains truthfully `DEGRADED`; it cannot relabel deterministic output
+as demo or live AI. An OpenAI-compatible endpoint is also disabled by default.
+The only smoke command is deliberately opt-in and accepts
+an explicitly configured loopback endpoint and model; it does not default to
+an OpenAI URL or read a credential unless `openai-compatible` mode is selected:
+
+```bash
+FLOWPULSE_LIVE_PROVIDER_SMOKE=1 \
+FLOWPULSE_PROVIDER_MODE=local-open-source \
+FLOWPULSE_OPENAI_COMPATIBLE_BASE_URL=http://127.0.0.1:8080/v1 \
+FLOWPULSE_OPENAI_COMPATIBLE_MODEL=local-model \
+PYTHONPYCACHEPREFIX=/tmp/flowpulse-pycache .venv/bin/python -m unittest \
+  tests.test_live_provider_smoke -v
+```
 
 The API is still tenant-scoped through trusted server authentication. For the
 local cross-worktree test harness, the browser uses the frontend same-origin

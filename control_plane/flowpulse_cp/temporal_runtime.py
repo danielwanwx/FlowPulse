@@ -52,7 +52,11 @@ from .repository import InMemoryCaseRepository
 from .source_readback import LocalDeterministicSourceReadback, S3SourceReadback
 from .temporal_workflow import DiagnosisTemporalWorkflow
 from .workspace_activities import WorkspaceActivityDispatcher, build_workspace_activities
+from .capabilities import CapabilityRegistry
+from .conversation_manager import ConversationManager
+from .provider_gateway import ProviderSettings, build_conversation_provider
 from .workspace_models import (
+    ConversationRole,
     IncidentProjection,
     NodeExplanationReceipt,
     NodeExplanationStart,
@@ -410,6 +414,7 @@ async def run_worker(
     source_tenant_id: str, source_access_key: str, source_secret_key: str, authorization_service_url: str,
     authorization_service_token: str,
     local_deterministic_evidence: bool = False,
+    provider_settings: Optional[ProviderSettings] = None,
 ) -> None:
     client = await Client.connect(address)
     repository = PostgresCaseRepository(postgres_dsn)
@@ -428,6 +433,12 @@ async def run_worker(
     evidence_acquirer = None if local_deterministic_evidence else S3CurrentEvidenceAcquirer(
         source_client, source_bucket, source_prefix, source_tenant_id,
     )
+    conversation_manager = ConversationManager(
+        build_conversation_provider(provider_settings or ProviderSettings()),
+        CapabilityRegistry(audit_sink=repository),
+        specialist_roles=[ConversationRole.EVIDENCE_SPECIALIST, ConversationRole.TOPOLOGY_SPECIALIST],
+        max_output_tokens=(provider_settings or ProviderSettings()).max_output_tokens,
+    )
     async with Worker(
         client, task_queue=task_queue,
         workflows=[
@@ -439,7 +450,7 @@ async def run_worker(
             build_temporal_activities(PostgresActivityDispatcher(
                 repository, artifacts, source_readback, authorization, evidence_acquirer,
             ))
-            + build_workspace_activities(WorkspaceActivityDispatcher(repository))
+            + build_workspace_activities(WorkspaceActivityDispatcher(repository, conversation_manager=conversation_manager))
         ),
     ):
         try:

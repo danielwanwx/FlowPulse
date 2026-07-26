@@ -8,6 +8,7 @@ from typing import Dict, Optional
 from pydantic import ValidationError
 
 from .models import AuthContext
+from .provider_gateway import ProviderSettings
 
 
 def required(name: str) -> str:
@@ -80,6 +81,7 @@ class WorkerSettings:
     authorization_service_url: str
     authorization_service_token: str
     temporal_task_queue: str
+    provider_settings: ProviderSettings
 
     @classmethod
     def from_environment(cls) -> "WorkerSettings":
@@ -99,6 +101,7 @@ class WorkerSettings:
             authorization_service_url=required("FLOWPULSE_AUTHORIZATION_SERVICE_URL"),
             authorization_service_token=required("FLOWPULSE_AUTHORIZATION_SERVICE_TOKEN"),
             temporal_task_queue=required("FLOWPULSE_TEMPORAL_TASK_QUEUE"),
+            provider_settings=ProviderSettings.from_environment(),
         )
 
 

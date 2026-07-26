@@ -77,6 +77,12 @@ class LiveIncidentWorkspaceHttpTests(unittest.TestCase):
         bodies = [json.loads(item[1]) for item in replies]
         self.assertEqual(bodies[0]["explanation"]["explanation_id"], bodies[1]["explanation"]["explanation_id"])
         self.assertEqual("DEGRADED", bodies[0]["explanation"]["state"])
+        self.assertEqual("DEGRADED", bodies[0]["explanation"]["truth_label"])
+        self.assertEqual("provider_unavailable", bodies[0]["explanation"]["degraded_code"])
+        trace = bodies[0]["explanation"]["conversation_trace"]
+        self.assertEqual("DEGRADED", trace["truth_label"])
+        self.assertEqual(0, trace["provider_call_count"])
+        self.assertEqual(0, trace["tool_calls"])
         self.assertFalse(bodies[0]["explanation"]["fresh_read_performed"])
         self.assertFalse(bodies[0]["explanation"]["fresh_diagnosis_claimed"])
 

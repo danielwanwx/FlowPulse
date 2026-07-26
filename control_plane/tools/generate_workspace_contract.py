@@ -23,6 +23,7 @@ from flowpulse_cp.workspace_models import (
     NodeExplanation,
     NodeExplanationReceipt,
     NodeExplanationState,
+    ConversationTrace,
     NodeExplanationStart,
     ProjectionState,
     WorkspaceIntake,
@@ -81,7 +82,11 @@ def _examples():
             "run_id and topology_revision are backend-owned public identities; case_id, workflow_id, "
             "and workflow_run_id are internal correlations. run_id is never derived from a Temporal ID."
         ),
-        "provider_note": "This Contract Core has no provider/read capability; provider_unavailable is typed degraded state.",
+        "provider_note": (
+            "Standard and demo provider modes return typed degraded state when no provider is configured. "
+            "Deterministic output is test-only dependency injection and is labeled TEST_DETERMINISTIC; "
+            "explicit configured providers are labeled LIVE."
+        ),
         "request_examples": {
             "WorkspaceIntake": WorkspaceIntake(
                 incident_id="incident-example", title="Checkout latency", severity="SEV2", environment="local",
@@ -100,6 +105,7 @@ def _examples():
             "IncidentProjection": IncidentProjection.schema(),
             "NodeExplanationStart": NodeExplanationStart.schema(),
             "NodeExplanationReceipt": NodeExplanationReceipt.schema(),
+            "ConversationTrace": ConversationTrace.schema(),
             "IncidentEvent": IncidentEvent.schema(),
             "ComponentContext": ComponentContext.schema(),
         },
@@ -119,6 +125,7 @@ def generate(output: Path, producer_git_sha: str) -> dict:
         "public_identity": ["tenant_id", "incident_id", "run_id", "topology_revision"],
         "internal_correlation": ["case_id", "case_revision", "workflow_id", "workflow_run_id"],
         "provider_mode": "typed_degraded_when_unconfigured",
+        "provider_truth_labels": ["DEGRADED", "TEST_DETERMINISTIC", "DEMO", "LIVE"],
     }
     checksums = {
         openapi_path.name: _write_json(openapi_path, openapi),

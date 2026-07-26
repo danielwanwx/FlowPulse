@@ -30,6 +30,7 @@ from .policy import (
     validate_claim_evidence,
     validate_evidence_admission,
 )
+from .capabilities import CapabilityAuditRecord
 from .workspace_models import IncidentEvent, IncidentProjection, IncidentRunBinding, NodeExplanation
 
 
@@ -347,6 +348,36 @@ class PostgresCaseRepository:
             )
             return NodeExplanation.parse_obj(_decode(row["payload"])) if row else None
         return await self._tenant(tenant_id, operation)
+
+    async def append_workspace_capability_audit(self, audit: CapabilityAuditRecord) -> CapabilityAuditRecord:
+        """Append one shared capability audit to the existing tenant/RLS tool ledger."""
+        async def operation(connection: asyncpg.Connection) -> CapabilityAuditRecord:
+            await _lock_workspace_mapping(connection, _workspace_binding(audit))
+            binding_row = await connection.fetchrow(
+                "SELECT payload FROM incident_run_bindings WHERE tenant_id=$1 AND run_id=$2",
+                audit.tenant_id, audit.run_id,
+            )
+            if binding_row is None or _workspace_binding(_decode(binding_row["payload"])) != _workspace_binding(audit):
+                raise PolicyViolation("workspace_public_internal_binding_mismatch")
+            existing = await connection.fetchrow(
+                "SELECT payload FROM tool_calls WHERE tenant_id=$1 AND tool_call_id=$2",
+                audit.tenant_id, audit.audit_id,
+            )
+            if existing is not None:
+                recorded = CapabilityAuditRecord.parse_obj(_decode(existing["payload"]))
+                if recorded != audit:
+                    raise PolicyViolation("workspace_capability_audit_immutable")
+                return recorded
+            await connection.execute(
+                """INSERT INTO tool_calls
+                   (tool_call_id, case_id, tenant_id, activity_id, capability, status, request_hash,
+                    response_artifact_key, payload, created_at)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,NULL,$8::jsonb,$9)""",
+                audit.audit_id, audit.case_id, audit.tenant_id, audit.activity_id,
+                audit.capability.value, audit.status, audit.request_hash, _payload(audit), audit.created_at,
+            )
+            return audit
+        return await self._tenant(audit.tenant_id, operation)
 
     async def create_auth_command_intent(
         self, actor: AuthContext, case: IncidentCase, proposal_id: Optional[str] = None,

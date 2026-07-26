@@ -1,7 +1,7 @@
 """Activities for the additive Incident Workspace workflow.
 
-No provider or read capability is wired in this checkpoint. The only
-NodeExplanation outcome is an explicit, read-only degraded record.
+Conversation/provider work is bounded inside this Temporal activity.  No
+fresh capability invocation is permitted before the later Gate 1 increment.
 """
 
 from datetime import datetime, timezone
@@ -38,8 +38,9 @@ def build_workspace_activities(dispatcher: "WorkspaceActivityDispatcher") -> Lis
 class WorkspaceActivityDispatcher:
     """Writes only Temporal-derived public projections and safe degraded records."""
 
-    def __init__(self, repository: Any) -> None:
+    def __init__(self, repository: Any, conversation_manager: Any = None) -> None:
         self.repository = repository
+        self.conversation_manager = conversation_manager
 
     async def _persist_case(self, packet: WorkspaceActivityPacket) -> None:
         if not hasattr(self.repository, "put_case"):
@@ -91,6 +92,12 @@ class WorkspaceActivityDispatcher:
             if command.component_id not in known:
                 raise RuntimeError("workspace_node_explanation_component_not_canonical")
             selection_key = command.selection_key(packet.tenant_id)
+            conversation = None
+            if self.conversation_manager is not None:
+                binding = IncidentRunBinding.parse_obj({
+                    name: getattr(packet, name) for name in IncidentRunBinding.__fields__
+                })
+                conversation = await self.conversation_manager.explain(binding, packet.projection, command)
             explanation = NodeExplanation(
                 **{name: getattr(packet, name) for name in packet.__fields__ if name in {
                     "tenant_id", "incident_id", "run_id", "topology_revision", "case_id", "case_revision",
@@ -99,12 +106,28 @@ class WorkspaceActivityDispatcher:
                 explanation_id="node-explanation-{}".format(sha256(selection_key.encode("utf-8")).hexdigest()[:24]),
                 selection_key=selection_key, projection_revision=command.projection_revision,
                 component_id=command.component_id, conversation_schema_version=command.conversation_schema_version,
-                state=NodeExplanationState.DEGRADED,
-                summary="No provider or read capability is configured; no fresh read or diagnosis was performed.",
-                evidence_refs=list(packet.projection.evidence_refs), fresh_read_performed=False,
-                fresh_diagnosis_claimed=False, degraded_code="provider_unavailable",
+                state=(
+                    NodeExplanationState.COMPLETED
+                    if conversation is not None and conversation.truth_label.value != "DEGRADED"
+                    else NodeExplanationState.DEGRADED
+                ),
+                summary=(
+                    conversation.summary if conversation is not None
+                    else "No provider or read capability is configured; no fresh read or diagnosis was performed."
+                ),
+                evidence_refs=(
+                    conversation.evidence_refs if conversation is not None else list(packet.projection.evidence_refs)
+                ),
+                fresh_read_performed=False, fresh_diagnosis_claimed=False,
+                truth_label=(conversation.truth_label if conversation is not None else "DEGRADED"),
+                conversation_trace=(conversation.trace if conversation is not None else None),
+                degraded_code=(conversation.degraded_code if conversation is not None else "provider_unavailable"),
             )
             stored, _ = await self.repository.start_or_reuse_workspace_explanation(explanation)
-            await self._append_event(packet, "node_explanation.degraded", {"explanation_id": stored.explanation_id})
+            await self._append_event(
+                packet,
+                "node_explanation.completed" if stored.state == NodeExplanationState.COMPLETED else "node_explanation.degraded",
+                {"explanation_id": stored.explanation_id, "truth_label": stored.truth_label.value},
+            )
             return WorkspaceActivityOutcome(explanation=stored).dict()
         raise RuntimeError("workspace_activity_unknown")
