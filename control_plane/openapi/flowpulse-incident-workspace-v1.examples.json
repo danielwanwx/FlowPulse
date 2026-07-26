@@ -87,6 +87,11 @@
               "title": "Component Id",
               "type": "string"
             },
+            "display_name": {
+              "minLength": 1,
+              "title": "Display Name",
+              "type": "string"
+            },
             "impact_status": {
               "minLength": 1,
               "title": "Impact Status",
@@ -104,6 +109,7 @@
           "required": [
             "component_id",
             "canonical_identity",
+            "display_name",
             "membership",
             "runtime_status",
             "impact_status"
@@ -459,6 +465,18 @@
     },
     "IncidentEvent": {
       "additionalProperties": false,
+      "definitions": {
+        "ExplanationEventStatus": {
+          "description": "An enumeration.",
+          "enum": [
+            "STARTED",
+            "COMPLETED",
+            "DEGRADED"
+          ],
+          "title": "ExplanationEventStatus",
+          "type": "string"
+        }
+      },
       "description": "Public run identity and its immutable internal Temporal correlation.",
       "properties": {
         "case_id": {
@@ -488,6 +506,9 @@
           },
           "title": "Evidence Refs",
           "type": "array"
+        },
+        "explanation_status": {
+          "$ref": "#/definitions/ExplanationEventStatus"
         },
         "incident_id": {
           "minLength": 1,
@@ -564,6 +585,128 @@
         "occurred_at"
       ],
       "title": "IncidentEvent",
+      "type": "object"
+    },
+    "IncidentNotification": {
+      "additionalProperties": false,
+      "definitions": {
+        "IncidentNotificationType": {
+          "description": "An enumeration.",
+          "enum": [
+            "incident.accepted",
+            "incident.updated"
+          ],
+          "title": "IncidentNotificationType",
+          "type": "string"
+        },
+        "IncidentSummary": {
+          "additionalProperties": false,
+          "description": "Bounded, operator-facing discovery record derived from a projection.",
+          "properties": {
+            "case_id": {
+              "minLength": 1,
+              "title": "Case Id",
+              "type": "string"
+            },
+            "incident_id": {
+              "minLength": 1,
+              "title": "Incident Id",
+              "type": "string"
+            },
+            "lifecycle_state": {
+              "$ref": "#/definitions/ProjectionState"
+            },
+            "projection_revision": {
+              "minimum": 1,
+              "title": "Projection Revision",
+              "type": "integer"
+            },
+            "run_id": {
+              "minLength": 1,
+              "title": "Run Id",
+              "type": "string"
+            },
+            "sequence": {
+              "minimum": 1,
+              "title": "Sequence",
+              "type": "integer"
+            },
+            "status": {
+              "minLength": 1,
+              "title": "Status",
+              "type": "string"
+            },
+            "summary": {
+              "minLength": 1,
+              "title": "Summary",
+              "type": "string"
+            },
+            "title": {
+              "minLength": 1,
+              "title": "Title",
+              "type": "string"
+            },
+            "topology_revision": {
+              "minLength": 1,
+              "title": "Topology Revision",
+              "type": "string"
+            }
+          },
+          "required": [
+            "case_id",
+            "incident_id",
+            "run_id",
+            "topology_revision",
+            "projection_revision",
+            "sequence",
+            "lifecycle_state",
+            "status",
+            "title",
+            "summary"
+          ],
+          "title": "IncidentSummary",
+          "type": "object"
+        },
+        "ProjectionState": {
+          "description": "An enumeration.",
+          "enum": [
+            "INITIALIZING",
+            "DEGRADED",
+            "AWAITING_OWNER",
+            "BLOCKED",
+            "NEEDS_HUMAN",
+            "ABSTAINED"
+          ],
+          "title": "ProjectionState",
+          "type": "string"
+        }
+      },
+      "description": "One durable, tenant-scoped browser notification cursor and hydration summary.",
+      "properties": {
+        "event_type": {
+          "$ref": "#/definitions/IncidentNotificationType"
+        },
+        "incident": {
+          "$ref": "#/definitions/IncidentSummary"
+        },
+        "notification_id": {
+          "minLength": 1,
+          "title": "Notification Id",
+          "type": "string"
+        },
+        "occurred_at": {
+          "format": "date-time",
+          "title": "Occurred At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "notification_id",
+        "event_type",
+        "occurred_at",
+        "incident"
+      ],
+      "title": "IncidentNotification",
       "type": "object"
     },
     "IncidentProjection": {
@@ -660,6 +803,11 @@
               "title": "Component Id",
               "type": "string"
             },
+            "display_name": {
+              "minLength": 1,
+              "title": "Display Name",
+              "type": "string"
+            },
             "impact_status": {
               "minLength": 1,
               "title": "Impact Status",
@@ -677,6 +825,7 @@
           "required": [
             "component_id",
             "canonical_identity",
+            "display_name",
             "membership",
             "runtime_status",
             "impact_status"
@@ -766,6 +915,18 @@
         "lifecycle_state": {
           "$ref": "#/definitions/ProjectionState"
         },
+        "operator_summary": {
+          "default": "An active incident requires attention.",
+          "minLength": 1,
+          "title": "Operator Summary",
+          "type": "string"
+        },
+        "operator_title": {
+          "default": "Incident active",
+          "minLength": 1,
+          "title": "Operator Title",
+          "type": "string"
+        },
         "projection_revision": {
           "minimum": 1,
           "title": "Projection Revision",
@@ -836,6 +997,89 @@
       "title": "IncidentProjection",
       "type": "object"
     },
+    "IncidentSummary": {
+      "additionalProperties": false,
+      "definitions": {
+        "ProjectionState": {
+          "description": "An enumeration.",
+          "enum": [
+            "INITIALIZING",
+            "DEGRADED",
+            "AWAITING_OWNER",
+            "BLOCKED",
+            "NEEDS_HUMAN",
+            "ABSTAINED"
+          ],
+          "title": "ProjectionState",
+          "type": "string"
+        }
+      },
+      "description": "Bounded, operator-facing discovery record derived from a projection.",
+      "properties": {
+        "case_id": {
+          "minLength": 1,
+          "title": "Case Id",
+          "type": "string"
+        },
+        "incident_id": {
+          "minLength": 1,
+          "title": "Incident Id",
+          "type": "string"
+        },
+        "lifecycle_state": {
+          "$ref": "#/definitions/ProjectionState"
+        },
+        "projection_revision": {
+          "minimum": 1,
+          "title": "Projection Revision",
+          "type": "integer"
+        },
+        "run_id": {
+          "minLength": 1,
+          "title": "Run Id",
+          "type": "string"
+        },
+        "sequence": {
+          "minimum": 1,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "status": {
+          "minLength": 1,
+          "title": "Status",
+          "type": "string"
+        },
+        "summary": {
+          "minLength": 1,
+          "title": "Summary",
+          "type": "string"
+        },
+        "title": {
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        },
+        "topology_revision": {
+          "minLength": 1,
+          "title": "Topology Revision",
+          "type": "string"
+        }
+      },
+      "required": [
+        "case_id",
+        "incident_id",
+        "run_id",
+        "topology_revision",
+        "projection_revision",
+        "sequence",
+        "lifecycle_state",
+        "status",
+        "title",
+        "summary"
+      ],
+      "title": "IncidentSummary",
+      "type": "object"
+    },
     "NextBestAction": {
       "additionalProperties": false,
       "definitions": {
@@ -884,6 +1128,11 @@
         "capability_registry_revision": {
           "minLength": 1,
           "title": "Capability Registry Revision",
+          "type": "string"
+        },
+        "capability_version": {
+          "minLength": 1,
+          "title": "Capability Version",
           "type": "string"
         },
         "card_version": {
@@ -1736,6 +1985,7 @@
         "canonical_identity": "service:checkout",
         "classification_reason": null,
         "component_id": "checkout",
+        "display_name": "Checkout",
         "impact_status": "unknown",
         "membership": "CONNECTED",
         "runtime_status": "unknown"
@@ -1758,6 +2008,7 @@
       "created_at": "2026-07-26 00:00:00+00:00",
       "event_type": "workspace.initialized",
       "evidence_refs": [],
+      "explanation_status": null,
       "incident_id": "incident-example",
       "occurred_at": "2026-07-26 00:00:00+00:00",
       "payload": {
@@ -1771,6 +2022,23 @@
       "topology_revision": "topology-v1-example",
       "workflow_id": "flowpulse.incident-workspace:tenant-example:run-example-01",
       "workflow_run_id": "temporal-run-example"
+    },
+    "IncidentNotification": {
+      "event_type": "incident.accepted",
+      "incident": {
+        "case_id": "workspace-case-example",
+        "incident_id": "incident-example",
+        "lifecycle_state": "DEGRADED",
+        "projection_revision": 1,
+        "run_id": "run-example-01",
+        "sequence": 1,
+        "status": "provider_unavailable",
+        "summary": "Checkout requests are degraded.",
+        "title": "Checkout latency",
+        "topology_revision": "topology-v1-example"
+      },
+      "notification_id": "2026-07-26T00:00:00+00:00|run-example-01|0000000001",
+      "occurred_at": "2026-07-26 00:00:00+00:00"
     },
     "IncidentProjection": {
       "action_revision": 1,
@@ -1789,6 +2057,7 @@
             "canonical_identity": "service:checkout",
             "classification_reason": null,
             "component_id": "checkout",
+            "display_name": "Checkout",
             "impact_status": "unknown",
             "membership": "CONNECTED",
             "runtime_status": "unknown"
@@ -1798,6 +2067,8 @@
       "impacted_path": [],
       "incident_id": "incident-example",
       "lifecycle_state": "DEGRADED",
+      "operator_summary": "Checkout requests are degraded.",
+      "operator_title": "Checkout latency",
       "projection_revision": 1,
       "run_id": "run-example-01",
       "schema_version": "flowpulse.incident-projection.v1",
@@ -1808,11 +2079,24 @@
       "workflow_id": "flowpulse.incident-workspace:tenant-example:run-example-01",
       "workflow_run_id": "temporal-run-example"
     },
+    "IncidentSummary": {
+      "case_id": "workspace-case-example",
+      "incident_id": "incident-example",
+      "lifecycle_state": "DEGRADED",
+      "projection_revision": 1,
+      "run_id": "run-example-01",
+      "sequence": 1,
+      "status": "provider_unavailable",
+      "summary": "Checkout requests are degraded.",
+      "title": "Checkout latency",
+      "topology_revision": "topology-v1-example"
+    },
     "NextBestAction": {
       "action_id": "action-example-gate1",
       "action_revision": 1,
       "capability": "METRICS",
       "capability_registry_revision": "capability-policy.v2",
+      "capability_version": null,
       "card_version": 1,
       "case_id": "workspace-case-example",
       "case_revision": 1,

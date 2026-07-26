@@ -10,7 +10,7 @@ from pathlib import Path
 CONTROL_PLANE = Path(__file__).resolve().parents[1]
 REPO = CONTROL_PLANE.parent
 ARTIFACT_DIR = CONTROL_PLANE / "openapi"
-PRODUCER_SHA = "b4c49f25204dca664fd13081fc3f4995122bebcf"
+PRODUCER_SHA = "0b158cdfc355594d64500d9ae3f8ba33e7ee0a6f"
 
 
 class WorkspaceContractFreezeTests(unittest.TestCase):
@@ -25,6 +25,7 @@ class WorkspaceContractFreezeTests(unittest.TestCase):
         self.assertEqual(["tenant_id", "incident_id", "run_id", "topology_revision"], boundary["public_identity"])
         self.assertIn("workflow_run_id", boundary["internal_correlation"])
         self.assertIn("/v1/incidents/{case_id}/node-explanations", openapi["paths"])
+        self.assertIn("/v1/incidents/events", openapi["paths"])
         self.assertIn("/v1/incidents/{case_id}/actions", openapi["paths"])
         self.assertIn("/v1/incidents/{case_id}/actions/{action_id}", openapi["paths"])
         self.assertEqual(
@@ -45,6 +46,8 @@ class WorkspaceContractFreezeTests(unittest.TestCase):
         )
         event_response = openapi["paths"]["/v1/incidents/{case_id}/events"]["get"]["responses"]["200"]
         self.assertEqual({"text/event-stream"}, set(event_response["content"]))
+        global_event_response = openapi["paths"]["/v1/incidents/events"]["get"]["responses"]["200"]
+        self.assertEqual({"text/event-stream"}, set(global_event_response["content"]))
 
     def test_plan_and_contract_record_exact_bundle_hashes_before_frontend_integration(self):
         plan = (REPO / "docs" / "plans" / "2026-07-25-agent-led-incident-control-plane-integration.md").read_text()

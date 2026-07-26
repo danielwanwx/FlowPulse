@@ -459,8 +459,28 @@
         "title": "IncidentCase",
         "type": "object"
       },
+      "IncidentDiscoveryState": {
+        "description": "An enumeration.",
+        "enum": [
+          "active"
+        ],
+        "title": "IncidentDiscoveryState",
+        "type": "string"
+      },
       "IncidentEvent": {
         "additionalProperties": false,
+        "definitions": {
+          "ExplanationEventStatus": {
+            "description": "An enumeration.",
+            "enum": [
+              "STARTED",
+              "COMPLETED",
+              "DEGRADED"
+            ],
+            "title": "ExplanationEventStatus",
+            "type": "string"
+          }
+        },
         "description": "Public run identity and its immutable internal Temporal correlation.",
         "properties": {
           "case_id": {
@@ -490,6 +510,9 @@
             },
             "title": "Evidence Refs",
             "type": "array"
+          },
+          "explanation_status": {
+            "$ref": "#/components/schemas/ExplanationEventStatus"
           },
           "incident_id": {
             "minLength": 1,
@@ -638,6 +661,11 @@
             "title": "Component Id",
             "type": "string"
           },
+          "display_name": {
+            "minLength": 1,
+            "title": "Display Name",
+            "type": "string"
+          },
           "impact_status": {
             "minLength": 1,
             "title": "Impact Status",
@@ -655,6 +683,7 @@
         "required": [
           "component_id",
           "canonical_identity",
+          "display_name",
           "membership",
           "runtime_status",
           "impact_status"
@@ -799,6 +828,18 @@
           "lifecycle_state": {
             "$ref": "#/components/schemas/ProjectionState"
           },
+          "operator_summary": {
+            "default": "An active incident requires attention.",
+            "minLength": 1,
+            "title": "Operator Summary",
+            "type": "string"
+          },
+          "operator_title": {
+            "default": "Incident active",
+            "minLength": 1,
+            "title": "Operator Title",
+            "type": "string"
+          },
           "projection_revision": {
             "minimum": 1.0,
             "title": "Projection Revision",
@@ -869,6 +910,74 @@
         "title": "IncidentProjection",
         "type": "object"
       },
+      "IncidentSummary": {
+        "additionalProperties": false,
+        "description": "Bounded, operator-facing discovery record derived from a projection.",
+        "properties": {
+          "case_id": {
+            "minLength": 1,
+            "title": "Case Id",
+            "type": "string"
+          },
+          "incident_id": {
+            "minLength": 1,
+            "title": "Incident Id",
+            "type": "string"
+          },
+          "lifecycle_state": {
+            "$ref": "#/components/schemas/ProjectionState"
+          },
+          "projection_revision": {
+            "minimum": 1.0,
+            "title": "Projection Revision",
+            "type": "integer"
+          },
+          "run_id": {
+            "minLength": 1,
+            "title": "Run Id",
+            "type": "string"
+          },
+          "sequence": {
+            "minimum": 1.0,
+            "title": "Sequence",
+            "type": "integer"
+          },
+          "status": {
+            "minLength": 1,
+            "title": "Status",
+            "type": "string"
+          },
+          "summary": {
+            "minLength": 1,
+            "title": "Summary",
+            "type": "string"
+          },
+          "title": {
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          },
+          "topology_revision": {
+            "minLength": 1,
+            "title": "Topology Revision",
+            "type": "string"
+          }
+        },
+        "required": [
+          "case_id",
+          "incident_id",
+          "run_id",
+          "topology_revision",
+          "projection_revision",
+          "sequence",
+          "lifecycle_state",
+          "status",
+          "title",
+          "summary"
+        ],
+        "title": "IncidentSummary",
+        "type": "object"
+      },
       "NextBestAction": {
         "additionalProperties": false,
         "description": "A fixed, server-generated recommendation\u2014not an executable command.",
@@ -891,6 +1000,11 @@
           "capability_registry_revision": {
             "minLength": 1,
             "title": "Capability Registry Revision",
+            "type": "string"
+          },
+          "capability_version": {
+            "minLength": 1,
+            "title": "Capability Version",
             "type": "string"
           },
           "card_version": {
@@ -2078,6 +2192,69 @@
       }
     },
     "/v1/incidents": {
+      "get": {
+        "description": "Tenant-scoped toast hydration; discovery never starts or advances a workflow.",
+        "operationId": "list_active_workspace_incidents_v1_incidents_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/IncidentDiscoveryState"
+                }
+              ],
+              "default": "active"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 50.0,
+              "minimum": 1.0,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/IncidentSummary"
+                  },
+                  "title": "Response List Active Workspace Incidents V1 Incidents Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "FlowPulseTrustedBearer": []
+          }
+        ],
+        "summary": "List Active Workspace Incidents"
+      },
       "post": {
         "operationId": "intake_workspace_incident_v1_incidents_post",
         "requestBody": {
@@ -2118,6 +2295,60 @@
           }
         ],
         "summary": "Intake Workspace Incident"
+      }
+    },
+    "/v1/incidents/events": {
+      "get": {
+        "description": "Read the global notification projection without creating a case or conversation.",
+        "operationId": "workspace_incident_notifications_v1_incidents_events_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "title": "After",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Last-Event-ID",
+            "required": false,
+            "schema": {
+              "title": "Last-Event-Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/IncidentNotification"
+                }
+              }
+            },
+            "description": "Ordered tenant incident notifications for toast hydration."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "FlowPulseTrustedBearer": []
+          }
+        ],
+        "summary": "Workspace Incident Notifications"
       }
     },
     "/v1/incidents/{case_id}/actions": {

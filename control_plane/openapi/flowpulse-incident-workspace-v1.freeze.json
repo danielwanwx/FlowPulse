@@ -1,10 +1,10 @@
 {
   "artifacts": {
-    "flowpulse-incident-workspace-v1.examples.json": "c55d57928dd5a6a5b8ad666fab4da08027427d85132a0f7d2fe18aabdc3ecb3d",
-    "flowpulse-incident-workspace-v1.openapi.json": "aae3bb9f9dabfef7e7ebd24aa5cdb4a3651fded4421de9249ecf11df727df168"
+    "flowpulse-incident-workspace-v1.examples.json": "44e8fc35b4bff51a4de684469121a2b8f70fe1aac54a90df174d422296ef4738",
+    "flowpulse-incident-workspace-v1.openapi.json": "1c082ba24e93719cec2797e9f0bfea996ba32ebaaf687ee1427cea0d26e3abd5"
   },
   "generated_at": "deterministic-from-source",
   "hash_algorithm": "sha256",
-  "producer_implementation_git_sha": "b4c49f25204dca664fd13081fc3f4995122bebcf",
+  "producer_implementation_git_sha": "0b158cdfc355594d64500d9ae3f8ba33e7ee0a6f",
   "schema_version": "flowpulse.incident-workspace.freeze.v1"
 }

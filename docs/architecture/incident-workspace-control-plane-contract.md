@@ -1,4 +1,4 @@
-# Incident Workspace control-plane contract v1
+# Incident Workspace control-plane contract v1.1
 
 ## Scope and authority
 
@@ -28,7 +28,7 @@ NodeExplanation records, evidence bindings, gate records, and later action
 cards. A tenant/case/run/topology mapping may not be rebound to a different
 Temporal run.
 
-## v1 HTTP routes and v2 workflow read model
+## v1.1 HTTP routes and v2 workflow read model
 
 All routes require trusted authenticated tenant/subject context and return only
 tenant-scoped records:
@@ -36,16 +36,29 @@ tenant-scoped records:
 | Route | Contract Core behavior |
 | --- | --- |
 | `POST /v1/incidents` | Starts `flowpulse.incident-workspace.v2`; waits for its initialization activity and returns the durable `IncidentProjection`. |
+| `GET /v1/incidents?state=active` | Returns bounded tenant-scoped `IncidentSummary` records for toast hydration. The authenticated tenant is authoritative; this read does not create a case, conversation, fresh read, or Temporal transition. |
+| `GET /v1/incidents/events` | Ordered global tenant notification SSE. `Last-Event-ID` or `after` resumes strictly after its opaque server cursor and carries enough public identity to hydrate a per-case projection. |
 | `GET /v1/incidents/{case_id}/projection` | Returns the latest Temporal-authoritative projection. |
 | `GET /v1/incidents/{case_id}/components/{component_id}/context` | Returns canonical, recorded context only; `fresh_read_performed=false`. |
 | `POST /v1/incidents/{case_id}/node-explanations` | Submits the typed exactly-once Temporal update. The browser supplies only public identity, canonical component, projection revision, and idempotency key. |
 | `GET /v1/incidents/{case_id}/node-explanations/{explanation_id}` | Returns a persisted explanation under the same public/internal binding. |
 | `GET /v1/incidents/{case_id}/events` | Ordered SSE events. `Last-Event-ID` or `after` resumes strictly after an accepted sequence. |
+| `GET /v1/incidents/{case_id}/actions` / `POST /v1/incidents/{case_id}/actions/{action_id}` | Reads server-generated cards and submits the one revalidated Temporal action update; no browser scope or tool payload is accepted. |
 
-No generic action/NextBestAction route exists in this checkpoint. Those are
-explicitly deferred until their capability and Gate 1 contracts are
-implemented. An unavailable provider/capability returns a typed `DEGRADED`
-projection with `provider_unavailable`; it never returns fixture success.
+`IncidentGraphNode.display_name` is nonempty, server-projected operator text;
+the browser must render it and must not prettify `component_id` or
+`canonical_identity`. The projection also carries bounded English
+`operator_title` and `operator_summary` fields that the discovery summary
+uses for toast content. An unavailable provider/capability returns a typed
+`DEGRADED` projection with `provider_unavailable`; it never returns fixture
+success.
+
+The global notification feed publishes only accepted/updated projection events.
+Per-case SSE publishes bounded `node_explanation.started`,
+`node_explanation.completed`, or `node_explanation.degraded` status records;
+the durable POST/GET `NodeExplanationReceipt` remains the content source. There
+is no token-stream API. Toast focus and both discovery feeds are read-only and
+cannot create an explanation.
 
 ## NodeExplanation boundary
 
@@ -96,12 +109,12 @@ for schemas.
 
 ## Workspace contract freeze
 
-The producer implementation commit is
-`b4c49f25204dca664fd13081fc3f4995122bebcf`. The generated bundle is:
+The v1.1 producer implementation commit is
+`0b158cdfc355594d64500d9ae3f8ba33e7ee0a6f`. The generated bundle is:
 
-- `control_plane/openapi/flowpulse-incident-workspace-v1.openapi.json` — SHA-256 `aae3bb9f9dabfef7e7ebd24aa5cdb4a3651fded4421de9249ecf11df727df168`
-- `control_plane/openapi/flowpulse-incident-workspace-v1.examples.json` — SHA-256 `c55d57928dd5a6a5b8ad666fab4da08027427d85132a0f7d2fe18aabdc3ecb3d`
-- `control_plane/openapi/flowpulse-incident-workspace-v1.freeze.json` — SHA-256 `101af9b41458715f498db62340ef380376074d0ad907a80e1a931d79129daeef`
+- `control_plane/openapi/flowpulse-incident-workspace-v1.openapi.json` — SHA-256 `1c082ba24e93719cec2797e9f0bfea996ba32ebaaf687ee1427cea0d26e3abd5`
+- `control_plane/openapi/flowpulse-incident-workspace-v1.examples.json` — SHA-256 `44e8fc35b4bff51a4de684469121a2b8f70fe1aac54a90df174d422296ef4738`
+- `control_plane/openapi/flowpulse-incident-workspace-v1.freeze.json` — SHA-256 `58c2f4e2daae3087ebdc18e2b1c142e4f162976e95cbb8e66c8fa3cb789215f1`
 
 The frontend product branch must record these values verbatim, together with
 the public identity and same-origin process-side authentication boundary,
