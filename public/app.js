@@ -19,6 +19,10 @@ import {
   canonicalIncidentWorkspaceStage,
   incidentWorkflowEvidence,
   incidentVerificationProjection,
+  incidentCompareControlAvailable,
+  incidentVerificationGuidance,
+  createTopologyRefreshTracker,
+  createPinnedRunStateRetryController,
   sharedRunReconnectDelay,
   agentTeamConversationProjection,
   agentTeamProviderProjection,
@@ -170,12 +174,22 @@ if (selectedRunId === null && sharedRun?.run_id) bindCanonicalRunSelection(share
 let sharedRunReconnectTimer = null;
 let sharedRunReconnectAttempts = 0;
 let sharedRunReconnectRequiresSchemaFrame = false;
-let sharedRunTopologyRefreshKey = null;
+const sharedRunTopologyRefresh = createTopologyRefreshTracker();
+const selectedRunStateRetry = createPinnedRunStateRetryController({
+  schedule: (callback, delay) => setTimeout(callback, delay),
+  cancel: (timer) => clearTimeout(timer),
+  onRetry: (runId) => {
+    if (selectedRunId === runId) void refresh({ synchronizeIncidentStage: true });
+  }
+});
 let sharedRunFollowing = true;
 
 window.addEventListener("popstate", () => {
   const requestedRunId = readRequestedRunId();
-  if (requestedRunId !== selectedRunId) cancelSharedRunReconnect();
+  if (requestedRunId !== selectedRunId) {
+    cancelSharedRunReconnect();
+    selectedRunStateRetry.cancel();
+  }
   selectedRunId = requestedRunId;
   void refresh({ synchronizeIncidentStage: true });
 });
@@ -257,11 +271,13 @@ document.addEventListener("keydown", (event) => {
 
 await refresh({ synchronizeIncidentStage: true });
 
-async function refresh({ synchronizeIncidentStage = false } = {}) {
+async function refresh({ synchronizeIncidentStage = false, topologyRefreshKey = null } = {}) {
+  const requestedRunId = selectedRunId;
   setLoading(true);
   try {
     state = await request(browserStatePath());
-    if (selectedRunId !== null && state?.run_id !== selectedRunId) throw new Error("The requested incident is unavailable.");
+    if (selectedRunId !== requestedRunId) return;
+    if (requestedRunId !== null && state?.run_id !== requestedRunId) throw new Error("The requested incident is unavailable.");
     bindCanonicalWorkspace(state.workspace_projection);
     const canonical = sharedRunModel();
     synchronizeCanonicalIncidentStage(canonical, { force: synchronizeIncidentStage });
@@ -270,19 +286,30 @@ async function refresh({ synchronizeIncidentStage = false } = {}) {
     hideError();
     render();
     ensureSelectedLiveComponentDetail();
+    if (topologyRefreshKey) sharedRunTopologyRefresh.succeed(topologyRefreshKey);
+    if (requestedRunId !== null) selectedRunStateRetry.succeed(requestedRunId);
     void hydrateSharedRun();
     void restoreAgentTeamSession();
     // Local-development diagnostics can spend seconds probing Docker and the
     // optional flag API. They must never delay the canonical browser state.
     void refreshDevelopmentStatus();
   } catch (error) {
+    if (topologyRefreshKey) sharedRunTopologyRefresh.fail(topologyRefreshKey);
+    if (selectedRunId !== requestedRunId) return;
     showError(error.message);
     // A restored terminal run cannot rely on a live EventSource to surface a
     // failed reload. Keep its canonical identity pinned and enter the same
     // rehydrate loop used for incompatible stream frames.
-    if (sharedRun?.run_id && selectedRunId === sharedRun.run_id) {
+    // A rejected topology refresh is a pinned /api/state failure, not an
+    // EventSource failure. Retry that exact state read so the refresh tracker
+    // can accept the same revision after a transient 503.
+    if (topologyRefreshKey && requestedRunId !== null) {
+      selectedRunStateRetry.schedule(requestedRunId);
+    } else if (sharedRun?.run_id && selectedRunId === sharedRun.run_id) {
       scheduleSharedRunReconnect({ error: "Canonical incident refresh is unavailable." });
       renderSharedRunConnectionStatus();
+    } else if (requestedRunId !== null) {
+      selectedRunStateRetry.schedule(requestedRunId);
     }
   } finally {
     setLoading(false);
@@ -350,7 +377,10 @@ function bindCanonicalRunSelection(loop) {
   // Update the mutable selector and the visible URL synchronously before the
   // next hydration/SSE refresh. This prevents a refresh from selecting a
   // different loop that happened to start in another tab.
-  if (selectedRunId !== runId) cancelSharedRunReconnect();
+  if (selectedRunId !== runId) {
+    cancelSharedRunReconnect();
+    selectedRunStateRetry.cancel();
+  }
   selectedRunId = runId;
   resetIncidentStageForRun(runId);
   history.replaceState({ ...(history.state || {}), flowpulse_run_id: runId }, "", `${next.pathname}${next.search}${next.hash}`);
@@ -408,22 +438,6 @@ function sharedRunTransportState(loop) {
   return sharedRunReconnectAttempts >= 2 ? "stale" : "reconnecting";
 }
 
-function sharedRunTopologyNeedsRefresh(loop) {
-  const topology = loop?.topology;
-  const needsRefresh = !topology
-    || state?.run_id !== loop?.run_id
-    || state?.topology_views?.run_id !== loop?.run_id
-    || state?.topology_views?.projection_revision !== topology.projection_revision;
-  if (!needsRefresh) {
-    sharedRunTopologyRefreshKey = null;
-    return false;
-  }
-  const key = `${loop?.run_id || "unknown"}:${topology?.projection_revision || "missing"}:${state?.topology_views?.projection_revision || "missing"}`;
-  if (sharedRunTopologyRefreshKey === key) return false;
-  sharedRunTopologyRefreshKey = key;
-  return true;
-}
-
 async function hydrateSharedRun() {
   const runId = sharedRun?.run_id;
   if (!runId || selectedRunId !== runId) return;
@@ -436,7 +450,7 @@ async function hydrateSharedRun() {
     // When the retry was caused by a malformed SSE envelope, keep the
     // backoff until a valid frame proves the transport schema is usable.
     if (!sharedRunReconnectRequiresSchemaFrame) sharedRunReconnectAttempts = 0;
-    const topologyNeedsRefresh = sharedRunTopologyNeedsRefresh(loop);
+    const topologyRefreshKey = sharedRunTopologyRefresh.request(loop, state);
     sharedRun = { ...sharedRun, loop, last_sequence: Math.max(sharedRun.last_sequence || 0, loop.events.at(-1)?.sequence || 0), stream_state: sharedRunTransportState(loop), error: null };
     agentTeam = {
       ...agentTeam,
@@ -454,7 +468,7 @@ async function hydrateSharedRun() {
     // A guided replay may finish before EventSource connects. Its full loop
     // projection is useful, but the Incident canvas also needs the matching
     // pinned /api/state topology view before it can render the graph.
-    if (topologyNeedsRefresh) void refresh({ synchronizeIncidentStage: true });
+    if (topologyRefreshKey) void refresh({ synchronizeIncidentStage: true, topologyRefreshKey });
   } catch (error) {
     if (sharedRun?.run_id !== runId || selectedRunId !== runId) return;
     scheduleSharedRunReconnect({ error: error.message || "Shared run is unavailable." });
@@ -466,7 +480,7 @@ function cancelSharedRunReconnect() {
   sharedRunReconnectTimer = null;
   sharedRunReconnectAttempts = 0;
   sharedRunReconnectRequiresSchemaFrame = false;
-  sharedRunTopologyRefreshKey = null;
+  sharedRunTopologyRefresh.reset();
   agentLoopEventSource?.close();
   agentLoopEventSource = null;
 }
@@ -1663,14 +1677,17 @@ function recoveryRoleDetail(node, { events, plan, authority, repair, verificatio
       ["Verification condition", Array.isArray(plan?.payload?.verification_plan) ? plan.payload.verification_plan.map((item) => item.replaceAll("_", " ")).join(" · ") : "Not projected"]
     ], evidence, chatRole: "orchestrator", chatLabel: "Orchestrator"
   };
-  if (node.id === "verifier") return {
-    facts: [
-      ["Input", repair ? "Bounded repair result" : "Awaiting repair execution"],
-      ["Agent output", verificationProjection.passed ? "All independent checks passed" : "Verification not complete"],
-      ["Proposed action", verificationProjection.passed ? "Record recovered state" : "Continue verification"],
-      ["Verification condition", verification?.payload?.recovery_slo?.target || "All projected checks pass"]
-    ], evidence, chatRole: null, chatLabel: null
-  };
+  if (node.id === "verifier") {
+    const guidance = incidentVerificationGuidance(verificationProjection);
+    return {
+      facts: [
+        ["Input", repair ? "Bounded repair result" : "Awaiting repair execution"],
+        ["Agent output", guidance.agentOutput],
+        ["Proposed action", guidance.nextAction],
+        ["Verification condition", verification?.payload?.recovery_slo?.target || "All projected checks pass"]
+      ], evidence, chatRole: null, chatLabel: null
+    };
+  }
   return {
     facts: [
       ["Input", node.task],
@@ -1856,7 +1873,7 @@ function renderTimeline() {
     els["timeline-title"].textContent = event ? sharedEventLabel(event) : "Awaiting canonical event";
     els["timeline-copy"].textContent = event ? "View history" : "Awaiting event history";
     const compareStage = isIncidentCompareStage() || mode === "compare";
-    els["compare-control"].hidden = !compareStage || shared.topology?.verification?.passed !== true;
+    els["compare-control"].hidden = !compareStage || !incidentCompareControlAvailable(shared);
     els["timeline-current"].hidden = compareStage;
     return;
   }

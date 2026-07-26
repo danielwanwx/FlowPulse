@@ -20,6 +20,10 @@ import {
   hasAuthoritativeIncidentExecution,
   incidentWorkflowEvidence,
   incidentVerificationProjection,
+  incidentCompareControlAvailable,
+  incidentVerificationGuidance,
+  createTopologyRefreshTracker,
+  createPinnedRunStateRetryController,
   sharedRunReconnectDelay,
   architectureViewTopology,
   componentDetailProjection,
@@ -343,6 +347,7 @@ test("Incident accepts only the backend authority and verifier chain for its cur
   const recovered = {
     state: "recovered",
     topology: { verification: { passed: true } },
+    workspace_actions: { compare_recovery: { available: true } },
     events: [plan, authority, repair, verification(true)]
   };
   const needsHuman = {
@@ -403,10 +408,53 @@ test("Incident accepts only the backend authority and verifier chain for its cur
   assert.equal(canonicalIncidentWorkspaceStage(forgedVerifierParent), "execute");
   assert.equal(hasAuthoritativeIncidentExecution(malformedRepair), false);
   assert.equal(hasAuthoritativeIncidentExecution(repairWithoutAuthority), false);
-  assert.equal(incidentVerificationProjection({ ...recovered, topology: { verification: { passed: true }, snapshots: { verified: {} } } }).passed, true);
+  const strictVerified = { ...recovered, topology: { verification: { passed: true }, snapshots: { verified: {} } } };
+  assert.equal(incidentVerificationProjection(strictVerified).passed, true);
+  assert.equal(incidentCompareControlAvailable(strictVerified), true);
+  assert.equal(incidentVerificationProjection({ ...strictVerified, state: "running" }).passed, false);
+  assert.equal(incidentVerificationProjection({ ...strictVerified, state: "needs_human" }).passed, false);
+  assert.equal(incidentVerificationProjection({ ...strictVerified, workspace_actions: { compare_recovery: { available: false } } }).passed, false);
+  assert.equal(incidentCompareControlAvailable({ ...strictVerified, state: "running" }), false);
   assert.deepEqual(incidentVerificationProjection(forgedPassedAfterFailure), { attempted: true, passed: false, failed: true });
+  assert.deepEqual(incidentVerificationGuidance({ passed: false, failed: true }), {
+    agentOutput: "Independent verification failed",
+    nextAction: "Review the recorded evidence with an operator"
+  });
   assert.deepEqual([1, 2, 3, 4].map(sharedRunReconnectDelay), [750, 1500, 3000, 3000]);
   assert.match(twinStateSource, /function incidentFocusSignal\(id, metric\) \{\n  if \(!metric \|\| !validCanonicalMetric\(metric, false\)\) return null;/);
+});
+
+test("Incident refresh controllers retry failed pinned state and topology refreshes without suppressing recovery", () => {
+  const loop = { run_id: "run-action", topology: null };
+  const state = { run_id: "run-action", topology_views: { run_id: "run-action", projection_revision: "revision-one" } };
+  const tracker = createTopologyRefreshTracker();
+  const firstKey = tracker.request(loop, state);
+  assert.ok(firstKey);
+  assert.equal(tracker.request(loop, state), null, "an in-flight refresh is deduplicated");
+  tracker.fail(firstKey);
+  assert.equal(tracker.request(loop, state), firstKey, "a 503 clears the in-flight key so the same topology refresh retries");
+  tracker.succeed(firstKey);
+  assert.equal(tracker.request(loop, state), null, "a completed refresh is deduplicated until identity changes");
+
+  const scheduled = [];
+  const retried = [];
+  let retryController;
+  retryController = createPinnedRunStateRetryController({
+    schedule: (callback, delay) => {
+      scheduled.push({ callback, delay });
+      return scheduled.length;
+    },
+    cancel: () => {},
+    onRetry: (runId) => {
+      retried.push(runId);
+      retryController.succeed(runId);
+    }
+  });
+  assert.equal(retryController.schedule("run-deep-link"), true, "a first /api/state 503 with no model schedules a pinned retry");
+  assert.deepEqual(scheduled.map(({ delay }) => delay), [750]);
+  scheduled[0].callback();
+  assert.deepEqual(retried, ["run-deep-link"], "the scheduled retry keeps the original pinned run id");
+  assert.deepEqual(retryController.snapshot(), { runId: null, attempts: 0, pending: false }, "a successful retry restores the fresh deep link and resets backoff");
 });
 
 function componentDetailPayload() {
@@ -613,7 +661,7 @@ test("the shared header omits nonessential capture, theme, and workspace-menu ch
 });
 
 test("initial rendering does not wait for optional development diagnostics", () => {
-  const refreshSource = appJs.slice(appJs.indexOf("async function refresh({ synchronizeIncidentStage = false } = {})"), appJs.indexOf("function render()"));
+  const refreshSource = appJs.slice(appJs.indexOf("async function refresh({ synchronizeIncidentStage = false, topologyRefreshKey = null } = {})"), appJs.indexOf("function render()"));
   assert.match(refreshSource, /state = await request\(browserStatePath\(\)\);/);
   assert.match(refreshSource, /void refreshDevelopmentStatus\(\);/);
   assert.doesNotMatch(refreshSource, /Promise\.all\(/);
@@ -1639,7 +1687,7 @@ test("P0.6 keeps internal provenance out of primary chrome and makes recovery au
 
 test("Incident hydration pins the restored run, reports a stale stream, and retains stage focus across rerenders", () => {
   const bootstrap = appJs.slice(appJs.indexOf("let sharedRun = restoreSharedRun()"), appJs.indexOf("window.addEventListener(\"popstate\""));
-  const refreshSource = appJs.slice(appJs.indexOf("async function refresh({ synchronizeIncidentStage = false } = {})"), appJs.indexOf("function bindCanonicalWorkspace"));
+  const refreshSource = appJs.slice(appJs.indexOf("async function refresh({ synchronizeIncidentStage = false, topologyRefreshKey = null } = {})"), appJs.indexOf("function bindCanonicalWorkspace"));
   const hydrateSource = appJs.slice(appJs.indexOf("async function hydrateSharedRun"), appJs.indexOf("function appendLoopTimelineItem"));
   const railSource = appJs.slice(appJs.indexOf("function renderIncidentStageRail"), appJs.indexOf("function renderCanonicalTopologyPending"));
   const headerSource = appJs.slice(appJs.indexOf("function renderHeader"), appJs.indexOf("function toggleTheme"));
@@ -1649,10 +1697,11 @@ test("Incident hydration pins the restored run, reports a stale stream, and reta
   const sharedSummarySource = appJs.slice(appJs.indexOf("function workspaceSummaryModel"), appJs.indexOf("function recoveryGateLabel"));
   const streamSource = appJs.slice(appJs.indexOf("function connectSharedRunStream"), appJs.indexOf("function appendLoopTimelineItem"));
   const reconnectSource = appJs.slice(appJs.indexOf("function scheduleSharedRunReconnect"), appJs.indexOf("function connectSharedRunStream"));
+  const timelineSource = appJs.slice(appJs.indexOf("function renderTimeline"), appJs.indexOf("function sharedTimelineMarkers"));
   const streamOpenSource = streamSource.slice(streamSource.indexOf("stream.onopen"), streamSource.indexOf("stream.addEventListener(\"local-fault-loop\""));
   assert.match(bootstrap, /let selectedRunId = readRequestedRunId\(\);[\s\S]*?if \(selectedRunId === null && sharedRun\?\.run_id\) bindCanonicalRunSelection\(sharedRun\);/);
   assert.match(appJs, /if \(selectedRunId === null\) bindCanonicalRunSelection\(loop\);/);
-  assert.match(appJs, /state = await request\(browserStatePath\(\)\);[\s\S]*?state\?\.run_id !== selectedRunId/);
+  assert.match(appJs, /state = await request\(browserStatePath\(\)\);[\s\S]*?state\?\.run_id !== requestedRunId/);
   assert.match(hydrateSource, /if \(!runId \|\| selectedRunId !== runId\) return;/);
   assert.match(hydrateSource, /agent-loop\?run_id=\$\{encodeURIComponent\(runId\)\}/);
   assert.match(hydrateSource, /new EventSource\(`\/api\/demo\/agent-loop\/events\?run_id=\$\{encodeURIComponent\(runId\)\}/);
@@ -1663,9 +1712,12 @@ test("Incident hydration pins the restored run, reports a stale stream, and reta
   assert.doesNotMatch(reconnectSource, /sharedRunTerminal\(\)/);
   assert.match(refreshSource, /Canonical incident refresh is unavailable\./);
   assert.match(hydrateSource, /if \(!sharedRunReconnectRequiresSchemaFrame\) sharedRunReconnectAttempts = 0;/);
-  assert.match(hydrateSource, /const topologyNeedsRefresh = sharedRunTopologyNeedsRefresh\(loop\);/);
+  assert.match(hydrateSource, /const topologyRefreshKey = sharedRunTopologyRefresh\.request\(loop, state\);/);
   assert.match(hydrateSource, /stream_state: sharedRunTransportState\(loop\)/);
-  assert.match(hydrateSource, /if \(topologyNeedsRefresh\) void refresh\(\{ synchronizeIncidentStage: true \}\);/);
+  assert.match(hydrateSource, /if \(topologyRefreshKey\) void refresh\(\{ synchronizeIncidentStage: true, topologyRefreshKey \}\);/);
+  assert.match(refreshSource, /if \(topologyRefreshKey\) sharedRunTopologyRefresh\.succeed\(topologyRefreshKey\);/);
+  assert.match(refreshSource, /if \(topologyRefreshKey\) sharedRunTopologyRefresh\.fail\(topologyRefreshKey\);/);
+  assert.match(refreshSource, /selectedRunStateRetry\.schedule\(requestedRunId\);/);
   assert.doesNotMatch(streamOpenSource, /sharedRunReconnectAttempts = 0/);
   assert.match(streamSource, /topology: projection\.topology \|\| sharedRun\.loop\.topology/);
   assert.match(streamSource, /needsAuthoritativeBrowserProjection[\s\S]*?void refresh\(\{ synchronizeIncidentStage: true \}\)/);
@@ -1689,7 +1741,7 @@ test("Incident hydration pins the restored run, reports a stale stream, and reta
   assert.match(appJs, /verification\.passed \? "Passed" : verification\.failed \? "Failed" : "Awaiting independent check"/);
   assert.match(appJs, /function resetIncidentStageForRun\(runId\)[\s\S]*?incidentStageFollowsAuthority = true/);
   assert.match(appJs, /function cancelSharedRunReconnect\([\s\S]*?clearTimeout\(sharedRunReconnectTimer\)/);
-  assert.match(appJs, /if \(selectedRunId !== runId\) cancelSharedRunReconnect\(\);/);
+  assert.match(appJs, /if \(selectedRunId !== runId\) \{[\s\S]*?cancelSharedRunReconnect\(\);[\s\S]*?selectedRunStateRetry\.cancel\(\);/);
   assert.match(appJs, /bindCanonicalRunSelection\(loop\)[\s\S]*?resetIncidentStageForRun\(runId\)/);
   assert.match(appJs, /data-start-guided-replay/);
   assert.match(headerSource, /Recovery verification incident/);
@@ -1700,6 +1752,7 @@ test("Incident hydration pins the restored run, reports a stale stream, and reta
   assert.doesNotMatch(sharedRecoverySource, /verification\.payload\.passed/);
   assert.match(sharedSummarySource, /const verification = incidentVerificationProjection\(shared\);/);
   assert.doesNotMatch(sharedSummarySource, /verification\?\.payload\?\.passed/);
+  assert.match(timelineSource, /incidentCompareControlAvailable\(shared\)/);
   assert.match(railSource, /focusedStage = null/);
   assert.match(railSource, /focus\(\{ preventScroll: true \}\)/);
   assert.match(stylesCss, /\.causal-note\.note-deploy \{ left: clamp\(140px, 14%, calc\(100% - 140px\)\);/);

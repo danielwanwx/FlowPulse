@@ -753,13 +753,126 @@ export function hasAuthoritativeIncidentExecution(events) {
 export function incidentVerificationProjection(shared) {
   const evidence = incidentWorkflowEvidence(shared?.events);
   const topology = plainRecord(shared?.topology) ? shared.topology : null;
-  const passed = evidence.verificationPassed
+  const passed = shared?.state === "recovered"
+    && shared?.workspace_actions?.compare_recovery?.available === true
+    && evidence.verificationPassed
     && topology?.verification?.passed === true
     && topology?.snapshots?.verified != null;
   return {
     attempted: evidence.verificationAttempted,
     passed,
     failed: !passed && evidence.verificationFailed
+  };
+}
+
+// The timeline Compare controls are only an alternate entry point into the
+// same verified state shown by the canvas and stage panel. Keep this as a
+// shared derived gate so one weak topology flag cannot expose comparison.
+export function incidentCompareControlAvailable(shared) {
+  return incidentVerificationProjection(shared).passed;
+}
+
+export function incidentVerificationGuidance(verification) {
+  if (verification?.passed) return {
+    agentOutput: "All independent checks passed",
+    nextAction: "Record recovered state"
+  };
+  if (verification?.failed) return {
+    agentOutput: "Independent verification failed",
+    nextAction: "Review the recorded evidence with an operator"
+  };
+  return {
+    agentOutput: "Verification not complete",
+    nextAction: "Continue verification"
+  };
+}
+
+function canonicalTopologyRefreshKey(loop, state) {
+  const topology = plainRecord(loop?.topology) ? loop.topology : null;
+  const needsRefresh = !topology
+    || state?.run_id !== loop?.run_id
+    || state?.topology_views?.run_id !== loop?.run_id
+    || state?.topology_views?.projection_revision !== topology.projection_revision;
+  if (!needsRefresh) return null;
+  return `${loop?.run_id || "unknown"}:${topology?.projection_revision || "missing"}:${state?.topology_views?.projection_revision || "missing"}`;
+}
+
+// Tracks a requested authoritative topology refresh. A failed request must
+// release its key; only a successful refresh may suppress the same request.
+export function createTopologyRefreshTracker() {
+  let inFlightKey = null;
+  let succeededKey = null;
+  return {
+    request(loop, state) {
+      const key = canonicalTopologyRefreshKey(loop, state);
+      if (!key) {
+        inFlightKey = null;
+        succeededKey = null;
+        return null;
+      }
+      if (key === inFlightKey || key === succeededKey) return null;
+      inFlightKey = key;
+      return key;
+    },
+    succeed(key) {
+      if (!key || inFlightKey !== key) return false;
+      inFlightKey = null;
+      succeededKey = key;
+      return true;
+    },
+    fail(key) {
+      if (!key || inFlightKey !== key) return false;
+      inFlightKey = null;
+      if (succeededKey === key) succeededKey = null;
+      return true;
+    },
+    reset() {
+      inFlightKey = null;
+      succeededKey = null;
+    }
+  };
+}
+
+// A valid deep link must be able to recover before a loop model is available.
+// The controller makes the selected run id part of the timer ownership, so a
+// later navigation cannot inherit an earlier retry callback.
+export function createPinnedRunStateRetryController({ schedule, cancel, onRetry }) {
+  if (typeof schedule !== "function" || typeof cancel !== "function" || typeof onRetry !== "function") throw new Error("Pinned run retry requires timer callbacks.");
+  let timer = null;
+  let runId = null;
+  let attempts = 0;
+  const reset = () => {
+    if (timer !== null) cancel(timer);
+    timer = null;
+    runId = null;
+    attempts = 0;
+  };
+  return {
+    schedule(nextRunId) {
+      if (typeof nextRunId !== "string" || !nextRunId || timer !== null && runId === nextRunId) return false;
+      if (timer !== null) reset();
+      runId = nextRunId;
+      attempts += 1;
+      const delay = sharedRunReconnectDelay(attempts);
+      timer = schedule(() => {
+        timer = null;
+        onRetry(nextRunId);
+      }, delay);
+      return true;
+    },
+    succeed(nextRunId) {
+      if (nextRunId !== runId) return false;
+      reset();
+      return true;
+    },
+    cancel(nextRunId = null) {
+      if (nextRunId !== null && nextRunId !== runId) return false;
+      reset();
+      return true;
+    },
+    snapshot() {
+      return { runId, attempts, pending: timer !== null };
+    }
   };
 }
 
