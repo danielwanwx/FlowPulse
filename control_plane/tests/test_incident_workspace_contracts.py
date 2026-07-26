@@ -10,8 +10,10 @@ from pydantic import ValidationError
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from flowpulse_cp.workspace_models import (
+    ClassifiedNodeReason,
     GraphMembership,
     IncidentGraph,
+    IncidentGraphEdge,
     IncidentGraphNode,
     IncidentProjection,
     IncidentRunBinding,
@@ -48,7 +50,9 @@ def projection():
         status="provider_unavailable", generated_at=NOW,
         graph=IncidentGraph(nodes=[IncidentGraphNode(
             component_id="checkout", canonical_identity="service:checkout",
-            membership=GraphMembership.CONNECTED, runtime_status="unknown", impact_status="unknown",
+            membership=GraphMembership.CLASSIFIED,
+            classification_reason=ClassifiedNodeReason.RELATIONSHIP_UNAVAILABLE,
+            runtime_status="unknown", impact_status="unknown",
         )], edges=[]),
         impacted_path=[], evidence_revision=1, gate_revision=1, action_revision=1,
         evidence_refs=[], degraded_code="provider_unavailable",
@@ -76,6 +80,47 @@ class IncidentWorkspaceContractTests(unittest.TestCase):
                 component_id="unknown", canonical_identity="service:unknown",
                 membership=GraphMembership.CLASSIFIED, runtime_status="unknown", impact_status="unknown",
             )
+
+    def test_graph_requires_members_and_edges_and_rejects_false_connected_nodes(self):
+        required = set(IncidentGraph.schema()["required"])
+        self.assertEqual({"nodes", "edges"}, required)
+        with self.assertRaises(ValidationError):
+            IncidentGraph.parse_obj({"nodes": []})
+        with self.assertRaisesRegex(ValidationError, "connected_node_requires_edge"):
+            IncidentGraph(nodes=[IncidentGraphNode(
+                component_id="checkout", canonical_identity="service:checkout", display_name="Checkout",
+                membership=GraphMembership.CONNECTED, runtime_status="degraded", impact_status="impacted",
+            )], edges=[])
+        with self.assertRaisesRegex(ValidationError, "graph_edge_references_unknown_component"):
+            IncidentGraph(nodes=[IncidentGraphNode(
+                component_id="checkout", canonical_identity="service:checkout", display_name="Checkout",
+                membership=GraphMembership.CLASSIFIED,
+                classification_reason=ClassifiedNodeReason.RELATIONSHIP_UNAVAILABLE,
+                runtime_status="degraded", impact_status="impacted",
+            )], edges=[IncidentGraphEdge(
+                edge_id="checkout-unknown", source_component_id="checkout",
+                target_component_id="unknown", status="unknown",
+            )])
+        with self.assertRaises(ValidationError):
+            IncidentGraphNode(
+                component_id="checkout", canonical_identity="service:checkout", display_name="Checkout",
+                membership=GraphMembership.CLASSIFIED, classification_reason="browser_invented_reason",
+                runtime_status="degraded", impact_status="impacted",
+            )
+        graph = IncidentGraph(nodes=[
+            IncidentGraphNode(
+                component_id="checkout", canonical_identity="service:checkout", display_name="Checkout",
+                membership=GraphMembership.CONNECTED, runtime_status="degraded", impact_status="impacted",
+            ),
+            IncidentGraphNode(
+                component_id="payments", canonical_identity="service:payments", display_name="Payments",
+                membership=GraphMembership.CONNECTED, runtime_status="degraded", impact_status="impacted",
+            ),
+        ], edges=[IncidentGraphEdge(
+            edge_id="checkout-payments", source_component_id="checkout", target_component_id="payments",
+            status="degraded",
+        )])
+        self.assertEqual(2, len(graph.nodes))
 
     def test_node_explanation_command_uses_public_run_selection_key(self):
         command = NodeExplanationStart(

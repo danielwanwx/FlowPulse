@@ -50,9 +50,10 @@ def projection(item):
         **item.dict(), projection_revision=1, sequence=1, lifecycle_state=ProjectionState.DEGRADED,
         status="provider_unavailable", generated_at=NOW,
         graph=IncidentGraph(nodes=[IncidentGraphNode(
-            component_id="checkout", canonical_identity="service:checkout", membership=GraphMembership.CONNECTED,
+            component_id="checkout", canonical_identity="service:checkout", membership=GraphMembership.CLASSIFIED,
+            classification_reason="Relationship unavailable",
             runtime_status="unknown", impact_status="unknown",
-        )]), evidence_revision=1, gate_revision=1, action_revision=1,
+        )], edges=[]), evidence_revision=1, gate_revision=1, action_revision=1,
         evidence_refs=[], degraded_code="provider_unavailable",
     )
 

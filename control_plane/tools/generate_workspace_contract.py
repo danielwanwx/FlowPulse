@@ -21,6 +21,7 @@ if str(SOURCE_ROOT) not in sys.path:
 from flowpulse_cp.app import create_app
 from flowpulse_cp.workspace_models import (
     ComponentContext,
+    ClassifiedNodeReason,
     GraphMembership,
     IncidentEvent,
     IncidentNotification,
@@ -67,8 +68,10 @@ def _examples():
         graph=IncidentGraph(nodes=[IncidentGraphNode(
             component_id="checkout", canonical_identity="service:checkout",
             display_name="Checkout",
-            membership=GraphMembership.CONNECTED, runtime_status="unknown", impact_status="unknown",
-        )]), operator_title="Checkout latency", operator_summary="Checkout requests are degraded.",
+            membership=GraphMembership.CLASSIFIED,
+            classification_reason=ClassifiedNodeReason.RELATIONSHIP_UNAVAILABLE,
+            runtime_status="unknown", impact_status="unknown",
+        )], edges=[]), operator_title="Checkout latency", operator_summary="Checkout requests are degraded.",
         evidence_revision=1, gate_revision=1, action_revision=1,
         evidence_refs=[], degraded_code="provider_unavailable",
     )

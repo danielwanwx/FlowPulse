@@ -46,9 +46,10 @@ def projection(revision=1, sequence=1):
     return IncidentProjection(
         **binding().dict(), projection_revision=revision, sequence=sequence, lifecycle_state=ProjectionState.DEGRADED,
         status="degraded", generated_at=NOW, graph=IncidentGraph(nodes=[IncidentGraphNode(
-            component_id="checkout", canonical_identity="service:checkout", membership=GraphMembership.CONNECTED,
+            component_id="checkout", canonical_identity="service:checkout", membership=GraphMembership.CLASSIFIED,
+            classification_reason="Relationship unavailable",
             runtime_status="unknown", impact_status="unknown",
-        )]), evidence_revision=revision, gate_revision=1, action_revision=1,
+        )], edges=[]), evidence_revision=revision, gate_revision=1, action_revision=1,
     )
 
 

@@ -95,8 +95,8 @@ class IncidentGraphEdge(StrictModel):
 
 
 class IncidentGraph(StrictModel):
-    nodes: List[IncidentGraphNode] = Field(default_factory=list)
-    edges: List[IncidentGraphEdge] = Field(default_factory=list)
+    nodes: List[IncidentGraphNode]
+    edges: List[IncidentGraphEdge]
 
     @validator("nodes", allow_reuse=True)
     def component_ids_are_unique(cls, value):
@@ -107,10 +107,16 @@ class IncidentGraph(StrictModel):
 
     @root_validator(allow_reuse=True)
     def edges_reference_known_nodes(cls, values):
-        nodes = {item.component_id for item in values.get("nodes", [])}
+        graph_nodes = values.get("nodes", [])
+        nodes = {item.component_id for item in graph_nodes}
+        connected = set()
         for edge in values.get("edges", []):
             if edge.source_component_id not in nodes or edge.target_component_id not in nodes:
                 raise ValueError("graph_edge_references_unknown_component")
+            connected.update({edge.source_component_id, edge.target_component_id})
+        for node in graph_nodes:
+            if node.membership == GraphMembership.CONNECTED and node.component_id not in connected:
+                raise ValueError("connected_node_requires_edge")
         return values
 
 
@@ -509,9 +515,11 @@ def initial_projection(
         graph=IncidentGraph(nodes=[
             IncidentGraphNode(
                 component_id=entity, canonical_identity="service:{}".format(entity),
-                membership=GraphMembership.CONNECTED, runtime_status="unknown", impact_status="unknown",
+                membership=GraphMembership.CLASSIFIED,
+                classification_reason=ClassifiedNodeReason.RELATIONSHIP_UNAVAILABLE,
+                runtime_status="unknown", impact_status="unknown",
             ) for entity in entities
-        ]),
+        ], edges=[]),
         impacted_path=[], evidence_revision=1, gate_revision=1, action_revision=1,
         evidence_refs=[], degraded_code="provider_unavailable",
     )

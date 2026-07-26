@@ -43,11 +43,13 @@ def request():
     context = ConversationContext(
         **binding.dict(), projection_revision=1, component=IncidentGraphNode(
             component_id="checkout", canonical_identity="service:checkout",
-            membership=GraphMembership.CONNECTED, runtime_status="unknown", impact_status="unknown",
+            membership=GraphMembership.CLASSIFIED, classification_reason="Relationship unavailable",
+            runtime_status="unknown", impact_status="unknown",
         ), graph=IncidentGraph(nodes=[IncidentGraphNode(
             component_id="checkout", canonical_identity="service:checkout",
-            membership=GraphMembership.CONNECTED, runtime_status="unknown", impact_status="unknown",
-        )]), recorded_evidence_refs=["evidence-current"], knowledge_prior_refs=[],
+            membership=GraphMembership.CLASSIFIED, classification_reason="Relationship unavailable",
+            runtime_status="unknown", impact_status="unknown",
+        )], edges=[]), recorded_evidence_refs=["evidence-current"], knowledge_prior_refs=[],
         available_capabilities=[], max_tool_calls=0,
     )
     return ConversationProviderRequest(

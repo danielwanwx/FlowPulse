@@ -50,8 +50,9 @@ def projection(item):
         status="provider_unavailable", generated_at=NOW,
         graph=IncidentGraph(nodes=[IncidentGraphNode(
             component_id="checkout", canonical_identity="service:checkout",
-            membership=GraphMembership.CONNECTED, runtime_status="unknown", impact_status="unknown",
-        )]), impacted_path=[], evidence_revision=1, gate_revision=1, action_revision=1,
+            membership=GraphMembership.CLASSIFIED, classification_reason="Relationship unavailable",
+            runtime_status="unknown", impact_status="unknown",
+        )], edges=[]), impacted_path=[], evidence_revision=1, gate_revision=1, action_revision=1,
         evidence_refs=["evidence-current"], degraded_code="provider_unavailable",
     )
 

@@ -10,6 +10,7 @@ from typing import Any, AsyncIterator, Mapping, Optional, Protocol
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Security
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.responses import StreamingResponse
+from pydantic.schema import schema as pydantic_schema
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from .authorization import AuthorizationPort, UnavailableAuthorizationPort
@@ -515,10 +516,17 @@ def create_app(
     def workspace_openapi():
         document = original_openapi()
         schemas = document.setdefault("components", {}).setdefault("schemas", {})
-        schemas["IncidentEvent"] = IncidentEvent.schema(ref_template="#/components/schemas/{model}")
+        stream_schemas = pydantic_schema(
+            [IncidentEvent, IncidentNotification], ref_prefix="#/components/schemas/",
+        )["definitions"]
+        schemas.update(stream_schemas)
         event_response = document["paths"]["/v1/incidents/{case_id}/events"]["get"]["responses"]["200"]
         event_response["content"] = {
             "text/event-stream": {"schema": {"$ref": "#/components/schemas/IncidentEvent"}},
+        }
+        notification_response = document["paths"]["/v1/incidents/events"]["get"]["responses"]["200"]
+        notification_response["content"] = {
+            "text/event-stream": {"schema": {"$ref": "#/components/schemas/IncidentNotification"}},
         }
         return document
 

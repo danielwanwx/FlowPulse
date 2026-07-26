@@ -13,6 +13,25 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class WorkspaceContractGeneratorTests(unittest.TestCase):
+    @staticmethod
+    def _refs(value):
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key == "$ref":
+                    yield item
+                else:
+                    yield from WorkspaceContractGeneratorTests._refs(item)
+        elif isinstance(value, list):
+            for item in value:
+                yield from WorkspaceContractGeneratorTests._refs(item)
+
+    @staticmethod
+    def _resolve(document, pointer):
+        current = document
+        for token in pointer.removeprefix("#/").split("/"):
+            current = current[token.replace("~1", "/").replace("~0", "~")]
+        return current
+
     def test_generator_emits_real_routes_safe_examples_and_reproducible_hashes(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory)
@@ -47,6 +66,9 @@ class WorkspaceContractGeneratorTests(unittest.TestCase):
                 "#/components/schemas/IncidentNotification",
                 notification_response["content"]["text/event-stream"]["schema"]["$ref"],
             )
+            for reference in self._refs(openapi):
+                self.assertTrue(reference.startswith("#/"), reference)
+                self.assertIsNotNone(self._resolve(openapi, reference), reference)
             self.assertFalse(openapi["components"]["schemas"]["ComponentContext"].get("additionalProperties", True))
             self.assertFalse(openapi["components"]["schemas"]["IncidentEvent"].get("additionalProperties", True))
             self.assertEqual("run-example-01", examples["response_examples"]["IncidentProjection"]["run_id"])

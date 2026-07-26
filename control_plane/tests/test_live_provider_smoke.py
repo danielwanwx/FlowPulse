@@ -38,10 +38,12 @@ def local_request():
     )
     component = IncidentGraphNode(
         component_id="checkout", canonical_identity="service:checkout",
-        membership=GraphMembership.CONNECTED, runtime_status="unknown", impact_status="unknown",
+        membership=GraphMembership.CLASSIFIED, classification_reason="Relationship unavailable",
+        runtime_status="unknown", impact_status="unknown",
     )
     context = ConversationContext(
-        **binding.dict(), projection_revision=1, component=component, graph=IncidentGraph(nodes=[component]),
+        **binding.dict(), projection_revision=1, component=component,
+        graph=IncidentGraph(nodes=[component], edges=[]),
         recorded_evidence_refs=["evidence-local-provider"], knowledge_prior_refs=[], available_capabilities=[], max_tool_calls=0,
     )
     return ConversationProviderRequest(
