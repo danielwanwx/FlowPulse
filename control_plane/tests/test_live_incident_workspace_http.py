@@ -1,4 +1,4 @@
-"""Opt-in end-to-end proof of the v1 HTTP -> Temporal -> projection path."""
+"""Opt-in end-to-end proof of the v1 HTTP -> v2 Temporal projection path."""
 
 import asyncio
 import json
@@ -14,7 +14,10 @@ from uuid import uuid4
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from temporalio.client import Client
+
 from flowpulse_cp.postgres import PostgresCaseRepository
+from flowpulse_cp.workspace_versions import WORKSPACE_V2_WORKFLOW_TYPE
 
 
 @unittest.skipUnless(os.environ.get("FLOWPULSE_LIVE_INCIDENT_WORKSPACE") == "1", "requires local Compose")
@@ -25,6 +28,7 @@ class LiveIncidentWorkspaceHttpTests(unittest.TestCase):
         "FLOWPULSE_TEST_POSTGRES_DSN",
         "postgresql://flowpulse_cp_app:flowpulse-cp-local-only@127.0.0.1:5433/flowpulse",
     )
+    temporal_address = os.environ.get("FLOWPULSE_TEMPORAL_ADDRESS", "127.0.0.1:7233")
 
     @classmethod
     def setUpClass(cls):
@@ -60,6 +64,15 @@ class LiveIncidentWorkspaceHttpTests(unittest.TestCase):
         self.assertNotEqual(projection["run_id"], projection["workflow_run_id"])
         self.assertEqual("DEGRADED", projection["lifecycle_state"])
         self.assertEqual("provider_unavailable", projection["degraded_code"])
+
+        async def started_workflow_type():
+            client = await Client.connect(self.temporal_address)
+            history = await client.get_workflow_handle(
+                projection["workflow_id"], run_id=projection["workflow_run_id"],
+            ).fetch_history()
+            return history.events[0].workflow_execution_started_event_attributes.workflow_type.name
+
+        self.assertEqual(WORKSPACE_V2_WORKFLOW_TYPE, asyncio.run(started_workflow_type()))
         status, current = self.request("GET", "/v1/incidents/{}/projection".format(projection["case_id"]))
         self.assertEqual(200, status, current)
         self.assertEqual(projection["workflow_run_id"], json.loads(current)["workflow_run_id"])
