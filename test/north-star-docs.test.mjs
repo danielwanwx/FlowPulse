@@ -146,14 +146,18 @@ function sharedClaimSubject(clause) {
   return controlPlane?.[0] ?? null;
 }
 
+function normalizeClaimText(source) {
+  return source.replace(/[’‘]/g, "'");
+}
+
 function matchingClaimClauses(source, matchesClaim) {
-  return normalizedClaimClauses(source).filter(matchesClaim);
+  return normalizedClaimClauses(normalizeClaimText(source)).filter(matchesClaim);
 }
 
 const legacyWorkspace = "(?:Diagnose|Recovery(?:\\s+Console)?|Compare)";
 const primaryWorkspaceRole = "(?:(?:top[-\\s]?level|primary|main|persistent|default|core|only)\\s+(?:(?:navigation\\s+)?(?:views?|workspaces?)|navigation))";
-const rhetoricalOnlyQualifier = "(?:(?:the\\s+)?(?:only|just|merely|simply|exclusively))";
-const predicateAdverb = "(?:(?:already|currently|definitely|fully|just|now|really|simply|still)\\s+)?";
+const rhetoricalOnlyQualifier = "(?:(?:the\\s+)?(?:only|just|merely|simply|solely|exclusively))";
+const predicateAdverb = "(?:(?:absolutely|already|certainly|currently|definitely|fully|just|now|really|simply|still)\\s+)?";
 const workspaceDenial = `(?:not(?!\\s+${rhetoricalOnlyQualifier}\\b)|never|isn't(?!\\s+${rhetoricalOnlyQualifier}\\b)|aren't(?!\\s+${rhetoricalOnlyQualifier}\\b)|wasn't(?!\\s+${rhetoricalOnlyQualifier}\\b)|weren't(?!\\s+${rhetoricalOnlyQualifier}\\b))`;
 
 function hasNegatedWorkspaceClaim(clause) {
@@ -180,7 +184,8 @@ const conditionalControlPlane = new RegExp(`\\b(?:if|when|once|after|provided\\s
 const trailingConditionalControlPlane = new RegExp(`\\b${controlPlaneReference}\\b[^.]{0,160}\\b${deliveryPredicate}\\b[^.]{0,120}\\b(?:if|when|once|after|provided\\s+that)\\b`, "i");
 
 function controlPlaneDeliveryVerdict(clause) {
-  const normalized = clause.replace(/[’‘]/g, "'");
+  const normalized = normalizeClaimText(clause)
+    .replace(/,\s*(?:(?:after|before|during|following|upon|despite|without|with)\b[^,]*|[A-Za-z]+ly)\s*,/g, " ");
   const integration = controlPlaneSubject.exec(normalized);
   if (!integration) return "absent";
 
@@ -194,44 +199,53 @@ function controlPlaneDeliveryVerdict(clause) {
   if (spanStart < 0 || spanEnd <= spanStart) return "absent";
 
   const actions = new Set(["ship", "shipped", "deliver", "delivered", "integrate", "integrated"]);
-  const completedActions = new Set(["shipped", "delivered", "integrated"]);
   const completedStates = new Set(["shipped", "delivered", "integrated", "live", "available"]);
   const modals = new Set(["will", "shall", "should", "may", "might", "can", "could", "would", "must"]);
   const negations = new Set(["not", "never", "haven't", "hasn't", "hadn't", "didn't", "don't", "doesn't", "won't", "can't"]);
-  const boundaries = new Set([".", ";", ",", "and", "but", "because", "however", "so", "then", "whereas", "while", "yet"]);
-  const directObjectFillers = new Set(["a", "an", "the", "real", "current", "new"]);
-  const passiveWords = new Set(["am", "are", "be", "been", "being", "has", "have", "had", "is", "was", "were", "will", "shall", "should", "may", "might", "can", "could", "would", "must", "not", "never", "no", "means", "by", "already", "certainly", "confidently", "definitely", "fully", "just", "now", "really", "successfully"]);
-  const artifactNouns = new Set(["design", "documentation", "document", "documents", "doc", "docs", "proposal", "specification", "spec"]);
-  const isQualified = (predicate) => predicate.some((token, index) => negations.has(token)
+  const rhetoricalTerms = new Set(["only", "just", "merely", "simply", "solely", "exclusively"]);
+  const predicateSeparators = new Set([".", ";", ",", "and", "but", "because", "however", "so", "then", "whereas", "while", "yet"]);
+  const prepositionalObjectMarkers = new Set(["about", "for", "of", "on", "regarding", "to"]);
+  const objectTailModifiers = new Set(["after", "already", "at", "before", "but", "by", "during", "for", "from", "in", "itself", "on", "that", "then", "today", "tomorrow", "which", "with", "yesterday"]);
+  const passiveWords = new Set(["am", "are", "be", "been", "being", "did", "has", "have", "had", "is", "was", "were", "will", "shall", "should", "may", "might", "can", "could", "would", "must", "not", "never", "no", "means", "by", "already", "certainly", "confidently", "definitely", "fully", "just", "now", "really", "successfully", "yet", ...rhetoricalTerms]);
+  const isQualified = (predicate) => predicate.some((token, index) => (negations.has(token) && !rhetoricalTerms.has(predicate[index + 1]))
     || (token === "no" && predicate[index + 1] === "means")
     || modals.has(token)
     || (["plan", "plans", "planned", "intend", "intends", "intended", "expect", "expects", "expected"].includes(token) && predicate[index + 1] === "to"));
   const predicateStart = (actionIndex) => {
     for (let index = actionIndex - 1; index >= 0; index -= 1) {
-      if (boundaries.has(tokens[index].value)) return index + 1;
+      if (predicateSeparators.has(tokens[index].value)) return index + 1;
     }
     return 0;
   };
+  const bindsIntegrationObject = (actionIndex) => {
+    const before = tokens.slice(actionIndex + 1, spanStart).map((token) => token.value);
+    if (before.some((token) => prepositionalObjectMarkers.has(token) || token === "-" || token === "/")) return false;
+    const next = tokens[spanEnd]?.value;
+    return !next
+      || predicateSeparators.has(next)
+      || objectTailModifiers.has(next)
+      || next.endsWith("ly");
+  };
 
   for (let actionIndex = spanStart - 1; actionIndex >= 0; actionIndex -= 1) {
-    if (boundaries.has(tokens[actionIndex].value)) break;
+    if (predicateSeparators.has(tokens[actionIndex].value)) break;
     if (!actions.has(tokens[actionIndex].value)) continue;
-    const between = tokens.slice(actionIndex + 1, spanStart).map((token) => token.value);
-    if (!between.every((token) => directObjectFillers.has(token)) || artifactNouns.has(tokens[spanEnd]?.value)) continue;
+    if (!bindsIntegrationObject(actionIndex)) continue;
     const predicate = tokens.slice(predicateStart(actionIndex), actionIndex).map((token) => token.value);
     if (isQualified(predicate)) return "qualified";
-    if (completedActions.has(tokens[actionIndex].value)) return "completed";
+    if (completedStates.has(tokens[actionIndex].value)) return "completed";
     return predicate.includes("did") ? "completed" : "qualified";
   }
 
   for (let actionIndex = spanEnd; actionIndex < tokens.length; actionIndex += 1) {
-    if (boundaries.has(tokens[actionIndex].value) && tokens[actionIndex].value !== ",") break;
-    if (!completedStates.has(tokens[actionIndex].value)) continue;
+    if (predicateSeparators.has(tokens[actionIndex].value) && tokens[actionIndex].value !== ",") break;
+    if (!actions.has(tokens[actionIndex].value) && !completedStates.has(tokens[actionIndex].value)) continue;
     const predicate = tokens.slice(spanEnd, actionIndex)
       .map((token) => token.value)
       .filter((token) => token !== ",");
     if (!predicate.every((token) => passiveWords.has(token) || token.endsWith("ly"))) return "absent";
-    return isQualified(predicate) ? "qualified" : "completed";
+    if (isQualified(predicate)) return "qualified";
+    return completedStates.has(tokens[actionIndex].value) || predicate.includes("did") ? "completed" : "qualified";
   }
   return "absent";
 }
@@ -252,10 +266,10 @@ const contractedAuthorityDenial = `(?:isn't(?!\\s+${rhetoricalOnlyQualifier}\\b)
 
 function hasNegatedNodeAuthorityClaim(clause, authority) {
   const directNodeNegation = new RegExp(`\\b${nodeCompatibilityPath}\\b(?:\\s+(?:compatibility|demo|server|path|surface)){0,4}\\s+(?:(?:is|are|was|were|remains?|serves?\\s+as|does|do|can)\\s+)?${authorityDenial}\\b[^.;]{0,40}\\b${authority}\\b`, "i");
- const directNodeAdverbialDenial = new RegExp(`\\b${nodeCompatibilityPath}\\b(?:\\s+(?:compatibility|demo|server|path|surface)){0,4}\\s+(?:(?:is|are|was|were|remains?|serves?\\s+as|does|do|can)\\s+)?${predicateAdverb}${authorityDenial}\\b[^.;]{0,40}\\b${authority}\\b`, "i");
- const authorityBeforeNegatedNode = new RegExp(`\\b${authority}\\b[^.;]{0,80}\\b(?:(?:is|are|belongs?\\s+to|serves?\\s+as)\\s+${authorityDenial}|${contractedAuthorityDenial})\\b[^.;]{0,40}\\b${nodeCompatibilityPath}\\b`, "i");
+  const directNodeAdverbialDenial = new RegExp(`\\b${nodeCompatibilityPath}\\b(?:\\s+(?:compatibility|demo|server|path|surface)){0,4}\\s+(?:(?:is|are|was|were|remains?|serves?\\s+as|does|do|can)\\s+)?${predicateAdverb}${authorityDenial}\\b[^.;]{0,40}\\b${authority}\\b`, "i");
+  const authorityBeforeNegatedNode = new RegExp(`\\b${authority}\\b[^.;]{0,80}\\b(?:(?:is|are|belongs?\\s+to|serves?\\s+as)\\s+${authorityDenial}|${contractedAuthorityDenial})\\b[^.;]{0,40}\\b${nodeCompatibilityPath}\\b`, "i");
   const authorityBeforeAdverbialNegatedNode = new RegExp(`\\b${authority}\\b[^.;]{0,80}\\b(?:is|are|belongs?\\s+to|serves?\\s+as)\\s+${predicateAdverb}${authorityDenial}\\b[^.;]{0,40}\\b${nodeCompatibilityPath}\\b`, "i");
- const authorityDoesNotBelongToNode = new RegExp(`\\b${authority}\\b[^.;]{0,80}\\b(?:does\\s+not|doesn't)\\s+belong\\s+to\\s+${nodeCompatibilityPath}\\b`, "i");
+  const authorityDoesNotBelongToNode = new RegExp(`\\b${authority}\\b[^.;]{0,80}\\b(?:does\\s+not|doesn't)\\s+belong\\s+to\\s+${nodeCompatibilityPath}\\b`, "i");
   return directNodeAdverbialDenial.test(clause) || directNodeNegation.test(clause) || authorityBeforeAdverbialNegatedNode.test(clause) || authorityBeforeNegatedNode.test(clause) || authorityDoesNotBelongToNode.test(clause);
 }
 
@@ -411,7 +425,9 @@ test("North Star contradiction detectors evaluate wording and negation at clause
   assertClaimDetected(findLegacyPrimaryWorkspaceClaims, "Top-level navigation includes Architecture, Live, and Compare.");
   assertClaimAllowed(findLegacyPrimaryWorkspaceClaims, "Compare is not a primary workspace.");
   assertClaimAllowed(findLegacyPrimaryWorkspaceClaims, "Compare isn't a primary workspace.");
+  assertClaimAllowed(findLegacyPrimaryWorkspaceClaims, "Compare isn’t a primary workspace.");
   assertClaimAllowed(findLegacyPrimaryWorkspaceClaims, "Compare is definitely not a primary workspace.");
+  assertClaimAllowed(findLegacyPrimaryWorkspaceClaims, "Compare is certainly not a primary workspace.");
   assertClaimAllowed(findLegacyPrimaryWorkspaceClaims, "Incident is the unified workspace; Diagnose is a compatibility label.");
 
   assertClaimDetected(findShippedControlPlaneClaims, "FastAPI/Temporal control plane integration is already shipped.");
@@ -438,12 +454,19 @@ test("North Star contradiction detectors evaluate wording and negation at clause
   assertClaimDetected(findShippedControlPlaneClaims, "Our team shipped the FastAPI/Temporal control plane integration.");
   assertClaimDetected(findShippedControlPlaneClaims, "The product team delivered the FastAPI/Temporal control plane integration.");
   assertClaimDetected(findShippedControlPlaneClaims, "Our team confidently shipped the FastAPI/Temporal control plane integration.");
+  assertClaimDetected(findShippedControlPlaneClaims, "We shipped our FastAPI/Temporal control plane integration.");
+  assertClaimDetected(findShippedControlPlaneClaims, "We shipped this FastAPI/Temporal control plane integration.");
+  assertClaimDetected(findShippedControlPlaneClaims, "The FastAPI/Temporal control plane integration did ship yesterday.");
+  assertClaimDetected(findShippedControlPlaneClaims, "We shipped, after review, the FastAPI/Temporal control plane integration.");
+  assertClaimDetected(findShippedControlPlaneClaims, "The FastAPI/Temporal control plane integration, after review, was shipped.");
   assertClaimDetected(findShippedControlPlaneClaims, "We did not delay the rollout and shipped the FastAPI/Temporal control plane integration.");
   assertClaimDetected(findShippedControlPlaneClaims, "We could document the rollout because we shipped the FastAPI/Temporal control plane integration.");
   assertClaimDetected(findShippedControlPlaneClaims, "We plan to improve the UI and have shipped the FastAPI/Temporal control plane integration.");
   assertClaimDetected(findShippedControlPlaneClaims, "The FastAPI/Temporal control plane integration has definitely been shipped.");
   assertClaimDetected(findShippedControlPlaneClaims, "The FastAPI/Temporal control plane integration shipped yesterday.");
   assertClaimDetected(findShippedControlPlaneClaims, "The FastAPI/Temporal control plane integration was confidently delivered.");
+  assertClaimDetected(findShippedControlPlaneClaims, "We have not merely shipped the FastAPI/Temporal control plane integration but verified it.");
+  assertClaimDetected(findShippedControlPlaneClaims, "The FastAPI/Temporal control plane integration was not only shipped but verified.");
   assertClaimAllowed(findShippedControlPlaneClaims, "We have not shipped the FastAPI/Temporal control plane integration.");
   assertClaimAllowed(findShippedControlPlaneClaims, "We never shipped the FastAPI/Temporal control plane integration.");
   assertClaimAllowed(findShippedControlPlaneClaims, "We haven't shipped the FastAPI/Temporal control plane integration.");
@@ -451,6 +474,10 @@ test("North Star contradiction detectors evaluate wording and negation at clause
   assertClaimAllowed(findShippedControlPlaneClaims, "We have by no means shipped the FastAPI/Temporal control plane integration.");
   assertClaimAllowed(findShippedControlPlaneClaims, "We shipped documentation for the FastAPI/Temporal control plane integration.");
   assertClaimAllowed(findShippedControlPlaneClaims, "We delivered a design for the FastAPI/Temporal control plane integration.");
+  assertClaimAllowed(findShippedControlPlaneClaims, "We shipped the FastAPI/Temporal control plane integration-related documentation.");
+  assertClaimAllowed(findShippedControlPlaneClaims, "We shipped the FastAPI/Temporal control plane integration mock.");
+  assertClaimAllowed(findShippedControlPlaneClaims, "We shipped the FastAPI/Temporal control plane integration demo.");
+  assertClaimAllowed(findShippedControlPlaneClaims, "We delivered the FastAPI/Temporal control plane integration test fixture.");
   assertClaimAllowed(findShippedControlPlaneClaims, "The FastAPI/Temporal control plane integration will have been delivered by Q4.");
   assertClaimAllowed(findShippedControlPlaneClaims, "The team will ship documentation for the FastAPI/Temporal control plane integration.");
   assertClaimAllowed(findShippedControlPlaneClaims, "We will ship the FastAPI/Temporal control plane integration after approval.");
@@ -473,6 +500,7 @@ test("North Star contradiction detectors evaluate wording and negation at clause
   assertClaimDetected(findNodeLifecycleAuthorityClaims, "Node isn't the only lifecycle authority but also the executor.");
   assertClaimDetected(findNodeLifecycleAuthorityClaims, "Node isn't simply the lifecycle authority but also the executor.");
   assertClaimDetected(findNodeLifecycleAuthorityClaims, "Node isn't exclusively the lifecycle authority but also the executor.");
+  assertClaimDetected(findNodeLifecycleAuthorityClaims, "Node is not solely the lifecycle authority but also the executor.");
   assertClaimDetected(findNodeLifecycleAuthorityClaims, "Node, not Temporal, is the lifecycle authority.");
   assertClaimDetected(findNodeLifecycleAuthorityClaims, "Node, despite being a compatibility layer, is the lifecycle authority.");
   assertClaimDetected(findNodeLifecycleAuthorityClaims, "Node is a compatibility layer, but it is the lifecycle authority.");
@@ -493,6 +521,7 @@ test("North Star contradiction detectors evaluate wording and negation at clause
   assertClaimAllowed(findNodeLifecycleAuthorityClaims, "Temporal replaces Node, but it remains the lifecycle authority.");
   assertClaimAllowed(findNodeLifecycleAuthorityClaims, "Node isn't the sole lifecycle authority.");
   assertClaimAllowed(findNodeLifecycleAuthorityClaims, "Node is definitely not the lifecycle authority.");
+  assertClaimAllowed(findNodeLifecycleAuthorityClaims, "Node is absolutely not the lifecycle authority.");
 
   assertClaimDetected(findNodeProductionAuthorityClaims, "Production authorities belong solely to Node.");
   assertClaimAllowed(findNodeProductionAuthorityClaims, "The Node compatibility path is not a production authority.");
