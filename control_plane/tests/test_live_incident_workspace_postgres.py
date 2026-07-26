@@ -143,13 +143,18 @@ class LiveIncidentWorkspacePostgresTests(unittest.TestCase):
                         environment=case.environment, affected_entities=case.affected_entities,
                         stage="acquire_current_evidence", sequence=1,
                     )
-                    outcome = await DomainActivityEngine(
+                    engine = DomainActivityEngine(
                         FrozenSourceReadback([]), authorization=None, evidence_acquirer=acquirer,
                         capability_registry=registry,
-                    ).execute_async(packet, DomainEvidenceAdmission(repository, "owner-capability"))
+                    )
+                    outcome = await engine.execute_async(packet, DomainEvidenceAdmission(repository, "owner-capability"))
                     self.assertEqual("PASS", outcome.decision.value)
                     self.assertEqual("capability:current-evidence:v1", outcome.identity)
-                    self.assertEqual(1, acquirer.calls)
+                    # A lost activity-completion acknowledgement can redeliver
+                    # the exact packet: admission/audit remain append-only.
+                    retry = await engine.execute_async(packet, DomainEvidenceAdmission(repository, "owner-capability"))
+                    self.assertEqual("PASS", retry.decision.value)
+                    self.assertEqual(2, acquirer.calls)
                     async def counts(connection):
                         return await connection.fetchrow(
                             """SELECT

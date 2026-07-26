@@ -563,6 +563,13 @@ class PostgresCaseRepository:
         if case is None or case.case_revision != evidence.case_revision:
             raise PolicyViolation("evidence_case_tenant_or_revision_mismatch")
         async def operation(connection: asyncpg.Connection) -> None:
+            existing = await connection.fetchrow(
+                "SELECT payload FROM evidence_envelopes WHERE evidence_id=$1", evidence.evidence_id,
+            )
+            if existing is not None:
+                if EvidenceEnvelope.parse_obj(_decode(existing["payload"])) != evidence:
+                    raise PolicyViolation("evidence_id_immutable")
+                return
             for parent_evidence_id in evidence.parent_evidence_ids:
                 if parent_evidence_id == evidence.evidence_id:
                     raise PolicyViolation("evidence_parent_self_reference")
@@ -573,18 +580,23 @@ class PostgresCaseRepository:
                 )
                 if parent is None:
                     raise PolicyViolation("unknown_parent_evidence")
-            await connection.execute(
+            inserted = await connection.fetchval(
                 """
                 INSERT INTO evidence_envelopes
                   (evidence_id, case_id, tenant_id, case_revision, acl_subjects, proof_scope, source_uri,
                    source_anchor, content_hash, independence_key, payload)
                 VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10,$11::jsonb)
                 ON CONFLICT (evidence_id) DO NOTHING
+                RETURNING evidence_id
                 """,
                 evidence.evidence_id, evidence.case_id, evidence.tenant_id, evidence.case_revision,
                 json.dumps(evidence.acl_subjects), evidence.proof_scope.value, evidence.source_uri,
                 evidence.source_anchor, evidence.content_hash, evidence.independence_key, _payload(evidence),
             )
+            # An RLS-hidden row with the same global evidence ID must never be
+            # treated as a successful cross-tenant admission.
+            if inserted is None:
+                raise PolicyViolation("evidence_id_conflict_or_not_visible")
         await self._tenant(evidence.tenant_id, operation, subject_id)
 
     async def evidence_for_case(self, tenant_id: str, case_id: str, subject_id: str) -> List[EvidenceEnvelope]:
