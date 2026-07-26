@@ -157,13 +157,14 @@ function normalizeClaimText(source) {
     .replace(/\b([A-Za-z]+)n't\b/g, (match, stem) => contractions[match.toLowerCase()] ?? stem + " not")
     .replace(/\b([A-Za-z]+)'ve\b/g, "$1 have")
     .replace(/\b([A-Za-z]+)'ll\b/g, "$1 will")
-    // A contracted 'd is past perfect when its predicate reaches a delivery
-    // participle without another auxiliary; "would have shipped" stays modal.
-    .replace(/\b([A-Za-z]+)'d\s+((?:(?!\b(?:be|been|have)\b)[A-Za-z]+\s+){0,3})(shipped|delivered|integrated)\b/g, "$1 had $2$3")
+    // A contracted 'd is past perfect only when grammatical adverbs lead
+    // directly to delivery; another lexical subject keeps the would reading.
+    .replace(/\b([A-Za-z]+)'d\s+((?:(?:[A-Za-z]+ly|already|just|now)\s+){0,3})(shipped|delivered|integrated)\b/g, "$1 had $2$3")
     .replace(/\b([A-Za-z]+)'d\b/g, "$1 would")
-    // A contracted 's is copular when only adverbs precede its complement;
-    // a noun immediately following it remains possessive.
-    .replace(/\b([A-Za-z]+)'s\s+(?=(?:(?:[A-Za-z]+ly)\s+)*(?:not|the|a|an)\b)/g, "$1 is ");
+    // A contracted 's is perfect before "been" and copular when adverbs
+    // lead to its complement; a following noun remains possessive.
+    .replace(/\b([A-Za-z]+)'s\s+(?=(?:never\s+)?been\b)/g, "$1 has ")
+    .replace(/\b([A-Za-z]+)'s\s+(?=(?:(?:[A-Za-z]+ly|already|just|now)\s+)*(?:not|the|a|an)\b)/g, "$1 is ");
 }
 
 function matchingClaimClauses(source, matchesClaim) {
@@ -215,7 +216,10 @@ function controlPlaneDeliveryVerdict(clause) {
   const isObjectRelation = (token) => /^(?:about|for|of|on|regarding|to)$/.test(token);
   const isPredicateAdverb = (token) => token.endsWith("ly") || /^(?:already|now|just)$/.test(token);
   const isDeterminer = (token) => /^(?:a|an|the|this|that|these|those|my|your|his|her|its|our|their|no|neither)$/.test(token);
-  const isUnrealModifier = (token) => /^(?:mock(?:ed)?|simulat(?:ed|ion)|emulat(?:ed|ion)|synthetic)$/.test(token);
+  // These word families explicitly describe a non-production representation.
+  // Other modifiers (for example "secure" or "production-ready") leave the
+  // integration as the grammatical object and therefore remain actual claims.
+  const isExplicitNonProductionModifier = (token) => /^(?:(?:mock|stub)(?:bed|bing|ed)?|prototyp(?:e|al)?|simulat(?:ed|ion)?|emulat(?:ed|ion)?|synthetic)$/.test(token);
   const isPossessiveOwner = (token) => token.endsWith("'s");
   const prefixModifierRole = (tokensToCheck) => {
     const lexical = tokensToCheck.filter((token) => (
@@ -228,7 +232,7 @@ function controlPlaneDeliveryVerdict(clause) {
     // The integration is an artifact only when grammar gives another object
     // its own role (a relation or relative clause), or an unreal modifier
     // describes the integration. Unknown descriptive words remain modifiers.
-    if (lexical.some(isUnrealModifier)
+    if (lexical.some(isExplicitNonProductionModifier)
       || lexical.some(isObjectRelation)
       || tokensToCheck.includes(":")
       || lexical.some((token) => /^(?:called|describing|titled)$/.test(token))) return "artifact";
@@ -244,13 +248,11 @@ function controlPlaneDeliveryVerdict(clause) {
     || (/^(?:plan|plans|planned|intend|intends|intended|expect|expects|expected)$/.test(token) && predicate[index + 1] === "to")
     || (token === "scheduled" && predicate[index + 1] === "to")
   ));
-  const deliveryPredicateRecord = ({
+  const deliveryPredicateVerdict = ({
     subject,
     predicate,
     action,
-    objectRole: role,
-    objectNegated = false,
-    conditionMarker = null
+    objectNegated = false
   }) => {
     const auxiliary = predicate.filter((token) => /^(?:am|are|be|been|being|did|do|does|had|has|have|is|was|were)$/.test(token));
     const modal = predicate.some(isModal);
@@ -262,23 +264,9 @@ function controlPlaneDeliveryVerdict(clause) {
       ? "factual"
       : "undetermined";
     const qualified = isQualified(predicate) || objectNegated;
-    const record = {
-      subject,
-      action,
-      objectRole: role,
-      conditionMarker,
-      tense,
-      modal,
-      negated
-    };
-    record.verdict = record.subject === "other"
-      ? "absent"
-      : qualified || record.negated || record.modal
-        ? "qualified"
-        : record.tense === "factual"
-          ? "completed"
-          : "qualified";
-    return record;
+    if (subject === "other") return "absent";
+    if (qualified || negated || modal) return "qualified";
+    return tense === "factual" ? "completed" : "qualified";
   };
   const predicateStart = (actionIndex) => {
     for (let index = actionIndex - 1; index >= 0; index -= 1) {
@@ -286,16 +274,19 @@ function controlPlaneDeliveryVerdict(clause) {
     }
     return 0;
   };
-  const hasSharedObjectCoordination = (actionIndex) => {
-    if (tokens[actionIndex + 1]?.value !== ",") return false;
-    const closingComma = tokens.findIndex((token, index) => index > actionIndex + 1 && index < spanStart && token.value === ",");
-    if (closingComma < 0) return false;
-    const coordinatedPredicate = tokens.slice(actionIndex + 2, closingComma).map((token) => token.value);
-    return /^(?:and|but)$/.test(coordinatedPredicate[0] ?? "")
-      && coordinatedPredicate.some((token) => /^(?:did|do|does)$/.test(token));
+  const coordinationObjectRole = (actionIndex) => {
+    const between = tokens.slice(actionIndex + 1, spanStart).map((token) => token.value);
+    const coordinationIndex = between.findIndex((token) => /^(?:and|but)$/.test(token));
+    if (coordinationIndex < 0) return "none";
+    const leftObject = between.slice(0, coordinationIndex).filter((token) => token !== ",");
+    const rightPredicate = between.slice(coordinationIndex + 1).filter((token) => token !== ",");
+    const hasPredicate = rightPredicate.some((token) => /^(?:did|do|does|had|has|have)$/.test(token))
+      || rightPredicate.some((token) => /(?:ed|ing)$/.test(token));
+    if (!hasPredicate) return "none";
+    return leftObject.length === 0 ? "shared" : "separate";
   };
   const integrationObjectTokens = (actionIndex) => {
-    if (hasSharedObjectCoordination(actionIndex)) return [];
+    if (coordinationObjectRole(actionIndex) === "shared") return [];
     const before = [];
     for (let index = actionIndex + 1; index < spanStart; index += 1) {
       const parenthetical = parentheticalFollowing(index);
@@ -323,16 +314,21 @@ function controlPlaneDeliveryVerdict(clause) {
       || isPredicateAdverb(postObject[0] ?? "")
       || /^(?:last|next|this|today|tomorrow|yesterday)$/.test(postObject[0] ?? "")
       || (/^(?:\d+|one|two|three)$/.test(postObject[0] ?? "") && /^(?:day|days|week|weeks|month|months|year|years)$/.test(postObject[1] ?? ""));
-    // A bare noun after the integration is the compound's head, making the
-    // integration its modifier (docs, specifications, plan, proof, etc.).
-    const compoundArtifact = postObject.length > 0 && !startsQualifier;
-    return !compoundArtifact;
+    const selfReference = postObject[0] === "itself";
+    const operationalComplement = /^(?:adapter|implementation)$/.test(postObject[0] ?? "");
+    // A following noun is the grammatical head of a separate artifact
+    // compound. Reflexives and operational complements keep the integration
+    // itself as the delivered capability.
+    const postObjectRole = postObject.length === 0 || startsQualifier || selfReference || operationalComplement
+      ? "actual_integration"
+      : "artifact";
+    return postObjectRole === "actual_integration";
   };
   const integrationSubject = () => {
     const subjectPrefix = tokens.slice(predicateStart(spanStart), spanStart).map((token) => token.value);
     const structuralPrefix = subjectPrefix.filter((token) => !/^(?:if|when|once|after|until|provided|that)$/.test(token));
     return {
-      isSubject: !structuralPrefix.some((token) => isObjectRelation(token) || isUnrealModifier(token)) && !hasArtifactHead(structuralPrefix),
+      isSubject: !structuralPrefix.some((token) => isObjectRelation(token) || isExplicitNonProductionModifier(token)) && !hasArtifactHead(structuralPrefix),
       negated: isNegativeObject(structuralPrefix)
     };
   };
@@ -362,12 +358,10 @@ function controlPlaneDeliveryVerdict(clause) {
     const externalParentheticalSubject = parentheticalSubjectTokens.length > 0;
     const artifactSubject = directObjectRole === "artifact"
       || externalParentheticalSubject;
-    return deliveryPredicateRecord({
+    return deliveryPredicateVerdict({
       subject: artifactSubject ? "other" : "integration",
       predicate,
       action: contents[actionIndex],
-      objectRole: artifactSubject ? "artifact" : "actual_integration",
-      conditionMarker: predicate.find((token) => /^(?:if|when|once|after|until)$/.test(token)) ?? null
     });
   };
 
@@ -375,7 +369,7 @@ function controlPlaneDeliveryVerdict(clause) {
   for (let actionIndex = spanStart - 1; actionIndex >= 0; actionIndex -= 1) {
     const parenthetical = parentheticalPreceding(actionIndex);
     const parentheticalRecord = parenthetical && parentheticalPredicateRecord(parenthetical.contents);
-    if (parenthetical && (!parentheticalRecord || parentheticalRecord.verdict === "absent")) {
+    if (parenthetical && (!parentheticalRecord || parentheticalRecord === "absent")) {
       actionIndex = parenthetical.start;
       continue;
     }
@@ -387,28 +381,31 @@ function controlPlaneDeliveryVerdict(clause) {
     if (!isDeliveryAction(tokens[actionIndex].value)) continue;
     // Crossing a contrast can only retain the target object for a recognized
     // shared-object coordination, never for an earlier unrelated delivery.
-    if (crossedContrast && !hasSharedObjectCoordination(actionIndex)) continue;
+    if (crossedContrast && coordinationObjectRole(actionIndex) !== "shared") continue;
+    if (coordinationObjectRole(actionIndex) === "separate") continue;
     if (!bindsIntegrationObject(actionIndex)) continue;
     const predicate = tokens.slice(predicateStart(actionIndex), actionIndex).map((token) => token.value);
     const object = integrationObjectTokens(actionIndex);
-    return deliveryPredicateRecord({
+    return deliveryPredicateVerdict({
       subject: "actor",
       predicate,
       action: tokens[actionIndex].value,
-      objectRole: "actual_integration",
-      objectNegated: isNegativeObject(object),
-      conditionMarker: predicate.find((token) => /^(?:if|when|once|after|until)$/.test(token)) ?? null
-    }).verdict;
+      objectNegated: isNegativeObject(object)
+    });
   }
 
   const subject = integrationSubject();
   if (!subject.isSubject) return "absent";
-  let passivePredicateStart = spanEnd;
+  // "integration implementation/adapter" names the deployed capability's
+  // operational complement, not a detached documentation artifact.
+  let passivePredicateStart = /^(?:implementation|adapter)$/.test(tokens[spanEnd]?.value ?? "")
+    ? spanEnd + 1
+    : spanEnd;
   for (let actionIndex = spanEnd; actionIndex < tokens.length; actionIndex += 1) {
     const parenthetical = parentheticalFollowing(actionIndex);
     if (parenthetical) {
       const parentheticalRecord = parentheticalPredicateRecord(parenthetical.contents);
-      if (parentheticalRecord?.verdict === "completed") return "completed";
+      if (parentheticalRecord === "completed") return "completed";
       passivePredicateStart = parenthetical.end + 1;
       actionIndex = parenthetical.end;
       continue;
@@ -424,14 +421,12 @@ function controlPlaneDeliveryVerdict(clause) {
       || isRhetoricalAmplifier(token)
       || isPredicateAdverb(token)
     ))) return "absent";
-    return deliveryPredicateRecord({
+    return deliveryPredicateVerdict({
       subject: "integration",
       predicate,
       action: tokens[actionIndex].value,
-      objectRole: "actual_integration",
-      objectNegated: subject.negated,
-      conditionMarker: predicate.find((token) => /^(?:if|when|once|after|until)$/.test(token)) ?? null
-    }).verdict;
+      objectNegated: subject.negated
+    });
   }
   return "absent";
 }
@@ -441,9 +436,13 @@ function hasFutureConditionalDelivery(clause) {
   const consequentIsFuture = (consequent) => {
     const trimmed = consequent.trim();
     if (/\b(?:will|shall|should|may|might|can|could|would|must)\b/i.test(trimmed)) return true;
-    // An imperative has no explicit subject or finite auxiliary before its
-    // verb, unlike "we celebrated" or "the integration was shipped".
-    return /^(?!\b(?:a|an|it|she|he|they|the|this|that|we|you)\b)(?!\b(?:am|are|be|been|being|did|does|do|had|has|have|is|was|were)\b)[A-Za-z]+\b/i.test(trimmed);
+    if (/^do\s+[a-z]+\b/.test(trimmed)) return true;
+    // A past finite verb belongs to a factual consequent even when its
+    // subject is a product name or a role noun rather than a pronoun.
+    if (/\b(?:am|are|be|been|being|did|does|do|had|has|have|is|was|were)\b/i.test(trimmed)
+      || /\b[A-Za-z]+ed\b/i.test(trimmed)) return false;
+    // The remaining bare verb form is imperative: "do retire Node".
+    return /^[a-z]+\b/i.test(trimmed);
   };
   const leading = normalized.match(/^\s*(if|when|once|after|until|provided\s+that)\b[\s\S]*?,\s*([\s\S]+)$/i);
   if (leading) return leading[1].toLowerCase() === "if" || consequentIsFuture(leading[2]);
@@ -466,7 +465,8 @@ function findShippedControlPlaneClaims(source) {
       const integration = controlPlaneSubject.exec(normalized);
       if (!integration) return false;
       const after = normalized.slice(integration.index + integration[0].length);
-      const trailingHypothesis = /\b(?:if|until|provided\s+that)\b/i.test(after);
+      const trailingHypothesis = /\b(?:if|until|provided\s+that)\b/i.test(after)
+        && !/,\s*(?:if|until|provided\s+that)\b/i.test(after);
       // A conditional is hypothetical only when its consequent is future.
       // A delivery followed by "when approval arrived" remains completed.
       if (trailingHypothesis || hasFutureConditionalDelivery(clause)) return false;
@@ -485,10 +485,11 @@ const contractedAuthorityDenial = `(?:isn't(?!\\s+${rhetoricalOnlyQualifier}\\b)
 function hasNegatedNodeAuthorityClaim(clause, authority) {
   const directNodeNegation = new RegExp(`\\b${nodeCompatibilityPath}\\b(?:\\s+(?:compatibility|demo|server|path|surface)){0,4}\\s+(?:(?:is|are|was|were|remains?|serves?\\s+as|does|do|can)\\s+)?${authorityDenial}\\b[^.;]{0,40}\\b${authority}\\b`, "i");
   const directNodeAdverbialDenial = new RegExp(`\\b${nodeCompatibilityPath}\\b(?:\\s+(?:compatibility|demo|server|path|surface)){0,4}\\s+(?:(?:is|are|was|were|remains?|serves?\\s+as|does|do|can)\\s+)?${predicateAdverb}${authorityDenial}\\b[^.;]{0,40}\\b${authority}\\b`, "i");
+  const perfectNodeDenial = new RegExp(`\\b${nodeCompatibilityPath}\\b[^.;]{0,40}\\b(?:has|had)\\s+(?:never|not)\\s+been\\b[^.;]{0,40}\\b${authority}\\b`, "i");
   const authorityBeforeNegatedNode = new RegExp(`\\b${authority}\\b[^.;]{0,80}\\b(?:(?:is|are|belongs?\\s+to|serves?\\s+as)\\s+${authorityDenial}|${contractedAuthorityDenial})\\b[^.;]{0,40}\\b${nodeCompatibilityPath}\\b`, "i");
   const authorityBeforeAdverbialNegatedNode = new RegExp(`\\b${authority}\\b[^.;]{0,80}\\b(?:is|are|belongs?\\s+to|serves?\\s+as)\\s+${predicateAdverb}${authorityDenial}\\b[^.;]{0,40}\\b${nodeCompatibilityPath}\\b`, "i");
   const authorityDoesNotBelongToNode = new RegExp(`\\b${authority}\\b[^.;]{0,80}\\b(?:does\\s+not|doesn't)\\s+belong\\s+to\\s+${nodeCompatibilityPath}\\b`, "i");
-  return directNodeAdverbialDenial.test(clause) || directNodeNegation.test(clause) || authorityBeforeAdverbialNegatedNode.test(clause) || authorityBeforeNegatedNode.test(clause) || authorityDoesNotBelongToNode.test(clause);
+  return perfectNodeDenial.test(clause) || directNodeAdverbialDenial.test(clause) || directNodeNegation.test(clause) || authorityBeforeAdverbialNegatedNode.test(clause) || authorityBeforeNegatedNode.test(clause) || authorityDoesNotBelongToNode.test(clause);
 }
 
 function hasNegatedNodeLifecycleOwnership(clause) {
@@ -499,7 +500,7 @@ function hasNegatedNodeLifecycleOwnership(clause) {
 function findNodeLifecycleAuthorityClaims(source) {
   const nodeBeforeAuthority = new RegExp(`\\b${nodeCompatibilityPath}\\b[^.]{0,160}\\b${lifecycleAuthority}\\b`, "i");
   const authorityBeforeNode = new RegExp(`\\b${lifecycleAuthorityNoun}\\b[^.]{0,160}\\b${nodeCompatibilityPath}\\b`, "i");
-  const nodeCopularAuthority = new RegExp(`\\b${nodeCompatibilityPath}\\b[^.]{0,80}\\b(?:is|are|isn't|aren't|wasn't|weren't|remains?|becomes?|acts?\\s+as|serves?\\s+as)\\b[^.]{0,80}\\b${lifecycleAuthorityNoun}\\b`, "i");
+  const nodeCopularAuthority = new RegExp(`\\b${nodeCompatibilityPath}\\b[^.]{0,80}\\b(?:is|are|isn't|aren't|wasn't|weren't|has\\s+been|had\\s+been|remains?|becomes?|acts?\\s+as|serves?\\s+as)\\b[^.]{0,80}\\b${lifecycleAuthorityNoun}\\b`, "i");
   const nodeOwnsLifecycle = new RegExp(`\\b${nodeCompatibilityPath}\\b[^.]{0,80}\\b(?:owns?|governs?|controls?)\\b[^.]{0,120}\\b(?:the\\s+)?(?:incident\\s+)?lifecycle(?:\\s+transitions?)?\\b`, "i");
   const authorityBelongsToNode = new RegExp("\\b(?:incident\\s+)?lifecycle\\s+authorit(?:y|ies)\\b[^.]{0,80}\\b(?:solely|only|exclusively)\\b[^.]{0,80}\\b" + nodeCompatibilityPath + "\\b", "i");
   return matchingClaimClauses(source, (clause) => !hasNegatedNodeAuthorityClaim(clause, lifecycleAuthorityNoun)
@@ -730,8 +731,14 @@ test("North Star contradiction detectors evaluate wording and negation at clause
   assertClaimDetected(findShippedControlPlaneClaims, "We’d successfully delivered the FastAPI/Temporal control plane integration.");
   assertClaimDetected(findShippedControlPlaneClaims, "FlowPulse's FastAPI/Temporal control plane integration was shipped.");
   assertClaimDetected(findShippedControlPlaneClaims, "We shipped, but did not document, the FastAPI/Temporal control plane integration.");
+  assertClaimDetected(findShippedControlPlaneClaims, "We shipped but did not document the FastAPI/Temporal control plane integration.");
+  assertClaimDetected(findShippedControlPlaneClaims, "We have shipped, but have not documented, the FastAPI/Temporal control plane integration.");
   assertClaimDetected(findShippedControlPlaneClaims, "We’d previously shipped the FastAPI/Temporal control plane integration.");
   assertClaimDetected(findShippedControlPlaneClaims, "Once the FastAPI/Temporal control plane integration has been shipped, we celebrated.");
+  assertClaimDetected(findShippedControlPlaneClaims, "When the FastAPI/Temporal control plane integration was shipped, FlowPulse celebrated.");
+  assertClaimDetected(findShippedControlPlaneClaims, "After the FastAPI/Temporal control plane integration had been shipped, I celebrated.");
+  assertClaimDetected(findShippedControlPlaneClaims, "After the FastAPI/Temporal control plane integration was shipped, operators reported it.");
+  assertClaimDetected(findShippedControlPlaneClaims, "We shipped the FastAPI/Temporal control plane integration, if anyone asks.");
   assertClaimAllowed(findShippedControlPlaneClaims, "We have not shipped the FastAPI/Temporal control plane integration.");
   assertClaimAllowed(findShippedControlPlaneClaims, "We never shipped the FastAPI/Temporal control plane integration.");
   assertClaimAllowed(findShippedControlPlaneClaims, "We haven't shipped the FastAPI/Temporal control plane integration.");
@@ -754,9 +761,17 @@ test("North Star contradiction detectors evaluate wording and negation at clause
   assertClaimAllowed(findShippedControlPlaneClaims, "We shipped the FastAPI/Temporal control plane integration specifications.");
   assertClaimAllowed(findShippedControlPlaneClaims, "We shipped a synthetic FastAPI/Temporal control plane integration.");
   assertClaimAllowed(findShippedControlPlaneClaims, "We shipped an emulated FastAPI/Temporal control plane integration.");
+  assertClaimAllowed(findShippedControlPlaneClaims, "We shipped a stub FastAPI/Temporal control plane integration.");
+  assertClaimAllowed(findShippedControlPlaneClaims, "A prototype FastAPI/Temporal control plane integration was shipped.");
   assertClaimAllowed(findShippedControlPlaneClaims, "We shipped the FastAPI/Temporal control plane integration proof of concept.");
+  assertClaimDetected(findShippedControlPlaneClaims, "We shipped the FastAPI/Temporal control plane integration itself.");
+  assertClaimDetected(findShippedControlPlaneClaims, "We shipped the FastAPI/Temporal control plane integration implementation.");
+  assertClaimDetected(findShippedControlPlaneClaims, "We shipped the FastAPI/Temporal control plane integration adapter.");
+  assertClaimDetected(findShippedControlPlaneClaims, "The FastAPI/Temporal control plane integration implementation was delivered.");
   assertClaimAllowed(findShippedControlPlaneClaims, "We shipped the dashboard yesterday, but the FastAPI/Temporal control plane integration remains future work.");
   assertClaimAllowed(findShippedControlPlaneClaims, "We shipped the UI yesterday, while the FastAPI/Temporal control plane integration remains future work.");
+  assertClaimAllowed(findShippedControlPlaneClaims, "We shipped the dashboard and documented the FastAPI/Temporal control plane integration.");
+  assertClaimAllowed(findShippedControlPlaneClaims, "We shipped the dashboard, and documented the FastAPI/Temporal control plane integration.");
   assertClaimAllowed(findShippedControlPlaneClaims, "We shipped documentation: FastAPI/Temporal control plane integration.");
   assertClaimAllowed(findShippedControlPlaneClaims, "We shipped a mock implementation called the FastAPI/Temporal control plane integration.");
   assertClaimAllowed(findShippedControlPlaneClaims, "We shipped documentation titled FastAPI/Temporal control plane integration.");
@@ -779,6 +794,10 @@ test("North Star contradiction detectors evaluate wording and negation at clause
   assertClaimAllowed(findShippedControlPlaneClaims, "Once we have shipped the FastAPI/Temporal control plane integration, retire Node.");
   assertClaimAllowed(findShippedControlPlaneClaims, "The FastAPI/Temporal control plane integration, once shipped, will retire Node.");
   assertClaimAllowed(findShippedControlPlaneClaims, "The FastAPI/Temporal control plane integration, when shipped, will retire Node.");
+  assertClaimAllowed(findShippedControlPlaneClaims, "When the FastAPI/Temporal control plane integration has been shipped, do retire Node.");
+  assertClaimAllowed(findShippedControlPlaneClaims, "When the FastAPI/Temporal control plane integration has been shipped, Retire Node.");
+  assertClaimAllowed(findShippedControlPlaneClaims, "We’d prefer they shipped the FastAPI/Temporal control plane integration.");
+  assertClaimAllowed(findShippedControlPlaneClaims, "We'd prefer they shipped the FastAPI/Temporal control plane integration.");
   assertClaimAllowed(findShippedControlPlaneClaims, "We’ll have shipped the FastAPI/Temporal control plane integration by Q4.");
   assertClaimAllowed(findShippedControlPlaneClaims, "We'll have shipped the FastAPI/Temporal control plane integration by Q4.");
   assertClaimAllowed(findShippedControlPlaneClaims, "We'd have shipped the FastAPI/Temporal control plane integration by now.");
@@ -804,6 +823,8 @@ test("North Star contradiction detectors evaluate wording and negation at clause
   assertClaimDetected(findNodeLifecycleAuthorityClaims, "Node's the lifecycle authority.");
   assertClaimDetected(findNodeLifecycleAuthorityClaims, "Node's clearly the lifecycle authority.");
   assertClaimDetected(findNodeLifecycleAuthorityClaims, "Node’s unquestionably the lifecycle authority.");
+  assertClaimDetected(findNodeLifecycleAuthorityClaims, "Node’s now the lifecycle authority.");
+  assertClaimDetected(findNodeLifecycleAuthorityClaims, "Node’s been the lifecycle authority.");
   assertClaimAllowed(findNodeLifecycleAuthorityClaims, "Node's lifecycle authority is Temporal.");
   assertClaimAllowed(findNodeLifecycleAuthorityClaims, "Node’s lifecycle authority is Temporal.");
   assertClaimDetected(findNodeLifecycleAuthorityClaims, "Node is not only the lifecycle authority but also the executor.");
@@ -833,6 +854,7 @@ test("North Star contradiction detectors evaluate wording and negation at clause
   assertClaimAllowed(findNodeLifecycleAuthorityClaims, "Node isn't the sole lifecycle authority.");
   assertClaimAllowed(findNodeLifecycleAuthorityClaims, "Node is definitely not the lifecycle authority.");
   assertClaimAllowed(findNodeLifecycleAuthorityClaims, "Node is absolutely not the lifecycle authority.");
+  assertClaimAllowed(findNodeLifecycleAuthorityClaims, "Node’s never been the sole lifecycle authority.");
 
   assertClaimDetected(findNodeProductionAuthorityClaims, "Production authorities belong solely to Node.");
   assertClaimAllowed(findNodeProductionAuthorityClaims, "The Node compatibility path is not a production authority.");
