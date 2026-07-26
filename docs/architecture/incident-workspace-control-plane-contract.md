@@ -93,11 +93,11 @@ for schemas.
 ## Workspace contract freeze
 
 The producer implementation commit is
-`e7cf2d8ec2f8a537762f6808a5769ca035a4f5ec`. The generated bundle is:
+`191db75e3e9d03ac2511120bea97ff0fd4f5773c`. The generated bundle is:
 
 - `control_plane/openapi/flowpulse-incident-workspace-v1.openapi.json` — SHA-256 `ad8911366e7e508d47a4d258768a052e71b44658d9bf33b474bf3a491ad0c75f`
 - `control_plane/openapi/flowpulse-incident-workspace-v1.examples.json` — SHA-256 `1e7a6094d116cca582a983f333f17a4b298b8d254819abf8ee4c4ab8fa1eb55c`
-- `control_plane/openapi/flowpulse-incident-workspace-v1.freeze.json` — SHA-256 `31c9de65646ddcfda909c0654b5c26f01ffd65c875e187afe382b927750f4519`
+- `control_plane/openapi/flowpulse-incident-workspace-v1.freeze.json` — SHA-256 `8395f13b99495c7a666698ef56c34f7065b68e6c2bdf9361aa0a25ad4804a741`
 
 The frontend product branch must record these values verbatim, together with
 the public identity and same-origin process-side authentication boundary,
