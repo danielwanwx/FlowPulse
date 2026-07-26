@@ -67,6 +67,36 @@ class CurrentEvidenceCapabilityAdapter:
         )
 
 
+class Gate1CurrentEvidenceCapabilityAdapter(CurrentEvidenceCapabilityAdapter):
+    """Production user-read adapter for the one bounded Gate 1 capability.
+
+    It shares the controlled, tenant-bound source acquisition implementation
+    with autonomous diagnosis, but has a distinct descriptor because its
+    audience and gate are deliberately different authorities.
+    """
+
+    descriptor = CapabilityDescriptor(
+        capability=CapabilityName.GATE1_CURRENT_EVIDENCE,
+        version="workspace-gate1-current-evidence.v1",
+        fresh_read=True,
+        enabled=True,
+        audiences=[CapabilityAudience.USER_QA],
+        data_classes=[CapabilityDataClass.CURRENT_INCIDENT],
+        required_gate=CapabilityGate.GATE1,
+        input_schema="current-evidence-input.v1",
+    )
+
+
+def production_current_evidence_adapters(acquirer: CurrentEvidenceAcquisitionPort):
+    """Return the two explicit production authorities sharing one source port."""
+    autonomous = CurrentEvidenceCapabilityAdapter(acquirer)
+    gate1 = Gate1CurrentEvidenceCapabilityAdapter(acquirer)
+    return (
+        [autonomous.descriptor, gate1.descriptor],
+        {autonomous.descriptor.capability: autonomous, gate1.descriptor.capability: gate1},
+    )
+
+
 class RecordedContextCapabilityAdapter:
     """Audits use of an already-projected context without reading a new source."""
 

@@ -7,6 +7,7 @@ before every fresh read.
 """
 
 import inspect
+import json
 from hashlib import sha256
 from datetime import datetime, timedelta, timezone
 from enum import Enum
@@ -25,7 +26,15 @@ from .capabilities import (
 )
 from .models import AuthAssertion, Hash, NonEmpty, PositiveInt, StrictBool, StrictModel
 from .policy import PolicyViolation
-from .workspace_models import IncidentProjection, IncidentRunBinding
+from .workspace_models import IncidentEvent, IncidentProjection, IncidentRunBinding
+
+
+def canonical_evidence_set_hash(evidence_refs: List[str]) -> str:
+    """Hash the exact, order-independent evidence set bound to a Gate 1 lease."""
+    if len(evidence_refs) != len(set(evidence_refs)):
+        raise PolicyViolation("gate1_evidence_set_duplicate")
+    encoded = json.dumps(sorted(evidence_refs), separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    return sha256(encoded).hexdigest()
 
 
 class Gate1LeaseStatus(str, Enum):
@@ -135,6 +144,9 @@ class WorkspaceActionPacket(IncidentRunBinding):
     actor_tenant_id: NonEmpty
     actor_subject_id: NonEmpty
     actor_roles: List[NonEmpty]
+    # Set by new workflow commands. Frozen v2 histories omit it and derive the
+    # same immutable command identity in the activity dispatcher.
+    activity_identity: Optional[NonEmpty] = None
 
 
 class WorkspaceActionGenerationPacket(IncidentRunBinding):
@@ -289,10 +301,27 @@ class Gate1Lease(IncidentRunBinding):
     capability_registry_revision: NonEmpty
     precondition_version: NonEmpty
     precondition_hash: Hash
+    issuance_command_fingerprint: Hash
+    evidence_set_hash: Hash
     issued_at: datetime
     expires_at: datetime
     status: Gate1LeaseStatus
     consumed_by_activity_id: Optional[NonEmpty] = None
+    consumed_command_fingerprint: Optional[Hash] = None
+    consumed_evidence_set_hash: Optional[Hash] = None
+    consumed_evidence_revision: Optional[PositiveInt] = None
+
+
+class WorkspaceActionCommit(StrictModel):
+    """The one append-only action/outbox unit committed by a Temporal activity."""
+
+    activity_identity: NonEmpty
+    command_fingerprint: Hash
+    projection: IncidentProjection
+    receipt: WorkspaceActionReceipt
+    event: IncidentEvent
+    lease: Optional[Gate1Lease] = None
+    actions: List[NextBestAction] = Field(default_factory=list, max_items=3)
 
 
 class Gate1LeaseStore(Protocol):
@@ -346,6 +375,12 @@ class Gate1LeaseAuthority:
         ):
             if getattr(lease, field) != getattr(invocation_context, field):
                 raise PolicyViolation("gate1_lease_scope_mismatch")
+        evidence_set_hash = canonical_evidence_set_hash(list(getattr(invocation_context, "recorded_evidence_ids", [])))
+        if lease.evidence_set_hash != evidence_set_hash:
+            raise PolicyViolation("gate1_lease_evidence_set_mismatch")
+        command_fingerprint = getattr(invocation_context, "action_command_fingerprint", None)
+        if not command_fingerprint:
+            raise PolicyViolation("gate1_lease_command_fingerprint_required")
         if lease.required_permission not in getattr(invocation_context, "subject_permissions", []):
             raise PolicyViolation("gate1_lease_permission_denied")
         if lease.component_id not in getattr(invocation_context, "component_ids", []):
@@ -359,10 +394,19 @@ class Gate1LeaseAuthority:
         if descriptor is not None and lease.tool_schema_version != descriptor.input_schema:
             raise PolicyViolation("gate1_lease_tool_schema_mismatch")
         if retrying_same_activity:
+            if (
+                lease.consumed_command_fingerprint != command_fingerprint
+                or lease.consumed_evidence_set_hash != evidence_set_hash
+                or lease.consumed_evidence_revision != invocation_context.evidence_revision
+            ):
+                raise PolicyViolation("gate1_lease_consumed_binding_mismatch")
             return lease
         consumed = lease.copy(update={
             "lease_revision": lease.lease_revision + 1,
             "status": Gate1LeaseStatus.CONSUMED,
             "consumed_by_activity_id": invocation_context.activity_id,
+            "consumed_command_fingerprint": command_fingerprint,
+            "consumed_evidence_set_hash": evidence_set_hash,
+            "consumed_evidence_revision": invocation_context.evidence_revision,
         })
         return await _maybe_await(self._store.append_gate1_lease(consumed))

@@ -91,6 +91,7 @@ class LiveIncidentWorkspacePostgresTests(unittest.TestCase):
                         "001_control_plane.sql", "002_authorization_intents.sql",
                         "003_incident_workspace_projection.sql", "004_workspace_binding_integrity.sql",
                         "005_workspace_subject_grants.sql", "006_workspace_gate1_actions.sql",
+                        "007_workspace_action_transitions.sql",
                     ]:
                         await bootstrap.execute((migration_dir / name).read_text(encoding="utf-8"))
                 finally:
@@ -191,6 +192,7 @@ class LiveIncidentWorkspacePostgresTests(unittest.TestCase):
                         "001_control_plane.sql", "002_authorization_intents.sql",
                         "003_incident_workspace_projection.sql", "004_workspace_binding_integrity.sql",
                         "005_workspace_subject_grants.sql", "006_workspace_gate1_actions.sql",
+                        "007_workspace_action_transitions.sql",
                     ]:
                         await bootstrap.execute((migration_dir / name).read_text(encoding="utf-8"))
                 finally:

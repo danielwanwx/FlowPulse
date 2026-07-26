@@ -36,11 +36,13 @@ from .workspace_actions import (
     NextBestActionGenerator,
     WorkspaceActionAuthorizationOutcome,
     WorkspaceActionAuthorizationPacket,
+    WorkspaceActionCommit,
     WorkspaceActionGenerationOutcome,
     WorkspaceActionGenerationPacket,
     WorkspaceActionOutcome,
     WorkspaceActionPacket,
     WorkspaceActionReceipt,
+    canonical_evidence_set_hash,
     validate_current_action_card,
 )
 
@@ -93,15 +95,22 @@ class WorkspaceActivityDispatcher:
     def _permissions(actor) -> list:
         return ["incident:read"] if set(actor.roles).intersection({"viewer", "owner", "local-test-owner"}) else []
 
-    async def _append_action_event(self, packet: WorkspaceActionPacket, action: str) -> None:
-        event = IncidentEvent(
+    def _action_event(
+        self, packet: WorkspaceActionPacket, projection, action: str,
+        command_fingerprint: str, activity_identity: str,
+    ) -> IncidentEvent:
+        return IncidentEvent(
             **{name: getattr(packet, name) for name in IncidentRunBinding.__fields__},
-            projection_revision=packet.projection.projection_revision, sequence=packet.event_sequence,
+            projection_revision=projection.projection_revision, sequence=packet.event_sequence,
             event_type=action, occurred_at=datetime.now(timezone.utc),
-            payload={"action_id": packet.command.action_id, "idempotency_key": packet.command.idempotency_key},
-            evidence_refs=list(packet.projection.evidence_refs),
+            payload={
+                "action_id": packet.command.action_id,
+                "idempotency_key": packet.command.idempotency_key,
+                "command_fingerprint": command_fingerprint,
+                "activity_identity": activity_identity,
+            },
+            evidence_refs=list(projection.evidence_refs),
         )
-        await self.repository.append_workspace_event(event)
 
     async def _persist_case(self, packet: WorkspaceActivityPacket) -> None:
         if not hasattr(self.repository, "put_case"):
@@ -189,17 +198,23 @@ class WorkspaceActivityDispatcher:
             return WorkspaceActionGenerationOutcome(actions=actions).dict()
         if activity_name == "workspace_execute_action_activity":
             packet = WorkspaceActionPacket.parse_obj(packet_data)
-            prior = await self.repository.workspace_action_receipt(
+            command_fingerprint = packet.command.canonical_hash()
+            activity_identity = packet.activity_identity or "workspace-action:{}:{}".format(
+                packet.workflow_run_id, command_fingerprint,
+            )
+            prior = await self.repository.workspace_action_commit(
                 packet.tenant_id, packet.case_id, packet.command.idempotency_key,
             )
             if prior is not None:
-                if prior.action_id != packet.command.action_id:
+                if (
+                    prior.command_fingerprint != command_fingerprint
+                    or prior.receipt.action_id != packet.command.action_id
+                    or prior.activity_identity != activity_identity
+                ):
                     raise PolicyViolation("workspace_action_idempotency_conflict")
-                current = await self.repository.workspace_projection(packet.tenant_id, packet.case_id)
-                if current is None:
-                    raise PolicyViolation("workspace_action_projection_not_authoritative")
-                actions = await self.repository.workspace_next_best_actions(packet.tenant_id, packet.case_id)
-                return WorkspaceActionOutcome(receipt=prior, projection=current, actions=actions[:3]).dict()
+                return WorkspaceActionOutcome(
+                    receipt=prior.receipt, projection=prior.projection, actions=prior.actions,
+                ).dict()
             action = await self.repository.workspace_next_best_action(
                 packet.tenant_id, packet.case_id, packet.command.action_id,
             )
@@ -244,6 +259,7 @@ class WorkspaceActivityDispatcher:
                     capability_registry_revision=action.capability_registry_revision,
                     precondition_version=action.precondition_version, precondition_hash=action.precondition_hash,
                     gate1_lease_id=action.gate1_lease_id,
+                    action_command_fingerprint=command_fingerprint,
                 )
                 invocation = await self.capability_registry.invoke(
                     CapabilityAudience.USER_QA, invocation_context,
@@ -265,19 +281,21 @@ class WorkspaceActivityDispatcher:
                     "action_revision": packet.projection.action_revision + 1,
                     "evidence_refs": evidence_refs, "generated_at": now,
                 })
-                await self.repository.put_workspace_projection(updated_projection)
                 receipt = WorkspaceActionReceipt(
                     **{name: getattr(packet, name) for name in IncidentRunBinding.__fields__},
                     action_id=action.action_id, idempotency_key=packet.command.idempotency_key,
                     status="FRESH_READ_COMPLETED", gate1_lease_id=action.gate1_lease_id,
                     reason="temporal_gate1_bound_read_completed",
                 )
-                receipt = await self.repository.record_workspace_action_receipt(receipt)
-                await self._append_action_event(
-                    packet.copy(update={"projection": updated_projection}),
-                    "workspace.action.fresh_read_completed",
-                )
-                return WorkspaceActionOutcome(receipt=receipt, projection=updated_projection).dict()
+                commit = await self.repository.commit_workspace_action_transition(WorkspaceActionCommit(
+                    activity_identity=activity_identity, command_fingerprint=command_fingerprint,
+                    projection=updated_projection, receipt=receipt,
+                    event=self._action_event(
+                        packet, updated_projection, "workspace.action.fresh_read_completed",
+                        command_fingerprint, activity_identity,
+                    ),
+                ))
+                return WorkspaceActionOutcome(receipt=commit.receipt, projection=commit.projection).dict()
             if action.cta.value != "request_gate_1":
                 raise PolicyViolation("workspace_action_cta_not_enabled_p0")
             updated_projection = packet.projection.copy(update={
@@ -287,9 +305,7 @@ class WorkspaceActivityDispatcher:
                 "action_revision": packet.projection.action_revision + 1,
                 "generated_at": now,
             })
-            lease_id = "gate1-{}".format(sha256(
-                "{}:{}:{}".format(packet.tenant_id, packet.command.action_id, packet.command.idempotency_key).encode("utf-8")
-            ).hexdigest()[:24])
+            lease_id = "gate1-" + command_fingerprint
             lease = Gate1Lease(
                 **{name: getattr(packet, name) for name in IncidentRunBinding.__fields__},
                 lease_id=lease_id, lease_revision=1, subject_id=actor.subject_id,
@@ -300,24 +316,30 @@ class WorkspaceActivityDispatcher:
                 evidence_revision=updated_projection.evidence_revision,
                 capability_registry_revision=action.capability_registry_revision,
                 precondition_version=action.precondition_version, precondition_hash=NextBestActionGenerator._precondition_hash(updated_projection),
+                issuance_command_fingerprint=command_fingerprint,
+                evidence_set_hash=canonical_evidence_set_hash(list(updated_projection.evidence_refs)),
                 issued_at=now, expires_at=now + timedelta(minutes=30), status=Gate1LeaseStatus.ACTIVE,
             )
-            await self.repository.put_workspace_projection(updated_projection)
-            await self.repository.append_gate1_lease(lease)
             next_actions = NextBestActionGenerator(
                 self.capability_registry, registry_revision=self.capability_registry.policy_version,
             ).generate_after_gate1(updated_projection, lease, now)
-            for next_action in next_actions:
-                await self.repository.append_next_best_action(next_action)
             receipt = WorkspaceActionReceipt(
                 **{name: getattr(packet, name) for name in IncidentRunBinding.__fields__},
                 action_id=action.action_id, idempotency_key=packet.command.idempotency_key,
                 status="GATE1_GRANTED", gate1_lease_id=lease.lease_id,
                 reason="temporal_gate1_lease_accepted",
             )
-            receipt = await self.repository.record_workspace_action_receipt(receipt)
-            await self._append_action_event(packet.copy(update={"projection": updated_projection}), "workspace.action.gate1_granted")
-            return WorkspaceActionOutcome(receipt=receipt, projection=updated_projection, actions=next_actions).dict()
+            commit = await self.repository.commit_workspace_action_transition(WorkspaceActionCommit(
+                activity_identity=activity_identity, command_fingerprint=command_fingerprint,
+                projection=updated_projection, receipt=receipt, lease=lease, actions=next_actions,
+                event=self._action_event(
+                    packet, updated_projection, "workspace.action.gate1_granted",
+                    command_fingerprint, activity_identity,
+                ),
+            ))
+            return WorkspaceActionOutcome(
+                receipt=commit.receipt, projection=commit.projection, actions=commit.actions,
+            ).dict()
         packet = WorkspaceActivityPacket.parse_obj(packet_data)
         expected = packet.stage + "_activity"
         if activity_name != expected:

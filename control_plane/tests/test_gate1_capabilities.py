@@ -30,6 +30,7 @@ from flowpulse_cp.workspace_actions import (
     Gate1LeaseStatus,
     NextBestActionGenerator,
     WorkspaceActionPacket,
+    canonical_evidence_set_hash,
 )
 from flowpulse_cp.workspace_models import (
     GraphMembership,
@@ -66,7 +67,8 @@ def context(item, **changes):
         subject_permissions=["incident:read"], data_class=CapabilityDataClass.CURRENT_INCIDENT,
         max_tool_calls=1, capability_registry_revision="capability-registry.v3",
         precondition_version="workspace-precondition.v1", precondition_hash=HASH,
-        gate1_lease_id="lease-a",
+        gate1_lease_id="lease-a", action_command_fingerprint="c" * 64,
+        recorded_evidence_ids=["evidence-a", "evidence-b"],
     )
     values.update(changes)
     return CapabilityInvocationContext(**values)
@@ -79,6 +81,8 @@ def lease(item, **changes):
         data_class=CapabilityDataClass.CURRENT_INCIDENT.value, tool_schema_version="metrics-input.v1",
         projection_revision=1, evidence_revision=1, capability_registry_revision="capability-registry.v3",
         precondition_version="workspace-precondition.v1", precondition_hash=HASH,
+        issuance_command_fingerprint="d" * 64,
+        evidence_set_hash=canonical_evidence_set_hash(["evidence-a", "evidence-b"]),
         issued_at=NOW, expires_at=NOW + timedelta(minutes=30), status=Gate1LeaseStatus.ACTIVE,
     )
     values.update(changes)
@@ -134,6 +138,34 @@ def projection(item):
 
 
 class Gate1CapabilityTests(unittest.IsolatedAsyncioTestCase):
+    async def test_lease_binds_full_command_and_exact_evidence_set_on_consumption(self):
+        item = binding()
+        repository = InMemoryWorkspaceRepository()
+        await repository.put_binding(item)
+        await repository.append_gate1_lease(lease(item))
+        authority = Gate1LeaseAuthority(repository, now=lambda: NOW)
+        request = CapabilityRequest(
+            capability=CapabilityName.METRICS, component_id="checkout",
+            data_class=CapabilityDataClass.CURRENT_INCIDENT, parameters={},
+        )
+        consumed = await authority.assert_active(context(item), request, MetricsAdapter.descriptor)
+        self.assertEqual("c" * 64, consumed.consumed_command_fingerprint)
+        self.assertEqual(
+            canonical_evidence_set_hash(["evidence-a", "evidence-b"]),
+            consumed.consumed_evidence_set_hash,
+        )
+        self.assertEqual(1, consumed.consumed_evidence_revision)
+
+        for label, changed_context in {
+            "same-revision-evidence-substitution": context(item, recorded_evidence_ids=["evidence-a", "evidence-c"]),
+            "same-activity-command-replay": context(item, action_command_fingerprint="e" * 64),
+            "cross-tenant": context(item, tenant_id="tenant-b"),
+            "cross-run": context(item, run_id="run-public-b"),
+        }.items():
+            with self.subTest(label=label):
+                with self.assertRaises(PolicyViolation):
+                    await authority.assert_active(changed_context, request, MetricsAdapter.descriptor)
+
     async def test_lease_is_single_fresh_read_capability_and_only_retries_same_activity(self):
         item = binding()
         repository = InMemoryWorkspaceRepository()
@@ -246,6 +278,9 @@ class Gate1CapabilityTests(unittest.IsolatedAsyncioTestCase):
         lease_id = result["receipt"]["gate1_lease_id"]
         active = await repository.workspace_gate1_lease(item.tenant_id, item.case_id, lease_id)
         self.assertIsNotNone(active)
+        self.assertEqual("gate1-" + command.canonical_hash(), lease_id)
+        self.assertEqual(command.canonical_hash(), active.issuance_command_fingerprint)
+        self.assertEqual(canonical_evidence_set_hash([]), active.evidence_set_hash)
         retry = await dispatcher.dispatch("workspace_execute_action_activity", WorkspaceActionPacket(
             **item.dict(), projection=result["projection"], event_sequence=3, command=command,
             actor_tenant_id=item.tenant_id, actor_subject_id="subject-a", actor_roles=["viewer"],
@@ -257,6 +292,50 @@ class Gate1CapabilityTests(unittest.IsolatedAsyncioTestCase):
                 command=command.copy(update={"action_id": "other-card"}),
                 actor_tenant_id=item.tenant_id, actor_subject_id="subject-a", actor_roles=["viewer"],
             ).dict())
+
+    async def test_action_commit_rolls_back_every_persistence_boundary_then_retry_is_complete_once(self):
+        item = binding()
+        current = projection(item)
+        command = ActionInvocationCommand(
+            incident_id=item.incident_id, run_id=item.run_id, topology_revision=item.topology_revision,
+            projection_revision=1, action_id="placeholder", idempotency_key="gate1-atomic-a",
+        )
+        for boundary in ("after_projection", "after_lease", "after_cards", "after_receipt", "after_event", "after_transition"):
+            with self.subTest(boundary=boundary):
+                repository = InMemoryWorkspaceRepository(failure_injector=lambda checkpoint, target=boundary: (
+                    (_ for _ in ()).throw(RuntimeError("injected:" + checkpoint))
+                    if checkpoint == target else None
+                ))
+                await repository.put_binding(item)
+                await repository.put_projection(current)
+                registry = CapabilityRegistry(
+                    descriptors=[MetricsAdapter.descriptor], adapters={CapabilityName.METRICS: MetricsAdapter()},
+                )
+                card = NextBestActionGenerator(registry).generate(current, datetime.now(timezone.utc))[0]
+                await repository.append_next_best_action(card)
+                command = command.copy(update={"action_id": card.action_id})
+                dispatcher = WorkspaceActivityDispatcher(repository, capability_registry=registry)
+                packet = WorkspaceActionPacket(
+                    **item.dict(), projection=current, event_sequence=2, command=command,
+                    actor_tenant_id=item.tenant_id, actor_subject_id="subject-a", actor_roles=["viewer"],
+                )
+                with self.assertRaisesRegex(RuntimeError, "injected:" + boundary):
+                    await dispatcher.dispatch("workspace_execute_action_activity", packet.dict())
+                self.assertEqual(current, await repository.workspace_projection(item.tenant_id, item.case_id))
+                self.assertEqual([], repository.events[(item.tenant_id, item.run_id, item.topology_revision)])
+                self.assertEqual([], repository.gate1_leases[(item.tenant_id, item.case_id, "gate1-" + command.canonical_hash())])
+                self.assertIsNone(await repository.workspace_action_receipt(
+                    item.tenant_id, item.case_id, command.idempotency_key,
+                ))
+
+                repository.failure_injector = None
+                accepted = await dispatcher.dispatch("workspace_execute_action_activity", packet.dict())
+                self.assertEqual("GATE1_GRANTED", accepted["receipt"]["status"])
+                retried = await dispatcher.dispatch("workspace_execute_action_activity", packet.dict())
+                self.assertEqual(accepted["receipt"], retried["receipt"])
+                self.assertEqual(2, (await repository.workspace_projection(item.tenant_id, item.case_id)).projection_revision)
+                self.assertEqual(1, len(repository.events[(item.tenant_id, item.run_id, item.topology_revision)]))
+                self.assertEqual(1, len(repository.gate1_leases[(item.tenant_id, item.case_id, "gate1-" + command.canonical_hash())]))
 
 
 if __name__ == "__main__":

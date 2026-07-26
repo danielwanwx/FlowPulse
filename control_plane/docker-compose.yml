@@ -17,7 +17,10 @@ services:
       # Explicit local test credential. x-flowpulse-test-* headers never select
       # a tenant, subject, or role on this host-published API.
       FLOWPULSE_TRUSTED_AUTH_FIXTURE_TOKEN: ${FLOWPULSE_TEST_OWNER_TOKEN:?set_FLOWPULSE_TEST_OWNER_TOKEN_for_local_compose}
-      FLOWPULSE_TRUSTED_AUTH_FIXTURE_CONTEXT_JSON: '{"tenant_id":"tenant-http","subject_id":"owner-http","roles":["owner"]}'
+      # The default keeps the established owner-gate suite unchanged. The
+      # production Gate 1 Compose proof explicitly rebuilds with a separate,
+      # server-side tenant-minio fixture identity; browser headers never pick it.
+      FLOWPULSE_TRUSTED_AUTH_FIXTURE_CONTEXT_JSON: '${FLOWPULSE_TEST_FIXTURE_CONTEXT_JSON:-{"tenant_id":"tenant-http","subject_id":"owner-http","roles":["owner"]}}'
       FLOWPULSE_LOCAL_DETERMINISTIC_EVIDENCE: "1"
     depends_on:
       postgres: {condition: service_healthy}

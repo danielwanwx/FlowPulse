@@ -64,7 +64,9 @@ from .capabilities import (
 from .capability_adapters import (
     CurrentEvidenceCapabilityAdapter,
     DomainEvidenceAdmission,
+    Gate1CurrentEvidenceCapabilityAdapter,
     RecordedContextCapabilityAdapter,
+    production_current_evidence_adapters,
 )
 from .postgres import PostgresCapabilityScopeAuthority
 from .conversation_manager import ConversationManager
@@ -560,14 +562,26 @@ async def run_worker(
         if local_deterministic_evidence
         else S3SourceReadback(source_client, source_bucket, source_prefix, source_tenant_id)
     )
-    evidence_acquirer = None if local_deterministic_evidence else S3CurrentEvidenceAcquirer(
+    controlled_evidence_acquirer = S3CurrentEvidenceAcquirer(
         source_client, source_bucket, source_prefix, source_tenant_id,
     )
+    # Local deterministic diagnosis remains isolated from the actual source
+    # reader, while the user-facing Gate 1 adapter always remains a real,
+    # controlled source capability when a worker has source credentials.
+    evidence_acquirer = None if local_deterministic_evidence else controlled_evidence_acquirer
     descriptors = [RecordedContextCapabilityAdapter.descriptor]
     adapters = {RecordedContextCapabilityAdapter.descriptor.capability: RecordedContextCapabilityAdapter()}
     if evidence_acquirer is not None:
-        descriptors.append(CurrentEvidenceCapabilityAdapter.descriptor)
-        adapters[CurrentEvidenceCapabilityAdapter.descriptor.capability] = CurrentEvidenceCapabilityAdapter(evidence_acquirer)
+        autonomous_descriptors, autonomous_adapters = production_current_evidence_adapters(evidence_acquirer)
+        descriptors.extend(autonomous_descriptors)
+        adapters.update(autonomous_adapters)
+    else:
+        # Compose's deterministic diagnosis fixture still uses the configured
+        # reader for a user-authorized Gate 1 command. It does not turn that
+        # read into deterministic diagnosis evidence.
+        gate1_adapter = Gate1CurrentEvidenceCapabilityAdapter(controlled_evidence_acquirer)
+        descriptors.append(gate1_adapter.descriptor)
+        adapters[gate1_adapter.descriptor.capability] = gate1_adapter
     capability_registry = CapabilityRegistry(
         descriptors=descriptors, adapters=adapters, audit_sink=repository,
         scope_authority=PostgresCapabilityScopeAuthority(repository),

@@ -1,5 +1,6 @@
 """Tenant-scoped Postgres projections; Temporal remains the state authority."""
 
+import inspect
 import json
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Dict, List, Mapping, Optional, Tuple, TypeVar
@@ -39,7 +40,13 @@ from .workspace_models import (
     NodeExplanation,
     NodeExplanationStart,
 )
-from .workspace_actions import ActionInvocationCommand, Gate1Lease, NextBestAction, WorkspaceActionReceipt
+from .workspace_actions import (
+    ActionInvocationCommand,
+    Gate1Lease,
+    NextBestAction,
+    WorkspaceActionCommit,
+    WorkspaceActionReceipt,
+)
 
 
 T = TypeVar("T")
@@ -89,9 +96,10 @@ def activity_event_identity(packet: TemporalActivityPacket, activity_id: str) ->
 
 
 class PostgresCaseRepository:
-    def __init__(self, dsn: str) -> None:
+    def __init__(self, dsn: str, failure_injector=None) -> None:
         self.dsn = dsn
         self.pool: Optional[asyncpg.Pool] = None
+        self.failure_injector = failure_injector
 
     async def connect(self) -> None:
         self.pool = await asyncpg.create_pool(self.dsn, min_size=1, max_size=4)
@@ -115,6 +123,13 @@ class PostgresCaseRepository:
                 if subject_id is not None:
                     await connection.execute("SELECT set_config('app.subject_id', $1, true)", subject_id)
                 return await operation(connection)
+
+    async def _action_checkpoint(self, checkpoint: str) -> None:
+        if self.failure_injector is None:
+            return
+        result = self.failure_injector(checkpoint)
+        if inspect.isawaitable(result):
+            await result
 
     async def get_case(self, tenant_id: str, case_id: str) -> Optional[IncidentCase]:
         async def operation(connection: asyncpg.Connection) -> Optional[IncidentCase]:
@@ -519,6 +534,225 @@ class PostgresCaseRepository:
             )
             return WorkspaceActionReceipt.parse_obj(_decode(row["payload"])) if row else None
         return await self._tenant(tenant_id, operation)
+
+    async def _verify_workspace_action_commit(
+        self, connection: asyncpg.Connection, commit: WorkspaceActionCommit,
+    ) -> None:
+        """Verify a stored outbox record still has its complete ledger set."""
+        projection = await connection.fetchrow(
+            """SELECT payload FROM incident_projections
+               WHERE tenant_id=$1 AND run_id=$2 AND topology_revision=$3 AND projection_revision=$4""",
+            commit.projection.tenant_id, commit.projection.run_id,
+            commit.projection.topology_revision, commit.projection.projection_revision,
+        )
+        receipt = await connection.fetchrow(
+            """SELECT payload FROM workspace_action_receipts
+               WHERE tenant_id=$1 AND case_id=$2 AND idempotency_key=$3""",
+            commit.receipt.tenant_id, commit.receipt.case_id, commit.receipt.idempotency_key,
+        )
+        event = await connection.fetchrow(
+            """SELECT payload FROM incident_projection_events
+               WHERE tenant_id=$1 AND run_id=$2 AND topology_revision=$3 AND sequence=$4""",
+            commit.event.tenant_id, commit.event.run_id, commit.event.topology_revision, commit.event.sequence,
+        )
+        if (
+            projection is None or receipt is None or event is None
+            or IncidentProjection.parse_obj(_decode(projection["payload"])) != commit.projection
+            or WorkspaceActionReceipt.parse_obj(_decode(receipt["payload"])) != commit.receipt
+            or IncidentEvent.parse_obj(_decode(event["payload"])) != commit.event
+        ):
+            raise PolicyViolation("workspace_action_transition_partial")
+        if commit.lease is not None:
+            lease = await connection.fetchrow(
+                """SELECT payload FROM workspace_gate1_leases
+                   WHERE tenant_id=$1 AND lease_id=$2 AND lease_revision=$3""",
+                commit.lease.tenant_id, commit.lease.lease_id, commit.lease.lease_revision,
+            )
+            if lease is None or Gate1Lease.parse_obj(_decode(lease["payload"])) != commit.lease:
+                raise PolicyViolation("workspace_action_transition_partial")
+        for action in commit.actions:
+            row = await connection.fetchrow(
+                """SELECT payload FROM next_best_actions
+                   WHERE tenant_id=$1 AND action_id=$2 AND card_version=$3""",
+                action.tenant_id, action.action_id, action.card_version,
+            )
+            if row is None or NextBestAction.parse_obj(_decode(row["payload"])) != action:
+                raise PolicyViolation("workspace_action_transition_partial")
+
+    async def workspace_action_commit(
+        self, tenant_id: str, case_id: str, idempotency_key: str,
+    ) -> Optional[WorkspaceActionCommit]:
+        """Read only a complete action outbox record; partial legacy writes fail closed."""
+        async def operation(connection: asyncpg.Connection) -> Optional[WorkspaceActionCommit]:
+            row = await connection.fetchrow(
+                """SELECT payload FROM workspace_action_transitions
+                   WHERE tenant_id=$1 AND case_id=$2 AND idempotency_key=$3""",
+                tenant_id, case_id, idempotency_key,
+            )
+            if row is None:
+                partial = await connection.fetchrow(
+                    """SELECT 1 FROM workspace_action_receipts
+                       WHERE tenant_id=$1 AND case_id=$2 AND idempotency_key=$3""",
+                    tenant_id, case_id, idempotency_key,
+                )
+                if partial is not None:
+                    raise PolicyViolation("workspace_action_transition_partial")
+                return None
+            commit = WorkspaceActionCommit.parse_obj(_decode(row["payload"]))
+            if (
+                commit.receipt.tenant_id != tenant_id or commit.receipt.case_id != case_id
+                or commit.receipt.idempotency_key != idempotency_key
+            ):
+                raise PolicyViolation("workspace_action_transition_partial")
+            await self._verify_workspace_action_commit(connection, commit)
+            return commit
+        return await self._tenant(tenant_id, operation)
+
+    async def commit_workspace_action_transition(self, commit: WorkspaceActionCommit) -> WorkspaceActionCommit:
+        """Append every Gate 1 result in one transaction or persist none of it."""
+        binding = _workspace_binding(commit.projection)
+        if (
+            _workspace_binding(commit.receipt) != binding
+            or _workspace_binding(commit.event) != binding
+            or (commit.lease is not None and _workspace_binding(commit.lease) != binding)
+            or any(_workspace_binding(action) != binding for action in commit.actions)
+        ):
+            raise PolicyViolation("workspace_action_transition_binding_mismatch")
+
+        async def operation(connection: asyncpg.Connection) -> WorkspaceActionCommit:
+            await _lock_workspace_mapping(connection, binding)
+            binding_row = await connection.fetchrow(
+                "SELECT payload FROM incident_run_bindings WHERE tenant_id=$1 AND run_id=$2",
+                binding.tenant_id, binding.run_id,
+            )
+            if binding_row is None or _workspace_binding(_decode(binding_row["payload"])) != binding:
+                raise PolicyViolation("workspace_public_internal_binding_mismatch")
+            existing = await connection.fetchrow(
+                """SELECT payload FROM workspace_action_transitions
+                   WHERE tenant_id=$1 AND case_id=$2 AND idempotency_key=$3""",
+                commit.receipt.tenant_id, commit.receipt.case_id, commit.receipt.idempotency_key,
+            )
+            if existing is not None:
+                recorded = WorkspaceActionCommit.parse_obj(_decode(existing["payload"]))
+                if recorded != commit:
+                    raise PolicyViolation("workspace_action_idempotency_conflict")
+                await self._verify_workspace_action_commit(connection, recorded)
+                return recorded
+            partial = await connection.fetchrow(
+                """SELECT 1 FROM workspace_action_receipts
+                   WHERE tenant_id=$1 AND case_id=$2 AND idempotency_key=$3""",
+                commit.receipt.tenant_id, commit.receipt.case_id, commit.receipt.idempotency_key,
+            )
+            if partial is not None:
+                raise PolicyViolation("workspace_action_transition_partial")
+
+            duplicate = await connection.fetchrow(
+                """SELECT payload FROM incident_projections
+                   WHERE tenant_id=$1 AND run_id=$2 AND topology_revision=$3
+                     AND (projection_revision=$4 OR sequence=$5)
+                   ORDER BY projection_revision DESC LIMIT 1""",
+                commit.projection.tenant_id, commit.projection.run_id, commit.projection.topology_revision,
+                commit.projection.projection_revision, commit.projection.sequence,
+            )
+            if duplicate is not None:
+                raise PolicyViolation("workspace_action_transition_partial")
+            latest = await connection.fetchrow(
+                """SELECT projection_revision, sequence FROM incident_projections
+                   WHERE tenant_id=$1 AND run_id=$2 AND topology_revision=$3
+                   ORDER BY projection_revision DESC LIMIT 1""",
+                commit.projection.tenant_id, commit.projection.run_id, commit.projection.topology_revision,
+            )
+            if latest is not None and (
+                commit.projection.projection_revision <= latest["projection_revision"]
+                or commit.projection.sequence <= latest["sequence"]
+            ):
+                raise PolicyViolation("workspace_projection_revision_or_sequence_not_monotonic")
+            await connection.execute(
+                """INSERT INTO incident_projections
+                   (tenant_id, incident_id, run_id, topology_revision, case_id, case_revision, workflow_id, workflow_run_id,
+                    projection_revision, sequence, payload, created_at)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12)""",
+                commit.projection.tenant_id, commit.projection.incident_id, commit.projection.run_id,
+                commit.projection.topology_revision, commit.projection.case_id, commit.projection.case_revision,
+                commit.projection.workflow_id, commit.projection.workflow_run_id,
+                commit.projection.projection_revision, commit.projection.sequence,
+                _payload(commit.projection), commit.projection.generated_at,
+            )
+            await self._action_checkpoint("after_projection")
+
+            if commit.lease is not None:
+                await connection.execute(
+                    """INSERT INTO workspace_gate1_leases
+                       (tenant_id, incident_id, run_id, topology_revision, case_id, case_revision, workflow_id,
+                        workflow_run_id, lease_id, lease_revision, status, consumed_by_activity_id, expires_at, payload, created_at)
+                       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15)""",
+                    commit.lease.tenant_id, commit.lease.incident_id, commit.lease.run_id,
+                    commit.lease.topology_revision, commit.lease.case_id, commit.lease.case_revision,
+                    commit.lease.workflow_id, commit.lease.workflow_run_id, commit.lease.lease_id,
+                    commit.lease.lease_revision, commit.lease.status.value, commit.lease.consumed_by_activity_id,
+                    commit.lease.expires_at, _payload(commit.lease), commit.lease.created_at,
+                )
+            await self._action_checkpoint("after_lease")
+
+            for action in commit.actions:
+                await connection.execute(
+                    """INSERT INTO next_best_actions
+                       (tenant_id, incident_id, run_id, topology_revision, case_id, case_revision, workflow_id,
+                        workflow_run_id, action_id, card_version, projection_revision, action_revision, expires_at,
+                        payload, created_at)
+                       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15)""",
+                    action.tenant_id, action.incident_id, action.run_id, action.topology_revision, action.case_id,
+                    action.case_revision, action.workflow_id, action.workflow_run_id, action.action_id,
+                    action.card_version, action.projection_revision, action.action_revision, action.expires_at,
+                    _payload(action), action.created_at,
+                )
+            await self._action_checkpoint("after_cards")
+
+            await connection.execute(
+                """INSERT INTO workspace_action_receipts
+                   (tenant_id, incident_id, run_id, topology_revision, case_id, case_revision, workflow_id,
+                    workflow_run_id, action_id, idempotency_key, status, payload, created_at)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13)""",
+                commit.receipt.tenant_id, commit.receipt.incident_id, commit.receipt.run_id,
+                commit.receipt.topology_revision, commit.receipt.case_id, commit.receipt.case_revision,
+                commit.receipt.workflow_id, commit.receipt.workflow_run_id, commit.receipt.action_id,
+                commit.receipt.idempotency_key, commit.receipt.status, _payload(commit.receipt), commit.receipt.created_at,
+            )
+            await self._action_checkpoint("after_receipt")
+
+            event_id = uuid5(
+                NAMESPACE_URL,
+                "workspace-event:{}:{}:{}:{}".format(
+                    commit.event.tenant_id, commit.event.run_id, commit.event.topology_revision, commit.event.sequence,
+                ),
+            )
+            await connection.execute(
+                """INSERT INTO incident_projection_events
+                   (event_id, tenant_id, incident_id, run_id, topology_revision, case_id, case_revision, workflow_id,
+                    workflow_run_id, projection_revision, sequence, event_type, payload, occurred_at)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb,$14)""",
+                event_id, commit.event.tenant_id, commit.event.incident_id, commit.event.run_id,
+                commit.event.topology_revision, commit.event.case_id, commit.event.case_revision,
+                commit.event.workflow_id, commit.event.workflow_run_id, commit.event.projection_revision,
+                commit.event.sequence, commit.event.event_type, _payload(commit.event), commit.event.occurred_at,
+            )
+            await self._action_checkpoint("after_event")
+
+            await connection.execute(
+                """INSERT INTO workspace_action_transitions
+                   (tenant_id, incident_id, run_id, topology_revision, case_id, case_revision, workflow_id,
+                    workflow_run_id, idempotency_key, action_id, activity_identity, command_fingerprint,
+                    projection_revision, event_sequence, event_type, payload, created_at)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,$17)""",
+                binding.tenant_id, binding.incident_id, binding.run_id, binding.topology_revision,
+                binding.case_id, binding.case_revision, binding.workflow_id, binding.workflow_run_id,
+                commit.receipt.idempotency_key, commit.receipt.action_id, commit.activity_identity,
+                commit.command_fingerprint, commit.projection.projection_revision, commit.event.sequence,
+                commit.event.event_type, _payload(commit), commit.receipt.created_at,
+            )
+            await self._action_checkpoint("after_transition")
+            return commit
+        return await self._tenant(binding.tenant_id, operation)
 
     async def _assert_capability_scope_connection(
         self, connection: asyncpg.Connection, context: CapabilityInvocationContext,

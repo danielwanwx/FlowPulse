@@ -40,6 +40,7 @@ with workflow.unsafe.imports_passed_through():
 
 
 WORKSPACE_V2_ACTIONS_PATCH = "workspace-v2-gate1-next-best-actions"
+WORKSPACE_V2_ACTION_COMMIT_PATCH = "workspace-v2-gate1-atomic-action-commit"
 
 
 @workflow.defn(name=WORKSPACE_V2_WORKFLOW_TYPE)
@@ -193,13 +194,23 @@ class IncidentWorkspaceTemporalWorkflow:
                 if command.action_id not in self._actions:
                     raise ValueError("workspace_action_not_current")
                 self._event_sequence += 1
+                action_packet = WorkspaceActionPacket(
+                    **self._binding.dict(), projection=self._projection, event_sequence=self._event_sequence,
+                    command=command, actor_tenant_id=actor.actor_tenant_id,
+                    actor_subject_id=actor.actor_subject_id, actor_roles=actor.actor_roles,
+                )
+                # Existing Task 5 update histories did not carry an explicit
+                # transition key. Preserve their commands exactly; every new
+                # history records the durable activity/command identity.
+                if workflow.patched(WORKSPACE_V2_ACTION_COMMIT_PATCH):
+                    action_packet = action_packet.copy(update={
+                        "activity_identity": "workspace-action:{}:{}".format(
+                            self._binding.workflow_run_id, command.canonical_hash(),
+                        ),
+                    })
                 outcome_data = await self._action_activity(
                     "workspace_execute_action_activity",
-                    WorkspaceActionPacket(
-                        **self._binding.dict(), projection=self._projection, event_sequence=self._event_sequence,
-                        command=command, actor_tenant_id=actor.actor_tenant_id,
-                        actor_subject_id=actor.actor_subject_id, actor_roles=actor.actor_roles,
-                    ).dict(),
+                    action_packet.dict(),
                 )
                 outcome = WorkspaceActionOutcome.parse_obj(outcome_data)
                 if outcome.projection is not None:

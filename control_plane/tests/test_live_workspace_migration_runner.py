@@ -90,7 +90,7 @@ class LiveWorkspaceMigrationRunnerTests(unittest.TestCase):
             cwd=ROOT, env=environment, text=True, capture_output=True, timeout=90,
         )
 
-    def test_actual_runner_upgrades_legacy_001_and_crash_recovery_never_records_partial_006(self):
+    def test_actual_runner_upgrades_legacy_001_and_crash_recovery_never_records_partial_007(self):
         async def run():
             database = "flowpulse_runner_{}".format(uuid4().hex)
             target_admin_dsn = self.admin_dsn.rsplit("/", 1)[0] + "/" + database
@@ -119,16 +119,17 @@ class LiveWorkspaceMigrationRunnerTests(unittest.TestCase):
                                 "001_control_plane.sql", "002_authorization_intents.sql",
                                 "003_incident_workspace_projection.sql", "004_workspace_binding_integrity.sql",
                                 "005_workspace_subject_grants.sql", "006_workspace_gate1_actions.sql",
+                                "007_workspace_action_transitions.sql",
                             ],
                             [row["filename"] for row in rows],
                         )
                     finally:
                         await check.close()
 
-                    # 006 is an established workspace migration.  The
+                    # 007 is an established workspace migration.  The
                     # temporary crash/recovery fixture must be the next
-                    # contiguous migration, not a competing 006 prefix.
-                    crash = copied / "007_runner_crash_recovery.sql"
+                    # contiguous migration, not a competing 007 prefix.
+                    crash = copied / "008_runner_crash_recovery.sql"
                     crash.write_text(
                         "CREATE TABLE runner_crash_marker (id integer PRIMARY KEY);\nSELECT 1 / 0;\n",
                         encoding="utf-8",
@@ -139,7 +140,7 @@ class LiveWorkspaceMigrationRunnerTests(unittest.TestCase):
                     try:
                         self.assertIsNone(await check.fetchval("SELECT to_regclass('public.runner_crash_marker')"))
                         self.assertIsNone(await check.fetchval(
-                            "SELECT checksum_sha256 FROM schema_migrations WHERE filename='007_runner_crash_recovery.sql'"
+                            "SELECT checksum_sha256 FROM schema_migrations WHERE filename='008_runner_crash_recovery.sql'"
                         ))
                     finally:
                         await check.close()
@@ -153,7 +154,7 @@ class LiveWorkspaceMigrationRunnerTests(unittest.TestCase):
                             "SELECT to_regclass('public.runner_crash_marker')::text"
                         ))
                         self.assertIsNotNone(await check.fetchval(
-                            "SELECT checksum_sha256 FROM schema_migrations WHERE filename='007_runner_crash_recovery.sql'"
+                            "SELECT checksum_sha256 FROM schema_migrations WHERE filename='008_runner_crash_recovery.sql'"
                         ))
                     finally:
                         await check.close()
@@ -313,6 +314,7 @@ class LiveWorkspaceMigrationRunnerTests(unittest.TestCase):
                             "001_control_plane.sql", "002_authorization_intents.sql",
                             "003_incident_workspace_projection.sql", "004_workspace_binding_integrity.sql",
                             "005_workspace_subject_grants.sql", "006_workspace_gate1_actions.sql",
+                            "007_workspace_action_transitions.sql",
                         ],
                         [row["filename"] for row in rows],
                     )

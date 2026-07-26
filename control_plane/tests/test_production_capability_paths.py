@@ -12,7 +12,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from flowpulse_cp.capabilities import (
     CapabilityAudience,
     CapabilityDataClass,
+    CapabilityGate,
     CapabilityInvocationContext,
+    CapabilityName,
     CapabilityRegistry,
     CapabilityRequest,
     CapabilityScope,
@@ -21,7 +23,9 @@ from flowpulse_cp.capabilities import (
 from flowpulse_cp.capability_adapters import (
     CurrentEvidenceCapabilityAdapter,
     DomainEvidenceAdmission,
+    Gate1CurrentEvidenceCapabilityAdapter,
     RecordedContextCapabilityAdapter,
+    production_current_evidence_adapters,
 )
 from flowpulse_cp.conversation_manager import ConversationManager
 from flowpulse_cp.integrity import FrozenSourceReadback
@@ -139,6 +143,18 @@ class ProductionCapabilityPathTests(unittest.TestCase):
                 RecordedContextCapabilityAdapter.descriptor.capability: RecordedContextCapabilityAdapter(),
             },
             audit_sink=self.audit, scope_authority=self.authority,
+        )
+
+    def test_worker_factory_exposes_a_real_user_gate1_current_evidence_adapter(self):
+        descriptors, adapters = production_current_evidence_adapters(ControlledAcquirer(self.acquisition_result()))
+        registry = CapabilityRegistry(descriptors=descriptors, adapters=adapters)
+        user_descriptors = registry.available(CapabilityAudience.USER_QA)
+        self.assertEqual(
+            [(CapabilityName.GATE1_CURRENT_EVIDENCE, CapabilityGate.GATE1, CapabilityDataClass.CURRENT_INCIDENT)],
+            [(item.capability, item.required_gate, item.data_classes[0]) for item in user_descriptors],
+        )
+        self.assertIsInstance(
+            adapters[CapabilityName.GATE1_CURRENT_EVIDENCE], Gate1CurrentEvidenceCapabilityAdapter,
         )
 
     def autonomous_packet(self):

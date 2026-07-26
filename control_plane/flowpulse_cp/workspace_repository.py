@@ -1,8 +1,9 @@
 """Append-only workspace projections used by Temporal activities and API reads."""
 
+import copy
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 from uuid import uuid4
 
 from .capabilities import CapabilityAuditRecord
@@ -10,7 +11,13 @@ from .models import AuthCommandIntent, AuthCommandKind, AuthContext
 
 from .policy import PolicyViolation
 from .workspace_models import IncidentEvent, IncidentProjection, IncidentRunBinding, NodeExplanation, NodeExplanationStart
-from .workspace_actions import ActionInvocationCommand, Gate1Lease, NextBestAction, WorkspaceActionReceipt
+from .workspace_actions import (
+    ActionInvocationCommand,
+    Gate1Lease,
+    NextBestAction,
+    WorkspaceActionCommit,
+    WorkspaceActionReceipt,
+)
 
 
 BindingKey = Tuple[str, str, str]
@@ -33,7 +40,7 @@ def _same_binding(left: IncidentRunBinding, right: IncidentRunBinding) -> bool:
 class InMemoryWorkspaceRepository:
     """Deterministic test/query projection; it never advances workflow state."""
 
-    def __init__(self) -> None:
+    def __init__(self, failure_injector: Optional[Callable[[str], None]] = None) -> None:
         self.bindings: Dict[BindingKey, IncidentRunBinding] = {}
         self.projections: Dict[BindingKey, List[IncidentProjection]] = defaultdict(list)
         self.events: Dict[BindingKey, List[IncidentEvent]] = defaultdict(list)
@@ -46,6 +53,10 @@ class InMemoryWorkspaceRepository:
         self.next_best_actions: Dict[Tuple[str, str, str], NextBestAction] = {}
         self.workspace_action_receipts: Dict[Tuple[str, str, str], WorkspaceActionReceipt] = {}
         self.workspace_action_idempotency: Dict[Tuple[str, str, str], str] = {}
+        self.workspace_action_commits: Dict[Tuple[str, str, str], WorkspaceActionCommit] = {}
+        # Test-only seam: a checkpoint raises inside the same in-memory
+        # transaction simulation and restores every append-only collection.
+        self.failure_injector = failure_injector
 
     async def put_binding(self, binding: IncidentRunBinding) -> IncidentRunBinding:
         key = _binding_key(binding)
@@ -293,6 +304,81 @@ class InMemoryWorkspaceRepository:
         self, tenant_id: str, case_id: str, idempotency_key: str,
     ) -> Optional[WorkspaceActionReceipt]:
         return self.workspace_action_receipts.get((tenant_id, case_id, idempotency_key))
+
+    def _action_checkpoint(self, checkpoint: str) -> None:
+        if self.failure_injector is not None:
+            self.failure_injector(checkpoint)
+
+    async def workspace_action_commit(
+        self, tenant_id: str, case_id: str, idempotency_key: str,
+    ) -> Optional[WorkspaceActionCommit]:
+        key = (tenant_id, case_id, idempotency_key)
+        commit = self.workspace_action_commits.get(key)
+        receipt = self.workspace_action_receipts.get(key)
+        if commit is None:
+            if receipt is not None:
+                raise PolicyViolation("workspace_action_transition_partial")
+            return None
+        if receipt != commit.receipt:
+            raise PolicyViolation("workspace_action_transition_partial")
+        if self.projections.get(_binding_key(commit.projection), [])[-1] != commit.projection:
+            raise PolicyViolation("workspace_action_transition_partial")
+        events = self.events.get(_binding_key(commit.event), [])
+        if commit.event not in events:
+            raise PolicyViolation("workspace_action_transition_partial")
+        if commit.lease is not None:
+            latest = await self.workspace_gate1_lease(
+                commit.lease.tenant_id, commit.lease.case_id, commit.lease.lease_id,
+            )
+            if latest != commit.lease:
+                raise PolicyViolation("workspace_action_transition_partial")
+        for action in commit.actions:
+            if await self.workspace_next_best_action(action.tenant_id, action.case_id, action.action_id) != action:
+                raise PolicyViolation("workspace_action_transition_partial")
+        return commit
+
+    async def commit_workspace_action_transition(self, commit: WorkspaceActionCommit) -> WorkspaceActionCommit:
+        """Atomically append projection, optional lease/cards, receipt, event, and outbox record."""
+        key = (commit.receipt.tenant_id, commit.receipt.case_id, commit.receipt.idempotency_key)
+        existing = await self.workspace_action_commit(*key)
+        if existing is not None:
+            if existing != commit:
+                raise PolicyViolation("workspace_action_idempotency_conflict")
+            return existing
+        snapshots = {
+            "projections": copy.deepcopy(self.projections),
+            "gate1_leases": copy.deepcopy(self.gate1_leases),
+            "next_best_actions": copy.deepcopy(self.next_best_actions),
+            "workspace_action_receipts": copy.deepcopy(self.workspace_action_receipts),
+            "workspace_action_idempotency": copy.deepcopy(self.workspace_action_idempotency),
+            "events": copy.deepcopy(self.events),
+            "workspace_action_commits": copy.deepcopy(self.workspace_action_commits),
+        }
+        try:
+            await self.put_workspace_projection(commit.projection)
+            self._action_checkpoint("after_projection")
+            if commit.lease is not None:
+                await self.append_gate1_lease(commit.lease)
+            self._action_checkpoint("after_lease")
+            for action in commit.actions:
+                await self.append_next_best_action(action)
+            self._action_checkpoint("after_cards")
+            await self.record_workspace_action_receipt(commit.receipt)
+            self._action_checkpoint("after_receipt")
+            await self.append_workspace_event(commit.event)
+            self._action_checkpoint("after_event")
+            self.workspace_action_commits[key] = commit
+            self._action_checkpoint("after_transition")
+            return commit
+        except Exception:
+            self.projections = snapshots["projections"]
+            self.gate1_leases = snapshots["gate1_leases"]
+            self.next_best_actions = snapshots["next_best_actions"]
+            self.workspace_action_receipts = snapshots["workspace_action_receipts"]
+            self.workspace_action_idempotency = snapshots["workspace_action_idempotency"]
+            self.events = snapshots["events"]
+            self.workspace_action_commits = snapshots["workspace_action_commits"]
+            raise
 
     async def append_capability_audit(self, audit: CapabilityAuditRecord) -> CapabilityAuditRecord:
         """Append the shared capability audit under the immutable workspace binding."""

@@ -46,6 +46,7 @@ class CapabilityGate(str, Enum):
 class CapabilityName(str, Enum):
     RECORDED_CONTEXT = "RECORDED_CONTEXT"
     CURRENT_EVIDENCE = "CURRENT_EVIDENCE"
+    GATE1_CURRENT_EVIDENCE = "GATE1_CURRENT_EVIDENCE"
     METRICS = "METRICS"
     LOGS = "LOGS"
     TRACES = "TRACES"
@@ -114,6 +115,7 @@ class CapabilityInvocationContext(IncidentRunBinding):
     precondition_version: NonEmpty = "workspace-precondition.v1"
     precondition_hash: Hash = "0" * 64
     gate1_lease_id: Optional[NonEmpty] = None
+    action_command_fingerprint: Optional[Hash] = None
     gate1_authorized: StrictBool = False
     system_authorized: StrictBool = False
 
