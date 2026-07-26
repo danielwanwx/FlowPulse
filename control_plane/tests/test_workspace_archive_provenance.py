@@ -1,13 +1,16 @@
 """The workspace archive provenance is derived from immutable image/Git identity."""
 
+import asyncio
 import json
 import base64
 import hashlib
+import io
 import os
 import subprocess
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 from pathlib import Path
 
@@ -15,6 +18,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 REPO = ROOT.parent
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "tools"))
 
 from flowpulse_cp.workspace_provenance import (  # noqa: E402
     IMAGE_GIT_LABEL,
@@ -27,6 +31,7 @@ from flowpulse_cp.workspace_provenance import (  # noqa: E402
     history_identity,
     inspect_producer_image,
 )
+from archive_workspace_temporal_history import archive  # noqa: E402
 
 
 class WorkspaceArchiveProvenanceTests(unittest.TestCase):
@@ -118,6 +123,30 @@ class WorkspaceArchiveProvenanceTests(unittest.TestCase):
         ).decode("ascii")
         with self.assertRaisesRegex(RuntimeError, "workspace_history_workflow_id_input_mismatch"):
             history_identity(json.dumps(forged).encode("utf-8"))
+
+    def test_archive_can_verify_a_read_only_temporal_cli_history_stream_without_host_port(self):
+        fixture = ROOT / "tests" / "fixtures" / "temporal_workspace_v1"
+        raw = (fixture / "workspace_node_explanation_degraded.json").read_bytes()
+        attestation = json.loads((fixture / "producer-attestation.json").read_text(encoding="utf-8"))
+        producer = {key: value for key, value in attestation.items() if key != "schema_version"}
+        identity = history_identity(raw)
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            args = SimpleNamespace(
+                producer_attestation=fixture / "producer-attestation.json", repo_root=REPO,
+                producer_image="unused-in-deterministic-stream-test", history_stdin=True, address=None,
+                workflow_id=identity["workflow_id"], workflow_run_id=identity["workflow_run_id"], output=output,
+            )
+
+            class Stream:
+                buffer = io.BytesIO(raw)
+
+            with patch("archive_workspace_temporal_history.verify_producer_image_attestation", return_value=producer):
+                with patch.object(sys, "stdin", Stream()):
+                    asyncio.run(archive(args))
+            manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(identity["workflow_run_id"], manifest["producer"]["workflow_run_id"])
+            self.assertEqual(hashlib.sha256(raw).hexdigest(), manifest["histories"][0]["sha256"])
 
     @unittest.skipUnless(
         os.environ.get("FLOWPULSE_LIVE_WORKSPACE_PROVENANCE") == "1",
