@@ -40,6 +40,19 @@ test("versioned browser client uses only same-origin BFF paths and validates JSO
   assert.doesNotMatch(JSON.stringify(calls), /authorization|bearer/i);
 });
 
+test("browser-bound fetch receives the global receiver before the client sends its first request", async () => {
+  const calls = [];
+  const browserReceiverFetch = function (path, options = {}) {
+    assert.equal(this, globalThis);
+    calls.push({ path, options });
+    return new Response(JSON.stringify([summary]), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  const client = new ControlPlaneClient({ fetch: browserReceiverFetch });
+  assert.deepEqual(await client.activeIncidents(), [summary]);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].path, "/api/control-plane/v1/incidents?state=active&limit=20");
+});
+
 test("client fails closed for redacted BFF errors and malformed projection responses", async () => {
   const unavailable = new ControlPlaneClient({
     fetch: async () => new Response(JSON.stringify({ error: "control_plane_unavailable" }), { status: 503, headers: { "content-type": "application/json" } })

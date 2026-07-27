@@ -105,7 +105,7 @@ export class ControlPlaneClient {
   async json(path, options, parse) {
     let response;
     try {
-      response = await this.fetch(path, { headers: { accept: "application/json", ...(options.headers || {}) }, ...options });
+      response = await this.fetch.call(globalThis, path, { headers: { accept: "application/json", ...(options.headers || {}) }, ...options });
     } catch {
       throw new ControlPlaneClientError("control_plane_unavailable");
     }
