@@ -1,11 +1,13 @@
 """Public read seams for narrowly compatible legacy workspace projections."""
 
+import asyncio
 import copy
 import sys
 import unittest
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+from starlette.requests import Request
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -132,10 +134,28 @@ class LegacyProjectionHydrationTests(unittest.TestCase):
         self.assertEqual("Relationship unavailable", node["classification_reason"])
 
     def test_global_sse_hydrates_frozen_legacy_projection(self):
-        response = self.client.get("/v1/incidents/events")
-        self.assertEqual(200, response.status_code, response.text)
-        self.assertIn("event: incident-notification", response.text)
-        self.assertIn('"case_id": "workspace-case-legacy"', response.text)
+        async def read_one():
+            endpoint = next(
+                route.endpoint for route in self.client.app.routes
+                if getattr(route, "name", "") == "workspace_incident_notifications"
+            )
+
+            async def receive():
+                return {"type": "http.request", "body": b"", "more_body": False}
+
+            response = await endpoint(
+                request=Request({"type": "http", "app": self.client.app, "headers": []}, receive),
+                after=None, last_event_id=None,
+                actor=AuthContext(tenant_id="tenant-minio", subject_id="owner-minio", roles=["owner"]),
+            )
+            iterator = response.body_iterator
+            chunk = await asyncio.wait_for(iterator.__anext__(), timeout=0.2)
+            await iterator.aclose()
+            return chunk
+
+        response = asyncio.run(read_one())
+        self.assertIn("event: incident-notification", response)
+        self.assertIn('"case_id": "workspace-case-legacy"', response)
 
     def test_current_format_connected_node_without_edge_remains_rejected(self):
         repository = FrozenProjectionRepository(current_projection())

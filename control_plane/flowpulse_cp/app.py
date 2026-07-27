@@ -1,5 +1,6 @@
 """Tenant-scoped FastAPI boundary with a real Postgres lifespan repository."""
 
+import asyncio
 import hmac
 import inspect
 import json
@@ -197,6 +198,8 @@ def create_app(
     # retain an explicitly supplied deterministic repository immediately.
     app.state.repository = repository
     app.state.workspace_repository = workspace_repository
+    app.state.workspace_sse_poll_seconds = 0.5
+    app.state.workspace_sse_heartbeat_seconds = 15.0
     if trusted_fixture_identities:
         app.add_middleware(FixtureTokenAuthMiddleware, identities=trusted_fixture_identities)
     temporal_starter = temporal_starter or TemporalUnavailableStarter()
@@ -263,10 +266,37 @@ def create_app(
             raise HTTPException(status_code=409, detail=str(error))
 
         async def stream() -> AsyncIterator[str]:
-            for notification in notifications:
-                yield "id: {}\nevent: incident-notification\ndata: {}\n\n".format(
-                    notification.notification_id, notification.json(),
+            cursor = checkpoint
+            pending = notifications
+            loop = asyncio.get_running_loop()
+            last_emit = loop.time()
+            while True:
+                if await request.is_disconnected():
+                    return
+                if pending:
+                    for notification in pending:
+                        if await request.is_disconnected():
+                            return
+                        cursor = notification.notification_id
+                        yield "id: {}\nevent: incident-notification\ndata: {}\n\n".format(
+                            notification.notification_id, notification.json(),
+                        )
+                        last_emit = loop.time()
+                    pending = []
+                    continue
+                await asyncio.sleep(request.app.state.workspace_sse_poll_seconds)
+                if await request.is_disconnected():
+                    return
+                pending = await _workspace_call(
+                    _workspace_repository(request), ("incident_notifications_after",),
+                    actor.tenant_id, cursor,
                 )
+                if (
+                    not pending
+                    and loop.time() - last_emit >= request.app.state.workspace_sse_heartbeat_seconds
+                ):
+                    yield ": heartbeat\n\n"
+                    last_emit = loop.time()
         return StreamingResponse(stream(), media_type="text/event-stream")
 
     @app.get("/v1/incidents/{case_id}/projection", response_model=IncidentProjection)
@@ -438,8 +468,37 @@ def create_app(
         )
 
         async def stream() -> AsyncIterator[str]:
-            for event in events:
-                yield "id: {}\nevent: incident-event\ndata: {}\n\n".format(event.sequence, event.json())
+            cursor = checkpoint
+            pending = events
+            loop = asyncio.get_running_loop()
+            last_emit = loop.time()
+            while True:
+                if await request.is_disconnected():
+                    return
+                if pending:
+                    for event in pending:
+                        if await request.is_disconnected():
+                            return
+                        cursor = event.sequence
+                        yield "id: {}\nevent: incident-event\ndata: {}\n\n".format(
+                            event.sequence, event.json(),
+                        )
+                        last_emit = loop.time()
+                    pending = []
+                    continue
+                await asyncio.sleep(request.app.state.workspace_sse_poll_seconds)
+                if await request.is_disconnected():
+                    return
+                pending = await _workspace_call(
+                    _workspace_repository(request), ("workspace_events_after", "events_after"),
+                    actor.tenant_id, case_id, cursor,
+                )
+                if (
+                    not pending
+                    and loop.time() - last_emit >= request.app.state.workspace_sse_heartbeat_seconds
+                ):
+                    yield ": heartbeat\n\n"
+                    last_emit = loop.time()
 
         return StreamingResponse(stream(), media_type="text/event-stream")
 

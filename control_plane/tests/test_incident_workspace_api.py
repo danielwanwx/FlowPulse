@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+from starlette.requests import Request
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -107,7 +108,143 @@ class IncidentWorkspaceApiTests(unittest.TestCase):
         self.app.dependency_overrides[trusted_auth_context] = lambda: AuthContext(
             tenant_id="tenant-a", subject_id="subject-a", roles=["viewer"],
         )
+        self.app.state.workspace_sse_poll_seconds = 0.005
+        self.app.state.workspace_sse_heartbeat_seconds = 0.02
         self.client = TestClient(self.app)
+
+    def _stream_request(self):
+        disconnected = {"value": False}
+
+        async def receive():
+            if disconnected["value"]:
+                return {"type": "http.disconnect"}
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        return Request({"type": "http", "app": self.app, "headers": []}, receive), disconnected
+
+    async def _case_event_chunks(self, after, count):
+        endpoint = next(
+            route.endpoint for route in self.app.routes
+            if getattr(route, "name", "") == "workspace_events"
+        )
+        request, _ = self._stream_request()
+        response = await endpoint(
+            case_id="case-a", request=request, after=after, last_event_id=None,
+            actor=AuthContext(tenant_id="tenant-a", subject_id="subject-a", roles=["viewer"]),
+        )
+        iterator = response.body_iterator
+        chunks = [await asyncio.wait_for(iterator.__anext__(), timeout=0.2) for _ in range(count)]
+        await iterator.aclose()
+        return "".join(chunks)
+
+    async def _notification_chunk(self, last_event_id=None):
+        endpoint = next(
+            route.endpoint for route in self.app.routes
+            if getattr(route, "name", "") == "workspace_incident_notifications"
+        )
+        request, _ = self._stream_request()
+        response = await endpoint(
+            request=request, after=None, last_event_id=last_event_id,
+            actor=AuthContext(tenant_id="tenant-a", subject_id="subject-a", roles=["viewer"]),
+        )
+        iterator = response.body_iterator
+        chunk = await asyncio.wait_for(iterator.__anext__(), timeout=0.2)
+        await iterator.aclose()
+        return chunk
+
+    def test_global_notification_stream_stays_live_resumes_and_delivers_without_reconnect(self):
+        intake = WorkspaceIntake(
+            incident_id="incident-a", title="Checkout latency", severity="SEV2", environment="prod",
+            affected_entities=["checkout"], observed_at=NOW, summary="Checkout requests are degraded.",
+        )
+        self.assertEqual(202, self.client.post("/v1/incidents", json=json.loads(intake.json())).status_code)
+
+        async def exercise():
+            endpoint = next(
+                route.endpoint for route in self.app.routes
+                if getattr(route, "name", "") == "workspace_incident_notifications"
+            )
+            first_request, _ = self._stream_request()
+            first_response = await endpoint(
+                request=first_request, after=None, last_event_id=None,
+                actor=AuthContext(tenant_id="tenant-a", subject_id="subject-a", roles=["viewer"]),
+            )
+            first_iterator = first_response.body_iterator
+            first_body = await asyncio.wait_for(first_iterator.__anext__(), timeout=0.2)
+            await first_iterator.aclose()
+            first_id = next(
+                line.removeprefix("id: ")
+                for line in first_body.splitlines()
+                if line.startswith("id: ")
+            )
+            await self.workspace.append_event(IncidentEvent(
+                **binding().dict(), projection_revision=1, sequence=2,
+                event_type="workspace.updated", occurred_at=NOW, payload={"state": "updated"},
+            ))
+            request, disconnected = self._stream_request()
+            response = await endpoint(
+                request=request, after=None, last_event_id=first_id,
+                actor=AuthContext(tenant_id="tenant-a", subject_id="subject-a", roles=["viewer"]),
+            )
+            iterator = response.body_iterator
+            replayed = await asyncio.wait_for(iterator.__anext__(), timeout=0.2)
+            heartbeat = await asyncio.wait_for(iterator.__anext__(), timeout=0.2)
+            await self.workspace.append_event(IncidentEvent(
+                **binding().dict(), projection_revision=1, sequence=3,
+                event_type="workspace.updated", occurred_at=NOW, payload={"state": "updated-again"},
+            ))
+            newly_durable = await asyncio.wait_for(iterator.__anext__(), timeout=0.2)
+            disconnected["value"] = True
+            with self.assertRaises(StopAsyncIteration):
+                await asyncio.wait_for(iterator.__anext__(), timeout=0.2)
+            return first_id, replayed, heartbeat, newly_durable
+
+        first_id, replayed, heartbeat, newly_durable = asyncio.run(exercise())
+        self.assertNotIn("id: " + first_id + "\n", replayed)
+        self.assertIn("event: incident-notification", replayed)
+        self.assertTrue(heartbeat.startswith(": heartbeat"))
+        self.assertIn("event: incident-notification", newly_durable)
+        self.assertNotEqual(replayed, newly_durable)
+
+    def test_case_event_stream_stays_live_resumes_and_delivers_without_reconnect(self):
+        intake = WorkspaceIntake(
+            incident_id="incident-a", title="Checkout latency", severity="SEV2", environment="prod",
+            affected_entities=["checkout"], observed_at=NOW, summary="Checkout requests are degraded.",
+        )
+        self.assertEqual(202, self.client.post("/v1/incidents", json=json.loads(intake.json())).status_code)
+
+        async def exercise():
+            endpoint = next(
+                route.endpoint for route in self.app.routes
+                if getattr(route, "name", "") == "workspace_events"
+            )
+            await self.workspace.append_event(IncidentEvent(
+                **binding().dict(), projection_revision=1, sequence=2,
+                event_type="workspace.updated", occurred_at=NOW, payload={"state": "updated"},
+            ))
+            request, disconnected = self._stream_request()
+            response = await endpoint(
+                case_id="case-a", request=request, after=1, last_event_id=None,
+                actor=AuthContext(tenant_id="tenant-a", subject_id="subject-a", roles=["viewer"]),
+            )
+            iterator = response.body_iterator
+            replayed = await asyncio.wait_for(iterator.__anext__(), timeout=0.2)
+            heartbeat = await asyncio.wait_for(iterator.__anext__(), timeout=0.2)
+            await self.workspace.append_event(IncidentEvent(
+                **binding().dict(), projection_revision=1, sequence=3,
+                event_type="workspace.updated", occurred_at=NOW, payload={"state": "updated-again"},
+            ))
+            newly_durable = await asyncio.wait_for(iterator.__anext__(), timeout=0.2)
+            disconnected["value"] = True
+            with self.assertRaises(StopAsyncIteration):
+                await asyncio.wait_for(iterator.__anext__(), timeout=0.2)
+            return replayed, heartbeat, newly_durable
+
+        replayed, heartbeat, newly_durable = asyncio.run(exercise())
+        self.assertIn("id: 2\n", replayed)
+        self.assertNotIn("id: 1\n", replayed)
+        self.assertTrue(heartbeat.startswith(": heartbeat"))
+        self.assertIn("id: 3\n", newly_durable)
 
     def test_routes_preserve_public_identity_and_sse_resumes_strictly_after(self):
         intake = WorkspaceIntake(
@@ -126,11 +263,10 @@ class IncidentWorkspaceApiTests(unittest.TestCase):
         })
         self.assertEqual(202, explanation.status_code, explanation.text)
         self.assertEqual("DEGRADED", explanation.json()["explanation"]["state"])
-        stream = self.client.get("/v1/incidents/case-a/events?after=0")
-        self.assertEqual(200, stream.status_code, stream.text)
-        self.assertIn("id: 1", stream.text)
-        resumed = self.client.get("/v1/incidents/case-a/events?after=1")
-        self.assertNotIn("id: 1", resumed.text)
+        stream = asyncio.run(self._case_event_chunks(0, 3))
+        self.assertIn("id: 1", stream)
+        resumed = asyncio.run(self._case_event_chunks(1, 2))
+        self.assertNotIn("id: 1", resumed)
 
     def test_cross_tenant_or_mismatched_public_identity_fails_closed(self):
         asyncio.run(self.workspace.put_binding(binding()))
@@ -165,15 +301,13 @@ class IncidentWorkspaceApiTests(unittest.TestCase):
         self.assertEqual(200, projected.status_code, projected.text)
         self.assertEqual("Checkout", projected.json()["graph"]["nodes"][0]["display_name"])
 
-        notifications = self.client.get("/v1/incidents/events")
-        self.assertEqual(200, notifications.status_code, notifications.text)
-        self.assertIn("event: incident-notification", notifications.text)
+        notifications = asyncio.run(self._notification_chunk())
+        self.assertIn("event: incident-notification", notifications)
         notification_id = next(
-            line.removeprefix("id: ") for line in notifications.text.splitlines() if line.startswith("id: ")
+            line.removeprefix("id: ") for line in notifications.splitlines() if line.startswith("id: ")
         )
-        resumed = self.client.get("/v1/incidents/events", headers={"Last-Event-ID": notification_id})
-        self.assertEqual(200, resumed.status_code, resumed.text)
-        self.assertNotIn("event: incident-notification", resumed.text)
+        resumed = asyncio.run(self._notification_chunk(notification_id))
+        self.assertTrue(resumed.startswith(": heartbeat"))
         self.assertEqual(0, len(self.workspace.explanations))
 
     def test_explanation_events_are_bounded_status_records_and_receipt_remains_content_source(self):
@@ -188,12 +322,11 @@ class IncidentWorkspaceApiTests(unittest.TestCase):
         })
         self.assertEqual(202, started.status_code, started.text)
         receipt = started.json()
-        stream = self.client.get("/v1/incidents/case-a/events?after=1")
-        self.assertEqual(200, stream.status_code, stream.text)
-        self.assertIn('"event_type": "node_explanation.started"', stream.text)
-        self.assertIn('"event_type": "node_explanation.degraded"', stream.text)
-        self.assertIn(receipt["explanation"]["explanation_id"], stream.text)
-        self.assertNotIn(receipt["explanation"]["summary"], stream.text)
+        stream = asyncio.run(self._case_event_chunks(1, 2))
+        self.assertIn('"event_type": "node_explanation.started"', stream)
+        self.assertIn('"event_type": "node_explanation.degraded"', stream)
+        self.assertIn(receipt["explanation"]["explanation_id"], stream)
+        self.assertNotIn(receipt["explanation"]["summary"], stream)
 
 
 if __name__ == "__main__":

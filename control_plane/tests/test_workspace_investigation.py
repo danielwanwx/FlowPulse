@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+from starlette.requests import Request
 from pydantic import ValidationError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -328,12 +329,29 @@ class WorkspaceInvestigationApiTests(unittest.TestCase):
         actions = client.get("/v1/incidents/{}/actions".format(item.case_id))
         self.assertEqual(200, actions.status_code, actions.text)
         self.assertEqual([], actions.json())
-        stream = client.get("/v1/incidents/{}/events?after={}".format(
-            item.case_id, final["projection"]["sequence"] - 1,
-        ))
-        self.assertEqual(200, stream.status_code, stream.text)
-        self.assertIn("workspace.investigation.accepted", stream.text)
-        self.assertIn(final["projection"]["investigation_result"]["result_id"], stream.text)
+        async def read_one():
+            endpoint = next(
+                route.endpoint for route in app.routes
+                if getattr(route, "name", "") == "workspace_events"
+            )
+
+            async def receive():
+                return {"type": "http.request", "body": b"", "more_body": False}
+
+            stream = await endpoint(
+                case_id=item.case_id,
+                request=Request({"type": "http", "app": app, "headers": []}, receive),
+                after=final["projection"]["sequence"] - 1, last_event_id=None,
+                actor=AuthContext(tenant_id=item.tenant_id, subject_id="subject-a", roles=["viewer"]),
+            )
+            iterator = stream.body_iterator
+            chunk = await asyncio.wait_for(iterator.__anext__(), timeout=0.2)
+            await iterator.aclose()
+            return chunk
+
+        stream = asyncio.run(read_one())
+        self.assertIn("workspace.investigation.accepted", stream)
+        self.assertIn(final["projection"]["investigation_result"]["result_id"], stream)
 
 
 if __name__ == "__main__":
