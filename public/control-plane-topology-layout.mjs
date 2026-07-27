@@ -26,6 +26,15 @@ export function topologyLayout(nodes) {
   };
 }
 
+export function applyTopologyNodePositions(container, positions) {
+  for (const node of container.querySelectorAll("[data-control-component]")) {
+    const position = positions.get(node.dataset.controlComponent);
+    if (!position) continue;
+    node.style.setProperty("left", `${position.x}%`);
+    node.style.setProperty("top", `${position.y}%`);
+  }
+}
+
 function spaciousLayout(nodes, columns, rows) {
   return {
     density: "spacious",

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { topologyLayout } from "../public/control-plane-topology-layout.mjs";
+import { applyTopologyNodePositions, topologyLayout } from "../public/control-plane-topology-layout.mjs";
 
 const canonicalNodes = Array.from({ length: 22 }, (_, index) => ({
   component_id: `server-projected-component-${index + 1}`
@@ -35,5 +35,25 @@ test("a dense 22-node server topology uses a deterministic scrollable layout wit
     assert.ok(box.left >= 0 && box.right <= layout.canvas.width, `card ${index} stays within the scrollable canvas width`);
     assert.ok(box.top >= 0 && box.bottom <= layout.canvas.height, `card ${index} stays within the scrollable canvas height`);
     for (const later of boxes.slice(index + 1)) assert.equal(overlaps(box, later), false, `card ${index} does not overlap another canonical card`);
+  }
+});
+
+test("dense canonical node positions are applied through the DOM style API after markup insertion", () => {
+  const layout = topologyLayout(canonicalNodes);
+  const elements = canonicalNodes.map((node) => ({
+    dataset: { controlComponent: node.component_id },
+    style: {
+      values: new Map(),
+      setProperty(name, value) { this.values.set(name, value); }
+    }
+  }));
+  const container = { querySelectorAll: () => elements };
+
+  applyTopologyNodePositions(container, layout.positions);
+
+  for (const node of elements) {
+    const position = layout.positions.get(node.dataset.controlComponent);
+    assert.equal(node.style.values.get("left"), `${position.x}%`);
+    assert.equal(node.style.values.get("top"), `${position.y}%`);
   }
 });

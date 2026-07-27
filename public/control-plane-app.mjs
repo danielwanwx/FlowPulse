@@ -1,6 +1,6 @@
 import { ControlPlaneClient, ControlPlaneClientError } from "./control-plane-client.mjs";
 import { controlPlaneReducer, createControlPlaneState, investigationPresentation } from "./control-plane-contract.mjs";
-import { topologyLayout } from "./control-plane-topology-layout.mjs";
+import { applyTopologyNodePositions, topologyLayout } from "./control-plane-topology-layout.mjs";
 
 // This module intentionally mounts only into the mature app-shell. It owns
 // presentation state, while all incident, gate, card, receipt, and evidence
@@ -248,18 +248,22 @@ function renderGraph() {
   const impacted = new Set(state.mode === "architecture" ? [] : projection.impacted_path);
   const nodeById = new Map(projection.graph.nodes.map((node) => [node.component_id, node]));
   const edges = projection.graph.edges.map((edge, index) => edgeMarkup(edge, positions, impacted, nodeById, index)).join("");
-  const nodes = projection.graph.nodes.map((node) => nodeMarkup(node, positions.get(node.component_id), impacted.has(node.component_id))).join("");
+  const nodes = projection.graph.nodes.map((node) => nodeMarkup(node, impacted.has(node.component_id))).join("");
   els["canvas-layers"].innerHTML = `<div class="control-plane-twin-layer" data-topology-density="${layout.density}"><svg class="edge-map control-plane-edge-map" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">${edges}</svg>${nodes}</div>`;
+  applyTopologyNodePositions(els["canvas-layers"], positions);
 }
 
 function applyTopologyDensity(layout) {
   const canvas = els["twin-canvas"];
-  canvas.dataset.topologyDensity = layout.density;
   if (layout.density !== "dense") {
+    delete canvas.dataset.topologyDensity;
+    delete root.dataset.topologyDensity;
     canvas.style.removeProperty("--control-plane-topology-width");
     canvas.style.removeProperty("--control-plane-topology-height");
     return;
   }
+  canvas.dataset.topologyDensity = "dense";
+  root.dataset.topologyDensity = "dense";
   canvas.style.setProperty("--control-plane-topology-width", `${layout.canvas.width}px`);
   canvas.style.setProperty("--control-plane-topology-height", `${layout.canvas.height}px`);
 }
@@ -267,14 +271,15 @@ function applyTopologyDensity(layout) {
 function clearTopologyDensity() {
   const canvas = els["twin-canvas"];
   delete canvas.dataset.topologyDensity;
+  delete root.dataset.topologyDensity;
   canvas.style.removeProperty("--control-plane-topology-width");
   canvas.style.removeProperty("--control-plane-topology-height");
 }
 
-function nodeMarkup(node, position, impacted) {
+function nodeMarkup(node, impacted) {
   const clickable = state.mode === "incident" && impacted && state.connection === "connected" && state.explanation.status !== "starting";
   const kind = node.membership === "CLASSIFIED" ? node.classification_reason : "Connected";
-  return `<button type="button" class="twin-node control-plane-twin-node${impacted ? " is-impact" : ""}${state.selected_component_id === node.component_id ? " is-selected" : ""}" style="left:${position.x}%;top:${position.y}%" data-control-component="${escapeHtml(node.component_id)}" data-clickable="${clickable}"${clickable ? "" : " disabled"}>
+  return `<button type="button" class="twin-node control-plane-twin-node${impacted ? " is-impact" : ""}${state.selected_component_id === node.component_id ? " is-selected" : ""}" data-control-component="${escapeHtml(node.component_id)}" data-clickable="${clickable}"${clickable ? "" : " disabled"}>
     <span class="node-icon" aria-hidden="true"><i class="ph ${impacted ? "ph-warning-circle" : "ph-cube"}"></i></span>
     <span class="node-copy"><strong>${escapeHtml(node.display_name)}</strong><small>${escapeHtml(node.runtime_status)} · ${escapeHtml(kind)}</small></span>
   </button>`;

@@ -4596,6 +4596,7 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
   min-width: var(--control-plane-topology-width);
   min-height: var(--control-plane-topology-height);
 }
+.app-shell[data-control-plane="true"][data-topology-density="dense"] .twin-workspace { overflow: auto; }
 .app-shell[data-control-plane="true"] .canvas-layers { transform: none !important; }
 .app-shell[data-control-plane="true"] .control-plane-twin-layer { position: absolute; inset: 0; min-height: 100%; }
 .app-shell[data-control-plane="true"] .control-plane-canvas-empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); font-size: 12px; }
