@@ -122,7 +122,7 @@ class LiveWorkspaceMigrationRunnerTests(unittest.TestCase):
             cwd=ROOT, env=environment, text=True, capture_output=True, timeout=90,
         )
 
-    def test_actual_runner_upgrades_legacy_001_and_crash_recovery_never_records_partial_011(self):
+    def test_actual_runner_upgrades_legacy_001_and_crash_recovery_never_records_partial_012(self):
         async def run():
             database = "flowpulse_runner_{}".format(uuid4().hex)
             target_admin_dsn = self.admin_dsn.rsplit("/", 1)[0] + "/" + database
@@ -154,16 +154,17 @@ class LiveWorkspaceMigrationRunnerTests(unittest.TestCase):
                                 "007_workspace_action_transitions.sql", "008_workspace_gate1_authority.sql",
                                 "009_workspace_subject_scope_grants.sql",
                                 "010_workspace_investigation_results.sql",
+                                "011_workspace_subject_scope_guard.sql",
                             ],
                             [row["filename"] for row in rows],
                         )
                     finally:
                         await check.close()
 
-                    # 010 is an established workspace migration.  The
+                    # 011 is an established workspace migration.  The
                     # temporary crash/recovery fixture must be the next
-                    # contiguous migration, not a competing 010 prefix.
-                    crash = copied / "011_runner_crash_recovery.sql"
+                    # contiguous migration, not a competing 011 prefix.
+                    crash = copied / "012_runner_crash_recovery.sql"
                     crash.write_text(
                         "CREATE TABLE runner_crash_marker (id integer PRIMARY KEY);\nSELECT 1 / 0;\n",
                         encoding="utf-8",
@@ -174,7 +175,7 @@ class LiveWorkspaceMigrationRunnerTests(unittest.TestCase):
                     try:
                         self.assertIsNone(await check.fetchval("SELECT to_regclass('public.runner_crash_marker')"))
                         self.assertIsNone(await check.fetchval(
-                            "SELECT checksum_sha256 FROM schema_migrations WHERE filename='011_runner_crash_recovery.sql'"
+                            "SELECT checksum_sha256 FROM schema_migrations WHERE filename='012_runner_crash_recovery.sql'"
                         ))
                     finally:
                         await check.close()
@@ -188,7 +189,7 @@ class LiveWorkspaceMigrationRunnerTests(unittest.TestCase):
                             "SELECT to_regclass('public.runner_crash_marker')::text"
                         ))
                         self.assertIsNotNone(await check.fetchval(
-                            "SELECT checksum_sha256 FROM schema_migrations WHERE filename='011_runner_crash_recovery.sql'"
+                            "SELECT checksum_sha256 FROM schema_migrations WHERE filename='012_runner_crash_recovery.sql'"
                         ))
                     finally:
                         await check.close()
@@ -276,6 +277,27 @@ class LiveWorkspaceMigrationRunnerTests(unittest.TestCase):
                             "009_workspace_subject_scope_grants.sql",
                             hashlib.sha256((MIGRATIONS / "009_workspace_subject_scope_grants.sql").read_bytes()).hexdigest(),
                         )
+                        await connection.execute(
+                            "DELETE FROM schema_migrations WHERE filename='011_workspace_subject_scope_guard.sql'"
+                        )
+                    finally:
+                        await connection.close()
+                    unrecorded_subject_scope_guard = self._runner(database, copied)
+                    self.assertNotEqual(0, unrecorded_subject_scope_guard.returncode)
+                    self.assertIn(
+                        "migration_partial_schema_unrecorded:011_workspace_subject_scope_guard.sql",
+                        unrecorded_subject_scope_guard.stderr + unrecorded_subject_scope_guard.stdout,
+                    )
+
+                    connection = await asyncpg.connect(target_admin_dsn)
+                    try:
+                        await connection.execute(
+                            "INSERT INTO schema_migrations (filename, checksum_sha256) VALUES ($1,$2)",
+                            "011_workspace_subject_scope_guard.sql",
+                            hashlib.sha256(
+                                (MIGRATIONS / "011_workspace_subject_scope_guard.sql").read_bytes()
+                            ).hexdigest(),
+                        )
                         await connection.execute("DELETE FROM schema_migrations WHERE filename='003_incident_workspace_projection.sql'")
                     finally:
                         await connection.close()
@@ -324,6 +346,109 @@ class LiveWorkspaceMigrationRunnerTests(unittest.TestCase):
                 await admin.execute("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname=$1", database)
                 await admin.execute("DROP DATABASE IF EXISTS " + database)
                 await admin.close()
+        asyncio.run(run())
+
+    def test_actual_runner_allows_app_role_to_append_contiguous_subject_scope_revisions(self):
+        async def run():
+            database = "flowpulse_runner_scope_guard_{}".format(uuid4().hex)
+            target_admin_dsn = self.admin_dsn.rsplit("/", 1)[0] + "/" + database
+            target_app_dsn = (
+                "postgresql://flowpulse_cp_app:flowpulse-cp-local-only@127.0.0.1:5433/" + database
+            )
+            tenant = "tenant-scope-guard-{}".format(uuid4().hex)
+            case_id = "case-scope-guard"
+            subject_id = "subject-scope-guard"
+            admin = await asyncpg.connect(self.admin_dsn)
+            try:
+                await admin.execute("CREATE DATABASE " + database)
+            finally:
+                await admin.close()
+            baseline = await asyncpg.connect(target_admin_dsn)
+            try:
+                await baseline.execute((MIGRATIONS / "001_control_plane.sql").read_text(encoding="utf-8"))
+            finally:
+                await baseline.close()
+            try:
+                migrated = self._runner(database, MIGRATIONS)
+                self.assertEqual(0, migrated.returncode, migrated.stderr + migrated.stdout)
+                connection = await asyncpg.connect(target_admin_dsn)
+                try:
+                    now = datetime.now(timezone.utc)
+                    await connection.execute(
+                        """INSERT INTO incident_cases
+                           (case_id, tenant_id, case_revision, workflow_id, workflow_run_id,
+                            state, payload, created_at, updated_at)
+                           VALUES ($1,$2,1,'workflow-scope-guard','temporal-scope-guard',
+                                   'RECEIVED',$3::jsonb,$4,$4)""",
+                        case_id, tenant, json.dumps({
+                            "case_id": case_id, "tenant_id": tenant, "case_revision": 1,
+                        }), now,
+                    )
+                    await connection.execute(
+                        """INSERT INTO incident_run_bindings
+                           (tenant_id, incident_id, run_id, topology_revision, case_id, case_revision,
+                            workflow_id, workflow_run_id, created_at, payload)
+                           VALUES ($1,'incident-scope-guard','run-scope-guard','topology-v1',$2,1,
+                                   'workflow-scope-guard','temporal-scope-guard',$3,$4::jsonb)""",
+                        tenant, case_id, now, json.dumps({
+                            "tenant_id": tenant, "case_id": case_id, "subject_id": subject_id,
+                        }),
+                    )
+                    await connection.execute(
+                        """INSERT INTO workspace_subject_grants
+                           (tenant_id, case_id, subject_id, created_at, roles, permissions)
+                           VALUES ($1,$2,$3,$4,'[]'::jsonb,'[]'::jsonb)""",
+                        tenant, case_id, subject_id, now,
+                    )
+                finally:
+                    await connection.close()
+
+                app = await asyncpg.connect(target_app_dsn)
+                try:
+                    await app.execute("SELECT set_config('app.tenant_id',$1,false)", tenant)
+                    await app.execute("SELECT set_config('app.subject_id',$1,false)", subject_id)
+                    for revision, role in ((1, "viewer"), (2, "owner")):
+                        await app.execute(
+                            """INSERT INTO workspace_subject_scope_grants
+                               (tenant_id, case_id, subject_id, scope_revision, roles, permissions, created_at)
+                               VALUES ($1,$2,$3,$4,$5::jsonb,'["incident:read"]'::jsonb,$6)""",
+                            tenant, case_id, subject_id, revision, json.dumps([role]),
+                            datetime.now(timezone.utc),
+                        )
+                    with self.assertRaisesRegex(
+                        asyncpg.exceptions.RaiseError,
+                        "workspace_subject_scope_revision_not_contiguous",
+                    ):
+                        await app.execute(
+                            """INSERT INTO workspace_subject_scope_grants
+                               (tenant_id, case_id, subject_id, scope_revision, roles, permissions, created_at)
+                               VALUES ($1,$2,$3,4,'["owner"]'::jsonb,'["incident:read"]'::jsonb,$4)""",
+                            tenant, case_id, subject_id, datetime.now(timezone.utc),
+                        )
+                    with self.assertRaises(asyncpg.exceptions.InsufficientPrivilegeError):
+                        await app.execute(
+                            """UPDATE workspace_subject_scope_grants SET roles='[]'::jsonb
+                               WHERE tenant_id=$1 AND case_id=$2 AND subject_id=$3""",
+                            tenant, case_id, subject_id,
+                        )
+                    with self.assertRaises(asyncpg.exceptions.InsufficientPrivilegeError):
+                        await app.execute(
+                            """DELETE FROM workspace_subject_scope_grants
+                               WHERE tenant_id=$1 AND case_id=$2 AND subject_id=$3""",
+                            tenant, case_id, subject_id,
+                        )
+                    self.assertEqual([1, 2], [
+                        row["scope_revision"] for row in await app.fetch(
+                            """SELECT scope_revision FROM workspace_subject_scope_grants
+                               WHERE tenant_id=$1 AND case_id=$2 AND subject_id=$3
+                               ORDER BY scope_revision""",
+                            tenant, case_id, subject_id,
+                        )
+                    ])
+                finally:
+                    await app.close()
+            finally:
+                await self._drop_database(database)
         asyncio.run(run())
 
     def test_actual_runner_upgrades_legacy_001_007_subject_grant_to_append_only_scope_then_authorizes_gate1(self):
@@ -568,6 +693,7 @@ class LiveWorkspaceMigrationRunnerTests(unittest.TestCase):
                             "007_workspace_action_transitions.sql", "008_workspace_gate1_authority.sql",
                             "009_workspace_subject_scope_grants.sql",
                             "010_workspace_investigation_results.sql",
+                            "011_workspace_subject_scope_guard.sql",
                         ],
                         [row["filename"] for row in rows],
                     )

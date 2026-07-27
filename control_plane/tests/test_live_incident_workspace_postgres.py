@@ -94,6 +94,7 @@ class LiveIncidentWorkspacePostgresTests(unittest.TestCase):
                         "007_workspace_action_transitions.sql", "008_workspace_gate1_authority.sql",
                         "009_workspace_subject_scope_grants.sql",
                         "010_workspace_investigation_results.sql",
+                        "011_workspace_subject_scope_guard.sql",
                     ]:
                         await bootstrap.execute((migration_dir / name).read_text(encoding="utf-8"))
                 finally:
@@ -197,6 +198,7 @@ class LiveIncidentWorkspacePostgresTests(unittest.TestCase):
                         "007_workspace_action_transitions.sql", "008_workspace_gate1_authority.sql",
                         "009_workspace_subject_scope_grants.sql",
                         "010_workspace_investigation_results.sql",
+                        "011_workspace_subject_scope_guard.sql",
                     ]:
                         await bootstrap.execute((migration_dir / name).read_text(encoding="utf-8"))
                 finally:

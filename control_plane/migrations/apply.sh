@@ -273,6 +273,16 @@ if ! ledger_has "010_workspace_investigation_results.sql" && \
   echo "migration_partial_schema_unrecorded:010_workspace_investigation_results.sql" >&2
   exit 1
 fi
+if ! ledger_has "011_workspace_subject_scope_guard.sql" && \
+  [ "$(psql -Atq -c "SELECT CASE
+       WHEN to_regprocedure('public.workspace_subject_scope_grants_revision_guard()') IS NULL THEN false
+       ELSE position('FOR UPDATE' IN upper(pg_get_functiondef(
+              to_regprocedure('public.workspace_subject_scope_grants_revision_guard()')
+            ))) = 0
+     END")" = "t" ]; then
+  echo "migration_partial_schema_unrecorded:011_workspace_subject_scope_guard.sql" >&2
+  exit 1
+fi
 
 # Ledger entries must name the exact contiguous source sequence.  This rejects
 # checksum drift, unsupported future versions, and a partially edited ledger.
