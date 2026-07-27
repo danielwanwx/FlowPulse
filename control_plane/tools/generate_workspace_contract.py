@@ -29,15 +29,32 @@ from flowpulse_cp.workspace_models import (
     IncidentGraph,
     IncidentGraphNode,
     IncidentProjection,
+    IncidentLifecycleStage,
     IncidentSummary,
     IncidentRunBinding,
+    Gate1ProjectionState,
+    InvestigationClaim,
+    InvestigationClaimKind,
+    InvestigationCritic,
+    InvestigationDisposition,
+    InvestigationEvidenceReference,
+    InvestigationResult,
     NodeExplanation,
     NodeExplanationReceipt,
     NodeExplanationState,
     ConversationTrace,
     NodeExplanationStart,
     ProjectionState,
+    ProviderTruthLabel,
+    VersionBundle,
     WorkspaceIntake,
+)
+from flowpulse_cp.models import (
+    EvidenceAuthority,
+    FreshnessStatus,
+    ProofScope,
+    SourceKind,
+    VerificationDecision,
 )
 from flowpulse_cp.workspace_actions import (
     ActionInvocationCommand,
@@ -125,6 +142,50 @@ def _examples():
         **binding.dict(), action_id=action.action_id, idempotency_key=action_command.idempotency_key,
         status="GATE1_GRANTED", gate1_lease_id="gate1-example", reason="temporal_gate1_lease_accepted",
     )
+    result_evidence = InvestigationEvidenceReference(
+        evidence_id="evidence-checkout-latency", source_kind=SourceKind.METRIC,
+        observed_at=now, freshness=FreshnessStatus.CURRENT,
+        authority=EvidenceAuthority.T1, proof_scope=ProofScope.CURRENT_OBSERVATION,
+    )
+    observation = InvestigationClaim(
+        claim_id="claim-checkout-latency", kind=InvestigationClaimKind.OBSERVATION,
+        statement="Current checkout latency is elevated.",
+        evidence_refs=[result_evidence.evidence_id],
+    )
+    hypothesis = InvestigationClaim(
+        claim_id="investigation-claim-example", kind=InvestigationClaimKind.HYPOTHESIS,
+        statement="The checkout service is constrained by the observed current signal.",
+        evidence_refs=[result_evidence.evidence_id],
+    )
+    investigation_result = InvestigationResult(
+        **binding.dict(), result_id="investigation-result-example", component_id="checkout",
+        source_action_id="action-example-read", source_idempotency_key="example-read-01",
+        source_activity_identity="workspace-action:temporal-run-example:command-hash-example",
+        synthesis_id="investigation-synthesis-example",
+        synthesis_activity_id="investigation-synthesis:activity-example",
+        synthesis_provider_id="configured-example-provider", synthesis_model_id="example-model",
+        projection_revision=4, evidence_revision=2, lifecycle_stage=IncidentLifecycleStage.DECIDE,
+        disposition=InvestigationDisposition.ACCEPTED,
+        summary="Current evidence supports a bounded checkout degradation hypothesis.",
+        claims=[observation, hypothesis], evidence=[result_evidence],
+        critic=InvestigationCritic(
+            critic_id="investigation-critic-example", identity="independent-example-critic",
+            decision=VerificationDecision.PASS,
+            reason_codes=["current_evidence_supports_candidate"],
+            reviewed_claim_ids=[observation.claim_id, hypothesis.claim_id],
+            evidence_refs=[result_evidence.evidence_id],
+        ),
+        truth_label=ProviderTruthLabel.LIVE, version_bundle=VersionBundle(), recorded_at=now,
+    )
+    decide_projection = IncidentProjection.parse_obj(projection.copy(update={
+        "projection_revision": 4, "sequence": 4, "lifecycle_state": ProjectionState.ACTIVE,
+        "lifecycle_stage": IncidentLifecycleStage.DECIDE,
+        "gate1_state": Gate1ProjectionState.CONSUMED,
+        "status": "investigation_accepted", "generated_at": now,
+        "evidence_revision": 2, "action_revision": 4,
+        "evidence_refs": [result_evidence.evidence_id],
+        "investigation_result": investigation_result, "degraded_code": None,
+    }).dict())
     return {
         "schema_version": "flowpulse.incident-workspace.examples.v1",
         "identity_note": (
@@ -146,6 +207,8 @@ def _examples():
         },
         "response_examples": {
             "IncidentProjection": projection.dict(),
+            "IncidentProjectionDecide": decide_projection.dict(),
+            "InvestigationResult": investigation_result.dict(),
             "IncidentSummary": incident_summary.dict(),
             "IncidentNotification": notification.dict(),
             "NodeExplanationReceipt": NodeExplanationReceipt(explanation=explanation, reused=False).dict(),
@@ -157,6 +220,7 @@ def _examples():
         "model_schemas": {
             "WorkspaceIntake": WorkspaceIntake.schema(),
             "IncidentProjection": IncidentProjection.schema(),
+            "InvestigationResult": InvestigationResult.schema(),
             "IncidentSummary": IncidentSummary.schema(),
             "IncidentNotification": IncidentNotification.schema(),
             "NodeExplanationStart": NodeExplanationStart.schema(),
@@ -178,9 +242,10 @@ def generate(output: Path, producer_git_sha: str) -> dict:
     manifest_path = output / "flowpulse-incident-workspace-v1.freeze.json"
     openapi = create_app().openapi()
     openapi["info"]["title"] = "FlowPulse Incident Workspace Contract"
-    openapi["info"]["version"] = "v1"
+    openapi["info"]["version"] = "v1.2"
     openapi["x-flowpulse-workspace-contract"] = {
         "schema_version": "flowpulse.incident-workspace.v1",
+        "contract_revision": "v1.2-investigate-decide",
         "public_identity": ["tenant_id", "incident_id", "run_id", "topology_revision"],
         "internal_correlation": ["case_id", "case_revision", "workflow_id", "workflow_run_id"],
         "provider_mode": "typed_degraded_when_unconfigured",

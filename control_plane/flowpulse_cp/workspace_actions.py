@@ -47,7 +47,13 @@ from .models import (
     StrictModel,
 )
 from .policy import PolicyViolation, validate_claim_evidence, validate_evidence_admission
-from .workspace_models import IncidentEvent, IncidentProjection, IncidentRunBinding
+from .workspace_models import (
+    Gate1ProjectionState,
+    IncidentEvent,
+    IncidentLifecycleStage,
+    IncidentProjection,
+    IncidentRunBinding,
+)
 
 
 def canonical_evidence_set_hash(evidence_refs: List[str]) -> str:
@@ -125,6 +131,7 @@ class NextBestAction(IncidentRunBinding):
     schema_version: NonEmpty = "flowpulse.next-best-action.v1"
     action_id: NonEmpty
     card_version: PositiveInt
+    lifecycle_stage: IncidentLifecycleStage = IncidentLifecycleStage.INVESTIGATE
     taxonomy: NextBestActionTaxonomy
     title: NonEmpty
     cta: NextBestActionCta
@@ -156,6 +163,17 @@ class NextBestAction(IncidentRunBinding):
         expected = ACTION_TAXONOMY.get(values.get("taxonomy"))
         if expected is None or (values.get("title"), values.get("cta")) != expected:
             raise ValueError("next_best_action_taxonomy_mapping_invalid")
+        allowed = {
+            IncidentLifecycleStage.INVESTIGATE: {
+                NextBestActionTaxonomy.FIND_CAUSE,
+                NextBestActionTaxonomy.MAP_IMPACT,
+                NextBestActionTaxonomy.REVIEW_EVIDENCE,
+            },
+            IncidentLifecycleStage.DECIDE: {NextBestActionTaxonomy.APPROVE_PLAN},
+            IncidentLifecycleStage.EXECUTE: {NextBestActionTaxonomy.APPLY_FIX},
+        }
+        if values.get("taxonomy") not in allowed.get(values.get("lifecycle_stage"), set()):
+            raise ValueError("next_best_action_stage_taxonomy_invalid")
         return values
 
 
@@ -242,6 +260,8 @@ def validate_current_action_card(
     ):
         if getattr(card, field) != getattr(projection, field):
             raise PolicyViolation("workspace_action_card_stale_or_rebound")
+    if card.lifecycle_stage != projection.lifecycle_stage:
+        raise PolicyViolation("workspace_action_card_stage_stale")
     if (
         command.incident_id != card.incident_id or command.run_id != card.run_id
         or command.topology_revision != card.topology_revision
@@ -290,6 +310,7 @@ class NextBestActionGenerator:
         action_id = "action-{}".format(sha256(str(sorted(identity.items())).encode("utf-8")).hexdigest()[:24])
         return NextBestAction(
             **projection.dict(include=set(IncidentRunBinding.__fields__)), action_id=action_id, card_version=1,
+            lifecycle_stage=projection.lifecycle_stage,
             taxonomy=taxonomy, title=title, cta=cta,
             summary=(
                 "Request a bounded fresh read for the current incident."
@@ -309,6 +330,8 @@ class NextBestActionGenerator:
         )
 
     def generate(self, projection, now: datetime) -> List[NextBestAction]:
+        if projection.lifecycle_stage != IncidentLifecycleStage.INVESTIGATE:
+            return []
         cards: List[NextBestAction] = []
         for descriptor in self.registry.available(CapabilityAudience.USER_QA):
             if descriptor.fresh_read and descriptor.required_gate == CapabilityGate.GATE1:
@@ -329,6 +352,8 @@ class NextBestActionGenerator:
 
     def generate_after_gate1(self, projection, lease: "Gate1Lease", now: datetime) -> List[NextBestAction]:
         """Expose one bound read card only after an active exact Gate 1 lease."""
+        if projection.lifecycle_stage != IncidentLifecycleStage.INVESTIGATE:
+            return []
         descriptor = next((item for item in self.registry.available(CapabilityAudience.USER_QA)
                            if item.capability.value == lease.capability), None)
         if descriptor is None or not descriptor.fresh_read or descriptor.required_gate != CapabilityGate.GATE1:
@@ -867,6 +892,7 @@ def validate_authoritative_fresh_read_transition(
         "sequence": prior_projection.sequence + 1,
         "evidence_revision": prior_projection.evidence_revision + 1,
         "action_revision": prior_projection.action_revision + 1,
+        "gate1_state": Gate1ProjectionState.CONSUMED,
         # The transition timestamp is not lifecycle truth.  It is retained
         # only as the activity's append timestamp while every semantic field
         # is copied from the locked predecessor.
@@ -984,6 +1010,7 @@ def validate_authoritative_gate1_grant_transition(
         "sequence": prior_projection.sequence + 1,
         "gate_revision": prior_projection.gate_revision + 1,
         "action_revision": prior_projection.action_revision + 1,
+        "gate1_state": Gate1ProjectionState.ACTIVE,
         "generated_at": commit.projection.generated_at,
     })
     if commit.projection != expected_projection:

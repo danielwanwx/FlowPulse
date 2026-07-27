@@ -17,6 +17,13 @@ from flowpulse_cp.provider_gateway import (
     ProviderSettings,
     ProviderTruthLabel,
     build_conversation_provider,
+    build_investigation_providers,
+)
+from flowpulse_cp.workspace_investigation import (
+    DeterministicInvestigationCritic,
+    DeterministicInvestigationSynthesizer,
+    UnavailableInvestigationCritic,
+    UnavailableInvestigationSynthesizer,
 )
 from flowpulse_cp.workspace_models import (
     ConversationContext,
@@ -100,6 +107,30 @@ class ProviderModeTests(unittest.TestCase):
             ).validate()
         with self.assertRaisesRegex(ProviderConfigurationError, "provider_endpoint_or_model_missing"):
             ProviderSettings(mode=ProviderMode.LOCAL_OPEN_SOURCE).validate()
+
+    def test_investigation_roles_are_paired_and_deterministic_only_in_explicit_test_mode(self):
+        synthesis, critic = build_investigation_providers(
+            ProviderSettings(mode=ProviderMode.STANDARD),
+        )
+        self.assertIsInstance(synthesis, UnavailableInvestigationSynthesizer)
+        self.assertIsInstance(critic, UnavailableInvestigationCritic)
+        deterministic_synthesis = DeterministicInvestigationSynthesizer()
+        deterministic_critic = DeterministicInvestigationCritic()
+        with self.assertRaisesRegex(
+            ProviderConfigurationError,
+            "deterministic_investigation_provider_requires_explicit_test_mode",
+        ):
+            build_investigation_providers(
+                ProviderSettings(mode=ProviderMode.STANDARD),
+                deterministic_synthesizer=deterministic_synthesis,
+                deterministic_critic=deterministic_critic,
+            )
+        resolved = build_investigation_providers(
+            ProviderSettings(mode=ProviderMode.TEST),
+            deterministic_synthesizer=deterministic_synthesis,
+            deterministic_critic=deterministic_critic,
+        )
+        self.assertEqual((deterministic_synthesis, deterministic_critic), resolved)
 
 
 if __name__ == "__main__":

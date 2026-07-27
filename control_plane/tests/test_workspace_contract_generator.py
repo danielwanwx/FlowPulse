@@ -72,6 +72,19 @@ class WorkspaceContractGeneratorTests(unittest.TestCase):
             self.assertFalse(openapi["components"]["schemas"]["ComponentContext"].get("additionalProperties", True))
             self.assertFalse(openapi["components"]["schemas"]["IncidentEvent"].get("additionalProperties", True))
             self.assertEqual("run-example-01", examples["response_examples"]["IncidentProjection"]["run_id"])
+            decide = examples["response_examples"]["IncidentProjectionDecide"]
+            self.assertEqual("DECIDE", decide["lifecycle_stage"])
+            self.assertEqual("ACCEPTED", decide["investigation_result"]["disposition"])
+            self.assertEqual(
+                decide["evidence_refs"],
+                [item["evidence_id"] for item in decide["investigation_result"]["evidence"]],
+            )
+            self.assertNotIn("reason", decide["investigation_result"])
+            self.assertIn("InvestigationResult", openapi["components"]["schemas"])
+            self.assertEqual(
+                "v1.2-investigate-decide",
+                openapi["x-flowpulse-workspace-contract"]["contract_revision"],
+            )
             self.assertEqual("Checkout", examples["response_examples"]["IncidentProjection"]["graph"]["nodes"][0]["display_name"])
             self.assertEqual(
                 "incident.accepted", examples["response_examples"]["IncidentNotification"]["event_type"],

@@ -26,6 +26,11 @@ from .workspace_actions import (
     validate_fresh_read_evidence_admission,
     validate_workspace_action_commit_kind,
 )
+from .workspace_investigation import (
+    WorkspaceInvestigationCommit,
+    WorkspaceInvestigationStageRecord,
+    validate_workspace_investigation_commit,
+)
 
 
 BindingKey = Tuple[str, str, str]
@@ -72,6 +77,12 @@ class InMemoryWorkspaceRepository:
         self.workspace_action_evidence = {}
         self.workspace_action_claims = {}
         self.workspace_action_coverage = {}
+        self.workspace_investigation_stage_records: Dict[
+            Tuple[str, str, str], WorkspaceInvestigationStageRecord
+        ] = {}
+        self.workspace_investigation_commits: Dict[
+            Tuple[str, str, str], WorkspaceInvestigationCommit
+        ] = {}
         # Test-only seam: a checkpoint raises inside the same in-memory
         # transaction simulation and restores every append-only collection.
         self.failure_injector = failure_injector
@@ -437,7 +448,7 @@ class InMemoryWorkspaceRepository:
         validate_workspace_action_commit_kind(commit)
         if receipt != commit.receipt:
             raise PolicyViolation("workspace_action_transition_partial")
-        if self.projections.get(_binding_key(commit.projection), [])[-1] != commit.projection:
+        if commit.projection not in self.projections.get(_binding_key(commit.projection), []):
             raise PolicyViolation("workspace_action_transition_partial")
         events = self.events.get(_binding_key(commit.event), [])
         if commit.event not in events:
@@ -656,3 +667,118 @@ class InMemoryWorkspaceRepository:
         return audit
 
     append_workspace_capability_audit = append_capability_audit
+
+    async def workspace_investigation_stage_record(
+        self, tenant_id: str, case_id: str, record_id: str,
+    ) -> Optional[WorkspaceInvestigationStageRecord]:
+        return self.workspace_investigation_stage_records.get((tenant_id, case_id, record_id))
+
+    async def append_workspace_investigation_stage_record(
+        self, record: WorkspaceInvestigationStageRecord,
+    ) -> WorkspaceInvestigationStageRecord:
+        binding = self.bindings.get(_binding_key(record))
+        if binding is None or not _same_binding(binding, record):
+            raise PolicyViolation("workspace_investigation_stage_binding_mismatch")
+        key = (record.tenant_id, record.case_id, record.record_id)
+        existing = self.workspace_investigation_stage_records.get(key)
+        if existing is not None:
+            if existing != record:
+                raise PolicyViolation("workspace_investigation_stage_record_immutable")
+            return existing
+        self.workspace_investigation_stage_records[key] = record
+        return record
+
+    async def workspace_investigation_transition(
+        self, tenant_id: str, case_id: str, transition_key: str,
+    ) -> Optional[WorkspaceInvestigationCommit]:
+        commit = self.workspace_investigation_commits.get((tenant_id, case_id, transition_key))
+        if commit is None:
+            return None
+        result = commit.projection.investigation_result
+        source = await self.workspace_action_commit(
+            tenant_id, case_id, result.source_idempotency_key,
+        )
+        synthesis = self.workspace_investigation_stage_records.get(
+            (tenant_id, case_id, result.synthesis_activity_id),
+        )
+        critic = next((
+            record for record in self.workspace_investigation_stage_records.values()
+            if record.tenant_id == tenant_id and record.case_id == case_id
+            and record.critic is not None and result.critic is not None
+            and record.critic.critic_id == result.critic.critic_id
+        ), None)
+        if synthesis is None or synthesis.synthesis is None:
+            raise PolicyViolation("workspace_investigation_transition_partial")
+        validate_workspace_investigation_commit(
+            commit, source, synthesis.synthesis, critic.critic if critic is not None else None,
+        )
+        if (
+            commit.projection not in self.projections.get(_binding_key(commit.projection), [])
+            or commit.event not in self.events.get(_binding_key(commit.event), [])
+            or any(self.workspace_action_claims.get(claim.claim_id) != claim for claim in commit.domain_claims)
+        ):
+            raise PolicyViolation("workspace_investigation_transition_partial")
+        return commit
+
+    async def commit_workspace_investigation_transition(
+        self, commit: WorkspaceInvestigationCommit,
+    ) -> WorkspaceInvestigationCommit:
+        key = (commit.projection.tenant_id, commit.projection.case_id, commit.transition_key)
+        existing = self.workspace_investigation_commits.get(key)
+        if existing is not None:
+            if existing != commit:
+                raise PolicyViolation("workspace_investigation_transition_idempotency_conflict")
+            return existing
+        source_transition = await self.workspace_action_commit(
+            commit.projection.tenant_id,
+            commit.projection.case_id,
+            commit.projection.investigation_result.source_idempotency_key,
+        )
+        result = commit.projection.investigation_result
+        synthesis_record = self.workspace_investigation_stage_records.get(
+            (commit.projection.tenant_id, commit.projection.case_id, result.synthesis_activity_id),
+        )
+        if synthesis_record is None or synthesis_record.synthesis is None:
+            raise PolicyViolation("investigation_synthesis_not_authoritative")
+        critic_record = None
+        if result.critic is not None:
+            critic_record = next((
+                record for record in self.workspace_investigation_stage_records.values()
+                if record.tenant_id == commit.projection.tenant_id
+                and record.case_id == commit.projection.case_id
+                and record.critic is not None
+                and record.critic.critic_id == result.critic.critic_id
+            ), None)
+            if critic_record is None:
+                raise PolicyViolation("investigation_critic_not_authoritative")
+        validate_workspace_investigation_commit(
+            commit,
+            source_transition,
+            synthesis_record.synthesis,
+            critic_record.critic if critic_record is not None else None,
+        )
+        current = await self.get_projection(commit.projection.tenant_id, commit.projection.case_id)
+        if current != commit.source_projection:
+            raise PolicyViolation("workspace_investigation_projection_mismatch")
+        snapshots = {
+            "projections": copy.deepcopy(self.projections),
+            "events": copy.deepcopy(self.events),
+            "claims": copy.deepcopy(self.workspace_action_claims),
+            "commits": copy.deepcopy(self.workspace_investigation_commits),
+        }
+        try:
+            for claim in commit.domain_claims:
+                prior = self.workspace_action_claims.get(claim.claim_id)
+                if prior is not None and prior != claim:
+                    raise PolicyViolation("workspace_investigation_claim_immutable")
+                self.workspace_action_claims[claim.claim_id] = claim
+            await self.put_workspace_projection(commit.projection)
+            await self.append_workspace_event(commit.event)
+            self.workspace_investigation_commits[key] = commit
+            return commit
+        except Exception:
+            self.projections = snapshots["projections"]
+            self.events = snapshots["events"]
+            self.workspace_action_claims = snapshots["claims"]
+            self.workspace_investigation_commits = snapshots["commits"]
+            raise

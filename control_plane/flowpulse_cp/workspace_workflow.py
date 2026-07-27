@@ -36,11 +36,22 @@ with workflow.unsafe.imports_passed_through():
         WorkspaceActionPacket,
         WorkspaceActionReceipt,
     )
+    from .workspace_investigation import (
+        InvestigationCriticOutcome,
+        InvestigationSynthesisDisposition,
+        InvestigationSynthesisOutcome,
+        WorkspaceInvestigationCriticPacket,
+        WorkspaceInvestigationFinalizePacket,
+        WorkspaceInvestigationOutcome,
+        WorkspaceInvestigationSynthesisPacket,
+        temporal_investigation_finalize_activity,
+    )
     from .workspace_versions import WORKSPACE_V2_WORKFLOW_TYPE
 
 
 WORKSPACE_V2_ACTIONS_PATCH = "workspace-v2-gate1-next-best-actions"
 WORKSPACE_V2_ACTION_COMMIT_PATCH = "workspace-v2-gate1-atomic-action-commit"
+WORKSPACE_V2_INVESTIGATION_PATCH = "workspace-v2-investigation-decide-handoff"
 
 
 @workflow.defn(name=WORKSPACE_V2_WORKFLOW_TYPE)
@@ -223,6 +234,76 @@ class IncidentWorkspaceTemporalWorkflow:
                     self._projection = outcome.projection
                 for action in outcome.actions:
                     self._actions[action.action_id] = action.dict()
+                if (
+                    outcome.receipt.status == "FRESH_READ_COMPLETED"
+                    and workflow.patched(WORKSPACE_V2_INVESTIGATION_PATCH)
+                ):
+                    source_action = self._actions.get(command.action_id)
+                    if source_action is None:
+                        raise ValueError("workspace_investigation_source_action_missing")
+                    component_id = source_action["component_id"]
+                    synthesis_activity_id = "investigation-synthesis:{}".format(
+                        action_packet.activity_identity,
+                    )
+                    synthesis = InvestigationSynthesisOutcome.parse_obj(
+                        await self._action_activity(
+                            "workspace_synthesize_investigation_activity",
+                            WorkspaceInvestigationSynthesisPacket(
+                                **self._binding.dict(),
+                                projection=self._projection,
+                                component_id=component_id,
+                                actor_subject_id=actor.actor_subject_id,
+                                source_action_id=command.action_id,
+                                source_idempotency_key=command.idempotency_key,
+                                synthesis_activity_id=synthesis_activity_id,
+                            ).dict(),
+                        ),
+                    )
+                    critic = None
+                    if synthesis.disposition == InvestigationSynthesisDisposition.CANDIDATE:
+                        critic_activity_id = "investigation-critic:{}".format(
+                            action_packet.activity_identity,
+                        )
+                        critic = InvestigationCriticOutcome.parse_obj(
+                            await self._action_activity(
+                                "workspace_critic_investigation_activity",
+                                WorkspaceInvestigationCriticPacket(
+                                    **self._binding.dict(),
+                                    projection=self._projection,
+                                    component_id=component_id,
+                                    actor_subject_id=actor.actor_subject_id,
+                                    source_action_id=command.action_id,
+                                    source_idempotency_key=command.idempotency_key,
+                                    critic_activity_id=critic_activity_id,
+                                    synthesis=synthesis,
+                                ).dict(),
+                            ),
+                        )
+                    final_activity = temporal_investigation_finalize_activity(synthesis, critic)
+                    self._event_sequence += 1
+                    finalized = WorkspaceInvestigationOutcome.parse_obj(
+                        await self._action_activity(
+                            final_activity,
+                            WorkspaceInvestigationFinalizePacket(
+                                **self._binding.dict(),
+                                projection=self._projection,
+                                component_id=component_id,
+                                actor_subject_id=actor.actor_subject_id,
+                                source_action_id=command.action_id,
+                                source_idempotency_key=command.idempotency_key,
+                                transition_key="investigation:{}".format(
+                                    action_packet.activity_identity,
+                                ),
+                                event_sequence=self._event_sequence,
+                                synthesis=synthesis,
+                                critic=critic,
+                            ).dict(),
+                        ),
+                    )
+                    self._projection = finalized.projection
+                    self._actions = {
+                        action.action_id: action.dict() for action in finalized.actions
+                    }
                 self._action_receipts[command.idempotency_key] = outcome.receipt.dict()
                 return outcome.receipt.dict()
         except (ValidationError, ValueError) as error:

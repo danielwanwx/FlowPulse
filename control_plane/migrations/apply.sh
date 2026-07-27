@@ -268,6 +268,11 @@ if ! ledger_has "009_workspace_subject_scope_grants.sql" && \
   echo "migration_partial_schema_unrecorded:009_workspace_subject_scope_grants.sql" >&2
   exit 1
 fi
+if ! ledger_has "010_workspace_investigation_results.sql" && \
+  [ "$(psql -Atq -c "SELECT to_regclass('public.workspace_investigation_stage_records') IS NOT NULL OR to_regclass('public.workspace_investigation_transitions') IS NOT NULL")" = "t" ]; then
+  echo "migration_partial_schema_unrecorded:010_workspace_investigation_results.sql" >&2
+  exit 1
+fi
 
 # Ledger entries must name the exact contiguous source sequence.  This rejects
 # checksum drift, unsupported future versions, and a partially edited ledger.

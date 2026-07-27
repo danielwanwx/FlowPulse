@@ -8,7 +8,17 @@ from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from typing import Any, Dict, List
 
-from .models import CaseState, IncidentCase
+from .models import (
+    CaseState,
+    ClaimRecord,
+    ClaimStatus,
+    EvidenceAuthority,
+    FreshnessStatus,
+    IncidentCase,
+    ProofScope,
+    SourceKind,
+    VerificationDecision,
+)
 from .policy import PolicyViolation
 from .capabilities import (
     CapabilityAudience,
@@ -19,11 +29,22 @@ from .capabilities import (
     ToolCallBudget,
 )
 from .workspace_models import (
+    Gate1ProjectionState,
     IncidentEvent,
+    IncidentLifecycleStage,
     IncidentRunBinding,
     ExplanationEventStatus,
+    InvestigationClaim,
+    InvestigationClaimKind,
+    InvestigationCritic,
+    InvestigationDisposition,
+    InvestigationEvidenceReference,
+    InvestigationResult,
     NodeExplanation,
     NodeExplanationState,
+    ProjectionState,
+    ProviderTruthLabel,
+    VersionBundle,
     WorkspaceActivityOutcome,
     WorkspaceActivityPacket,
     WorkspaceNodeExplanationAuthorizationOutcome,
@@ -46,6 +67,27 @@ from .workspace_actions import (
     validate_current_action_card,
     workspace_permissions_for_roles,
 )
+from .workspace_investigation import (
+    InvestigationCriticOutcome,
+    InvestigationCriticOutput,
+    InvestigationCriticRequest,
+    InvestigationSynthesisDisposition,
+    InvestigationSynthesisOutcome,
+    InvestigationSynthesisOutput,
+    InvestigationSynthesisRequest,
+    InvestigationStageRecordKind,
+    UnavailableInvestigationCritic,
+    UnavailableInvestigationSynthesizer,
+    WorkspaceInvestigationCommit,
+    WorkspaceInvestigationCriticPacket,
+    WorkspaceInvestigationFinalizePacket,
+    WorkspaceInvestigationOutcome,
+    WorkspaceInvestigationStageRecord,
+    WorkspaceInvestigationSynthesisPacket,
+    claim_fingerprint,
+    temporal_investigation_finalize_activity,
+    validate_investigation_source_transition,
+)
 
 
 def workspace_activity_surface() -> List[str]:
@@ -56,6 +98,10 @@ def workspace_activity_surface() -> List[str]:
         "workspace_authorize_action_activity",
         "workspace_generate_actions_activity",
         "workspace_execute_action_activity",
+        "workspace_synthesize_investigation_activity",
+        "workspace_critic_investigation_activity",
+        "workspace_accept_investigation_activity",
+        "workspace_record_investigation_degraded_activity",
     ]
 
 
@@ -85,15 +131,388 @@ class WorkspaceActivityDispatcher:
 
     def __init__(
         self, repository: Any, conversation_manager: Any = None, authorization: Any = None,
-        capability_registry: Any = None,
+        capability_registry: Any = None, investigation_synthesizer: Any = None,
+        investigation_critic: Any = None,
     ) -> None:
         self.repository = repository
         self.conversation_manager = conversation_manager
         self.authorization = authorization
         self.capability_registry = capability_registry
+        self.investigation_synthesizer = (
+            investigation_synthesizer or UnavailableInvestigationSynthesizer()
+        )
+        self.investigation_critic = investigation_critic or UnavailableInvestigationCritic()
         configure = getattr(repository, "configure_workspace_capability_registry", None)
         if capability_registry is not None and configure is not None:
             configure(capability_registry)
+
+    @staticmethod
+    def _binding(item) -> IncidentRunBinding:
+        return IncidentRunBinding.parse_obj({
+            name: getattr(item, name) for name in IncidentRunBinding.__fields__
+        })
+
+    async def _investigation_source(self, packet):
+        source = await self.repository.workspace_action_commit(
+            packet.tenant_id, packet.case_id, packet.source_idempotency_key,
+        )
+        validate_investigation_source_transition(
+            self._binding(packet), packet.projection, source,
+            source_action_id=packet.source_action_id,
+            source_idempotency_key=packet.source_idempotency_key,
+        )
+        if packet.component_id not in {node.component_id for node in packet.projection.graph.nodes}:
+            raise PolicyViolation("investigation_component_not_canonical")
+        if (
+            source.capability_audit.subject_id != packet.actor_subject_id
+            or source.capability_audit.component_id != packet.component_id
+            or packet.actor_subject_id not in {
+                subject
+                for evidence in source.capability_result.evidence
+                for subject in evidence.acl_subjects
+            }
+        ):
+            raise PolicyViolation("investigation_subject_evidence_acl_denied")
+        return source
+
+    async def _synthesize_investigation(self, packet_data: Dict[str, Any]) -> Dict[str, Any]:
+        packet = WorkspaceInvestigationSynthesisPacket.parse_obj(packet_data)
+        prior = await self.repository.workspace_investigation_stage_record(
+            packet.tenant_id, packet.case_id, packet.synthesis_activity_id,
+        )
+        if prior is not None:
+            if prior.kind != InvestigationStageRecordKind.SYNTHESIS:
+                raise PolicyViolation("investigation_stage_record_kind_mismatch")
+            return prior.synthesis.dict()
+        source = await self._investigation_source(packet)
+        request = InvestigationSynthesisRequest(
+            **self._binding(packet).dict(),
+            projection_revision=packet.projection.projection_revision,
+            evidence_revision=packet.projection.evidence_revision,
+            component_id=packet.component_id,
+            synthesis_activity_id=packet.synthesis_activity_id,
+            observations=source.capability_result.claims,
+            evidence=source.capability_result.evidence,
+        )
+        output = None
+        degraded_code = None
+        try:
+            raw = await self.investigation_synthesizer.synthesize(request)
+            output = InvestigationSynthesisOutput.parse_obj(raw) if raw is not None else None
+        except Exception:
+            degraded_code = "investigation_provider_output_invalid"
+        evidence_refs = [item.evidence_id for item in request.evidence]
+        disposition = InvestigationSynthesisDisposition.DEGRADED
+        truth_label = ProviderTruthLabel.DEGRADED
+        provider_id = getattr(
+            self.investigation_synthesizer, "provider_id", "unconfigured-investigation-provider",
+        )
+        model_id = getattr(self.investigation_synthesizer, "model_id", None)
+        summary = "Investigation synthesis is unavailable; current evidence remains recorded."
+        hypotheses = []
+        if output is not None:
+            if any(
+                not set(candidate.evidence_refs).issubset(set(evidence_refs))
+                for candidate in output.hypotheses
+            ):
+                output = None
+                degraded_code = "investigation_provider_evidence_mismatch"
+            elif output.abstained:
+                disposition = InvestigationSynthesisDisposition.ABSTAINED
+                degraded_code = "investigation_abstained"
+                summary = output.summary
+            else:
+                configured_truth = getattr(self.investigation_synthesizer, "truth_label", None)
+                if configured_truth not in {
+                    ProviderTruthLabel.TEST_DETERMINISTIC,
+                    ProviderTruthLabel.DEMO,
+                    ProviderTruthLabel.LIVE,
+                }:
+                    output = None
+                    degraded_code = "investigation_provider_truth_mode_invalid"
+                else:
+                    disposition = InvestigationSynthesisDisposition.CANDIDATE
+                    truth_label = configured_truth
+                    summary = output.summary
+                    hypotheses = output.hypotheses
+        if output is None and degraded_code is None:
+            degraded_code = "investigation_provider_unavailable"
+        synthesis_id = "investigation-synthesis-{}".format(
+            sha256(packet.synthesis_activity_id.encode("utf-8")).hexdigest()[:24],
+        )
+        outcome = InvestigationSynthesisOutcome(
+            **self._binding(packet).dict(),
+            synthesis_id=synthesis_id,
+            synthesis_activity_id=packet.synthesis_activity_id,
+            source_action_id=packet.source_action_id,
+            source_idempotency_key=packet.source_idempotency_key,
+            component_id=packet.component_id,
+            projection_revision=packet.projection.projection_revision,
+            evidence_revision=packet.projection.evidence_revision,
+            disposition=disposition,
+            truth_label=truth_label,
+            provider_id=provider_id,
+            model_id=model_id,
+            summary=summary,
+            hypotheses=hypotheses,
+            evidence_refs=evidence_refs,
+            degraded_code=degraded_code,
+        )
+        record = WorkspaceInvestigationStageRecord(
+            **self._binding(packet).dict(),
+            record_id=packet.synthesis_activity_id,
+            kind=InvestigationStageRecordKind.SYNTHESIS,
+            synthesis=outcome,
+        )
+        await self.repository.append_workspace_investigation_stage_record(record)
+        return outcome.dict()
+
+    async def _critic_investigation(self, packet_data: Dict[str, Any]) -> Dict[str, Any]:
+        packet = WorkspaceInvestigationCriticPacket.parse_obj(packet_data)
+        prior = await self.repository.workspace_investigation_stage_record(
+            packet.tenant_id, packet.case_id, packet.critic_activity_id,
+        )
+        if prior is not None:
+            if prior.kind != InvestigationStageRecordKind.CRITIC:
+                raise PolicyViolation("investigation_stage_record_kind_mismatch")
+            return prior.critic.dict()
+        source = await self._investigation_source(packet)
+        synthesis_record = await self.repository.workspace_investigation_stage_record(
+            packet.tenant_id, packet.case_id, packet.synthesis.synthesis_activity_id,
+        )
+        if synthesis_record is None or synthesis_record.synthesis != packet.synthesis:
+            raise PolicyViolation("investigation_synthesis_not_authoritative")
+        if packet.synthesis.disposition != InvestigationSynthesisDisposition.CANDIDATE:
+            raise PolicyViolation("investigation_critic_candidate_required")
+        if getattr(self.investigation_critic, "identity", "") == packet.synthesis.provider_id:
+            raise PolicyViolation("investigation_critic_identity_not_independent")
+        request = InvestigationCriticRequest(
+            **self._binding(packet).dict(),
+            projection_revision=packet.projection.projection_revision,
+            evidence_revision=packet.projection.evidence_revision,
+            component_id=packet.component_id,
+            critic_activity_id=packet.critic_activity_id,
+            synthesis=packet.synthesis,
+            observations=source.capability_result.claims,
+            evidence=source.capability_result.evidence,
+        )
+        try:
+            output = InvestigationCriticOutput.parse_obj(
+                await self.investigation_critic.critique(request),
+            )
+        except Exception:
+            output = InvestigationCriticOutput(
+                decision=VerificationDecision.AMBIGUOUS,
+                reason_codes=["critic_provider_output_invalid"],
+            )
+        fingerprints = [
+            claim_fingerprint(item.claim_type, item.statement, item.evidence_ids)
+            for item in request.observations
+        ] + [
+            claim_fingerprint("hypothesis", item.statement, item.evidence_refs)
+            for item in packet.synthesis.hypotheses
+        ]
+        outcome = InvestigationCriticOutcome(
+            **self._binding(packet).dict(),
+            critic_id="investigation-critic-{}".format(
+                sha256(packet.critic_activity_id.encode("utf-8")).hexdigest()[:24],
+            ),
+            critic_activity_id=packet.critic_activity_id,
+            identity=getattr(self.investigation_critic, "identity", "unconfigured-investigation-critic"),
+            source_action_id=packet.source_action_id,
+            source_idempotency_key=packet.source_idempotency_key,
+            component_id=packet.component_id,
+            projection_revision=packet.projection.projection_revision,
+            evidence_revision=packet.projection.evidence_revision,
+            decision=output.decision,
+            reason_codes=output.reason_codes,
+            reviewed_claim_fingerprints=fingerprints,
+            evidence_refs=[item.evidence_id for item in request.evidence],
+        )
+        await self.repository.append_workspace_investigation_stage_record(
+            WorkspaceInvestigationStageRecord(
+                **self._binding(packet).dict(),
+                record_id=packet.critic_activity_id,
+                kind=InvestigationStageRecordKind.CRITIC,
+                critic=outcome,
+            ),
+        )
+        return outcome.dict()
+
+    async def _finalize_investigation(
+        self, activity_name: str, packet_data: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        packet = WorkspaceInvestigationFinalizePacket.parse_obj(packet_data)
+        existing = await self.repository.workspace_investigation_transition(
+            packet.tenant_id, packet.case_id, packet.transition_key,
+        )
+        if existing is not None:
+            return WorkspaceInvestigationOutcome(
+                projection=existing.projection,
+                result=existing.projection.investigation_result,
+                actions=existing.actions,
+            ).dict()
+        source = await self._investigation_source(packet)
+        synthesis_record = await self.repository.workspace_investigation_stage_record(
+            packet.tenant_id, packet.case_id, packet.synthesis.synthesis_activity_id,
+        )
+        if synthesis_record is None or synthesis_record.synthesis != packet.synthesis:
+            raise PolicyViolation("investigation_synthesis_not_authoritative")
+        if packet.critic is not None:
+            critic_record = await self.repository.workspace_investigation_stage_record(
+                packet.tenant_id, packet.case_id, packet.critic.critic_activity_id,
+            )
+            if critic_record is None or critic_record.critic != packet.critic:
+                raise PolicyViolation("investigation_critic_not_authoritative")
+        expected_activity = temporal_investigation_finalize_activity(packet.synthesis, packet.critic)
+        if activity_name != expected_activity:
+            raise PolicyViolation("investigation_temporal_decision_mismatch")
+        accepted = activity_name == "workspace_accept_investigation_activity"
+        evidence = [
+            InvestigationEvidenceReference(
+                evidence_id=item.evidence_id,
+                source_kind=item.source_kind,
+                observed_at=item.observed_at,
+                freshness=item.freshness,
+                authority=item.authority,
+                proof_scope=item.proof_scope,
+                parent_evidence_refs=item.parent_evidence_ids,
+            )
+            for item in source.capability_result.evidence
+        ]
+        public_claims = [
+            InvestigationClaim(
+                claim_id=item.claim_id,
+                kind=InvestigationClaimKind.OBSERVATION,
+                statement=item.statement,
+                evidence_refs=item.evidence_ids,
+            )
+            for item in source.capability_result.claims
+        ]
+        domain_claims = []
+        if accepted:
+            for candidate in packet.synthesis.hypotheses:
+                claim_id = "investigation-claim-{}".format(
+                    claim_fingerprint("hypothesis", candidate.statement, candidate.evidence_refs)[:24],
+                )
+                public_claims.append(InvestigationClaim(
+                    claim_id=claim_id,
+                    kind=InvestigationClaimKind.HYPOTHESIS,
+                    statement=candidate.statement,
+                    evidence_refs=candidate.evidence_refs,
+                ))
+                domain_claims.append(ClaimRecord(
+                    claim_id=claim_id,
+                    case_id=packet.case_id,
+                    case_revision=packet.case_revision,
+                    tenant_id=packet.tenant_id,
+                    claim_type="hypothesis",
+                    statement=candidate.statement,
+                    evidence_ids=candidate.evidence_refs,
+                    status=ClaimStatus.SUPPORTED,
+                    requires_current_proof=True,
+                    created_by="workspace-investigator:" + packet.synthesis.synthesis_activity_id,
+                ))
+        disposition = InvestigationDisposition.ACCEPTED
+        degraded_code = None
+        lifecycle_stage = IncidentLifecycleStage.DECIDE
+        lifecycle_state = ProjectionState.ACTIVE
+        status = "investigation_accepted"
+        truth_label = packet.synthesis.truth_label
+        critic = None
+        if packet.critic is not None:
+            critic = InvestigationCritic(
+                critic_id=packet.critic.critic_id,
+                identity=packet.critic.identity,
+                decision=packet.critic.decision,
+                reason_codes=packet.critic.reason_codes,
+                reviewed_claim_ids=[item.claim_id for item in public_claims],
+                evidence_refs=packet.critic.evidence_refs,
+            )
+        if not accepted:
+            lifecycle_stage = IncidentLifecycleStage.INVESTIGATE
+            lifecycle_state = ProjectionState.DEGRADED
+            truth_label = ProviderTruthLabel.DEGRADED
+            status = "investigation_degraded"
+            degraded_code = packet.synthesis.degraded_code or "investigation_critic_rejected"
+            if packet.synthesis.disposition == InvestigationSynthesisDisposition.ABSTAINED:
+                disposition = InvestigationDisposition.ABSTAINED
+            elif packet.synthesis.disposition == InvestigationSynthesisDisposition.DEGRADED:
+                disposition = InvestigationDisposition.DEGRADED
+            else:
+                disposition = InvestigationDisposition.CRITIC_REJECTED
+                degraded_code = "investigation_critic_rejected"
+        next_revision = packet.projection.projection_revision + 1
+        result_id = "investigation-result-{}".format(
+            sha256(packet.transition_key.encode("utf-8")).hexdigest()[:24],
+        )
+        result = InvestigationResult(
+            **self._binding(packet).dict(),
+            result_id=result_id,
+            component_id=packet.component_id,
+            source_action_id=packet.source_action_id,
+            source_idempotency_key=packet.source_idempotency_key,
+            source_activity_identity=source.activity_identity,
+            synthesis_id=packet.synthesis.synthesis_id,
+            synthesis_activity_id=packet.synthesis.synthesis_activity_id,
+            synthesis_provider_id=packet.synthesis.provider_id,
+            synthesis_model_id=packet.synthesis.model_id,
+            projection_revision=next_revision,
+            evidence_revision=packet.projection.evidence_revision,
+            lifecycle_stage=lifecycle_stage,
+            disposition=disposition,
+            summary=packet.synthesis.summary,
+            claims=public_claims,
+            evidence=evidence,
+            critic=critic,
+            truth_label=truth_label,
+            version_bundle=VersionBundle(),
+            degraded_code=degraded_code,
+            recorded_at=datetime.now(timezone.utc),
+        )
+        projection = packet.projection.copy(update={
+            "projection_revision": next_revision,
+            "sequence": packet.projection.sequence + 1,
+            "action_revision": packet.projection.action_revision + 1,
+            "lifecycle_stage": lifecycle_stage,
+            "lifecycle_state": lifecycle_state,
+            "status": status,
+            "investigation_result": result,
+            "degraded_code": degraded_code,
+            "generated_at": result.recorded_at,
+        })
+        event = IncidentEvent(
+            **self._binding(packet).dict(),
+            projection_revision=projection.projection_revision,
+            sequence=packet.event_sequence,
+            event_type=(
+                "workspace.investigation.accepted"
+                if accepted else "workspace.investigation.degraded"
+            ),
+            occurred_at=result.recorded_at,
+            payload={
+                "result_id": result.result_id,
+                "component_id": result.component_id,
+                "lifecycle_stage": result.lifecycle_stage.value,
+                "disposition": result.disposition.value,
+            },
+            evidence_refs=list(projection.evidence_refs),
+        )
+        commit = WorkspaceInvestigationCommit(
+            transition_key=packet.transition_key,
+            source_projection=packet.projection,
+            projection=projection,
+            result_id=result.result_id,
+            domain_claims=domain_claims,
+            event=event,
+            actions=[],
+        )
+        stored = await self.repository.commit_workspace_investigation_transition(commit)
+        return WorkspaceInvestigationOutcome(
+            projection=stored.projection,
+            result=stored.projection.investigation_result,
+            actions=stored.actions,
+        ).dict()
 
     @staticmethod
     def _permissions(actor) -> list:
@@ -239,6 +658,15 @@ class WorkspaceActivityDispatcher:
             for action in actions:
                 await self.repository.append_next_best_action(action)
             return WorkspaceActionGenerationOutcome(actions=actions).dict()
+        if activity_name == "workspace_synthesize_investigation_activity":
+            return await self._synthesize_investigation(packet_data)
+        if activity_name == "workspace_critic_investigation_activity":
+            return await self._critic_investigation(packet_data)
+        if activity_name in {
+            "workspace_accept_investigation_activity",
+            "workspace_record_investigation_degraded_activity",
+        }:
+            return await self._finalize_investigation(activity_name, packet_data)
         if activity_name == "workspace_execute_action_activity":
             packet = WorkspaceActionPacket.parse_obj(packet_data)
             command_fingerprint = packet.command.canonical_hash()
@@ -341,6 +769,7 @@ class WorkspaceActivityDispatcher:
                     "sequence": packet.projection.sequence + 1,
                     "evidence_revision": packet.projection.evidence_revision + 1,
                     "action_revision": packet.projection.action_revision + 1,
+                    "gate1_state": Gate1ProjectionState.CONSUMED,
                     "evidence_refs": evidence_refs, "generated_at": now,
                 })
                 receipt = WorkspaceActionReceipt(
@@ -371,6 +800,7 @@ class WorkspaceActivityDispatcher:
                 "sequence": packet.projection.sequence + 1,
                 "gate_revision": packet.projection.gate_revision + 1,
                 "action_revision": packet.projection.action_revision + 1,
+                "gate1_state": Gate1ProjectionState.ACTIVE,
                 "generated_at": now,
             })
             lease_id = "gate1-" + command_fingerprint

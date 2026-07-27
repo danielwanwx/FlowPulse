@@ -21,6 +21,16 @@ from .workspace_models import (
     ConversationProviderRequest,
     ProviderTruthLabel,
 )
+from .workspace_investigation import (
+    DeterministicInvestigationCritic,
+    DeterministicInvestigationSynthesizer,
+    InvestigationCriticOutput,
+    InvestigationCriticRequest,
+    InvestigationSynthesisOutput,
+    InvestigationSynthesisRequest,
+    UnavailableInvestigationCritic,
+    UnavailableInvestigationSynthesizer,
+)
 
 
 class ProviderConfigurationError(RuntimeError):
@@ -211,6 +221,149 @@ class OpenAICompatibleConversationProvider:
         return await asyncio.to_thread(self._request_sync, request)
 
 
+def _openai_compatible_json(
+    settings: ProviderSettings,
+    *,
+    system_prompt: str,
+    input_payload: Dict[str, Any],
+) -> Dict[str, Any]:
+    base = (settings.base_url or "").rstrip("/")
+    endpoint = base + ("/chat/completions" if base.endswith("/v1") else "/v1/chat/completions")
+    headers = {"content-type": "application/json"}
+    if settings.api_key:
+        headers["authorization"] = "Bearer " + settings.api_key
+    payload = {
+        "model": settings.model,
+        "temperature": 0,
+        "max_tokens": settings.max_output_tokens,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": json.dumps(input_payload, sort_keys=True, default=str)},
+        ],
+    }
+    try:
+        with urlopen(
+            Request(
+                endpoint,
+                data=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
+                headers=headers,
+                method="POST",
+            ),
+            timeout=settings.timeout_seconds,
+        ) as response:
+            decoded = json.loads(response.read().decode("utf-8"))
+        return json.loads(decoded["choices"][0]["message"]["content"])
+    except Exception as error:
+        raise ProviderGatewayError("provider_request_or_output_failed") from error
+
+
+class OpenAICompatibleInvestigationSynthesizer:
+    """Opt-in provider for candidates only; the workflow still owns acceptance."""
+
+    truth_label = ProviderTruthLabel.LIVE
+    provider_id = "openai-compatible-investigation-synthesizer"
+
+    def __init__(self, settings: ProviderSettings) -> None:
+        self.settings = settings.validate()
+        if self.settings.mode not in {ProviderMode.LOCAL_OPEN_SOURCE, ProviderMode.OPENAI_COMPATIBLE}:
+            raise ProviderConfigurationError("openai_compatible_provider_mode_required")
+        self.model_id = self.settings.model
+
+    def _synthesize_sync(self, request: InvestigationSynthesisRequest) -> InvestigationSynthesisOutput:
+        payload = {
+            "component_id": request.component_id,
+            "observations": [
+                {
+                    "claim_type": item.claim_type,
+                    "statement": item.statement,
+                    "evidence_refs": item.evidence_ids,
+                }
+                for item in request.observations
+            ],
+            "evidence": [
+                {
+                    "evidence_id": item.evidence_id,
+                    "source_kind": item.source_kind.value,
+                    "observed_at": item.observed_at.isoformat(),
+                    "freshness": item.freshness.value,
+                    "authority": item.authority.value,
+                    "proof_scope": item.proof_scope.value,
+                    "parent_evidence_refs": item.parent_evidence_ids,
+                }
+                for item in request.evidence
+            ],
+        }
+        raw = _openai_compatible_json(
+            self.settings,
+            system_prompt=(
+                "Return a JSON object with only summary, hypotheses, and abstained. "
+                "Each hypothesis has only statement and evidence_refs. Cite only supplied evidence IDs. "
+                "Do not emit lifecycle, authority, tool, action, tenant, run, or component fields."
+            ),
+            input_payload=payload,
+        )
+        try:
+            return InvestigationSynthesisOutput.parse_obj(raw)
+        except ValidationError as error:
+            raise ProviderGatewayError("investigation_provider_output_schema_invalid") from error
+
+    async def synthesize(self, request: InvestigationSynthesisRequest) -> InvestigationSynthesisOutput:
+        return await asyncio.to_thread(self._synthesize_sync, request)
+
+
+class OpenAICompatibleInvestigationCritic:
+    """Separate provider role and activity identity for evidence-bound criticism."""
+
+    def __init__(self, settings: ProviderSettings) -> None:
+        self.settings = settings.validate()
+        if self.settings.mode not in {ProviderMode.LOCAL_OPEN_SOURCE, ProviderMode.OPENAI_COMPATIBLE}:
+            raise ProviderConfigurationError("openai_compatible_provider_mode_required")
+        self.identity = "openai-compatible-independent-critic:{}".format(self.settings.model)
+
+    def _critique_sync(self, request: InvestigationCriticRequest) -> InvestigationCriticOutput:
+        payload = {
+            "component_id": request.component_id,
+            "candidate": {
+                "summary": request.synthesis.summary,
+                "hypotheses": [item.dict() for item in request.synthesis.hypotheses],
+                "evidence_refs": request.synthesis.evidence_refs,
+            },
+            "observations": [
+                {
+                    "claim_type": item.claim_type,
+                    "statement": item.statement,
+                    "evidence_refs": item.evidence_ids,
+                }
+                for item in request.observations
+            ],
+            "evidence": [
+                {
+                    "evidence_id": item.evidence_id,
+                    "freshness": item.freshness.value,
+                    "authority": item.authority.value,
+                    "proof_scope": item.proof_scope.value,
+                }
+                for item in request.evidence
+            ],
+        }
+        raw = _openai_compatible_json(
+            self.settings,
+            system_prompt=(
+                "Independently evaluate whether every candidate claim is supported by supplied current evidence. "
+                "Return a JSON object with only decision (PASS, FAIL, or AMBIGUOUS) and reason_codes."
+            ),
+            input_payload=payload,
+        )
+        try:
+            return InvestigationCriticOutput.parse_obj(raw)
+        except ValidationError as error:
+            raise ProviderGatewayError("investigation_critic_output_schema_invalid") from error
+
+    async def critique(self, request: InvestigationCriticRequest) -> InvestigationCriticOutput:
+        return await asyncio.to_thread(self._critique_sync, request)
+
+
 def build_conversation_provider(
     settings: ProviderSettings, *, deterministic_provider: Optional[DeterministicConversationProvider] = None,
 ) -> ConversationProvider:
@@ -224,3 +377,28 @@ def build_conversation_provider(
     if settings.mode in {ProviderMode.LOCAL_OPEN_SOURCE, ProviderMode.OPENAI_COMPATIBLE}:
         return OpenAICompatibleConversationProvider(settings)
     return UnavailableConversationProvider()
+
+
+def build_investigation_providers(
+    settings: ProviderSettings,
+    *,
+    deterministic_synthesizer: Optional[DeterministicInvestigationSynthesizer] = None,
+    deterministic_critic: Optional[DeterministicInvestigationCritic] = None,
+):
+    """Resolve both roles together so no accepted path can silently use a fake."""
+
+    settings.validate()
+    if (deterministic_synthesizer is None) != (deterministic_critic is None):
+        raise ProviderConfigurationError("deterministic_investigation_provider_pair_required")
+    if deterministic_synthesizer is not None:
+        if settings.mode != ProviderMode.TEST:
+            raise ProviderConfigurationError(
+                "deterministic_investigation_provider_requires_explicit_test_mode",
+            )
+        return deterministic_synthesizer, deterministic_critic
+    if settings.mode in {ProviderMode.LOCAL_OPEN_SOURCE, ProviderMode.OPENAI_COMPATIBLE}:
+        return (
+            OpenAICompatibleInvestigationSynthesizer(settings),
+            OpenAICompatibleInvestigationCritic(settings),
+        )
+    return UnavailableInvestigationSynthesizer(), UnavailableInvestigationCritic()

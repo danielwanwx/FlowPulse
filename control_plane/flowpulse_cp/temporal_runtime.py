@@ -70,7 +70,11 @@ from .capability_adapters import (
 )
 from .postgres import PostgresCapabilityScopeAuthority
 from .conversation_manager import ConversationManager
-from .provider_gateway import ProviderSettings, build_conversation_provider
+from .provider_gateway import (
+    ProviderSettings,
+    build_conversation_provider,
+    build_investigation_providers,
+)
 from .workspace_models import (
     ConversationRole,
     IncidentProjection,
@@ -587,11 +591,15 @@ async def run_worker(
         scope_authority=PostgresCapabilityScopeAuthority(repository),
         gate1_authority=Gate1LeaseAuthority(repository),
     )
+    resolved_provider_settings = provider_settings or ProviderSettings()
     conversation_manager = ConversationManager(
-        build_conversation_provider(provider_settings or ProviderSettings()),
+        build_conversation_provider(resolved_provider_settings),
         capability_registry,
         specialist_roles=[ConversationRole.EVIDENCE_SPECIALIST, ConversationRole.TOPOLOGY_SPECIALIST],
-        max_output_tokens=(provider_settings or ProviderSettings()).max_output_tokens,
+        max_output_tokens=resolved_provider_settings.max_output_tokens,
+    )
+    investigation_synthesizer, investigation_critic = build_investigation_providers(
+        resolved_provider_settings,
     )
     async with Worker(
         client, task_queue=task_queue,
@@ -607,6 +615,8 @@ async def run_worker(
             + build_workspace_activities(WorkspaceActivityDispatcher(
                 repository, conversation_manager=conversation_manager, authorization=authorization,
                 capability_registry=capability_registry,
+                investigation_synthesizer=investigation_synthesizer,
+                investigation_critic=investigation_critic,
             ))
         ),
     ):

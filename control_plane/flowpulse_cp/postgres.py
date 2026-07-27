@@ -55,6 +55,11 @@ from .workspace_actions import (
     validate_fresh_read_evidence_admission,
     validate_workspace_action_commit_kind,
 )
+from .workspace_investigation import (
+    WorkspaceInvestigationCommit,
+    WorkspaceInvestigationStageRecord,
+    validate_workspace_investigation_commit,
+)
 
 
 T = TypeVar("T")
@@ -1333,6 +1338,288 @@ class PostgresCaseRepository:
             binding.tenant_id, operation,
             subject_id=(commit.capability_audit.subject_id if commit.capability_audit is not None else None),
         )
+
+    async def workspace_investigation_stage_record(
+        self, tenant_id: str, case_id: str, record_id: str,
+    ) -> Optional[WorkspaceInvestigationStageRecord]:
+        async def operation(connection: asyncpg.Connection) -> Optional[WorkspaceInvestigationStageRecord]:
+            row = await connection.fetchrow(
+                """SELECT payload FROM workspace_investigation_stage_records
+                   WHERE tenant_id=$1 AND case_id=$2 AND record_id=$3""",
+                tenant_id, case_id, record_id,
+            )
+            return WorkspaceInvestigationStageRecord.parse_obj(_decode(row["payload"])) if row else None
+        return await self._tenant(tenant_id, operation)
+
+    async def append_workspace_investigation_stage_record(
+        self, record: WorkspaceInvestigationStageRecord,
+    ) -> WorkspaceInvestigationStageRecord:
+        binding = _workspace_binding(record)
+
+        async def operation(connection: asyncpg.Connection) -> WorkspaceInvestigationStageRecord:
+            await _lock_workspace_mapping(connection, binding)
+            binding_row = await connection.fetchrow(
+                "SELECT payload FROM incident_run_bindings WHERE tenant_id=$1 AND run_id=$2",
+                record.tenant_id, record.run_id,
+            )
+            if binding_row is None or _workspace_binding(_decode(binding_row["payload"])) != binding:
+                raise PolicyViolation("workspace_investigation_stage_binding_mismatch")
+            prior = await connection.fetchrow(
+                """SELECT payload FROM workspace_investigation_stage_records
+                   WHERE tenant_id=$1 AND case_id=$2 AND record_id=$3""",
+                record.tenant_id, record.case_id, record.record_id,
+            )
+            if prior is not None:
+                stored = WorkspaceInvestigationStageRecord.parse_obj(_decode(prior["payload"]))
+                if stored != record:
+                    raise PolicyViolation("workspace_investigation_stage_record_immutable")
+                return stored
+            await connection.execute(
+                """INSERT INTO workspace_investigation_stage_records
+                   (tenant_id, incident_id, run_id, topology_revision, case_id, case_revision,
+                    workflow_id, workflow_run_id, record_id, kind, payload, created_at)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12)""",
+                record.tenant_id, record.incident_id, record.run_id, record.topology_revision,
+                record.case_id, record.case_revision, record.workflow_id, record.workflow_run_id,
+                record.record_id, record.kind.value, _payload(record), datetime.now(timezone.utc),
+            )
+            return record
+        return await self._tenant(record.tenant_id, operation)
+
+    async def _verify_workspace_investigation_commit(
+        self, connection: asyncpg.Connection, commit: WorkspaceInvestigationCommit,
+    ) -> None:
+        result = commit.projection.investigation_result
+        source_row = await connection.fetchrow(
+            """SELECT payload FROM workspace_action_transitions
+               WHERE tenant_id=$1 AND case_id=$2 AND idempotency_key=$3""",
+            commit.projection.tenant_id, commit.projection.case_id,
+            result.source_idempotency_key,
+        )
+        synthesis_row = await connection.fetchrow(
+            """SELECT payload FROM workspace_investigation_stage_records
+               WHERE tenant_id=$1 AND case_id=$2 AND record_id=$3""",
+            commit.projection.tenant_id, commit.projection.case_id,
+            result.synthesis_activity_id,
+        )
+        if source_row is None or synthesis_row is None:
+            raise PolicyViolation("workspace_investigation_transition_partial")
+        source = WorkspaceActionCommit.parse_obj(_decode(source_row["payload"]))
+        if source.capability_audit is None:
+            raise PolicyViolation("workspace_investigation_transition_partial")
+        await connection.execute(
+            "SELECT set_config('app.subject_id', $1, true)",
+            source.capability_audit.subject_id,
+        )
+        await self._verify_workspace_action_commit(connection, source)
+        synthesis_record = WorkspaceInvestigationStageRecord.parse_obj(
+            _decode(synthesis_row["payload"]),
+        )
+        critic_record = None
+        if result.critic is not None:
+            critic_row = await connection.fetchrow(
+                """SELECT payload FROM workspace_investigation_stage_records
+                   WHERE tenant_id=$1 AND case_id=$2 AND kind='CRITIC'
+                     AND payload->'critic'->>'critic_id'=$3""",
+                commit.projection.tenant_id, commit.projection.case_id,
+                result.critic.critic_id,
+            )
+            if critic_row is None:
+                raise PolicyViolation("workspace_investigation_transition_partial")
+            critic_record = WorkspaceInvestigationStageRecord.parse_obj(
+                _decode(critic_row["payload"]),
+            )
+        validate_workspace_investigation_commit(
+            commit,
+            source,
+            synthesis_record.synthesis,
+            critic_record.critic if critic_record is not None else None,
+        )
+        projection = await connection.fetchrow(
+            """SELECT payload FROM incident_projections
+               WHERE tenant_id=$1 AND run_id=$2 AND topology_revision=$3 AND projection_revision=$4""",
+            commit.projection.tenant_id, commit.projection.run_id,
+            commit.projection.topology_revision, commit.projection.projection_revision,
+        )
+        event = await connection.fetchrow(
+            """SELECT payload FROM incident_projection_events
+               WHERE tenant_id=$1 AND run_id=$2 AND topology_revision=$3 AND sequence=$4""",
+            commit.event.tenant_id, commit.event.run_id,
+            commit.event.topology_revision, commit.event.sequence,
+        )
+        if (
+            projection is None
+            or event is None
+            or IncidentProjection.parse_obj(_decode(projection["payload"])) != commit.projection
+            or IncidentEvent.parse_obj(_decode(event["payload"])) != commit.event
+        ):
+            raise PolicyViolation("workspace_investigation_transition_partial")
+        for claim in commit.domain_claims:
+            row = await connection.fetchrow(
+                "SELECT payload FROM claim_records WHERE tenant_id=$1 AND claim_id=$2",
+                claim.tenant_id, claim.claim_id,
+            )
+            if row is None or ClaimRecord.parse_obj(_decode(row["payload"])) != claim:
+                raise PolicyViolation("workspace_investigation_transition_partial")
+
+    async def workspace_investigation_transition(
+        self, tenant_id: str, case_id: str, transition_key: str,
+    ) -> Optional[WorkspaceInvestigationCommit]:
+        async def operation(connection: asyncpg.Connection) -> Optional[WorkspaceInvestigationCommit]:
+            row = await connection.fetchrow(
+                """SELECT payload FROM workspace_investigation_transitions
+                   WHERE tenant_id=$1 AND case_id=$2 AND transition_key=$3""",
+                tenant_id, case_id, transition_key,
+            )
+            if row is None:
+                return None
+            commit = WorkspaceInvestigationCommit.parse_obj(_decode(row["payload"]))
+            await self._verify_workspace_investigation_commit(connection, commit)
+            return commit
+        return await self._tenant(tenant_id, operation)
+
+    async def commit_workspace_investigation_transition(
+        self, commit: WorkspaceInvestigationCommit,
+    ) -> WorkspaceInvestigationCommit:
+        binding = _workspace_binding(commit.projection)
+
+        async def operation(connection: asyncpg.Connection) -> WorkspaceInvestigationCommit:
+            await _lock_workspace_mapping(connection, binding)
+            existing = await connection.fetchrow(
+                """SELECT payload FROM workspace_investigation_transitions
+                   WHERE tenant_id=$1 AND case_id=$2 AND transition_key=$3""",
+                binding.tenant_id, binding.case_id, commit.transition_key,
+            )
+            if existing is not None:
+                recorded = WorkspaceInvestigationCommit.parse_obj(_decode(existing["payload"]))
+                if recorded != commit:
+                    raise PolicyViolation("workspace_investigation_transition_idempotency_conflict")
+                await self._verify_workspace_investigation_commit(connection, recorded)
+                return recorded
+            source_row = await connection.fetchrow(
+                """SELECT payload FROM workspace_action_transitions
+                   WHERE tenant_id=$1 AND case_id=$2 AND idempotency_key=$3""",
+                binding.tenant_id, binding.case_id,
+                commit.projection.investigation_result.source_idempotency_key,
+            )
+            if source_row is None:
+                raise PolicyViolation("investigation_source_transition_missing")
+            source = WorkspaceActionCommit.parse_obj(_decode(source_row["payload"]))
+            if source.capability_audit is None:
+                raise PolicyViolation("investigation_source_transition_mismatch")
+            await connection.execute(
+                "SELECT set_config('app.subject_id', $1, true)",
+                source.capability_audit.subject_id,
+            )
+            await self._verify_workspace_action_commit(connection, source)
+            latest_row = await connection.fetchrow(
+                """SELECT payload FROM incident_projections
+                   WHERE tenant_id=$1 AND run_id=$2 AND topology_revision=$3
+                   ORDER BY projection_revision DESC LIMIT 1""",
+                binding.tenant_id, binding.run_id, binding.topology_revision,
+            )
+            if latest_row is None or IncidentProjection.parse_obj(_decode(latest_row["payload"])) != commit.source_projection:
+                raise PolicyViolation("workspace_investigation_projection_mismatch")
+            result = commit.projection.investigation_result
+            synthesis_row = await connection.fetchrow(
+                """SELECT payload FROM workspace_investigation_stage_records
+                   WHERE tenant_id=$1 AND case_id=$2 AND record_id=$3""",
+                binding.tenant_id, binding.case_id, result.synthesis_activity_id,
+            )
+            if synthesis_row is None:
+                raise PolicyViolation("investigation_synthesis_not_authoritative")
+            synthesis_record = WorkspaceInvestigationStageRecord.parse_obj(
+                _decode(synthesis_row["payload"]),
+            )
+            critic_record = None
+            if result.critic is not None:
+                critic_row = await connection.fetchrow(
+                    """SELECT payload FROM workspace_investigation_stage_records
+                       WHERE tenant_id=$1 AND case_id=$2 AND kind='CRITIC'
+                         AND payload->'critic'->>'critic_id'=$3""",
+                    binding.tenant_id, binding.case_id, result.critic.critic_id,
+                )
+                if critic_row is None:
+                    raise PolicyViolation("investigation_critic_not_authoritative")
+                critic_record = WorkspaceInvestigationStageRecord.parse_obj(
+                    _decode(critic_row["payload"]),
+                )
+            validate_workspace_investigation_commit(
+                commit,
+                source,
+                synthesis_record.synthesis,
+                critic_record.critic if critic_record is not None else None,
+            )
+
+            for claim in commit.domain_claims:
+                prior = await connection.fetchrow(
+                    "SELECT payload FROM claim_records WHERE tenant_id=$1 AND claim_id=$2",
+                    claim.tenant_id, claim.claim_id,
+                )
+                if prior is not None:
+                    if ClaimRecord.parse_obj(_decode(prior["payload"])) != claim:
+                        raise PolicyViolation("workspace_investigation_claim_immutable")
+                    continue
+                await connection.execute(
+                    """INSERT INTO claim_records
+                       (claim_id, case_id, tenant_id, case_revision, evidence_ids, status, payload)
+                       VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7::jsonb)""",
+                    claim.claim_id, claim.case_id, claim.tenant_id, claim.case_revision,
+                    json.dumps(claim.evidence_ids), claim.status.value, _payload(claim),
+                )
+                for evidence_id in claim.evidence_ids:
+                    await connection.execute(
+                        """INSERT INTO claim_evidence_links
+                           (claim_id, evidence_id, case_id, tenant_id, case_revision)
+                           VALUES ($1,$2,$3,$4,$5)""",
+                        claim.claim_id, evidence_id, claim.case_id, claim.tenant_id, claim.case_revision,
+                    )
+
+            await connection.execute(
+                """INSERT INTO incident_projections
+                   (tenant_id, incident_id, run_id, topology_revision, case_id, case_revision,
+                    workflow_id, workflow_run_id, projection_revision, sequence, payload, created_at)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12)""",
+                commit.projection.tenant_id, commit.projection.incident_id, commit.projection.run_id,
+                commit.projection.topology_revision, commit.projection.case_id, commit.projection.case_revision,
+                commit.projection.workflow_id, commit.projection.workflow_run_id,
+                commit.projection.projection_revision, commit.projection.sequence,
+                _payload(commit.projection), commit.projection.generated_at,
+            )
+            event_id = uuid5(
+                NAMESPACE_URL,
+                "workspace-event:{}:{}:{}:{}".format(
+                    commit.event.tenant_id, commit.event.run_id,
+                    commit.event.topology_revision, commit.event.sequence,
+                ),
+            )
+            await connection.execute(
+                """INSERT INTO incident_projection_events
+                   (event_id, tenant_id, incident_id, run_id, topology_revision, case_id,
+                    case_revision, workflow_id, workflow_run_id, projection_revision,
+                    sequence, event_type, payload, occurred_at)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb,$14)""",
+                event_id, commit.event.tenant_id, commit.event.incident_id, commit.event.run_id,
+                commit.event.topology_revision, commit.event.case_id, commit.event.case_revision,
+                commit.event.workflow_id, commit.event.workflow_run_id,
+                commit.event.projection_revision, commit.event.sequence, commit.event.event_type,
+                _payload(commit.event), commit.event.occurred_at,
+            )
+            await connection.execute(
+                """INSERT INTO workspace_investigation_transitions
+                   (tenant_id, incident_id, run_id, topology_revision, case_id, case_revision,
+                    workflow_id, workflow_run_id, transition_key, source_action_idempotency_key,
+                    result_id, projection_revision, event_sequence, payload, created_at)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15)""",
+                binding.tenant_id, binding.incident_id, binding.run_id, binding.topology_revision,
+                binding.case_id, binding.case_revision, binding.workflow_id, binding.workflow_run_id,
+                commit.transition_key,
+                commit.projection.investigation_result.source_idempotency_key,
+                commit.result_id, commit.projection.projection_revision, commit.event.sequence,
+                _payload(commit), commit.event.occurred_at,
+            )
+            return commit
+        return await self._tenant(binding.tenant_id, operation)
 
     async def _assert_capability_scope_connection(
         self, connection: asyncpg.Connection, context: CapabilityInvocationContext,

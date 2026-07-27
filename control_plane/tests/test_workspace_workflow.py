@@ -15,7 +15,15 @@ from temporalio.worker import Worker
 
 from flowpulse_cp.workspace_activities import WorkspaceActivityDispatcher, build_workspace_activities
 from flowpulse_cp.workspace_models import NodeExplanationStart, WorkspaceNodeExplanationInvocation, WorkspaceWorkflowRequest
-from flowpulse_cp.workspace_actions import ActionInvocationCommand, WorkspaceActionInvocation
+from flowpulse_cp.workspace_actions import (
+    ActionInvocationCommand,
+    Gate1LeaseAuthority,
+    WorkspaceActionInvocation,
+)
+from flowpulse_cp.workspace_investigation import (
+    DeterministicInvestigationCritic,
+    DeterministicInvestigationSynthesizer,
+)
 from flowpulse_cp.workspace_repository import InMemoryWorkspaceRepository
 from flowpulse_cp.workspace_workflow import IncidentWorkspaceTemporalWorkflow
 from flowpulse_cp.models import AuthContext
@@ -24,6 +32,7 @@ from flowpulse_cp.capabilities import (
     CapabilityAudience, CapabilityDataClass, CapabilityDescriptor, CapabilityGate,
     CapabilityName, CapabilityRegistry, CapabilityResult, EmptyCapabilityInput,
 )
+from tests.test_gate1_capabilities import AcceptingScope, CurrentMetricsAdapter
 
 
 NOW = datetime(2026, 7, 26, tzinfo=timezone.utc)
@@ -45,6 +54,96 @@ def request():
     "requires an installed Temporal test server; Compose is the live workflow proof",
 )
 class WorkspaceWorkflowTests(unittest.IsolatedAsyncioTestCase):
+    async def test_fresh_read_runs_synthesis_and_independent_critic_before_decide(self):
+        repository = InMemoryWorkspaceRepository()
+        authority = HmacAuthorizationAuthority("workspace-investigation-workflow-secret")
+        synthesizer = DeterministicInvestigationSynthesizer()
+        critic = DeterministicInvestigationCritic()
+        adapter = CurrentMetricsAdapter()
+        registry = CapabilityRegistry(
+            descriptors=[adapter.descriptor], adapters={CapabilityName.METRICS: adapter},
+            scope_authority=AcceptingScope(), gate1_authority=Gate1LeaseAuthority(repository),
+        )
+        dispatcher = WorkspaceActivityDispatcher(
+            repository, authorization=authority, capability_registry=registry,
+            investigation_synthesizer=synthesizer, investigation_critic=critic,
+        )
+        async with await WorkflowEnvironment.start_time_skipping() as environment:
+            task_queue = "workspace-investigation-workflow-test"
+            async with Worker(
+                environment.client, task_queue=task_queue,
+                workflows=[IncidentWorkspaceTemporalWorkflow],
+                activities=build_workspace_activities(dispatcher),
+            ):
+                handle = await environment.client.start_workflow(
+                    IncidentWorkspaceTemporalWorkflow.run,
+                    request().dict(), id="workspace-investigation-test", task_queue=task_queue,
+                )
+                for _ in range(50):
+                    current = await repository.get_projection("tenant-a", "case-a")
+                    cards = await repository.workspace_next_best_actions("tenant-a", "case-a")
+                    if current is not None and cards:
+                        break
+                    await asyncio.sleep(0.01)
+                gate_card = cards[0]
+                grant_command = ActionInvocationCommand(
+                    incident_id=current.incident_id, run_id=current.run_id,
+                    topology_revision=current.topology_revision,
+                    projection_revision=current.projection_revision,
+                    action_id=gate_card.action_id, idempotency_key="investigation-gate1",
+                )
+                grant_assertion = authority.issue_workspace_action_intent(
+                    await repository.create_workspace_action_intent(
+                        request().actor, current, grant_command,
+                    ),
+                )
+                grant = await handle.execute_update(
+                    IncidentWorkspaceTemporalWorkflow.invoke_next_best_action,
+                    WorkspaceActionInvocation(
+                        command=grant_command, authorization=grant_assertion,
+                    ).dict(),
+                )
+                self.assertEqual("GATE1_GRANTED", grant["status"])
+                granted_projection = await repository.get_projection("tenant-a", "case-a")
+                read_card = next(
+                    card for card in await repository.workspace_next_best_actions("tenant-a", "case-a")
+                    if card.cta.value == "run_read_capability"
+                )
+                read_command = ActionInvocationCommand(
+                    incident_id=granted_projection.incident_id,
+                    run_id=granted_projection.run_id,
+                    topology_revision=granted_projection.topology_revision,
+                    projection_revision=granted_projection.projection_revision,
+                    action_id=read_card.action_id,
+                    idempotency_key="investigation-fresh-read",
+                )
+                read_assertion = authority.issue_workspace_action_intent(
+                    await repository.create_workspace_action_intent(
+                        request().actor, granted_projection, read_command,
+                    ),
+                )
+                receipt = await handle.execute_update(
+                    IncidentWorkspaceTemporalWorkflow.invoke_next_best_action,
+                    WorkspaceActionInvocation(
+                        command=read_command, authorization=read_assertion,
+                    ).dict(),
+                )
+                self.assertEqual("FRESH_READ_COMPLETED", receipt["status"])
+                projected = await repository.get_projection("tenant-a", "case-a")
+                self.assertEqual("DECIDE", projected.lifecycle_stage.value)
+                self.assertEqual("ACCEPTED", projected.investigation_result.disposition.value)
+                self.assertEqual(1, synthesizer.call_count)
+                self.assertEqual(1, critic.call_count)
+                reloaded = await handle.execute_update(
+                    IncidentWorkspaceTemporalWorkflow.await_workspace_projection,
+                )
+                self.assertEqual(projected, type(projected).parse_obj(reloaded))
+                events = await repository.workspace_events_after("tenant-a", "case-a", 0)
+                self.assertEqual(
+                    1,
+                    sum(event.event_type == "workspace.investigation.accepted" for event in events),
+                )
+
     async def test_gate1_card_is_authorized_and_advanced_only_by_temporal_update(self):
         class MetricsAdapter:
             descriptor = CapabilityDescriptor(

@@ -8,7 +8,20 @@ from typing import Dict, List, Optional
 
 from pydantic import Field, StrictBool, StrictStr, root_validator, validator
 
-from .models import AuthAssertion, AuthContext, Hash, NonEmpty, NonNegativeInt, PositiveInt, StrictModel
+from .models import (
+    AuthAssertion,
+    AuthContext,
+    EvidenceAuthority,
+    FreshnessStatus,
+    Hash,
+    NonEmpty,
+    NonNegativeInt,
+    PositiveInt,
+    ProofScope,
+    SourceKind,
+    StrictModel,
+    VerificationDecision,
+)
 
 
 class GraphMembership(str, Enum):
@@ -26,6 +39,7 @@ class ClassifiedNodeReason(str, Enum):
 
 class ProjectionState(str, Enum):
     INITIALIZING = "INITIALIZING"
+    ACTIVE = "ACTIVE"
     DEGRADED = "DEGRADED"
     AWAITING_OWNER = "AWAITING_OWNER"
     BLOCKED = "BLOCKED"
@@ -46,6 +60,34 @@ class ProviderTruthLabel(str, Enum):
     TEST_DETERMINISTIC = "TEST_DETERMINISTIC"
     DEMO = "DEMO"
     LIVE = "LIVE"
+
+
+class IncidentLifecycleStage(str, Enum):
+    INVESTIGATE = "INVESTIGATE"
+    DECIDE = "DECIDE"
+    EXECUTE = "EXECUTE"
+    VERIFY = "VERIFY"
+    CLOSED = "CLOSED"
+    NEEDS_HUMAN = "NEEDS_HUMAN"
+
+
+class Gate1ProjectionState(str, Enum):
+    NONE = "NONE"
+    ACTIVE = "ACTIVE"
+    CONSUMED = "CONSUMED"
+    INVALIDATED = "INVALIDATED"
+
+
+class InvestigationDisposition(str, Enum):
+    ACCEPTED = "ACCEPTED"
+    DEGRADED = "DEGRADED"
+    ABSTAINED = "ABSTAINED"
+    CRITIC_REJECTED = "CRITIC_REJECTED"
+
+
+class InvestigationClaimKind(str, Enum):
+    OBSERVATION = "OBSERVATION"
+    HYPOTHESIS = "HYPOTHESIS"
 
 
 class ConversationRole(str, Enum):
@@ -141,11 +183,132 @@ class IncidentRunBinding(StrictModel):
         return values
 
 
+class InvestigationEvidenceReference(StrictModel):
+    evidence_id: NonEmpty
+    source_kind: SourceKind
+    observed_at: datetime
+    freshness: FreshnessStatus
+    authority: EvidenceAuthority
+    proof_scope: ProofScope
+    parent_evidence_refs: List[NonEmpty] = Field(default_factory=list)
+
+    @validator("parent_evidence_refs", allow_reuse=True)
+    def parents_are_unique_and_not_self(cls, value, values):
+        if len(value) != len(set(value)):
+            raise ValueError("investigation_evidence_parents_must_be_unique")
+        if values.get("evidence_id") in value:
+            raise ValueError("investigation_evidence_self_parent_forbidden")
+        return value
+
+
+class InvestigationClaim(StrictModel):
+    claim_id: NonEmpty
+    kind: InvestigationClaimKind
+    statement: NonEmpty
+    evidence_refs: List[NonEmpty] = Field(min_items=1, max_items=32)
+
+    @validator("evidence_refs", allow_reuse=True)
+    def evidence_refs_are_unique(cls, value):
+        if len(value) != len(set(value)):
+            raise ValueError("investigation_claim_evidence_refs_must_be_unique")
+        return value
+
+
+class InvestigationCritic(StrictModel):
+    critic_id: NonEmpty
+    identity: NonEmpty
+    decision: VerificationDecision
+    reason_codes: List[NonEmpty] = Field(default_factory=list, max_items=16)
+    reviewed_claim_ids: List[NonEmpty] = Field(default_factory=list, max_items=64)
+    evidence_refs: List[NonEmpty] = Field(default_factory=list, max_items=64)
+
+    @validator("reason_codes", "reviewed_claim_ids", "evidence_refs", allow_reuse=True)
+    def critic_values_are_unique(cls, value):
+        if len(value) != len(set(value)):
+            raise ValueError("investigation_critic_values_must_be_unique")
+        return value
+
+
+class InvestigationResult(IncidentRunBinding):
+    """Backend-owned, evidence-backed outcome accepted or rejected by Temporal."""
+
+    schema_version: NonEmpty = "flowpulse.investigation-result.v1"
+    result_id: NonEmpty
+    component_id: NonEmpty
+    source_action_id: NonEmpty
+    source_idempotency_key: NonEmpty
+    source_activity_identity: NonEmpty
+    synthesis_id: NonEmpty
+    synthesis_activity_id: NonEmpty
+    synthesis_provider_id: NonEmpty
+    synthesis_model_id: Optional[NonEmpty] = None
+    projection_revision: PositiveInt
+    evidence_revision: PositiveInt
+    lifecycle_stage: IncidentLifecycleStage
+    disposition: InvestigationDisposition
+    summary: NonEmpty
+    claims: List[InvestigationClaim] = Field(default_factory=list, max_items=64)
+    evidence: List[InvestigationEvidenceReference] = Field(default_factory=list, max_items=64)
+    critic: Optional[InvestigationCritic] = None
+    truth_label: ProviderTruthLabel
+    version_bundle: "VersionBundle"
+    degraded_code: Optional[StrictStr] = None
+    recorded_at: datetime
+
+    @root_validator(allow_reuse=True)
+    def accepted_result_requires_current_evidence_and_independent_critic(cls, values):
+        evidence = values.get("evidence", [])
+        claims = values.get("claims", [])
+        evidence_ids = [item.evidence_id for item in evidence]
+        claim_ids = [item.claim_id for item in claims]
+        if len(evidence_ids) != len(set(evidence_ids)) or len(claim_ids) != len(set(claim_ids)):
+            raise ValueError("investigation_result_ids_must_be_unique")
+        known_evidence = set(evidence_ids)
+        for item in evidence:
+            if not set(item.parent_evidence_refs).issubset(known_evidence):
+                raise ValueError("investigation_evidence_parent_unknown")
+        for claim in claims:
+            if not set(claim.evidence_refs).issubset(known_evidence):
+                raise ValueError("investigation_claim_evidence_unknown")
+        disposition = values.get("disposition")
+        if disposition == InvestigationDisposition.ACCEPTED:
+            if values.get("lifecycle_stage") != IncidentLifecycleStage.DECIDE:
+                raise ValueError("accepted_investigation_requires_decide_stage")
+            if values.get("truth_label") == ProviderTruthLabel.DEGRADED or values.get("degraded_code") is not None:
+                raise ValueError("accepted_investigation_truth_label_invalid")
+            critic = values.get("critic")
+            if critic is None or critic.decision != VerificationDecision.PASS:
+                raise ValueError("accepted_investigation_requires_critic_pass")
+            kinds = {claim.kind for claim in claims}
+            if not {
+                InvestigationClaimKind.OBSERVATION,
+                InvestigationClaimKind.HYPOTHESIS,
+            }.issubset(kinds):
+                raise ValueError("accepted_investigation_requires_observation_and_hypothesis")
+            for item in evidence:
+                if (
+                    item.proof_scope != ProofScope.CURRENT_OBSERVATION
+                    or item.freshness != FreshnessStatus.CURRENT
+                    or item.authority not in {EvidenceAuthority.T0, EvidenceAuthority.T1}
+                    or item.source_kind == SourceKind.KNOWLEDGE
+                ):
+                    raise ValueError("accepted_investigation_requires_current_trusted_evidence")
+            if not set(critic.reviewed_claim_ids).issuperset(claim_ids):
+                raise ValueError("accepted_investigation_critic_claim_coverage_incomplete")
+            if not set(critic.evidence_refs).issuperset(evidence_ids):
+                raise ValueError("accepted_investigation_critic_evidence_coverage_incomplete")
+        elif values.get("lifecycle_stage") != IncidentLifecycleStage.INVESTIGATE:
+            raise ValueError("nonaccepted_investigation_must_remain_investigate")
+        return values
+
+
 class IncidentProjection(IncidentRunBinding):
     schema_version: NonEmpty = "flowpulse.incident-projection.v1"
     projection_revision: PositiveInt
     sequence: PositiveInt
     lifecycle_state: ProjectionState
+    lifecycle_stage: IncidentLifecycleStage = IncidentLifecycleStage.INVESTIGATE
+    gate1_state: Gate1ProjectionState = Gate1ProjectionState.NONE
     status: NonEmpty
     operator_title: NonEmpty = "Incident active"
     operator_summary: NonEmpty = "An active incident requires attention."
@@ -156,6 +319,7 @@ class IncidentProjection(IncidentRunBinding):
     gate_revision: PositiveInt
     action_revision: PositiveInt
     evidence_refs: List[NonEmpty] = Field(default_factory=list)
+    investigation_result: Optional[InvestigationResult] = None
     degraded_code: Optional[StrictStr] = None
 
     @validator("impacted_path", allow_reuse=True)
@@ -166,6 +330,35 @@ class IncidentProjection(IncidentRunBinding):
             if any(component_id not in known for component_id in value):
                 raise ValueError("impacted_path_references_unknown_component")
         return value
+
+    @root_validator(allow_reuse=True)
+    def investigation_result_is_bound_to_projection(cls, values):
+        result = values.get("investigation_result")
+        stage = values.get("lifecycle_stage")
+        if stage == IncidentLifecycleStage.DECIDE and (
+            result is None or result.disposition != InvestigationDisposition.ACCEPTED
+        ):
+            raise ValueError("decide_projection_requires_accepted_investigation")
+        if result is None:
+            return values
+        for field in (
+            "tenant_id", "incident_id", "run_id", "topology_revision", "case_id",
+            "case_revision", "workflow_id", "workflow_run_id",
+        ):
+            if getattr(result, field) != values.get(field):
+                raise ValueError("investigation_result_binding_mismatch")
+        if (
+            result.projection_revision != values.get("projection_revision")
+            or result.evidence_revision != values.get("evidence_revision")
+            or result.lifecycle_stage != stage
+        ):
+            raise ValueError("investigation_result_revision_or_stage_mismatch")
+        graph = values.get("graph")
+        if graph is not None and result.component_id not in {node.component_id for node in graph.nodes}:
+            raise ValueError("investigation_result_component_not_canonical")
+        if not {item.evidence_id for item in result.evidence}.issubset(set(values.get("evidence_refs", []))):
+            raise ValueError("investigation_result_evidence_not_projected")
+        return values
 
 
 class ComponentContext(IncidentRunBinding):
@@ -248,6 +441,9 @@ class VersionBundle(StrictModel):
     evidence_schema_version: NonEmpty = "flowpulse.evidence-envelope.v1"
     card_schema_version: NonEmpty = "flowpulse.next-best-action.v1"
     model_policy_version: NonEmpty = "provider-policy.v1"
+
+
+InvestigationResult.update_forward_refs(VersionBundle=VersionBundle)
 
 
 class PromptLayer(StrictModel):
@@ -432,6 +628,7 @@ class IncidentSummary(StrictModel):
     projection_revision: PositiveInt
     sequence: PositiveInt
     lifecycle_state: ProjectionState
+    lifecycle_stage: IncidentLifecycleStage = IncidentLifecycleStage.INVESTIGATE
     status: NonEmpty
     title: NonEmpty
     summary: NonEmpty
@@ -441,7 +638,8 @@ class IncidentSummary(StrictModel):
         return cls(
             case_id=projection.case_id, incident_id=projection.incident_id, run_id=projection.run_id,
             topology_revision=projection.topology_revision, projection_revision=projection.projection_revision,
-            sequence=projection.sequence, lifecycle_state=projection.lifecycle_state, status=projection.status,
+            sequence=projection.sequence, lifecycle_state=projection.lifecycle_state,
+            lifecycle_stage=projection.lifecycle_stage, status=projection.status,
             title=projection.operator_title, summary=projection.operator_summary,
         )
 
