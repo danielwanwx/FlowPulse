@@ -132,7 +132,7 @@ class WorkspaceActivityDispatcher:
     def __init__(
         self, repository: Any, conversation_manager: Any = None, authorization: Any = None,
         capability_registry: Any = None, investigation_synthesizer: Any = None,
-        investigation_critic: Any = None,
+        investigation_critic: Any = None, topology_provider: Any = None,
     ) -> None:
         self.repository = repository
         self.conversation_manager = conversation_manager
@@ -142,6 +142,7 @@ class WorkspaceActivityDispatcher:
             investigation_synthesizer or UnavailableInvestigationSynthesizer()
         )
         self.investigation_critic = investigation_critic or UnavailableInvestigationCritic()
+        self.topology_provider = topology_provider
         configure = getattr(repository, "configure_workspace_capability_registry", None)
         if capability_registry is not None and configure is not None:
             configure(capability_registry)
@@ -848,13 +849,24 @@ class WorkspaceActivityDispatcher:
         if activity_name != expected:
             raise RuntimeError("workspace_activity_stage_mismatch")
         if packet.stage == "workspace_initialize":
-            await self._persist_case(packet)
+            intake_packet = packet
+            event_payload = {"state": packet.projection.status}
+            if self.topology_provider is not None:
+                projection = self.topology_provider.snapshot(packet.projection)
+                packet = WorkspaceActivityPacket.parse_obj({
+                    **packet.dict(),
+                    "projection": projection.dict(),
+                })
+                event_payload = self.topology_provider.initialized_event_payload(projection)
+            # The full topology is context, not a claim that every service was
+            # affected. Preserve the intake's bounded affected-entity record.
+            await self._persist_case(intake_packet)
             await self.repository.put_workspace_binding(IncidentRunBinding.parse_obj({
                 name: getattr(packet, name) for name in IncidentRunBinding.__fields__
             }))
             await self._grant_initializer_subject(packet)
             await self.repository.put_workspace_projection(packet.projection)
-            await self._append_event(packet, "workspace.initialized", {"state": packet.projection.status})
+            await self._append_event(packet, "workspace.initialized", event_payload)
             return WorkspaceActivityOutcome(projection=packet.projection).dict()
         if packet.stage == "workspace_node_explanation":
             command = packet.node_explanation

@@ -71,6 +71,7 @@ from .capability_adapters import (
 from .postgres import PostgresCapabilityScopeAuthority
 from .conversation_manager import ConversationManager
 from .provider_gateway import (
+    ProviderMode,
     ProviderSettings,
     build_conversation_provider,
     build_investigation_providers,
@@ -592,6 +593,10 @@ async def run_worker(
         gate1_authority=Gate1LeaseAuthority(repository),
     )
     resolved_provider_settings = provider_settings or ProviderSettings()
+    topology_provider = None
+    if resolved_provider_settings.mode in {ProviderMode.TEST, ProviderMode.DEMO}:
+        from .workspace_topology import CapturedAstronomyTopologyProvider
+        topology_provider = CapturedAstronomyTopologyProvider(resolved_provider_settings.mode)
     conversation_manager = ConversationManager(
         build_conversation_provider(resolved_provider_settings),
         capability_registry,
@@ -617,6 +622,7 @@ async def run_worker(
                 capability_registry=capability_registry,
                 investigation_synthesizer=investigation_synthesizer,
                 investigation_critic=investigation_critic,
+                topology_provider=topology_provider,
             ))
         ),
     ):

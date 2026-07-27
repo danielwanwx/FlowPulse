@@ -51,6 +51,7 @@ services:
       FLOWPULSE_SOURCE_READ_ACCESS_KEY: flowpulse-source-reader-tenant-minio
       FLOWPULSE_SOURCE_READ_SECRET_KEY: flowpulse-source-reader-tenant-minio-local-only
       FLOWPULSE_LOCAL_DETERMINISTIC_EVIDENCE: "1"
+      FLOWPULSE_PROVIDER_MODE: ${FLOWPULSE_PROVIDER_MODE:-standard}
     depends_on:
       postgres: {condition: service_healthy}
       migrate: {condition: service_completed_successfully}

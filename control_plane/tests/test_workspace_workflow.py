@@ -26,6 +26,8 @@ from flowpulse_cp.workspace_investigation import (
 )
 from flowpulse_cp.workspace_repository import InMemoryWorkspaceRepository
 from flowpulse_cp.workspace_workflow import IncidentWorkspaceTemporalWorkflow
+from flowpulse_cp.workspace_topology import CapturedAstronomyTopologyProvider
+from flowpulse_cp.provider_gateway import ProviderMode
 from flowpulse_cp.models import AuthContext
 from flowpulse_cp.authorization import HmacAuthorizationAuthority
 from flowpulse_cp.capabilities import (
@@ -54,6 +56,41 @@ def request():
     "requires an installed Temporal test server; Compose is the live workflow proof",
 )
 class WorkspaceWorkflowTests(unittest.IsolatedAsyncioTestCase):
+    async def test_test_mode_initialization_persists_and_returns_the_full_topology(self):
+        repository = InMemoryWorkspaceRepository()
+        dispatcher = WorkspaceActivityDispatcher(
+            repository,
+            topology_provider=CapturedAstronomyTopologyProvider(ProviderMode.TEST),
+        )
+        async with await WorkflowEnvironment.start_time_skipping() as environment:
+            task_queue = "workspace-topology-snapshot-test"
+            async with Worker(
+                environment.client,
+                task_queue=task_queue,
+                workflows=[IncidentWorkspaceTemporalWorkflow],
+                activities=build_workspace_activities(dispatcher),
+            ):
+                handle = await environment.client.start_workflow(
+                    IncidentWorkspaceTemporalWorkflow.run,
+                    request().dict(),
+                    id="workspace-topology-snapshot",
+                    task_queue=task_queue,
+                )
+                returned = await handle.execute_update(
+                    IncidentWorkspaceTemporalWorkflow.await_workspace_projection,
+                )
+                persisted = await repository.get_projection("tenant-a", "case-a")
+                self.assertEqual(persisted.dict(), returned)
+                self.assertEqual(22, len(persisted.graph.nodes))
+                self.assertEqual(26, len(persisted.graph.edges))
+                self.assertEqual(
+                    [
+                        "frontend", "checkout", "payment",
+                        "kafka", "accounting", "fraud-detection",
+                    ],
+                    persisted.impacted_path,
+                )
+
     async def test_explanation_then_gate1_advances_the_single_event_sequence(self):
         repository = InMemoryWorkspaceRepository()
         authority = HmacAuthorizationAuthority("workspace-explanation-gate1-sequence-secret")
