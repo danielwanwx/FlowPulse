@@ -4592,6 +4592,10 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .app-shell[data-control-plane="true"] .canvas-toolbar { grid-template-columns: minmax(0, 1fr); }
 .app-shell[data-control-plane="true"] .canvas-toolbar p { max-width: 680px; }
 .app-shell[data-control-plane="true"] .twin-canvas { min-width: 0; width: 100%; }
+.app-shell[data-control-plane="true"] .twin-canvas[data-topology-density="dense"] {
+  min-width: var(--control-plane-topology-width);
+  min-height: var(--control-plane-topology-height);
+}
 .app-shell[data-control-plane="true"] .canvas-layers { transform: none !important; }
 .app-shell[data-control-plane="true"] .control-plane-twin-layer { position: absolute; inset: 0; min-height: 100%; }
 .app-shell[data-control-plane="true"] .control-plane-canvas-empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); font-size: 12px; }

@@ -1,5 +1,6 @@
 import { ControlPlaneClient, ControlPlaneClientError } from "./control-plane-client.mjs";
 import { controlPlaneReducer, createControlPlaneState, investigationPresentation } from "./control-plane-contract.mjs";
+import { topologyLayout } from "./control-plane-topology-layout.mjs";
 
 // This module intentionally mounts only into the mature app-shell. It owns
 // presentation state, while all incident, gate, card, receipt, and evidence
@@ -237,15 +238,37 @@ function renderToast() {
 function renderGraph() {
   const projection = state.projection;
   if (!projection) {
+    clearTopologyDensity();
     els["canvas-layers"].innerHTML = `<div class="control-plane-canvas-empty">${escapeHtml(emptyCanvasCopy())}</div>`;
     return;
   }
-  const positions = graphPositions(projection.graph.nodes);
+  const layout = topologyLayout(projection.graph.nodes);
+  applyTopologyDensity(layout);
+  const { positions } = layout;
   const impacted = new Set(state.mode === "architecture" ? [] : projection.impacted_path);
   const nodeById = new Map(projection.graph.nodes.map((node) => [node.component_id, node]));
   const edges = projection.graph.edges.map((edge, index) => edgeMarkup(edge, positions, impacted, nodeById, index)).join("");
   const nodes = projection.graph.nodes.map((node) => nodeMarkup(node, positions.get(node.component_id), impacted.has(node.component_id))).join("");
-  els["canvas-layers"].innerHTML = `<div class="control-plane-twin-layer"><svg class="edge-map control-plane-edge-map" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">${edges}</svg>${nodes}</div>`;
+  els["canvas-layers"].innerHTML = `<div class="control-plane-twin-layer" data-topology-density="${layout.density}"><svg class="edge-map control-plane-edge-map" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">${edges}</svg>${nodes}</div>`;
+}
+
+function applyTopologyDensity(layout) {
+  const canvas = els["twin-canvas"];
+  canvas.dataset.topologyDensity = layout.density;
+  if (layout.density !== "dense") {
+    canvas.style.removeProperty("--control-plane-topology-width");
+    canvas.style.removeProperty("--control-plane-topology-height");
+    return;
+  }
+  canvas.style.setProperty("--control-plane-topology-width", `${layout.canvas.width}px`);
+  canvas.style.setProperty("--control-plane-topology-height", `${layout.canvas.height}px`);
+}
+
+function clearTopologyDensity() {
+  const canvas = els["twin-canvas"];
+  delete canvas.dataset.topologyDensity;
+  canvas.style.removeProperty("--control-plane-topology-width");
+  canvas.style.removeProperty("--control-plane-topology-height");
 }
 
 function nodeMarkup(node, position, impacted) {
@@ -366,15 +389,6 @@ function evidenceMarkup(evidence) {
   const items = Array.isArray(evidence) ? evidence : [];
   const body = items.length ? items.map((value) => `<code>${escapeHtml(value)}</code>`).join("") : "No evidence references were returned.";
   return `<details class="record-disclosure"><summary>Show evidence</summary><div class="telemetry-provenance">${body}</div></details>`;
-}
-
-function graphPositions(nodes) {
-  const columns = Math.max(1, Math.min(4, Math.ceil(Math.sqrt(nodes.length))));
-  const rows = Math.max(1, Math.ceil(nodes.length / columns));
-  return new Map(nodes.map((node, index) => [node.component_id, {
-    x: 13 + (index % columns) * (74 / Math.max(1, columns - 1)),
-    y: 24 + Math.floor(index / columns) * (54 / Math.max(1, rows - 1))
-  }]));
 }
 
 function viewTitle() {
