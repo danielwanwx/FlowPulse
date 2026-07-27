@@ -157,8 +157,9 @@ function nextBestAction({
 } = {}) {
   return {
     ...IDENTITY,
-    schema_version: "flowpulse.next-best-action.v1",
-    action_id,
+  schema_version: "flowpulse.next-best-action.v1",
+  lifecycle_stage: "INVESTIGATE",
+  action_id,
     card_version: 1,
     taxonomy,
     title,
@@ -400,6 +401,24 @@ test("Investigate cards and Gate 1 transition stay server-owned and reject stale
   const expiredClick = controlPlaneReducer(expiredState.state, { type: "action.clicked", action_id: "action-gate-1" });
   assert.equal(expiredClick.effects.length, 0);
   assert.equal(expiredClick.state.connection, "stale");
+});
+
+test("real backend-shaped action cards require the canonical lifecycle stage without degrading a healthy projection", () => {
+  const currentProjection = projection();
+  const liveAction = nextBestAction();
+  assert.equal(parseNextBestActions([liveAction])[0].lifecycle_stage, "INVESTIGATE");
+
+  let reduced = controlPlaneReducer(createControlPlaneState(), { type: "projection.hydrated", projection: currentProjection });
+  reduced = controlPlaneReducer(reduced.state, { type: "actions.hydrated", identity: currentProjection, actions: [liveAction] });
+  assert.equal(reduced.state.connection, "connected");
+  assert.equal(reduced.state.actions.cards[0].lifecycle_stage, "INVESTIGATE");
+
+  const invalidStage = { ...liveAction, lifecycle_stage: "BROWSER_DECIDE" };
+  assert.throws(() => parseNextBestActions([invalidStage]), /next_best_action_lifecycle_stage_invalid/);
+
+  const missingStage = { ...liveAction };
+  delete missingStage.lifecycle_stage;
+  assert.throws(() => parseNextBestActions([missingStage]), /next_best_action_unknown_field/);
 });
 
 test("accepted frozen investigation projection alone advances the canonical presentation to Decide", () => {

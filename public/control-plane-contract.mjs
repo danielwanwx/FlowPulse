@@ -673,19 +673,20 @@ function parseNodeExplanation(value) {
 
 function parseNextBestAction(value) {
   exactObject(value, [
-    ...IDENTITY_KEYS, "schema_version", "action_id", "card_version", "taxonomy", "title", "cta", "summary",
+    ...IDENTITY_KEYS, "schema_version", "lifecycle_stage", "action_id", "card_version", "taxonomy", "title", "cta", "summary",
     "display_order", "recommended", "projection_revision", "evidence_revision", "gate_revision", "action_revision",
     "component_id", "capability", "capability_version", "data_class", "required_permission", "required_gate",
     "tool_schema_version", "capability_registry_revision", "precondition_version", "precondition_hash", "gate1_lease_id",
     "evidence_refs", "expires_at"
   ], "next_best_action_unknown_field", [
-    ...IDENTITY_KEYS, "action_id", "card_version", "taxonomy", "title", "cta", "summary", "display_order",
+    ...IDENTITY_KEYS, "lifecycle_stage", "action_id", "card_version", "taxonomy", "title", "cta", "summary", "display_order",
     "recommended", "projection_revision", "evidence_revision", "gate_revision", "action_revision", "component_id",
     "capability", "data_class", "required_permission", "required_gate", "tool_schema_version",
     "capability_registry_revision", "precondition_version", "precondition_hash", "expires_at"
   ]);
   parseIdentity(value);
   if (value.schema_version !== undefined && value.schema_version !== "flowpulse.next-best-action.v1") fail("next_best_action_schema_invalid");
+  assertEnum(value.lifecycle_stage, LIFECYCLE_STAGES, "next_best_action_lifecycle_stage_invalid");
   for (const field of [
     "action_id", "title", "summary", "component_id", "capability", "data_class", "required_permission", "required_gate",
     "tool_schema_version", "capability_registry_revision", "precondition_version"
@@ -715,7 +716,8 @@ function sameIdentity(left, right) {
 function matchesActionProjection(action, projection) {
   return Boolean(action && projection)
     && ["tenant_id", "incident_id", "run_id", "topology_revision", "case_id", "case_revision", "workflow_id", "workflow_run_id"].every((field) => action[field] === projection[field])
-    && ["projection_revision", "evidence_revision", "gate_revision", "action_revision"].every((field) => action[field] === projection[field]);
+    && ["projection_revision", "evidence_revision", "gate_revision", "action_revision"].every((field) => action[field] === projection[field])
+    && (action.lifecycle_stage === undefined || action.lifecycle_stage === (projection.lifecycle_stage === undefined ? "INVESTIGATE" : projection.lifecycle_stage));
 }
 
 function allowsInvestigateActions(projection) {

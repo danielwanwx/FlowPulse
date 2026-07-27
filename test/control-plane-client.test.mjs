@@ -17,6 +17,7 @@ const identity = {
 const action = {
   ...identity,
   schema_version: "flowpulse.next-best-action.v1",
+  lifecycle_stage: "INVESTIGATE",
   action_id: "action-gate-1", card_version: 1, taxonomy: "FIND_CAUSE", title: "Find Cause", cta: "request_gate_1",
   summary: "Request investigation access.", display_order: 1, recommended: true,
   projection_revision: 1, evidence_revision: 1, gate_revision: 1, action_revision: 1,
