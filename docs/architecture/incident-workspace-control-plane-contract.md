@@ -1,4 +1,4 @@
-# Incident Workspace control-plane contract v1.1
+# Incident Workspace control-plane contract v1.2
 
 ## Scope and authority
 
@@ -28,7 +28,7 @@ NodeExplanation records, evidence bindings, gate records, and later action
 cards. A tenant/case/run/topology mapping may not be rebound to a different
 Temporal run.
 
-## v1.1 HTTP routes and v2 workflow read model
+## v1.2 HTTP routes and v2 workflow read model
 
 All routes require trusted authenticated tenant/subject context and return only
 tenant-scoped records:
@@ -59,6 +59,22 @@ Per-case SSE publishes bounded `node_explanation.started`,
 the durable POST/GET `NodeExplanationReceipt` remains the content source. There
 is no token-stream API. Toast focus and both discovery feeds are read-only and
 cannot create an explanation.
+
+## Investigate to Decide handoff
+
+A successful Gate-1 read appends current evidence but does not itself advance
+the lifecycle. The v2 workflow separately schedules schema-bound investigation
+synthesis and an independently identified critic Activity. Only a current,
+trusted, tenant/run/component-bound result with critic `PASS` is committed as
+`IncidentProjection.lifecycle_stage=DECIDE`. The projection exposes the typed
+`InvestigationResult` with its observation/hypothesis claims, evidence
+freshness and lineage, synthesis/critic identities, revisions, and version
+bundle. Provider-unavailable, malformed, stale, abstained, or critic-rejected
+outputs remain `INVESTIGATE` with a typed degraded result.
+
+No remediation capability is registered in this slice, so an accepted Decide
+handoff intentionally returns zero current action cards. Gate 2, dry-run
+execution, and verification remain later lifecycle slices.
 
 ## NodeExplanation boundary
 
@@ -109,12 +125,12 @@ for schemas.
 
 ## Workspace contract freeze
 
-The v1.1.1 producer implementation commit is
-`f05931e78216921428f666b3ff692fc43a3c948e`. The generated bundle is:
+The v1.2 producer implementation commit is
+`f92d6f6832f9562cbc8edfd574c19bc0a31acd6b`. The generated bundle is:
 
-- `control_plane/openapi/flowpulse-incident-workspace-v1.openapi.json` — SHA-256 `e11fb5c389417d7e5b63696b4a2469e2d0e537cbe80a01fdeadbac7ce83d418b`
-- `control_plane/openapi/flowpulse-incident-workspace-v1.examples.json` — SHA-256 `6e8acd0c9cffce1fd9d3c562ea13b45f702fb169897aec3686f748d78dedcc60`
-- `control_plane/openapi/flowpulse-incident-workspace-v1.freeze.json` — SHA-256 `261116cd46156c4fea44432fee83733995280b5af9a3e0beb5e4833a1735c5ef`
+- `control_plane/openapi/flowpulse-incident-workspace-v1.openapi.json` — SHA-256 `51b0bc8a8f709b82a7302437a0d4daa941bc50c65c282c61517f093da761c3d3`
+- `control_plane/openapi/flowpulse-incident-workspace-v1.examples.json` — SHA-256 `a0f73ee3ec17a78de0f4eb783e1a6f674c75d58b5dd44bd9779a59094d86f463`
+- `control_plane/openapi/flowpulse-incident-workspace-v1.freeze.json` — SHA-256 `81c74db8114dceceb3b87ff67f721ada159be47e8ef6a9efc088e916f0c329dd`
 
 The frontend product branch must record these values verbatim, together with
 the public identity and same-origin process-side authentication boundary,

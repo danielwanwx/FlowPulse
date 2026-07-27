@@ -10,7 +10,7 @@ from pathlib import Path
 CONTROL_PLANE = Path(__file__).resolve().parents[1]
 REPO = CONTROL_PLANE.parent
 ARTIFACT_DIR = CONTROL_PLANE / "openapi"
-PRODUCER_SHA = "f05931e78216921428f666b3ff692fc43a3c948e"
+PRODUCER_SHA = "f92d6f6832f9562cbc8edfd574c19bc0a31acd6b"
 
 
 class WorkspaceContractFreezeTests(unittest.TestCase):
@@ -44,6 +44,11 @@ class WorkspaceContractFreezeTests(unittest.TestCase):
             "flowpulse.next-best-action.v1",
             openapi["components"]["schemas"]["VersionBundle"]["properties"]["card_schema_version"]["default"],
         )
+        self.assertEqual(
+            "v1.2-investigate-decide",
+            openapi["x-flowpulse-workspace-contract"]["contract_revision"],
+        )
+        self.assertIn("InvestigationResult", openapi["components"]["schemas"])
         event_response = openapi["paths"]["/v1/incidents/{case_id}/events"]["get"]["responses"]["200"]
         self.assertEqual({"text/event-stream"}, set(event_response["content"]))
         global_event_response = openapi["paths"]["/v1/incidents/events"]["get"]["responses"]["200"]
