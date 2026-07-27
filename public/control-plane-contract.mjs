@@ -1,5 +1,5 @@
-// Browser-side, fail-closed boundary for frozen Incident Workspace contract v1.1
-// (backend commit 65e62bcff7c9302f95ee9d778c98f11b3fc000e9). This module owns no
+// Browser-side, fail-closed boundary for frozen Incident Workspace contract v1.2
+// (backend commit 99f84dfb84fabc6d0b45148f0bc415d419ba1ff4). This module owns no
 // incident truth: it only accepts complete server projections and records local
 // presentation state keyed to their canonical identity.
 
@@ -10,12 +10,25 @@ const CLASSIFICATIONS = new Set([
   "Observed boundary",
   "Relationship unavailable"
 ]);
-const LIFECYCLE_STATES = new Set(["INITIALIZING", "DEGRADED", "AWAITING_OWNER", "BLOCKED", "NEEDS_HUMAN", "ABSTAINED"]);
+const LIFECYCLE_STATES = new Set(["INITIALIZING", "ACTIVE", "DEGRADED", "AWAITING_OWNER", "BLOCKED", "NEEDS_HUMAN", "ABSTAINED"]);
+const LIFECYCLE_STAGES = new Set(["INVESTIGATE", "DECIDE", "EXECUTE", "VERIFY", "CLOSED", "NEEDS_HUMAN"]);
+const GATE1_STATES = new Set(["NONE", "ACTIVE", "CONSUMED", "INVALIDATED"]);
 const EXPLANATION_STATES = new Set(["DEGRADED", "COMPLETED", "BLOCKED"]);
 const EXPLANATION_EVENT_STATES = new Set(["STARTED", "COMPLETED", "DEGRADED"]);
 const TRUTH_LABELS = new Set(["DEGRADED", "TEST_DETERMINISTIC", "DEMO", "LIVE"]);
+const INVESTIGATION_DISPOSITIONS = new Set(["ACCEPTED", "DEGRADED", "ABSTAINED", "CRITIC_REJECTED"]);
+const INVESTIGATION_CLAIM_KINDS = new Set(["OBSERVATION", "HYPOTHESIS"]);
+const CRITIC_DECISIONS = new Set(["PASS", "FAIL", "AMBIGUOUS"]);
+const EVIDENCE_AUTHORITIES = new Set(["T0_AUTHORITATIVE_CURRENT", "T1_DIRECT_CURRENT", "T2_DERIVED", "T3_HISTORICAL", "T4_UNTRUSTED"]);
+const EVIDENCE_FRESHNESS = new Set(["CURRENT", "AGING", "STALE", "UNKNOWN"]);
+const EVIDENCE_PROOF_SCOPES = new Set(["CURRENT_OBSERVATION", "REFERENCE_ONLY"]);
+const EVIDENCE_SOURCE_KINDS = new Set(["METRIC", "LOG", "TRACE", "CHANGE", "CONFIG", "TOPOLOGY", "KNOWLEDGE", "SOURCE_READBACK"]);
 const NOTIFICATION_TYPES = new Set(["incident.accepted", "incident.updated"]);
 const IDENTITY_KEYS = ["tenant_id", "incident_id", "run_id", "topology_revision", "case_id", "case_revision", "workflow_id", "workflow_run_id", "created_at"];
+const VERSION_BUNDLE_KEYS = [
+  "capability_registry_version", "card_schema_version", "context_pack_version", "core_policy_version", "evidence_schema_version",
+  "model_policy_version", "policy_version", "role_prompt_version", "schema_version", "tool_schema_version", "workflow_version"
+];
 const ACTION_TAXONOMY = new Map([
   ["FIND_CAUSE", { title: "Find Cause", cta: "request_gate_1" }],
   ["MAP_IMPACT", { title: "Map Impact", cta: "run_read_capability" }],
@@ -42,8 +55,11 @@ export function parseIncidentSummaries(value) {
 export function parseIncidentSummary(value) {
   exactObject(value, [
     "case_id", "incident_id", "run_id", "topology_revision", "projection_revision", "sequence",
+    "lifecycle_state", "lifecycle_stage", "status", "title", "summary"
+  ], "incident_summary_unknown_field", [
+    "case_id", "incident_id", "run_id", "topology_revision", "projection_revision", "sequence",
     "lifecycle_state", "status", "title", "summary"
-  ], "incident_summary_unknown_field");
+  ]);
   assertText(value.case_id, "case_id_invalid");
   assertText(value.incident_id, "incident_id_invalid");
   assertText(value.run_id, "run_id_invalid");
@@ -51,6 +67,7 @@ export function parseIncidentSummary(value) {
   assertInteger(value.projection_revision, "projection_revision_invalid");
   assertInteger(value.sequence, "sequence_invalid");
   assertEnum(value.lifecycle_state, LIFECYCLE_STATES, "lifecycle_state_invalid");
+  if (value.lifecycle_stage !== undefined) assertEnum(value.lifecycle_stage, LIFECYCLE_STAGES, "lifecycle_stage_invalid");
   assertText(value.status, "incident_status_invalid");
   assertText(value.title, "incident_title_invalid");
   assertText(value.summary, "incident_summary_invalid");
@@ -70,7 +87,7 @@ export function parseIncidentProjection(value) {
     ...IDENTITY_KEYS,
     "schema_version", "projection_revision", "sequence", "lifecycle_state", "status", "operator_title", "operator_summary",
     "generated_at", "graph", "impacted_path", "evidence_revision", "gate_revision", "action_revision",
-    "evidence_refs", "degraded_code"
+    "evidence_refs", "degraded_code", "lifecycle_stage", "gate1_state", "investigation_result"
   ], "incident_projection_unknown_field", [
     ...IDENTITY_KEYS, "projection_revision", "sequence", "lifecycle_state", "status", "generated_at", "graph",
     "evidence_revision", "gate_revision", "action_revision"
@@ -93,7 +110,40 @@ export function parseIncidentProjection(value) {
   assertInteger(value.action_revision, "action_revision_invalid");
   const evidence_refs = stringList(value.evidence_refs === undefined ? [] : value.evidence_refs, "evidence_refs_invalid");
   if (value.degraded_code !== undefined && value.degraded_code !== null) assertText(value.degraded_code, "degraded_code_invalid");
-  return { ...clone(value), graph, impacted_path, evidence_refs };
+  const lifecycle_stage = value.lifecycle_stage === undefined ? "INVESTIGATE" : value.lifecycle_stage;
+  const gate1_state = value.gate1_state === undefined ? "NONE" : value.gate1_state;
+  assertEnum(lifecycle_stage, LIFECYCLE_STAGES, "lifecycle_stage_invalid");
+  assertEnum(gate1_state, GATE1_STATES, "gate1_state_invalid");
+  const projection = { ...clone(value), graph, impacted_path, evidence_refs };
+  if (value.investigation_result !== undefined && value.investigation_result !== null) {
+    projection.investigation_result = parseInvestigationResult(value.investigation_result, projection);
+  }
+  assertTrustedProjectionStage(projection, lifecycle_stage, gate1_state);
+  return projection;
+}
+
+// This is a presentation-safe read model. It has no authority to advance a
+// lifecycle: the stage is accepted only when the canonical projection carries
+// a valid backend result. Raw receipt/event/provider/internal IDs stay out of
+// this shape and therefore out of the primary operator card.
+export function investigationPresentation(value) {
+  const projection = parseIncidentProjection(value);
+  const lifecycle_stage = projection.lifecycle_stage === undefined ? "INVESTIGATE" : projection.lifecycle_stage;
+  const result = projection.investigation_result || null;
+  if (!result) return { stage: "INVESTIGATE", outcome: projection.lifecycle_state === "DEGRADED" ? "degraded" : "pending", summary: null, claims: [], evidence: [], critic: null, truth_label: null };
+  const accepted = result.disposition === "ACCEPTED";
+  const stage = accepted && ["DECIDE", "EXECUTE", "VERIFY", "CLOSED"].includes(lifecycle_stage)
+    ? lifecycle_stage
+    : "INVESTIGATE";
+  return {
+    stage,
+    outcome: accepted ? "accepted" : "degraded",
+    summary: result.summary,
+    claims: result.claims.map(({ kind, statement }) => ({ kind, statement })),
+    evidence: result.evidence.map(({ source_kind, observed_at, freshness, authority, proof_scope, parent_evidence_refs }) => ({ source_kind, observed_at, freshness, authority, proof_scope, lineage_count: parent_evidence_refs.length })),
+    critic: result.critic ? { identity: result.critic.identity, decision: result.critic.decision } : null,
+    truth_label: result.truth_label
+  };
 }
 
 export function parseIncidentEvent(value) {
@@ -243,7 +293,7 @@ export function controlPlaneReducer(current, action) {
         state.projection = projection;
         state.last_case_sequence = Math.max(state.last_case_sequence, projection.sequence);
         state.actions = emptyActions(state.actions);
-        effects.push({ type: "actions.load", case_id: projection.case_id, identity: projection });
+        if (allowsInvestigateActions(projection)) effects.push({ type: "actions.load", case_id: projection.case_id, identity: projection });
       }
       state.connection = "connected";
       if (state.mode === "incident" && toastMatches) {
@@ -291,6 +341,10 @@ export function controlPlaneReducer(current, action) {
         state.connection = "stale";
         return { state, effects };
       }
+      if (!allowsInvestigateActions(state.projection)) {
+        state.actions = emptyActions(state.actions);
+        return { state, effects };
+      }
       const cards = parseNextBestActions(action.actions);
       if (cards.some((card) => !matchesActionProjection(card, state.projection))) {
         state.connection = "degraded";
@@ -307,7 +361,7 @@ export function controlPlaneReducer(current, action) {
       return { state, effects };
     }
     if (action?.type === "action.clicked") {
-      if (!state.projection || state.connection !== "connected" || state.actions.in_flight) return { state, effects };
+      if (!state.projection || !allowsInvestigateActions(state.projection) || state.connection !== "connected" || state.actions.in_flight) return { state, effects };
       const card = state.actions.cards.find((candidate) => candidate.action_id === action.action_id);
       if (!card || Date.parse(card.expires_at) <= Date.now()) {
         state.connection = "stale";
@@ -363,7 +417,9 @@ export function controlPlaneReducer(current, action) {
       // Recommendation cards are a server read, not a fresh capability. This
       // happens only after the operator selects an impacted node; toast focus
       // itself remains zero-network and zero-command.
-      effects.push({ type: "actions.load", case_id: state.projection.case_id, identity: state.projection });
+      if (allowsInvestigateActions(state.projection)) {
+        effects.push({ type: "actions.load", case_id: state.projection.case_id, identity: state.projection });
+      }
       return { state, effects };
     }
     if (action?.type === "explanation.receipt") {
@@ -422,6 +478,131 @@ export function controlPlaneReducer(current, action) {
     state.connection = "degraded";
     return { state, effects };
   }
+}
+
+function parseInvestigationResult(value, projection) {
+  exactObject(value, [
+    ...IDENTITY_KEYS, "schema_version", "result_id", "component_id", "source_action_id", "source_idempotency_key",
+    "source_activity_identity", "synthesis_id", "synthesis_activity_id", "synthesis_model_id", "synthesis_provider_id",
+    "projection_revision", "evidence_revision", "lifecycle_stage", "disposition", "summary", "claims", "evidence",
+    "critic", "degraded_code", "truth_label", "version_bundle", "recorded_at"
+  ], "investigation_result_unknown_field", [
+    ...IDENTITY_KEYS, "result_id", "component_id", "source_action_id", "source_idempotency_key", "source_activity_identity",
+    "synthesis_id", "synthesis_activity_id", "synthesis_provider_id", "projection_revision", "evidence_revision",
+    "lifecycle_stage", "disposition", "summary", "truth_label", "version_bundle", "recorded_at"
+  ]);
+  parseIdentity(value);
+  if (value.schema_version !== undefined && value.schema_version !== "flowpulse.investigation-result.v1") fail("investigation_result_schema_invalid");
+  for (const field of [
+    "result_id", "component_id", "source_action_id", "source_idempotency_key", "source_activity_identity",
+    "synthesis_id", "synthesis_activity_id", "synthesis_provider_id", "summary"
+  ]) assertText(value[field], `investigation_result_${field}_invalid`);
+  if (value.synthesis_model_id !== undefined && value.synthesis_model_id !== null) assertText(value.synthesis_model_id, "investigation_result_synthesis_model_id_invalid");
+  assertInteger(value.projection_revision, "investigation_result_projection_revision_invalid");
+  assertInteger(value.evidence_revision, "investigation_result_evidence_revision_invalid");
+  assertEnum(value.lifecycle_stage, LIFECYCLE_STAGES, "investigation_result_lifecycle_stage_invalid");
+  assertEnum(value.disposition, INVESTIGATION_DISPOSITIONS, "investigation_result_disposition_invalid");
+  assertEnum(value.truth_label, TRUTH_LABELS, "investigation_result_truth_label_invalid");
+  assertTimestamp(value.recorded_at, "investigation_result_recorded_at_invalid");
+  if (value.degraded_code !== undefined && value.degraded_code !== null) assertText(value.degraded_code, "investigation_result_degraded_code_invalid");
+  if (!IDENTITY_KEYS.every((field) => projection[field] === value[field])) fail("investigation_result_identity_mismatch");
+  if (projection.projection_revision !== value.projection_revision || projection.evidence_revision !== value.evidence_revision) fail("investigation_result_revision_mismatch");
+  const component = projection.graph.nodes.find((node) => node.component_id === value.component_id);
+  if (!component) fail("investigation_result_component_mismatch");
+  const evidence = parseInvestigationEvidence(value.evidence === undefined ? [] : value.evidence);
+  const evidenceIds = new Set(evidence.map((item) => item.evidence_id));
+  if ([...evidenceIds].some((evidenceId) => !projection.evidence_refs.includes(evidenceId))) fail("investigation_result_evidence_mismatch");
+  if (evidence.some((item) => item.parent_evidence_refs.some((evidenceId) => evidenceId === item.evidence_id || !evidenceIds.has(evidenceId)))) fail("investigation_evidence_parent_mismatch");
+  const claims = parseInvestigationClaims(value.claims === undefined ? [] : value.claims, evidenceIds);
+  const critic = value.critic === undefined || value.critic === null ? null : parseInvestigationCritic(value.critic, claims, evidenceIds);
+  const version_bundle = parseVersionBundle(value.version_bundle);
+  const result = { ...clone(value), claims, evidence, critic, version_bundle };
+  assertTrustedInvestigationResult(result);
+  return result;
+}
+
+function parseInvestigationClaims(value, evidenceIds) {
+  if (!Array.isArray(value) || value.length > 64) fail("investigation_claims_invalid");
+  const claims = value.map((claim) => {
+    exactObject(claim, ["claim_id", "kind", "statement", "evidence_refs"], "investigation_claim_unknown_field");
+    assertText(claim.claim_id, "investigation_claim_id_invalid");
+    assertEnum(claim.kind, INVESTIGATION_CLAIM_KINDS, "investigation_claim_kind_invalid");
+    assertText(claim.statement, "investigation_claim_statement_invalid");
+    const evidence_refs = stringList(claim.evidence_refs, "investigation_claim_evidence_invalid");
+    if (evidence_refs.some((evidenceId) => !evidenceIds.has(evidenceId))) fail("investigation_claim_evidence_mismatch");
+    return { ...clone(claim), evidence_refs };
+  });
+  if (new Set(claims.map((claim) => claim.claim_id)).size !== claims.length) fail("investigation_claim_duplicate");
+  return claims;
+}
+
+function parseInvestigationEvidence(value) {
+  if (!Array.isArray(value) || value.length > 64) fail("investigation_evidence_invalid");
+  const evidence = value.map((item) => {
+    exactObject(item, ["evidence_id", "source_kind", "observed_at", "freshness", "authority", "proof_scope", "parent_evidence_refs"], "investigation_evidence_unknown_field", ["evidence_id", "source_kind", "observed_at", "freshness", "authority", "proof_scope"]);
+    assertText(item.evidence_id, "investigation_evidence_id_invalid");
+    assertEnum(item.source_kind, EVIDENCE_SOURCE_KINDS, "investigation_evidence_source_kind_invalid");
+    assertTimestamp(item.observed_at, "investigation_evidence_observed_at_invalid");
+    assertEnum(item.freshness, EVIDENCE_FRESHNESS, "investigation_evidence_freshness_invalid");
+    assertEnum(item.authority, EVIDENCE_AUTHORITIES, "investigation_evidence_authority_invalid");
+    assertEnum(item.proof_scope, EVIDENCE_PROOF_SCOPES, "investigation_evidence_proof_scope_invalid");
+    return { ...clone(item), parent_evidence_refs: stringList(item.parent_evidence_refs === undefined ? [] : item.parent_evidence_refs, "investigation_evidence_parent_invalid") };
+  });
+  if (new Set(evidence.map((item) => item.evidence_id)).size !== evidence.length) fail("investigation_evidence_duplicate");
+  return evidence;
+}
+
+function parseInvestigationCritic(value, claims, evidenceIds) {
+  exactObject(value, ["critic_id", "identity", "decision", "evidence_refs", "reason_codes", "reviewed_claim_ids"], "investigation_critic_unknown_field", ["critic_id", "identity", "decision"]);
+  assertText(value.critic_id, "investigation_critic_id_invalid");
+  assertText(value.identity, "investigation_critic_identity_invalid");
+  assertEnum(value.decision, CRITIC_DECISIONS, "investigation_critic_decision_invalid");
+  const evidence_refs = stringList(value.evidence_refs === undefined ? [] : value.evidence_refs, "investigation_critic_evidence_invalid");
+  if (evidence_refs.some((evidenceId) => !evidenceIds.has(evidenceId))) fail("investigation_critic_evidence_mismatch");
+  const reason_codes = stringList(value.reason_codes === undefined ? [] : value.reason_codes, "investigation_critic_reason_invalid");
+  const reviewed_claim_ids = stringList(value.reviewed_claim_ids === undefined ? [] : value.reviewed_claim_ids, "investigation_critic_claim_invalid");
+  const claimIds = new Set(claims.map((claim) => claim.claim_id));
+  if (reviewed_claim_ids.some((claimId) => !claimIds.has(claimId))) fail("investigation_critic_claim_mismatch");
+  return { ...clone(value), evidence_refs, reason_codes, reviewed_claim_ids };
+}
+
+function parseVersionBundle(value) {
+  exactObject(value, VERSION_BUNDLE_KEYS, "investigation_version_bundle_unknown_field", []);
+  for (const field of VERSION_BUNDLE_KEYS) {
+    if (value[field] !== undefined) assertText(value[field], "investigation_version_bundle_invalid");
+  }
+  return clone(value);
+}
+
+function assertTrustedInvestigationResult(result) {
+  if (result.disposition === "ACCEPTED") {
+    const claimKinds = new Set(result.claims.map((claim) => claim.kind));
+    const evidenceIds = new Set(result.evidence.map((item) => item.evidence_id));
+    const acceptedEvidenceIsCurrent = result.evidence.every((item) => item.proof_scope === "CURRENT_OBSERVATION"
+      && item.freshness === "CURRENT"
+      && (item.authority === "T0_AUTHORITATIVE_CURRENT" || item.authority === "T1_DIRECT_CURRENT")
+      && item.source_kind !== "KNOWLEDGE");
+    const criticCoversEvidence = result.critic?.evidence_refs?.every((evidenceId) => evidenceIds.has(evidenceId))
+      && [...evidenceIds].every((evidenceId) => result.critic?.evidence_refs?.includes(evidenceId));
+    const claimIds = new Set(result.claims.map((claim) => claim.claim_id));
+    const criticCoversClaims = result.critic?.reviewed_claim_ids?.every((claimId) => claimIds.has(claimId))
+      && [...claimIds].every((claimId) => result.critic?.reviewed_claim_ids?.includes(claimId));
+    if (result.lifecycle_stage !== "DECIDE" || result.truth_label === "DEGRADED" || result.degraded_code !== null && result.degraded_code !== undefined
+      || result.critic?.decision !== "PASS" || !claimKinds.has("OBSERVATION") || !claimKinds.has("HYPOTHESIS")
+      || !acceptedEvidenceIsCurrent || !criticCoversEvidence || !criticCoversClaims || VERSION_BUNDLE_KEYS.some((field) => !result.version_bundle[field])) {
+      fail("investigation_result_critic_invalid");
+    }
+    return;
+  }
+  if (result.disposition === "CRITIC_REJECTED" && result.critic?.decision !== "FAIL") fail("investigation_result_critic_invalid");
+  if (result.lifecycle_stage !== "INVESTIGATE") fail("investigation_result_lifecycle_stage_invalid");
+}
+
+function assertTrustedProjectionStage(projection, lifecycle_stage, gate1_state) {
+  const result = projection.investigation_result;
+  if (lifecycle_stage === "DECIDE" && (!result || result.disposition !== "ACCEPTED" || result.critic?.decision !== "PASS")) fail("investigation_result_stage_untrusted");
+  if (result && result.lifecycle_stage !== lifecycle_stage) fail("investigation_result_stage_untrusted");
+  if (result?.disposition === "ACCEPTED" && gate1_state !== "CONSUMED") fail("investigation_result_stage_untrusted");
 }
 
 function parseGraph(value) {
@@ -535,6 +716,10 @@ function matchesActionProjection(action, projection) {
   return Boolean(action && projection)
     && ["tenant_id", "incident_id", "run_id", "topology_revision", "case_id", "case_revision", "workflow_id", "workflow_run_id"].every((field) => action[field] === projection[field])
     && ["projection_revision", "evidence_revision", "gate_revision", "action_revision"].every((field) => action[field] === projection[field]);
+}
+
+function allowsInvestigateActions(projection) {
+  return investigationPresentation(projection).stage === "INVESTIGATE";
 }
 
 function emptyActions(previous = null) {

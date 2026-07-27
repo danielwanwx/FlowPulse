@@ -19,3 +19,12 @@ test("the established FlowPulse shell is the only visible standard-path workspac
   assert.doesNotMatch(controlPlaneApp, /\/api\/(?:state|source|demo|agent-control)\b/);
   assert.match(controlPlaneApp, /new ControlPlaneClient\(\)/);
 });
+
+test("the decision workspace renders only the projection-owned investigation presentation", () => {
+  assert.match(controlPlaneApp, /import \{ controlPlaneReducer, createControlPlaneState, investigationPresentation \}/);
+  assert.match(controlPlaneApp, /investigationMarkup\(investigationPresentation\(projection\)\)/);
+  assert.match(controlPlaneApp, /stageRailMarkup\(investigation\)/);
+  assert.match(controlPlaneApp, /investigationEvidenceMarkup\(investigation\.evidence\)/);
+  assert.doesNotMatch(controlPlaneApp, /receipt\.reason/);
+  assert.doesNotMatch(controlPlaneApp, /workspace\.investigation\.[a-z]+.*summary/);
+});

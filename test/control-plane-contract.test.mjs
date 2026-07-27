@@ -5,6 +5,7 @@ import {
   actionInvocationCommand,
   controlPlaneReducer,
   createControlPlaneState,
+  investigationPresentation,
   nodeExplanationCommand,
   parseIncidentEvent,
   parseIncidentNotification,
@@ -15,7 +16,7 @@ import {
   parseWorkspaceActionReceipt
 } from "../public/control-plane-contract.mjs";
 
-// Test-only fixtures derived from frozen backend contract 65e62bc….
+// Test-only fixtures derived from frozen backend contract 99f84df….
 const IDENTITY = Object.freeze({
   tenant_id: "tenant-test",
   incident_id: "incident-test",
@@ -53,6 +54,72 @@ function projection({ revision = 1, sequence = revision, impacted = true } = {})
     action_revision: 1,
     evidence_refs: [],
     degraded_code: "provider_unavailable"
+  };
+}
+
+function investigationResult({
+  disposition = "ACCEPTED",
+  lifecycle_stage = disposition === "ACCEPTED" ? "DECIDE" : "INVESTIGATE",
+  critic_decision = disposition === "ACCEPTED" ? "PASS" : disposition === "CRITIC_REJECTED" ? "FAIL" : "AMBIGUOUS",
+  projection_revision = 4,
+  evidence_revision = 2,
+  component_id = "checkout"
+} = {}) {
+  return {
+    ...IDENTITY,
+    schema_version: "flowpulse.investigation-result.v1",
+    result_id: "investigation-result-example",
+    component_id,
+    source_action_id: "action-example-read",
+    source_idempotency_key: "example-read-01",
+    source_activity_identity: "workspace-action:temporal-test-run:command-hash-example",
+    synthesis_id: "investigation-synthesis-example",
+    synthesis_activity_id: "investigation-synthesis:activity-example",
+    synthesis_model_id: "example-model",
+    synthesis_provider_id: "configured-example-provider",
+    projection_revision,
+    evidence_revision,
+    lifecycle_stage,
+    disposition,
+    summary: "Current evidence supports a bounded checkout degradation hypothesis.",
+    claims: [
+      { claim_id: "claim-checkout-latency", kind: "OBSERVATION", statement: "Current checkout latency is elevated.", evidence_refs: ["evidence-checkout-latency"] },
+      { claim_id: "investigation-claim-example", kind: "HYPOTHESIS", statement: "The checkout service is constrained by the observed current signal.", evidence_refs: ["evidence-checkout-latency"] }
+    ],
+    evidence: [{
+      evidence_id: "evidence-checkout-latency", source_kind: "METRIC", observed_at: "2026-07-26T00:00:00Z",
+      freshness: "CURRENT", authority: "T1_DIRECT_CURRENT", proof_scope: "CURRENT_OBSERVATION", parent_evidence_refs: []
+    }],
+    critic: {
+      critic_id: "investigation-critic-example", identity: "independent-example-critic", decision: critic_decision,
+      evidence_refs: ["evidence-checkout-latency"], reason_codes: ["current_evidence_supports_candidate"],
+      reviewed_claim_ids: ["claim-checkout-latency", "investigation-claim-example"]
+    },
+    truth_label: "LIVE",
+    version_bundle: {
+      capability_registry_version: "capability-registry.v1", card_schema_version: "flowpulse.next-best-action.v1",
+      context_pack_version: "conversation-context-pack.v1", core_policy_version: "conversation-core-policy.v1",
+      evidence_schema_version: "flowpulse.evidence-envelope.v1", model_policy_version: "provider-policy.v1",
+      policy_version: "capability-policy.v1", role_prompt_version: "conversation-role-prompts.v1",
+      schema_version: "flowpulse.version-bundle.v1", tool_schema_version: "capability-tool-schema.v1",
+      workflow_version: "flowpulse.incident-workspace.v2"
+    },
+    recorded_at: "2026-07-26T00:00:00Z"
+  };
+}
+
+function investigateProjection({ disposition = "ACCEPTED", lifecycle_stage, critic_decision, revision = 4, sequence = revision, impacted = true } = {}) {
+  const result = investigationResult({ disposition, lifecycle_stage, critic_decision, projection_revision: revision, evidence_revision: 2 });
+  const value = projection({ revision, sequence, impacted });
+  return {
+    ...value,
+    lifecycle_state: "ACTIVE",
+    status: disposition === "ACCEPTED" ? "investigation_accepted" : "investigation_degraded",
+    evidence_revision: 2,
+    gate1_state: "CONSUMED",
+    lifecycle_stage: result.lifecycle_stage,
+    evidence_refs: ["evidence-checkout-latency"],
+    investigation_result: result
   };
 }
 
@@ -333,4 +400,119 @@ test("Investigate cards and Gate 1 transition stay server-owned and reject stale
   const expiredClick = controlPlaneReducer(expiredState.state, { type: "action.clicked", action_id: "action-gate-1" });
   assert.equal(expiredClick.effects.length, 0);
   assert.equal(expiredClick.state.connection, "stale");
+});
+
+test("accepted frozen investigation projection alone advances the canonical presentation to Decide", () => {
+  // The frozen backend example intentionally has a classified selected
+  // component and an empty impacted path. Result identity binds to the graph
+  // component, not a client-inferred red path.
+  const accepted = investigateProjection({ impacted: false });
+  accepted.graph = {
+    nodes: [{
+      component_id: "checkout", canonical_identity: "service:checkout", display_name: "Checkout",
+      membership: "CLASSIFIED", classification_reason: "Relationship unavailable", runtime_status: "unknown", impact_status: "unknown"
+    }],
+    edges: []
+  };
+  const parsed = parseIncidentProjection(accepted);
+  const presentation = investigationPresentation(parsed);
+  assert.equal(presentation.stage, "DECIDE");
+  assert.equal(presentation.outcome, "accepted");
+  assert.equal(presentation.summary, accepted.investigation_result.summary);
+  assert.deepEqual(presentation.claims.map((claim) => claim.kind), ["OBSERVATION", "HYPOTHESIS"]);
+  assert.equal(presentation.critic.identity, "independent-example-critic");
+  assert.deepEqual(presentation.evidence.map((evidence) => evidence.freshness), ["CURRENT"]);
+  assert.equal("evidence_refs" in presentation.claims[0], false);
+  assert.equal("evidence_id" in presentation.evidence[0], false);
+
+  const hydrated = controlPlaneReducer(createControlPlaneState(), { type: "projection.hydrated", projection: accepted });
+  assert.equal(hydrated.state.projection.lifecycle_stage, "DECIDE");
+  assert.equal(investigationPresentation(hydrated.state.projection).stage, "DECIDE");
+  assert.deepEqual(hydrated.effects, []);
+});
+
+test("degraded, abstained, and critic-rejected results remain server-owned Investigate outcomes", () => {
+  for (const disposition of ["DEGRADED", "ABSTAINED", "CRITIC_REJECTED"]) {
+    const result = investigateProjection({ disposition });
+    const parsed = parseIncidentProjection(result);
+    const presentation = investigationPresentation(parsed);
+    assert.equal(presentation.stage, "INVESTIGATE", disposition);
+    assert.equal(presentation.outcome, "degraded", disposition);
+  }
+
+  const untrustedSuccess = investigateProjection({ critic_decision: "FAIL" });
+  assert.throws(() => parseIncidentProjection(untrustedSuccess), /investigation_result_critic_invalid/);
+
+  const staleSuccessEvidence = investigateProjection();
+  staleSuccessEvidence.investigation_result.evidence[0].freshness = "STALE";
+  assert.throws(() => parseIncidentProjection(staleSuccessEvidence), /investigation_result_critic_invalid/);
+
+  const staleResult = investigateProjection();
+  staleResult.investigation_result.projection_revision = 3;
+  assert.throws(() => parseIncidentProjection(staleResult), /investigation_result_revision_mismatch/);
+
+  const crossRun = investigateProjection();
+  crossRun.investigation_result.run_id = "run-attacker";
+  assert.throws(() => parseIncidentProjection(crossRun), /investigation_result_identity_mismatch/);
+
+  const unknownComponent = investigateProjection();
+  unknownComponent.investigation_result.component_id = "component-attacker";
+  assert.throws(() => parseIncidentProjection(unknownComponent), /investigation_result_component_mismatch/);
+
+  const unknownNested = investigateProjection();
+  unknownNested.investigation_result.evidence[0].browser_decision = "accept";
+  assert.throws(() => parseIncidentProjection(unknownNested), /investigation_evidence_unknown_field/);
+
+  const mismatchedEvidence = investigateProjection();
+  mismatchedEvidence.investigation_result.claims[0].evidence_refs = ["evidence-attacker"];
+  assert.throws(() => parseIncidentProjection(mismatchedEvidence), /investigation_claim_evidence_mismatch/);
+
+  const invalidLineage = investigateProjection();
+  invalidLineage.investigation_result.evidence[0].parent_evidence_refs = ["evidence-checkout-latency"];
+  assert.throws(() => parseIncidentProjection(invalidLineage), /investigation_evidence_parent_mismatch/);
+});
+
+test("historical v1.1.1 projections remain Investigate and never infer Decide from an action receipt", () => {
+  const historical = parseIncidentProjection(projection());
+  assert.equal(historical.lifecycle_stage, undefined);
+  assert.equal(historical.investigation_result, undefined);
+  assert.equal(investigationPresentation(historical).stage, "INVESTIGATE");
+
+  const state = createControlPlaneState();
+  state.projection = historical;
+  state.actions.receipt = { status: "FRESH_READ_COMPLETED", reason: "Investigation accepted: move to Decide." };
+  assert.equal(investigationPresentation(state.projection).stage, "INVESTIGATE");
+});
+
+test("investigation SSE only rehydrates a newer canonical projection and never treats event prose as truth", () => {
+  const current = investigateProjection({ disposition: "DEGRADED", revision: 3, sequence: 3 });
+  const hydrated = controlPlaneReducer(createControlPlaneState(), { type: "projection.hydrated", projection: current }).state;
+  const acceptedEvent = {
+    ...IDENTITY,
+    schema_version: "flowpulse.incident-event.v1",
+    projection_revision: 4,
+    sequence: 4,
+    event_type: "workspace.investigation.accepted",
+    occurred_at: "2026-07-26T00:01:00Z",
+    evidence_refs: ["evidence-checkout-latency"],
+    payload: { summary: "untrusted event prose", disposition: "ACCEPTED" }
+  };
+  const received = controlPlaneReducer(hydrated, { type: "case.event", event: acceptedEvent });
+  assert.deepEqual(received.effects, [{ type: "projection.load", case_id: IDENTITY.case_id, identity: null }]);
+  assert.equal(investigationPresentation(received.state.projection).outcome, "degraded");
+
+  const degradedEvent = { ...acceptedEvent, event_type: "workspace.investigation.degraded", projection_revision: 5, sequence: 5 };
+  const degraded = controlPlaneReducer(received.state, { type: "case.event", event: degradedEvent });
+  assert.deepEqual(degraded.effects, [{ type: "projection.load", case_id: IDENTITY.case_id, identity: null }]);
+  assert.equal(investigationPresentation(degraded.state.projection).outcome, "degraded");
+
+  const duplicate = controlPlaneReducer(degraded.state, { type: "case.event", event: degradedEvent });
+  assert.equal(duplicate.effects.length, 0);
+
+  const outOfOrder = controlPlaneReducer(degraded.state, { type: "case.event", event: { ...acceptedEvent, event_type: "workspace.investigation.degraded", sequence: 3 } });
+  assert.equal(outOfOrder.effects.length, 0);
+
+  const crossRun = controlPlaneReducer(hydrated, { type: "case.event", event: { ...acceptedEvent, run_id: "run-attacker" } });
+  assert.equal(crossRun.state.connection, "stale");
+  assert.equal(crossRun.state.projection.run_id, IDENTITY.run_id);
 });

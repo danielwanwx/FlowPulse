@@ -1,5 +1,5 @@
 import { ControlPlaneClient, ControlPlaneClientError } from "./control-plane-client.mjs";
-import { controlPlaneReducer, createControlPlaneState } from "./control-plane-contract.mjs";
+import { controlPlaneReducer, createControlPlaneState, investigationPresentation } from "./control-plane-contract.mjs";
 
 // This module intentionally mounts only into the mature app-shell. It owns
 // presentation state, while all incident, gate, card, receipt, and evidence
@@ -187,7 +187,7 @@ function render() {
   root.classList.toggle("is-loading", !projection && state.connection === "connecting");
   els.environment.textContent = "Control plane / server projection";
   els["workspace-title"].textContent = viewTitle();
-  els.stage.textContent = projection ? "Investigate" : "Waiting";
+  els.stage.textContent = projection ? investigationPresentation(projection).stage : "Waiting";
   els["status-text"].textContent = connectionCopy(state.connection);
   els["canvas-title"].textContent = viewTitle();
   els["canvas-caption"].textContent = projection?.operator_summary || emptyCanvasCopy();
@@ -276,31 +276,38 @@ function renderIncidentChrome() {
   els["timeline-dock"].hidden = !projection || !incidentMode;
   if (!projection || !incidentMode) return;
   els.severity.textContent = "ACTIVE";
+  const investigation = investigationPresentation(projection);
   els["incident-title"].textContent = projection.operator_title || "Active incident";
   els["incident-summary"].textContent = projection.operator_summary || projection.status;
-  els["incident-stage"].textContent = investigateStatus();
+  els["incident-stage"].textContent = investigationStatus(investigation);
   els["open-incident-button"].textContent = state.focus_status === "loading" ? "Loading path" : "Incident focused";
   els["open-incident-button"].disabled = state.focus_status === "loading" || !state.toast;
-  els["incident-stage-rail"].innerHTML = stageRailMarkup();
+  els["incident-stage-rail"].innerHTML = stageRailMarkup(investigation);
   els["stage-track"].style.setProperty("--stage-count", "4");
   els["stage-track"].innerHTML = stageTrackMarkup();
   els["timeline-time"].textContent = "Now";
-  els["timeline-title"].textContent = "Investigate";
-  els["timeline-copy"].textContent = investigateStatus();
+  els["timeline-title"].textContent = investigation.stage === "CLOSED" ? "Verify" : titleCase(investigation.stage);
+  els["timeline-copy"].textContent = investigationStatus(investigation);
 }
 
-function stageRailMarkup() {
+function stageRailMarkup(investigation) {
+  const current = investigation.stage === "CLOSED" ? "VERIFY" : investigation.stage;
   const stages = [
-    ["1", "Investigate", investigateStatus(), true],
-    ["2", "Decide", "Locked by server", false],
-    ["3", "Execute", "Locked by server", false],
-    ["4", "Verify", "Locked by server", false]
+    ["1", "Investigate", investigation.stage === "INVESTIGATE" ? investigationStatus(investigation) : "Recorded by server", current === "INVESTIGATE"],
+    ["2", "Decide", current === "DECIDE" ? investigationStatus(investigation) : "Locked by server", current === "DECIDE"],
+    ["3", "Execute", current === "EXECUTE" ? "Server-owned stage" : "Locked by server", current === "EXECUTE"],
+    ["4", "Verify", current === "VERIFY" ? "Server-owned stage" : "Locked by server", current === "VERIFY"]
   ];
-  return stages.map(([number, title, detail, active]) => `<button type="button" class="incident-stage-button${active ? " is-active" : ""}"${active ? "" : " disabled"}><span>${number}</span><strong>${title}</strong><small>${escapeHtml(detail)}</small></button>`).join("");
+  return stages.map(([number, title, detail, active]) => `<button type="button" class="incident-stage-button${active ? " is-active" : ""}" disabled><span>${number}</span><strong>${title}</strong><small>${escapeHtml(detail)}</small></button>`).join("");
 }
 
 function stageTrackMarkup() {
-  return ["Investigate", "Decide", "Execute", "Verify"].map((stage, index) => `<button type="button" class="stage-marker${index === 0 ? " is-current" : ""}"${index === 0 ? "" : " disabled"}><strong>${stage}</strong><span>${index === 0 ? "Current" : "Locked"}</span></button>`).join("");
+  const current = state.projection ? investigationPresentation(state.projection).stage : "INVESTIGATE";
+  const normalized = current === "CLOSED" ? "VERIFY" : current;
+  return ["Investigate", "Decide", "Execute", "Verify"].map((stage) => {
+    const active = stage.toUpperCase() === normalized;
+    return `<button type="button" class="stage-marker${active ? " is-current" : ""}" disabled><strong>${stage}</strong><span>${active ? "Current" : "Locked"}</span></button>`;
+  }).join("");
 }
 
 function renderDrawer() {
@@ -314,7 +321,14 @@ function renderDrawer() {
   els["drawer-kind"].textContent = node ? "Component context" : "Incident workspace";
   els["drawer-title"].textContent = node?.display_name || projection.operator_title || "Investigate";
   els["drawer-subtitle"].textContent = node ? "Server-projected component context" : "Select an affected component to start its durable explanation.";
-  els["drawer-content"].innerHTML = `${node ? explanationMarkup(node) : '<div class="drawer-empty">Select a red affected component. That is the only interaction that starts or reuses a node explanation.</div>'}${actionCardsMarkup()}${actionReceiptMarkup()}`;
+  els["drawer-content"].innerHTML = `${investigationMarkup(investigationPresentation(projection))}${node ? explanationMarkup(node) : '<div class="drawer-empty">Select a red affected component. That is the only interaction that starts or reuses a node explanation.</div>'}${actionCardsMarkup()}${actionReceiptMarkup()}`;
+}
+
+function investigationMarkup(investigation) {
+  if (!investigation.summary) return "";
+  const claims = investigation.claims.map((claim) => `<li><strong>${escapeHtml(titleCase(claim.kind))}</strong><span>${escapeHtml(claim.statement)}</span></li>`).join("");
+  const critic = investigation.critic ? `<p class="investigation-critic">Independent review: ${escapeHtml(investigation.critic.identity)} · ${escapeHtml(investigation.critic.decision)}</p>` : "";
+  return `<section class="detail-record investigation-result is-${escapeHtml(investigation.outcome)}"><header><span>Server investigation</span><span>${escapeHtml(titleCase(investigation.outcome))}</span></header><p>${escapeHtml(investigation.summary)}</p>${claims ? `<ul class="investigation-claims">${claims}</ul>` : ""}${critic}<p class="investigation-truth">Truth label: ${escapeHtml(investigation.truth_label || "DEGRADED")}</p>${investigationEvidenceMarkup(investigation.evidence)}</section>`;
 }
 
 function explanationMarkup(node) {
@@ -339,7 +353,13 @@ function actionReceiptMarkup() {
   const receipt = state.actions.receipt;
   if (!receipt) return "";
   const evidence = state.projection?.evidence_refs || [];
-  return `<section class="detail-record is-accepted"><header><span>Server action receipt</span><span>${escapeHtml(receipt.status)}</span></header><p>${escapeHtml(receipt.reason)}</p>${evidenceMarkup(evidence)}</section>`;
+  return `<section class="detail-record is-accepted"><header><span>Server action receipt</span><span>${escapeHtml(receipt.status)}</span></header><p>Recorded by the server. Waiting for the canonical projection.</p>${evidenceMarkup(evidence)}</section>`;
+}
+
+function investigationEvidenceMarkup(evidence) {
+  if (!evidence.length) return "";
+  const details = evidence.map((item) => `<li>${escapeHtml(item.source_kind)} · ${escapeHtml(item.freshness)} · ${escapeHtml(item.authority)} · ${escapeHtml(item.proof_scope)} · ${item.lineage_count ? `${item.lineage_count} parent record${item.lineage_count === 1 ? "" : "s"}` : "direct record"}</li>`).join("");
+  return `<details class="record-disclosure"><summary>Show evidence</summary><ul class="telemetry-provenance">${details}</ul></details>`;
 }
 
 function evidenceMarkup(evidence) {
@@ -369,13 +389,14 @@ function emptyCanvasCopy() {
   return "Waiting for a canonical incident projection.";
 }
 
-function investigateStatus() {
-  const status = state.actions.status;
-  if (status === "invoking") return "Waiting for server receipt";
-  if (status === "awaiting_gate1_event") return "Waiting for Temporal Gate 1 event";
-  if (state.actions.gate1.event) return "Gate 1 accepted";
-  if (state.actions.receipt?.status === "FRESH_READ_COMPLETED") return "Evidence read recorded";
+function investigateStatus(investigation) {
+  if (investigation.outcome === "accepted") return "Evidence-backed result accepted by server";
+  if (investigation.outcome === "degraded") return "Server investigation needs operator review";
   return "Server-owned investigation";
+}
+
+function titleCase(value) {
+  return String(value).toLowerCase().replace(/(^|_)([a-z])/g, (_, prefix, letter) => `${prefix ? " " : ""}${letter.toUpperCase()}`);
 }
 
 function requestedCaseId() {
