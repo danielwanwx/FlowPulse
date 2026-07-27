@@ -2,6 +2,7 @@
 
 import inspect
 import json
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Dict, List, Mapping, Optional, Tuple, TypeVar
 from uuid import NAMESPACE_URL, uuid4, uuid5
@@ -71,6 +72,58 @@ def _payload(record: Any) -> str:
 
 def _decode(value: Any) -> Dict[str, Any]:
     return json.loads(value) if isinstance(value, str) else value
+
+
+_LEGACY_PROJECTION_ABSENT_FIELDS = frozenset({
+    "operator_title",
+    "operator_summary",
+    "lifecycle_stage",
+    "gate1_state",
+    "investigation_result",
+})
+
+
+def _is_legacy_isolated_connected_projection(payload: Mapping[str, Any]) -> bool:
+    """Identify only the pre-discovery projection shape preserved in P0 volumes."""
+    if payload.get("schema_version") != "flowpulse.incident-projection.v1":
+        return False
+    if any(field in payload for field in _LEGACY_PROJECTION_ABSENT_FIELDS):
+        return False
+    if (
+        payload.get("lifecycle_state") != "DEGRADED"
+        or payload.get("status") != "provider_unavailable"
+        or payload.get("degraded_code") != "provider_unavailable"
+        or payload.get("impacted_path") != []
+    ):
+        return False
+    graph = payload.get("graph")
+    if not isinstance(graph, Mapping) or graph.get("edges") != []:
+        return False
+    nodes = graph.get("nodes")
+    if not isinstance(nodes, list) or not nodes:
+        return False
+    return all(
+        isinstance(node, Mapping)
+        and "display_name" not in node
+        and node.get("membership") == "CONNECTED"
+        and node.get("classification_reason") is None
+        and node.get("runtime_status") == "unknown"
+        and node.get("impact_status") == "unknown"
+        and bool(node.get("component_id"))
+        and bool(node.get("canonical_identity"))
+        for node in nodes
+    )
+
+
+def _persisted_workspace_projection(value: Any) -> IncidentProjection:
+    """Parse a stored projection without weakening validation for current records."""
+    payload = _decode(value)
+    if _is_legacy_isolated_connected_projection(payload):
+        payload = deepcopy(payload)
+        for node in payload["graph"]["nodes"]:
+            node["membership"] = "CLASSIFIED"
+            node["classification_reason"] = "Relationship unavailable"
+    return IncidentProjection.parse_obj(payload)
 
 
 def _workspace_binding(record: Any) -> IncidentRunBinding:
@@ -398,7 +451,7 @@ class PostgresCaseRepository:
                    ORDER BY projection_revision DESC LIMIT 1""",
                 tenant_id, case_id,
             )
-            return IncidentProjection.parse_obj(_decode(row["payload"])) if row else None
+            return _persisted_workspace_projection(row["payload"]) if row else None
         return await self._tenant(tenant_id, operation)
 
     async def append_workspace_event(self, event: IncidentEvent) -> IncidentEvent:
@@ -474,7 +527,10 @@ class PostgresCaseRepository:
                    LIMIT $2""",
                 tenant_id, limit,
             )
-            return [IncidentSummary.from_projection(IncidentProjection.parse_obj(_decode(row["payload"]))) for row in rows]
+            return [
+                IncidentSummary.from_projection(_persisted_workspace_projection(row["payload"]))
+                for row in rows
+            ]
         return await self._tenant(tenant_id, operation)
 
     active_incidents = workspace_active_incidents
@@ -506,7 +562,7 @@ class PostgresCaseRepository:
             notifications = []
             for row in rows:
                 event = IncidentEvent.parse_obj(_decode(row["event_payload"]))
-                projection = IncidentProjection.parse_obj(_decode(row["projection_payload"]))
+                projection = _persisted_workspace_projection(row["projection_payload"])
                 notifications.append(IncidentNotification(
                     notification_id=_notification_id(event),
                     event_type=(
