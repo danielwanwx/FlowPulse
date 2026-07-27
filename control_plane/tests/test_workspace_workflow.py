@@ -54,6 +54,86 @@ def request():
     "requires an installed Temporal test server; Compose is the live workflow proof",
 )
 class WorkspaceWorkflowTests(unittest.IsolatedAsyncioTestCase):
+    async def test_explanation_then_gate1_advances_the_single_event_sequence(self):
+        repository = InMemoryWorkspaceRepository()
+        authority = HmacAuthorizationAuthority("workspace-explanation-gate1-sequence-secret")
+        adapter = CurrentMetricsAdapter()
+        registry = CapabilityRegistry(
+            descriptors=[adapter.descriptor],
+            adapters={CapabilityName.METRICS: adapter},
+        )
+        dispatcher = WorkspaceActivityDispatcher(
+            repository, authorization=authority, capability_registry=registry,
+        )
+        async with await WorkflowEnvironment.start_time_skipping() as environment:
+            task_queue = "workspace-explanation-gate1-sequence-test"
+            async with Worker(
+                environment.client, task_queue=task_queue,
+                workflows=[IncidentWorkspaceTemporalWorkflow],
+                activities=build_workspace_activities(dispatcher),
+            ):
+                handle = await environment.client.start_workflow(
+                    IncidentWorkspaceTemporalWorkflow.run,
+                    request().dict(), id="workspace-explanation-gate1-sequence",
+                    task_queue=task_queue,
+                )
+                for _ in range(50):
+                    current = await repository.get_projection("tenant-a", "case-a")
+                    cards = await repository.workspace_next_best_actions("tenant-a", "case-a")
+                    if current is not None and cards:
+                        break
+                    await asyncio.sleep(0.01)
+                explanation_command = NodeExplanationStart(
+                    incident_id=current.incident_id, run_id=current.run_id,
+                    topology_revision=current.topology_revision,
+                    projection_revision=current.projection_revision,
+                    component_id="checkout", idempotency_key="explain-before-gate1",
+                )
+                explanation_assertion = authority.issue_workspace_node_explanation_intent(
+                    await repository.create_workspace_node_explanation_intent(
+                        request().actor, current, explanation_command,
+                    ),
+                )
+                explained = await handle.execute_update(
+                    IncidentWorkspaceTemporalWorkflow.start_or_reuse_node_explanation,
+                    WorkspaceNodeExplanationInvocation(
+                        command=explanation_command,
+                        authorization=explanation_assertion,
+                    ).dict(),
+                )
+                self.assertFalse(explained["reused"])
+
+                gate_card = cards[0]
+                gate_command = ActionInvocationCommand(
+                    incident_id=current.incident_id, run_id=current.run_id,
+                    topology_revision=current.topology_revision,
+                    projection_revision=current.projection_revision,
+                    action_id=gate_card.action_id, idempotency_key="gate1-after-explanation",
+                )
+                gate_assertion = authority.issue_workspace_action_intent(
+                    await repository.create_workspace_action_intent(
+                        request().actor, current, gate_command,
+                    ),
+                )
+                granted = await handle.execute_update(
+                    IncidentWorkspaceTemporalWorkflow.invoke_next_best_action,
+                    WorkspaceActionInvocation(
+                        command=gate_command, authorization=gate_assertion,
+                    ).dict(),
+                )
+                self.assertEqual("GATE1_GRANTED", granted["status"])
+                projected = await repository.get_projection("tenant-a", "case-a")
+                self.assertEqual(4, projected.sequence)
+                self.assertEqual(
+                    [1, 2, 3, 4],
+                    [
+                        event.sequence
+                        for event in await repository.workspace_events_after(
+                            "tenant-a", "case-a", 0,
+                        )
+                    ],
+                )
+
     async def test_fresh_read_runs_synthesis_and_independent_critic_before_decide(self):
         repository = InMemoryWorkspaceRepository()
         authority = HmacAuthorizationAuthority("workspace-investigation-workflow-secret")

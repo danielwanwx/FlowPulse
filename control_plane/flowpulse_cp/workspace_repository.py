@@ -21,6 +21,7 @@ from .workspace_actions import (
     WorkspaceSubjectGrant,
     WorkspaceActionCommit,
     WorkspaceActionReceipt,
+    validate_authoritative_action_event_successor,
     validate_authoritative_fresh_read_transition,
     validate_authoritative_gate1_grant_transition,
     validate_fresh_read_evidence_admission,
@@ -519,6 +520,17 @@ class InMemoryWorkspaceRepository:
         try:
             fresh_prior_projection = None
             fresh_active_lease = None
+            prior_action_projection = await self.get_projection(
+                commit.projection.tenant_id, commit.projection.case_id,
+            )
+            if prior_action_projection is None:
+                raise PolicyViolation("workspace_action_projection_not_found")
+            prior_events = self.events.get(_binding_key(prior_action_projection), [])
+            validate_authoritative_action_event_successor(
+                prior_action_projection,
+                prior_events[-1] if prior_events else None,
+                commit,
+            )
             if commit.issued_action is not None:
                 if _binding_key(commit.issued_action) != _binding_key(commit.projection):
                     raise PolicyViolation("workspace_action_transition_binding_mismatch")

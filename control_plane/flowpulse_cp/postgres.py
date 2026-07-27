@@ -51,6 +51,7 @@ from .workspace_actions import (
     WorkspaceSubjectGrant,
     WorkspaceActionCommit,
     WorkspaceActionReceipt,
+    validate_authoritative_action_event_successor,
     validate_authoritative_fresh_read_transition,
     validate_authoritative_gate1_grant_transition,
     validate_fresh_read_evidence_admission,
@@ -1167,6 +1168,29 @@ class PostgresCaseRepository:
             )
             if partial is not None:
                 raise PolicyViolation("workspace_action_transition_partial")
+
+            prior_action_projection_row = await connection.fetchrow(
+                """SELECT payload FROM incident_projections
+                   WHERE tenant_id=$1 AND run_id=$2 AND topology_revision=$3 AND case_id=$4
+                   ORDER BY projection_revision DESC LIMIT 1""",
+                binding.tenant_id, binding.run_id, binding.topology_revision, binding.case_id,
+            )
+            if prior_action_projection_row is None:
+                raise PolicyViolation("workspace_action_projection_not_found")
+            latest_action_event_row = await connection.fetchrow(
+                """SELECT payload FROM incident_projection_events
+                   WHERE tenant_id=$1 AND run_id=$2 AND topology_revision=$3 AND case_id=$4
+                   ORDER BY sequence DESC LIMIT 1""",
+                binding.tenant_id, binding.run_id, binding.topology_revision, binding.case_id,
+            )
+            validate_authoritative_action_event_successor(
+                IncidentProjection.parse_obj(_decode(prior_action_projection_row["payload"])),
+                (
+                    IncidentEvent.parse_obj(_decode(latest_action_event_row["payload"]))
+                    if latest_action_event_row is not None else None
+                ),
+                commit,
+            )
 
             if commit.issued_action is not None:
                 stored_action = await connection.fetchrow(

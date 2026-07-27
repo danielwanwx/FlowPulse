@@ -27,6 +27,7 @@ from flowpulse_cp.capabilities import (
 from pydantic import ValidationError
 
 from flowpulse_cp.models import (
+    AuthContext,
     ClaimRecord,
     CoverageEntry,
     CoverageStatus,
@@ -55,8 +56,10 @@ from flowpulse_cp.workspace_models import (
     IncidentGraphNode,
     IncidentProjection,
     IncidentRunBinding,
+    NodeExplanationStart,
     ProjectionState,
     IncidentEvent,
+    WorkspaceActivityPacket,
 )
 from flowpulse_cp.workspace_repository import InMemoryWorkspaceRepository
 from flowpulse_cp.workspace_activities import WorkspaceActivityDispatcher
@@ -314,6 +317,88 @@ def rebound_fresh_result(fresh, result):
 
 
 class Gate1CapabilityTests(unittest.IsolatedAsyncioTestCase):
+    async def test_explanation_events_then_gate1_share_one_authoritative_sequence(self):
+        """Gate 1 follows both durable explanation events without splitting ordering."""
+        item = binding()
+        current = projection(item)
+        repository = InMemoryWorkspaceRepository()
+        registry = CapabilityRegistry(
+            descriptors=[MetricsAdapter.descriptor],
+            adapters={CapabilityName.METRICS: MetricsAdapter()},
+        )
+        dispatcher = WorkspaceActivityDispatcher(repository, capability_registry=registry)
+        actor = AuthContext(tenant_id=item.tenant_id, subject_id="subject-a", roles=["viewer"])
+        now = datetime.now(timezone.utc)
+        await dispatcher.dispatch("workspace_initialize_activity", WorkspaceActivityPacket(
+            **item.dict(), stage="workspace_initialize", projection=current,
+            event_sequence=1, actor=actor,
+        ).dict())
+        gate_card = NextBestActionGenerator(registry).generate(current, now)[0]
+        await repository.append_next_best_action(gate_card)
+
+        explanation = NodeExplanationStart(
+            incident_id=item.incident_id, run_id=item.run_id,
+            topology_revision=item.topology_revision,
+            projection_revision=current.projection_revision,
+            component_id="checkout", idempotency_key="explain-before-gate1",
+        )
+        explained = await dispatcher.dispatch(
+            "workspace_node_explanation_activity",
+            WorkspaceActivityPacket(
+                **item.dict(), stage="workspace_node_explanation",
+                projection=current, event_sequence=2,
+                node_explanation=explanation, actor=actor,
+            ).dict(),
+        )
+        self.assertEqual("DEGRADED", explained["explanation"]["state"])
+
+        command = ActionInvocationCommand(
+            incident_id=item.incident_id, run_id=item.run_id,
+            topology_revision=item.topology_revision,
+            projection_revision=current.projection_revision,
+            action_id=gate_card.action_id, idempotency_key="gate1-after-explanation",
+        )
+        packet = WorkspaceActionPacket(
+            **item.dict(), projection=current, event_sequence=4, command=command,
+            actor_tenant_id=item.tenant_id, actor_subject_id=actor.subject_id,
+            actor_roles=actor.roles,
+        )
+        with self.assertRaisesRegex(
+            PolicyViolation, "gate1_grant_event_not_authoritative",
+        ):
+            await dispatcher.dispatch(
+                "workspace_execute_action_activity",
+                packet.copy(update={"event_sequence": 5}).dict(),
+            )
+        self.assertEqual(
+            [1, 2, 3],
+            [
+                event.sequence
+                for event in await repository.workspace_events_after(
+                    item.tenant_id, item.case_id, 0,
+                )
+            ],
+        )
+        granted = await dispatcher.dispatch("workspace_execute_action_activity", packet.dict())
+        self.assertEqual("GATE1_GRANTED", granted["receipt"]["status"])
+        self.assertEqual(4, granted["projection"]["sequence"])
+        self.assertEqual(
+            [1, 2, 3, 4],
+            [
+                event.sequence
+                for event in await repository.workspace_events_after(
+                    item.tenant_id, item.case_id, 0,
+                )
+            ],
+        )
+
+        retry = await dispatcher.dispatch("workspace_execute_action_activity", packet.dict())
+        self.assertEqual(granted, retry)
+        self.assertEqual(1, len(repository.workspace_action_commits))
+        self.assertEqual(4, len(await repository.workspace_events_after(
+            item.tenant_id, item.case_id, 0,
+        )))
+
     async def test_gate1_grant_rejects_every_forged_lease_axis_before_persistence(self):
         """A stored request card cannot be used to mint an arbitrary Gate 1 lease."""
         item = binding()

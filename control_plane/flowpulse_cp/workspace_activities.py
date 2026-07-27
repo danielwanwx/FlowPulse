@@ -766,7 +766,7 @@ class WorkspaceActivityDispatcher:
                         evidence_refs.append(evidence.evidence_id)
                 updated_projection = packet.projection.copy(update={
                     "projection_revision": packet.projection.projection_revision + 1,
-                    "sequence": packet.projection.sequence + 1,
+                    "sequence": packet.event_sequence,
                     "evidence_revision": packet.projection.evidence_revision + 1,
                     "action_revision": packet.projection.action_revision + 1,
                     "gate1_state": Gate1ProjectionState.CONSUMED,
@@ -797,7 +797,7 @@ class WorkspaceActivityDispatcher:
                 raise PolicyViolation("workspace_action_cta_not_enabled_p0")
             updated_projection = packet.projection.copy(update={
                 "projection_revision": packet.projection.projection_revision + 1,
-                "sequence": packet.projection.sequence + 1,
+                "sequence": packet.event_sequence,
                 "gate_revision": packet.projection.gate_revision + 1,
                 "action_revision": packet.projection.action_revision + 1,
                 "gate1_state": Gate1ProjectionState.ACTIVE,

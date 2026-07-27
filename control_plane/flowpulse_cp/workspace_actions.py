@@ -889,7 +889,7 @@ def validate_authoritative_fresh_read_transition(
             evidence_refs.append(evidence.evidence_id)
     expected_projection = prior_projection.copy(update={
         "projection_revision": prior_projection.projection_revision + 1,
-        "sequence": prior_projection.sequence + 1,
+        "sequence": commit.event.sequence,
         "evidence_revision": prior_projection.evidence_revision + 1,
         "action_revision": prior_projection.action_revision + 1,
         "gate1_state": Gate1ProjectionState.CONSUMED,
@@ -1007,7 +1007,7 @@ def validate_authoritative_gate1_grant_transition(
         raise PolicyViolation("gate1_grant_stored_card_not_authoritative")
     expected_projection = prior_projection.copy(update={
         "projection_revision": prior_projection.projection_revision + 1,
-        "sequence": prior_projection.sequence + 1,
+        "sequence": commit.event.sequence,
         "gate_revision": prior_projection.gate_revision + 1,
         "action_revision": prior_projection.action_revision + 1,
         "gate1_state": Gate1ProjectionState.ACTIVE,
@@ -1069,6 +1069,32 @@ def validate_authoritative_gate1_grant_transition(
         or commit.event.payload.get("activity_identity") != commit.activity_identity
     ):
         raise PolicyViolation("gate1_grant_event_not_authoritative")
+
+
+def validate_authoritative_action_event_successor(
+    prior_projection: IncidentProjection,
+    latest_event: Optional[IncidentEvent],
+    commit: WorkspaceActionCommit,
+) -> None:
+    """Bind an action projection to the next slot in the one incident event stream."""
+    error = (
+        "fresh_read_event_successor_invalid"
+        if commit.receipt.status == "FRESH_READ_COMPLETED"
+        else "gate1_grant_event_not_authoritative"
+    )
+    predecessor_sequence = prior_projection.sequence
+    if latest_event is not None:
+        if (
+            _workspace_binding_tuple(latest_event) != _workspace_binding_tuple(prior_projection)
+            or latest_event.sequence < prior_projection.sequence
+        ):
+            raise PolicyViolation(error)
+        predecessor_sequence = latest_event.sequence
+    if (
+        commit.event.sequence != predecessor_sequence + 1
+        or commit.projection.sequence != commit.event.sequence
+    ):
+        raise PolicyViolation(error)
 
 
 class Gate1LeaseStore(Protocol):
