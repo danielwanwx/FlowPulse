@@ -8,6 +8,24 @@ const summary = {
   title: "Checkout latency", summary: "Checkout requests are degraded."
 };
 
+const identity = {
+  tenant_id: "tenant-test", incident_id: "incident-test", run_id: "run-test", topology_revision: "topology-test-v1",
+  case_id: "case-test", case_revision: 1, workflow_id: "flowpulse.incident-workspace:tenant-test:run-test",
+  workflow_run_id: "temporal-test-run", created_at: "2026-07-26T00:00:00Z"
+};
+
+const action = {
+  ...identity,
+  schema_version: "flowpulse.next-best-action.v1",
+  action_id: "action-gate-1", card_version: 1, taxonomy: "FIND_CAUSE", title: "Find Cause", cta: "request_gate_1",
+  summary: "Request investigation access.", display_order: 1, recommended: true,
+  projection_revision: 1, evidence_revision: 1, gate_revision: 1, action_revision: 1,
+  component_id: "checkout", capability: "GATE1_CURRENT_EVIDENCE", capability_version: "workspace-gate1-current-evidence.v1",
+  data_class: "CURRENT_INCIDENT", required_permission: "incident:read", required_gate: "GATE1", tool_schema_version: "metrics-input.v1",
+  capability_registry_revision: "capability-policy.v1", precondition_version: "workspace-precondition.v1", precondition_hash: "a".repeat(64),
+  evidence_refs: [], expires_at: "2026-08-26T00:00:00Z"
+};
+
 test("versioned browser client uses only same-origin BFF paths and validates JSON before return", async () => {
   const calls = [];
   const client = new ControlPlaneClient({
@@ -68,4 +86,27 @@ test("SSE subscriptions accept ordered contract frames, retain the resume cursor
   source.emit("incident-notification", { notification_id: "bad" }, "cursor-2");
   assert.equal(source.closed, true);
   assert.deepEqual(connections.at(-1), { state: "degraded", cursor: "cursor-1" });
+});
+
+test("client reads server-issued cards and submits only an opaque canonical action command", async () => {
+  const calls = [];
+  const receipt = {
+    ...identity, action_id: action.action_id, idempotency_key: action.action_id,
+    status: "GATE1_GRANTED", gate1_lease_id: "gate1-accepted", reason: "temporal transition accepted"
+  };
+  const client = new ControlPlaneClient({
+    fetch: async (path, options = {}) => {
+      calls.push({ path, options });
+      const body = path.endsWith("/actions") ? [action] : receipt;
+      return new Response(JSON.stringify(body), { status: path.endsWith("/actions") ? 200 : 202, headers: { "content-type": "application/json" } });
+    }
+  });
+  assert.deepEqual(await client.actions("case-test"), [action]);
+  assert.equal((await client.invokeAction("case-test", action.action_id, {
+    incident_id: "incident-test", run_id: "run-test", topology_revision: "topology-test-v1", projection_revision: 1,
+    action_id: action.action_id, idempotency_key: action.action_id
+  })).status, "GATE1_GRANTED");
+  assert.equal(calls[0].path, "/api/control-plane/v1/incidents/case-test/actions");
+  assert.equal(calls[1].path, "/api/control-plane/v1/incidents/case-test/actions/action-gate-1");
+  assert.doesNotMatch(JSON.stringify(calls), /authorization|bearer/i);
 });

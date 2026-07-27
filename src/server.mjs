@@ -1138,6 +1138,19 @@ async function controlPlaneRoute(request, url) {
     const after = url.searchParams.get("after");
     return { method: "GET", path: `/v1/incidents/${encodeURIComponent(caseEvents)}/events${after !== null ? `?after=${after}` : ""}`, body: null, sse: true, lastEventId: forwardedLastEventId || null };
   }
+  const caseActions = matchControlPlanePath(path, /^\/api\/control-plane\/v1\/incidents\/([^/]+)\/actions$/);
+  if (caseActions && request.method === "GET") {
+    if (url.search) return queryError();
+    return { method: "GET", path: `/v1/incidents/${encodeURIComponent(caseActions)}/actions`, body: null, sse: false };
+  }
+  const invokeAction = matchControlPlanePath(path, /^\/api\/control-plane\/v1\/incidents\/([^/]+)\/actions\/([^/]+)$/);
+  if (invokeAction && request.method === "POST") {
+    if (url.search || !isJsonRequest(request)) return queryError();
+    let body;
+    try { body = await readJson(request); } catch { return queryError(); }
+    if (!validWorkspaceActionCommand(body, invokeAction[1])) return queryError();
+    return { method: "POST", path: `/v1/incidents/${encodeURIComponent(invokeAction[0])}/actions/${encodeURIComponent(invokeAction[1])}`, body, sse: false };
+  }
   const nodeStart = matchControlPlanePath(path, /^\/api\/control-plane\/v1\/incidents\/([^/]+)\/node-explanations$/);
   if (nodeStart && request.method === "POST") {
     if (url.search || !isJsonRequest(request)) return queryError();
@@ -1220,6 +1233,18 @@ function validNodeExplanationCommand(value) {
   if (keys.length !== expected.length || keys.some((key, index) => key !== expected[index])) return false;
   return ["incident_id", "run_id", "topology_revision", "component_id", "idempotency_key"].every((key) => validControlPlaneId(value[key]))
     && Number.isSafeInteger(value.projection_revision) && value.projection_revision >= 1;
+}
+function validWorkspaceActionCommand(value, actionId) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype) return false;
+  const keys = Object.keys(value).sort();
+  const expected = ["action_id", "idempotency_key", "incident_id", "projection_revision", "run_id", "topology_revision"];
+  if (keys.length !== expected.length || keys.some((key, index) => key !== expected[index])) return false;
+  // The frozen command deliberately carries canonical identity and an opaque
+  // server-issued action id, not an action revision. The separate control
+  // plane revalidates the current card/action revision before Temporal runs.
+  return ["incident_id", "run_id", "topology_revision", "action_id", "idempotency_key"].every((key) => validControlPlaneId(value[key]))
+    && Number.isSafeInteger(value.projection_revision) && value.projection_revision >= 1
+    && value.action_id === actionId && value.idempotency_key === value.action_id;
 }
 
 async function serveStatic(pathname, response) {

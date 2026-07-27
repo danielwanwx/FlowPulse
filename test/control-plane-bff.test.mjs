@@ -43,7 +43,7 @@ test("same-origin control-plane BFF allowlists contract routes, injects bearer, 
   assert.equal(upstream.requests.length, beforeRejected);
 
   const action = await fetch(`${frontend.baseUrl}/api/control-plane/v1/incidents/case-test/actions/action-test`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
-  assert.equal(action.status, 404);
+  assert.equal(action.status, 400);
   assert.equal(upstream.requests.length, beforeRejected);
 });
 
@@ -87,6 +87,37 @@ test("unconfigured BFF visibly fails closed without a local compatibility respon
   assert.deepEqual(await response.json(), { error: "control_plane_unavailable" });
 });
 
+test("BFF exposes only exact canonical Workspace Action routes and rejects forged action scope", async (context) => {
+  const upstream = await startUpstream(context);
+  const frontend = await startFrontend(context, upstream.baseUrl);
+  const listed = await fetch(`${frontend.baseUrl}/api/control-plane/v1/incidents/case-test/actions`);
+  assert.equal(listed.status, 200);
+  assert.deepEqual(await listed.json(), []);
+  assert.deepEqual(upstream.requests.at(-1), {
+    method: "GET", pathname: "/v1/incidents/case-test/actions", search: "", authorization: "Bearer trusted-server-only-test-token", lastEventId: null, body: ""
+  });
+
+  const command = {
+    incident_id: "incident-test", run_id: "run-test", topology_revision: "topology-test-v1", projection_revision: 2,
+    action_id: "action-test", idempotency_key: "action-test"
+  };
+  const invoked = await fetch(`${frontend.baseUrl}/api/control-plane/v1/incidents/case-test/actions/action-test`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(command)
+  });
+  assert.equal(invoked.status, 202);
+  assert.equal((await invoked.json()).status, "GATE1_GRANTED");
+  assert.equal(upstream.requests.at(-1).pathname, "/v1/incidents/case-test/actions/action-test");
+  assert.equal(upstream.requests.at(-1).body, JSON.stringify(command));
+
+  const count = upstream.requests.length;
+  const forged = await fetch(`${frontend.baseUrl}/api/control-plane/v1/incidents/case-test/actions/action-other`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(command)
+  });
+  assert.equal(forged.status, 400);
+  assert.deepEqual(await forged.json(), { error: "control_plane_request_invalid" });
+  assert.equal(upstream.requests.length, count);
+});
+
 async function startUpstream(context) {
   const requests = [];
   const server = createHttpServer(async (request, response) => {
@@ -114,6 +145,16 @@ async function startUpstream(context) {
     if (request.method === "POST" && url.pathname === "/v1/incidents/case-test/node-explanations") {
       response.writeHead(202, { "content-type": "application/json" });
       response.end(JSON.stringify({ reused: true, explanation: {} }));
+      return;
+    }
+    if (url.pathname === "/v1/incidents/case-test/actions" && request.method === "GET") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end("[]");
+      return;
+    }
+    if (url.pathname === "/v1/incidents/case-test/actions/action-test" && request.method === "POST") {
+      response.writeHead(202, { "content-type": "application/json" });
+      response.end(JSON.stringify({ status: "GATE1_GRANTED" }));
       return;
     }
     response.writeHead(200, { "content-type": "application/json" });

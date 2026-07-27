@@ -1,42 +1,66 @@
 import { ControlPlaneClient, ControlPlaneClientError } from "./control-plane-client.mjs";
 import { controlPlaneReducer, createControlPlaneState } from "./control-plane-contract.mjs";
 
+// This module intentionally mounts only into the mature app-shell. It owns
+// presentation state, while all incident, gate, card, receipt, and evidence
+// truth continues to come from the control-plane contract.
 const client = new ControlPlaneClient();
 const els = Object.fromEntries([...document.querySelectorAll("[id]")].map((element) => [element.id, element]));
+const root = els["app-shell"];
 const initialCaseId = requestedCaseId();
 let state = createControlPlaneState();
 let globalSubscription = null;
 let caseSubscription = null;
 let streamedCaseId = null;
+let lastError = null;
 const pendingProjections = new Set();
+const pendingActions = new Set();
 const pendingReceipts = new Set();
 
-for (const button of document.querySelectorAll("[data-control-mode]")) {
+root.dataset.controlPlane = "true";
+for (const button of document.querySelectorAll("button.mode-button[data-mode]")) {
   button.addEventListener("click", () => {
-    state = { ...state, mode: button.dataset.controlMode };
+    state = { ...state, mode: button.dataset.mode };
     render();
   });
 }
-els["control-plane-focus"].addEventListener("click", () => dispatch({ type: "toast.focus" }));
-els["control-plane-retry"].addEventListener("click", bootstrap);
-els["control-plane-canvas"].addEventListener("click", (event) => {
+els["open-incident-button"].addEventListener("click", () => dispatch({ type: "toast.focus" }));
+els["retry-button"].addEventListener("click", bootstrap);
+els["drawer-close"].addEventListener("click", () => {
+  state = { ...state, selected_component_id: null };
+  render();
+});
+els.toast.addEventListener("click", (event) => {
+  if (event.target.closest("[data-control-focus]")) dispatch({ type: "toast.focus" });
+});
+els["canvas-layers"].addEventListener("click", (event) => {
   const node = event.target.closest("[data-control-component]");
   if (node?.dataset.clickable === "true") dispatch({ type: "node.clicked", component_id: node.dataset.controlComponent });
 });
-els["control-plane-composer"].addEventListener("submit", (event) => event.preventDefault());
+els["drawer-content"].addEventListener("click", (event) => {
+  const card = event.target.closest("[data-control-action]");
+  if (card && !card.disabled) dispatch({ type: "action.clicked", action_id: card.dataset.controlAction });
+});
+els["timeline-current"].addEventListener("click", () => {
+  if (state.toast) dispatch({ type: "toast.focus" });
+});
 
+render();
 await bootstrap();
 
 async function bootstrap() {
-  closeGlobalSubscription();
+  closeSubscriptions();
+  lastError = null;
   dispatch({ type: "connection.reconnecting" });
   try {
     const summaries = await client.activeIncidents();
     dispatch({ type: "summaries.hydrated", summaries });
     openGlobalSubscription();
   } catch (error) {
-    dispatch({ type: "connection.degraded" });
-    renderError(error);
+    reportError(error);
+  } finally {
+    root.classList.remove("is-loading");
+    render();
   }
 }
 
@@ -58,30 +82,54 @@ async function runEffect(effect) {
       dispatch({ type: "projection.hydrated", projection, identity: effect.identity });
       if (initialCaseId === effect.case_id) dispatch({ type: "case.select", case_id: effect.case_id });
     } catch (error) {
-      dispatch({ type: "connection.degraded" });
-      renderError(error);
+      reportError(error);
     } finally {
       pendingProjections.delete(key);
     }
     return;
   }
-  if (effect.type === "node-explanation.start") {
+  if (effect.type === "actions.load") {
+    const key = `${effect.case_id}:${effect.identity.projection_revision}:${effect.identity.action_revision}`;
+    if (pendingActions.has(key)) return;
+    pendingActions.add(key);
     try {
-      const receipt = await client.startNodeExplanation(state.projection.case_id, effect.command);
-      dispatch({ type: "explanation.receipt", receipt });
+      dispatch({ type: "actions.hydrated", identity: effect.identity, actions: await client.actions(effect.case_id) });
     } catch (error) {
-      dispatch({ type: "connection.degraded" });
-      renderError(error);
+      reportError(error);
+    } finally {
+      pendingActions.delete(key);
+    }
+    return;
+  }
+  if (effect.type === "node-explanation.start") {
+    const caseId = state.projection?.case_id;
+    if (!caseId) return;
+    try {
+      dispatch({ type: "explanation.receipt", receipt: await client.startNodeExplanation(caseId, effect.command) });
+    } catch (error) {
+      reportError(error);
+    }
+    return;
+  }
+  if (effect.type === "action.invoke") {
+    try {
+      dispatch({ type: "action.receipt", receipt: await client.invokeAction(effect.case_id, effect.action_id, effect.command) });
+    } catch (error) {
+      reportError(error);
     }
   }
 }
 
 function openGlobalSubscription() {
   if (globalSubscription) return;
-  globalSubscription = client.subscribeGlobal({
-    onNotification: (notification) => dispatch({ type: "notification.received", notification }),
-    onConnection: (connection) => dispatch({ type: `connection.${connection}` })
-  });
+  try {
+    globalSubscription = client.subscribeGlobal({
+      onNotification: (notification) => dispatch({ type: "notification.received", notification }),
+      onConnection: (connection) => dispatch({ type: `connection.${connection}` })
+    });
+  } catch (error) {
+    reportError(error);
+  }
 }
 
 function syncCaseSubscription() {
@@ -89,35 +137,38 @@ function syncCaseSubscription() {
   if (!projection || streamedCaseId === projection.case_id) return;
   caseSubscription?.close();
   streamedCaseId = projection.case_id;
-  caseSubscription = client.subscribeCase({
-    caseId: projection.case_id,
-    after: state.last_case_sequence,
-    onEvent: (event) => {
-      const selectedBeforeEvent = state.selected_component_id;
-      dispatch({ type: "case.event", event });
-      if (selectedBeforeEvent && ["COMPLETED", "DEGRADED"].includes(event.explanation_status) && typeof event.payload?.explanation_id === "string") {
-        void loadReceipt(event.case_id, event.payload.explanation_id);
-      }
-    },
-    onConnection: (connection) => dispatch({ type: `connection.${connection}` })
-  });
+  try {
+    caseSubscription = client.subscribeCase({
+      caseId: projection.case_id,
+      after: state.last_case_sequence,
+      onEvent: (event) => {
+        const explanationId = event.payload?.explanation_id;
+        dispatch({ type: "case.event", event });
+        if (typeof explanationId === "string" && ["COMPLETED", "DEGRADED"].includes(event.explanation_status)) {
+          void loadExplanationReceipt(event.case_id, explanationId);
+        }
+      },
+      onConnection: (connection) => dispatch({ type: `connection.${connection}` })
+    });
+  } catch (error) {
+    reportError(error);
+  }
 }
 
-async function loadReceipt(caseId, explanationId) {
+async function loadExplanationReceipt(caseId, explanationId) {
   const key = `${caseId}:${explanationId}`;
   if (pendingReceipts.has(key)) return;
   pendingReceipts.add(key);
   try {
     dispatch({ type: "explanation.receipt", receipt: await client.nodeExplanationReceipt(caseId, explanationId) });
   } catch (error) {
-    dispatch({ type: "connection.degraded" });
-    renderError(error);
+    reportError(error);
   } finally {
     pendingReceipts.delete(key);
   }
 }
 
-function closeGlobalSubscription() {
+function closeSubscriptions() {
   globalSubscription?.close();
   globalSubscription = null;
   caseSubscription?.close();
@@ -125,96 +176,176 @@ function closeGlobalSubscription() {
   streamedCaseId = null;
 }
 
+function reportError(error) {
+  lastError = error instanceof ControlPlaneClientError ? error.code : "control_plane_unavailable";
+  dispatch({ type: "connection.degraded" });
+}
+
 function render() {
   const projection = state.projection;
-  const labels = { architecture: "System architecture", live: "Live system", incident: projection?.operator_title || "Incident" };
-  els["control-plane-app"].dataset.mode = state.mode;
-  els["control-plane-title"].textContent = labels[state.mode];
-  els["control-plane-kicker"].textContent = state.mode === "incident" ? "Incident workspace" : "Server projection";
-  els["control-plane-summary"].textContent = projection?.operator_summary || "Waiting for the canonical incident projection.";
-  els["control-plane-status"].textContent = connectionLabel(state.connection);
-  els["control-plane-status"].classList.toggle("is-degraded", ["degraded", "stale"].includes(state.connection));
-  if (state.connection !== "degraded") els["control-plane-degraded"].hidden = true;
-  els["control-plane-connection"].dataset.state = state.connection;
-  els["control-plane-connection"].textContent = connectionCopy(state.connection);
-  for (const button of document.querySelectorAll("[data-control-mode]")) {
-    const active = button.dataset.controlMode === state.mode;
-    button.classList.toggle("is-active", active);
-    button.setAttribute("aria-pressed", String(active));
-  }
+  root.dataset.mode = state.mode;
+  root.classList.toggle("is-loading", !projection && state.connection === "connecting");
+  els.environment.textContent = "Control plane / server projection";
+  els["workspace-title"].textContent = viewTitle();
+  els.stage.textContent = projection ? "Investigate" : "Waiting";
+  els["status-text"].textContent = connectionCopy(state.connection);
+  els["canvas-title"].textContent = viewTitle();
+  els["canvas-caption"].textContent = projection?.operator_summary || emptyCanvasCopy();
+  els["metric-checkout-label"].parentElement.hidden = true;
+  els["metric-payment-label"].parentElement.hidden = true;
+  els["metric-kafka-label"].parentElement.hidden = true;
+  els["operations-team-rail"].hidden = true;
+  els["approval-banner"].hidden = true;
+  els["compare-control"].hidden = true;
+  els["compare-handle"].hidden = true;
+  els["compare-canvas-range"].hidden = true;
+  els["incident-stage-panel"].hidden = true;
+  els["shared-run-connection"].hidden = !["stale", "reconnecting", "degraded"].includes(state.connection);
+  els["shared-run-connection"].dataset.state = state.connection;
+  els["shared-run-connection"].textContent = connectionCopy(state.connection);
+  renderModeButtons();
+  renderError();
   renderToast();
   renderGraph();
-  renderDecision();
+  renderIncidentChrome();
+  renderDrawer();
   if (projection) persistCaseId(projection.case_id);
+}
+
+function renderModeButtons() {
+  for (const button of document.querySelectorAll("button.mode-button[data-mode]")) {
+    const selected = button.dataset.mode === state.mode;
+    button.classList.toggle("is-active", selected);
+    button.setAttribute("aria-pressed", String(selected));
+  }
+}
+
+function renderError() {
+  const visible = ["degraded", "stale"].includes(state.connection);
+  els["error-banner"].hidden = !visible;
+  if (!visible) return;
+  els["error-message"].textContent = errorCopy(lastError || state.connection);
 }
 
 function renderToast() {
   const toast = state.toast;
-  els["control-plane-toast"].hidden = !toast;
+  els.toast.hidden = !toast;
   if (!toast) return;
-  els["control-plane-toast-title"].textContent = toast.incident.title;
-  els["control-plane-toast-copy"].textContent = toast.incident.summary;
+  els.toast.innerHTML = `<div><strong>${escapeHtml(toast.incident.title)}</strong><span>${escapeHtml(toast.incident.summary)}</span></div><button type="button" data-control-focus>Focus incident</button>`;
 }
 
 function renderGraph() {
   const projection = state.projection;
   if (!projection) {
-    els["control-plane-canvas"].innerHTML = '<p class="control-plane-empty">Waiting for a server projection.</p>';
+    els["canvas-layers"].innerHTML = `<div class="control-plane-canvas-empty">${escapeHtml(emptyCanvasCopy())}</div>`;
     return;
   }
-  const nodes = projection.graph.nodes;
-  const positions = graphPositions(nodes);
+  const positions = graphPositions(projection.graph.nodes);
   const impacted = new Set(state.mode === "architecture" ? [] : projection.impacted_path);
-  const nodeById = new Map(nodes.map((node) => [node.component_id, node]));
-  const edges = projection.graph.edges.map((edge) => edgeMarkup(edge, positions, impacted, nodeById)).join("");
-  const nodeMarkup = nodes.map((node) => {
-    const position = positions.get(node.component_id);
-    const isImpacted = impacted.has(node.component_id);
-    const clickable = state.mode === "incident" && isImpacted && state.explanation.status !== "starting";
-    const classification = node.membership === "CLASSIFIED" ? `<span class="control-plane-node-classification">${escapeHtml(node.classification_reason)}</span>` : "";
-    return `<button type="button" class="control-plane-node${isImpacted ? " is-impacted" : ""}" style="left:${position.x}%;top:${position.y}%;transform:translate(-50%,-50%)" data-control-component="${escapeHtml(node.component_id)}" data-clickable="${clickable}"${clickable ? "" : " disabled"}>
-      <span class="control-plane-node-name">${escapeHtml(node.display_name)}</span>
-      <span class="control-plane-node-meta"><i class="control-plane-node-dot" aria-hidden="true"></i>${escapeHtml(node.runtime_status)}</span>${classification}
-    </button>`;
-  }).join("");
-  els["control-plane-canvas"].innerHTML = `<div class="control-plane-graph"><svg class="control-plane-edge-layer" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">${edges}</svg>${nodeMarkup}</div>`;
+  const nodeById = new Map(projection.graph.nodes.map((node) => [node.component_id, node]));
+  const edges = projection.graph.edges.map((edge, index) => edgeMarkup(edge, positions, impacted, nodeById, index)).join("");
+  const nodes = projection.graph.nodes.map((node) => nodeMarkup(node, positions.get(node.component_id), impacted.has(node.component_id))).join("");
+  els["canvas-layers"].innerHTML = `<div class="control-plane-twin-layer"><svg class="edge-map control-plane-edge-map" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">${edges}</svg>${nodes}</div>`;
 }
 
-function renderDecision() {
-  const show = state.mode === "incident" && (state.selected_component_id || state.focus_status === "loading");
-  els["control-plane-decision"].hidden = !show;
-  if (!show) return;
-  if (state.focus_status === "loading") {
-    els["control-plane-decision-title"].textContent = "Loading impacted path";
-    els["control-plane-decision-copy"].textContent = "Waiting for the canonical projection before focusing this incident.";
-    els["control-plane-conversation"].innerHTML = "";
-    return;
-  }
-  const node = state.projection?.graph.nodes.find((candidate) => candidate.component_id === state.selected_component_id);
-  if (!node) return;
-  els["control-plane-decision-title"].textContent = node.display_name;
+function nodeMarkup(node, position, impacted) {
+  const clickable = state.mode === "incident" && impacted && state.connection === "connected" && state.explanation.status !== "starting";
+  const kind = node.membership === "CLASSIFIED" ? node.classification_reason : "Connected";
+  return `<button type="button" class="twin-node control-plane-twin-node${impacted ? " is-impact" : ""}${state.selected_component_id === node.component_id ? " is-selected" : ""}" style="left:${position.x}%;top:${position.y}%" data-control-component="${escapeHtml(node.component_id)}" data-clickable="${clickable}"${clickable ? "" : " disabled"}>
+    <span class="node-icon" aria-hidden="true"><i class="ph ${impacted ? "ph-warning-circle" : "ph-cube"}"></i></span>
+    <span class="node-copy"><strong>${escapeHtml(node.display_name)}</strong><small>${escapeHtml(node.runtime_status)} · ${escapeHtml(kind)}</small></span>
+  </button>`;
+}
+
+function edgeMarkup(edge, positions, impacted, nodes, index) {
+  const source = positions.get(edge.source_component_id);
+  const target = positions.get(edge.target_component_id);
+  if (!source || !target || !nodes.has(edge.source_component_id) || !nodes.has(edge.target_component_id)) return "";
+  const isImpacted = impacted.has(edge.source_component_id) && impacted.has(edge.target_component_id);
+  const middle = (source.x + target.x) / 2;
+  const path = `M ${source.x} ${source.y} C ${middle} ${source.y}, ${middle} ${target.y}, ${target.x} ${target.y}`;
+  const active = state.mode === "live" && ["active", "healthy", "degraded"].includes(edge.status);
+  return `<g class="edge-group${isImpacted ? " edge-impact" : ""}"><path class="edge-line${isImpacted ? " is-impact" : ""}" d="${path}"/><path class="pulse-flow${isImpacted ? " is-impact" : ""}${active ? " control-plane-live-pulse" : ""} pulse-slot-${index % 6}" d="${path}"/></g>`;
+}
+
+function renderIncidentChrome() {
+  const projection = state.projection;
+  const incidentMode = state.mode === "incident";
+  els["incident-strip"].hidden = !projection || !incidentMode;
+  els["incident-stage-rail"].hidden = !projection || !incidentMode;
+  els["timeline-dock"].hidden = !projection || !incidentMode;
+  if (!projection || !incidentMode) return;
+  els.severity.textContent = "ACTIVE";
+  els["incident-title"].textContent = projection.operator_title || "Active incident";
+  els["incident-summary"].textContent = projection.operator_summary || projection.status;
+  els["incident-stage"].textContent = investigateStatus();
+  els["open-incident-button"].textContent = state.focus_status === "loading" ? "Loading path" : "Incident focused";
+  els["open-incident-button"].disabled = state.focus_status === "loading" || !state.toast;
+  els["incident-stage-rail"].innerHTML = stageRailMarkup();
+  els["stage-track"].style.setProperty("--stage-count", "4");
+  els["stage-track"].innerHTML = stageTrackMarkup();
+  els["timeline-time"].textContent = "Now";
+  els["timeline-title"].textContent = "Investigate";
+  els["timeline-copy"].textContent = investigateStatus();
+}
+
+function stageRailMarkup() {
+  const stages = [
+    ["1", "Investigate", investigateStatus(), true],
+    ["2", "Decide", "Locked by server", false],
+    ["3", "Execute", "Locked by server", false],
+    ["4", "Verify", "Locked by server", false]
+  ];
+  return stages.map(([number, title, detail, active]) => `<button type="button" class="incident-stage-button${active ? " is-active" : ""}"${active ? "" : " disabled"}><span>${number}</span><strong>${title}</strong><small>${escapeHtml(detail)}</small></button>`).join("");
+}
+
+function stageTrackMarkup() {
+  return ["Investigate", "Decide", "Execute", "Verify"].map((stage, index) => `<button type="button" class="stage-marker${index === 0 ? " is-current" : ""}"${index === 0 ? "" : " disabled"}><strong>${stage}</strong><span>${index === 0 ? "Current" : "Locked"}</span></button>`).join("");
+}
+
+function renderDrawer() {
+  const projection = state.projection;
+  const visible = Boolean(projection && state.mode === "incident");
+  els["context-drawer"].hidden = !visible;
+  els["drawer-tabs"].hidden = true;
+  if (!visible) return;
+  const node = projection.graph.nodes.find((candidate) => candidate.component_id === state.selected_component_id) || null;
+  els["context-drawer"].dataset.tone = node && projection.impacted_path.includes(node.component_id) ? "impact" : "service";
+  els["drawer-kind"].textContent = node ? "Component context" : "Incident workspace";
+  els["drawer-title"].textContent = node?.display_name || projection.operator_title || "Investigate";
+  els["drawer-subtitle"].textContent = node ? "Server-projected component context" : "Select an affected component to start its durable explanation.";
+  els["drawer-content"].innerHTML = `${node ? explanationMarkup(node) : '<div class="drawer-empty">Select a red affected component. That is the only interaction that starts or reuses a node explanation.</div>'}${actionCardsMarkup()}${actionReceiptMarkup()}`;
+}
+
+function explanationMarkup(node) {
   const explanation = state.explanation;
-  if (explanation.status === "starting") {
-    els["control-plane-decision-copy"].textContent = "Starting the recorded component explanation.";
-    els["control-plane-conversation"].innerHTML = '<div class="control-plane-conversation-card"><strong>Conversation Manager</strong><p>Reading the durable explanation status.</p></div>';
-    return;
-  }
+  let body = "Select this affected component to read its durable server explanation.";
+  let evidence = [];
+  if (explanation.status === "starting") body = "Starting the recorded component explanation.";
   if (explanation.receipt) {
-    const record = explanation.receipt.explanation;
-    els["control-plane-decision-copy"].textContent = record.state === "DEGRADED" ? "Recorded context is available; live capabilities remain unavailable." : "Recorded component explanation.";
-    const evidence = record.evidence_refs.length ? record.evidence_refs.map(escapeHtml).join(", ") : "No evidence references were returned.";
-    els["control-plane-conversation"].innerHTML = `<div class="control-plane-conversation-card"><strong>Conversation Manager</strong><p>${escapeHtml(record.summary)}</p><details><summary>Show evidence</summary><p>${evidence}</p></details></div>`;
-    return;
+    body = explanation.receipt.explanation.summary;
+    evidence = explanation.receipt.explanation.evidence_refs;
   }
-  els["control-plane-decision-copy"].textContent = "Select an impacted component to read its durable explanation.";
-  els["control-plane-conversation"].innerHTML = "";
+  return `<section class="component-context is-impact"><header><div><span>Conversation Manager</span><strong>${escapeHtml(node.display_name)}</strong></div><small class="component-health">${escapeHtml(explanation.status)}</small></header><p>${escapeHtml(body)}</p>${evidenceMarkup(evidence)}</section>`;
 }
 
-function renderError(error) {
-  const code = error instanceof ControlPlaneClientError ? error.code : "control_plane_unavailable";
-  els["control-plane-degraded"].hidden = false;
-  els["control-plane-degraded-copy"].textContent = errorCopy(code);
-  render();
+function actionCardsMarkup() {
+  const cards = state.actions.cards;
+  if (!cards.length) return "";
+  return `<section class="control-plane-action-list" aria-label="Server-issued next actions">${cards.map((card) => `<article class="control-plane-action-card"><span>${escapeHtml(card.taxonomy)}</span><h3>${escapeHtml(card.title)}</h3><p>${escapeHtml(card.summary)}</p><button type="button" class="button" data-control-action="${escapeHtml(card.action_id)}"${state.actions.in_flight ? " disabled" : ""}>${escapeHtml(card.cta)}</button></article>`).join("")}</section>`;
+}
+
+function actionReceiptMarkup() {
+  const receipt = state.actions.receipt;
+  if (!receipt) return "";
+  const evidence = state.projection?.evidence_refs || [];
+  return `<section class="detail-record is-accepted"><header><span>Server action receipt</span><span>${escapeHtml(receipt.status)}</span></header><p>${escapeHtml(receipt.reason)}</p>${evidenceMarkup(evidence)}</section>`;
+}
+
+function evidenceMarkup(evidence) {
+  const items = Array.isArray(evidence) ? evidence : [];
+  const body = items.length ? items.map((value) => `<code>${escapeHtml(value)}</code>`).join("") : "No evidence references were returned.";
+  return `<details class="record-disclosure"><summary>Show evidence</summary><div class="telemetry-provenance">${body}</div></details>`;
 }
 
 function graphPositions(nodes) {
@@ -222,18 +353,29 @@ function graphPositions(nodes) {
   const rows = Math.max(1, Math.ceil(nodes.length / columns));
   return new Map(nodes.map((node, index) => [node.component_id, {
     x: 13 + (index % columns) * (74 / Math.max(1, columns - 1)),
-    y: 18 + Math.floor(index / columns) * (64 / Math.max(1, rows - 1))
+    y: 24 + Math.floor(index / columns) * (54 / Math.max(1, rows - 1))
   }]));
 }
 
-function edgeMarkup(edge, positions, impacted, nodeById) {
-  const source = positions.get(edge.source_component_id);
-  const target = positions.get(edge.target_component_id);
-  if (!source || !target || !nodeById.has(edge.source_component_id) || !nodeById.has(edge.target_component_id)) return "";
-  const isImpacted = impacted.has(edge.source_component_id) && impacted.has(edge.target_component_id);
-  const live = edge.status === "active" || edge.status === "healthy" || edge.status === "degraded";
-  const midX = (source.x + target.x) / 2;
-  return `<path class="control-plane-edge${isImpacted ? " is-impacted" : ""}${live ? " is-live" : ""}" d="M ${source.x} ${source.y} C ${midX} ${source.y}, ${midX} ${target.y}, ${target.x} ${target.y}"/>`;
+function viewTitle() {
+  if (state.mode === "architecture") return "System architecture";
+  if (state.mode === "live") return "Live system";
+  return state.projection?.operator_title || "Incident";
+}
+
+function emptyCanvasCopy() {
+  if (state.connection === "degraded") return "The canonical control-plane projection is unavailable.";
+  if (state.connection === "stale") return "Incident updates are stale. Waiting for a canonical projection.";
+  return "Waiting for a canonical incident projection.";
+}
+
+function investigateStatus() {
+  const status = state.actions.status;
+  if (status === "invoking") return "Waiting for server receipt";
+  if (status === "awaiting_gate1_event") return "Waiting for Temporal Gate 1 event";
+  if (state.actions.gate1.event) return "Gate 1 accepted";
+  if (state.actions.receipt?.status === "FRESH_READ_COMPLETED") return "Evidence read recorded";
+  return "Server-owned investigation";
 }
 
 function requestedCaseId() {
@@ -248,19 +390,15 @@ function persistCaseId(caseId) {
   history.replaceState(null, "", url);
 }
 
-function connectionLabel(connection) {
-  return ({ connected: "Live", connecting: "Connecting", reconnecting: "Reconnecting", stale: "Updates stale", degraded: "Unavailable" })[connection] || "Unavailable";
-}
-
 function connectionCopy(connection) {
   return ({ connected: "Server projection connected", connecting: "Connecting to incident workspace", reconnecting: "Reconnecting to incident updates", stale: "Incident updates are stale", degraded: "Incident workspace unavailable" })[connection] || "Incident workspace unavailable";
 }
 
 function errorCopy(code) {
   if (code === "control_plane_auth_failed") return "The incident workspace is not authorized for this server session.";
-  if (code === "control_plane_schema_invalid") return "The incident workspace returned an incompatible projection.";
-  if (code === "control_plane_identity_mismatch") return "The incident projection no longer matches the selected server identity.";
-  return "The canonical control-plane projection could not be read. Try again after access is restored.";
+  if (code === "control_plane_schema_invalid") return "The incident workspace returned an incompatible server projection.";
+  if (code === "control_plane_identity_mismatch") return "The selected server identity no longer matches this workspace.";
+  return "The canonical control-plane projection could not be read. Retry after server access is restored.";
 }
 
 function escapeHtml(value) {

@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   ControlPlaneContractError,
+  actionInvocationCommand,
   controlPlaneReducer,
   createControlPlaneState,
   nodeExplanationCommand,
@@ -9,7 +10,9 @@ import {
   parseIncidentNotification,
   parseIncidentProjection,
   parseIncidentSummaries,
-  parseNodeExplanationReceipt
+  parseNextBestActions,
+  parseNodeExplanationReceipt,
+  parseWorkspaceActionReceipt
 } from "../public/control-plane-contract.mjs";
 
 // Test-only fixtures derived from frozen backend contract 65e62bc….
@@ -73,6 +76,65 @@ function notification({ notification_id = "notification-1", sequence = 1 } = {})
   };
 }
 
+function nextBestAction({
+  action_id = "action-gate-1",
+  cta = "request_gate_1",
+  taxonomy = cta === "run_read_capability" ? "MAP_IMPACT" : "FIND_CAUSE",
+  title = cta === "run_read_capability" ? "Map Impact" : "Find Cause",
+  projection_revision = 1,
+  evidence_revision = 1,
+  gate_revision = 1,
+  action_revision = 1,
+  gate1_lease_id = undefined,
+  expires_at = "2026-08-26T00:00:00Z"
+} = {}) {
+  return {
+    ...IDENTITY,
+    schema_version: "flowpulse.next-best-action.v1",
+    action_id,
+    card_version: 1,
+    taxonomy,
+    title,
+    cta,
+    summary: cta === "run_read_capability" ? "Read current incident evidence." : "Request investigation access.",
+    display_order: 1,
+    recommended: true,
+    projection_revision,
+    evidence_revision,
+    gate_revision,
+    action_revision,
+    component_id: "checkout",
+    capability: "GATE1_CURRENT_EVIDENCE",
+    capability_version: "workspace-gate1-current-evidence.v1",
+    data_class: "CURRENT_INCIDENT",
+    required_permission: "incident:read",
+    required_gate: "GATE1",
+    tool_schema_version: "metrics-input.v1",
+    capability_registry_revision: "capability-policy.v1",
+    precondition_version: "workspace-precondition.v1",
+    precondition_hash: "a".repeat(64),
+    ...(gate1_lease_id ? { gate1_lease_id } : {}),
+    evidence_refs: [],
+    expires_at
+  };
+}
+
+function actionReceipt({
+  action_id = "action-gate-1",
+  idempotency_key = "workspace-action:run-test:1:action-gate-1:1",
+  status = "GATE1_GRANTED",
+  gate1_lease_id = "gate1-accepted"
+} = {}) {
+  return {
+    ...IDENTITY,
+    action_id,
+    idempotency_key,
+    status,
+    ...(gate1_lease_id ? { gate1_lease_id } : {}),
+    reason: "temporal transition accepted"
+  };
+}
+
 test("contract validator accepts only server identity and connected-or-classified graph records", () => {
   const parsed = parseIncidentProjection(projection());
   assert.equal(parsed.graph.nodes[0].display_name, "Checkout");
@@ -111,7 +173,10 @@ test("notification passively prefetches projection while focus itself makes no r
   assert.equal(focused.state.selected_component_id, null);
 
   const clicked = controlPlaneReducer(focused.state, { type: "node.clicked", component_id: "checkout" });
-  assert.deepEqual(clicked.effects, [{ type: "node-explanation.start", command: nodeExplanationCommand(projection(), "checkout") }]);
+  assert.deepEqual(clicked.effects, [
+    { type: "node-explanation.start", command: nodeExplanationCommand(projection(), "checkout") },
+    { type: "actions.load", case_id: IDENTITY.case_id, identity: projection() }
+  ]);
   const duplicate = controlPlaneReducer(clicked.state, { type: "node.clicked", component_id: "checkout" });
   assert.equal(duplicate.effects.length, 0);
   const concurrentOtherNode = controlPlaneReducer(clicked.state, { type: "node.clicked", component_id: "payment" });
@@ -205,4 +270,67 @@ test("global notification schema rejects malformed and duplicate stream frames",
   const repeated = controlPlaneReducer(state, { type: "notification.received", notification: notification() });
   assert.equal(repeated.effects.length, 0);
   assert.equal(repeated.state.seen_notification_ids.size, 1);
+});
+
+test("Investigate cards and Gate 1 transition stay server-owned and reject stale or forged cards", () => {
+  const currentProjection = projection();
+  const parsed = parseNextBestActions([nextBestAction()]);
+  assert.equal(parsed[0].title, "Find Cause");
+  assert.equal(parsed[0].cta, "request_gate_1");
+
+  let reduced = controlPlaneReducer(createControlPlaneState(), { type: "projection.hydrated", projection: currentProjection });
+  assert.deepEqual(reduced.effects, [{ type: "actions.load", case_id: IDENTITY.case_id, identity: currentProjection }]);
+  reduced = controlPlaneReducer(reduced.state, { type: "actions.hydrated", identity: currentProjection, actions: parsed });
+  assert.equal(reduced.state.actions.cards.length, 1);
+  assert.equal(reduced.state.actions.cards[0].title, "Find Cause");
+
+  const gateRequest = controlPlaneReducer(reduced.state, { type: "action.clicked", action_id: "action-gate-1" });
+  assert.equal(gateRequest.effects.length, 1);
+  assert.equal(gateRequest.effects[0].type, "action.invoke");
+  assert.deepEqual(gateRequest.effects[0].command, actionInvocationCommand(currentProjection, parsed[0]));
+
+  const gateReceipt = actionReceipt({ idempotency_key: gateRequest.effects[0].command.idempotency_key });
+  assert.equal(parseWorkspaceActionReceipt(gateReceipt).status, "GATE1_GRANTED");
+  let afterReceipt = controlPlaneReducer(gateRequest.state, { type: "action.receipt", receipt: gateReceipt });
+  assert.equal(afterReceipt.state.actions.gate1.event, null);
+  assert.equal(afterReceipt.state.actions.cards.length, 0);
+  assert.deepEqual(afterReceipt.effects, [{ type: "projection.load", case_id: IDENTITY.case_id, identity: null }]);
+
+  const earlyRead = nextBestAction({
+    action_id: "action-read-1", cta: "run_read_capability", gate1_lease_id: "gate1-accepted",
+    projection_revision: 2, gate_revision: 2, action_revision: 2
+  });
+  const refreshedProjection = projection({ revision: 2, sequence: 2 });
+  refreshedProjection.gate_revision = 2;
+  refreshedProjection.action_revision = 2;
+  afterReceipt = controlPlaneReducer(afterReceipt.state, { type: "projection.hydrated", projection: refreshedProjection });
+  const beforeEvent = controlPlaneReducer(afterReceipt.state, { type: "actions.hydrated", identity: refreshedProjection, actions: [earlyRead] });
+  assert.equal(beforeEvent.state.actions.status, "awaiting_gate1_event");
+  assert.equal(beforeEvent.state.actions.cards.length, 0);
+
+  const gateEvent = {
+    ...IDENTITY,
+    schema_version: "flowpulse.incident-event.v1",
+    projection_revision: 2,
+    sequence: 3,
+    event_type: "workspace.action.gate1_granted",
+    occurred_at: "2026-07-26T00:01:00Z",
+    evidence_refs: [],
+    payload: { action_id: "action-gate-1", idempotency_key: gateReceipt.idempotency_key }
+  };
+  const acceptedEvent = controlPlaneReducer(afterReceipt.state, { type: "case.event", event: gateEvent });
+  assert.equal(acceptedEvent.state.actions.gate1.event.event_type, "workspace.action.gate1_granted");
+  const allowedRead = controlPlaneReducer(acceptedEvent.state, { type: "actions.hydrated", identity: refreshedProjection, actions: [earlyRead] });
+  assert.equal(allowedRead.state.actions.cards[0].cta, "run_read_capability");
+
+  const forged = nextBestAction({ action_id: "action-forged", projection_revision: 99 });
+  const rejected = controlPlaneReducer(reduced.state, { type: "actions.hydrated", identity: currentProjection, actions: [forged] });
+  assert.equal(rejected.state.connection, "degraded");
+  assert.equal(rejected.state.actions.cards.length, 0);
+
+  const expired = nextBestAction({ expires_at: "2025-01-01T00:00:00Z" });
+  const expiredState = controlPlaneReducer(reduced.state, { type: "actions.hydrated", identity: currentProjection, actions: [expired] });
+  const expiredClick = controlPlaneReducer(expiredState.state, { type: "action.clicked", action_id: "action-gate-1" });
+  assert.equal(expiredClick.effects.length, 0);
+  assert.equal(expiredClick.state.connection, "stale");
 });

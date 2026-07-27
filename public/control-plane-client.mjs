@@ -1,10 +1,13 @@
 import {
   ControlPlaneContractError,
+  parseActionInvocationCommand,
   parseIncidentEvent,
   parseIncidentNotification,
   parseIncidentProjection,
   parseIncidentSummaries,
-  parseNodeExplanationReceipt
+  parseNextBestActions,
+  parseNodeExplanationReceipt,
+  parseWorkspaceActionReceipt
 } from "./control-plane-contract.mjs";
 
 export const CONTROL_PLANE_API_VERSION = "v1";
@@ -37,6 +40,29 @@ export class ControlPlaneClient {
     const projection = await this.json(`${ROOT}/incidents/${encodeURIComponent(caseId)}/projection`, {}, parseIncidentProjection);
     if (expectedIdentity && !matchesSummarySnapshot(expectedIdentity, projection)) throw new ControlPlaneClientError("control_plane_identity_mismatch");
     return projection;
+  }
+
+  actions(caseId) {
+    assertPathId(caseId);
+    return this.json(`${ROOT}/incidents/${encodeURIComponent(caseId)}/actions`, {}, parseNextBestActions);
+  }
+
+  async invokeAction(caseId, actionId, command) {
+    assertPathId(caseId);
+    assertPathId(actionId);
+    let parsed;
+    try {
+      parsed = parseActionInvocationCommand(command);
+    } catch (error) {
+      if (error instanceof ControlPlaneContractError) throw new ControlPlaneClientError("control_plane_schema_invalid");
+      throw error;
+    }
+    if (parsed.action_id !== actionId) throw new ControlPlaneClientError("control_plane_identity_mismatch");
+    return this.json(`${ROOT}/incidents/${encodeURIComponent(caseId)}/actions/${encodeURIComponent(actionId)}`, {
+      method: "POST",
+      headers: { accept: "application/json", "content-type": "application/json" },
+      body: JSON.stringify(parsed)
+    }, parseWorkspaceActionReceipt);
   }
 
   async startNodeExplanation(caseId, command) {

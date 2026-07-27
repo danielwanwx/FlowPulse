@@ -11,63 +11,8 @@
     <link rel="stylesheet" href="/styles.css">
   </head>
   <body>
-    <a class="skip-link" href="#control-plane-canvas">Skip to system canvas</a>
-    <div id="control-plane-app" class="control-plane-app" data-mode="architecture">
-      <header class="control-plane-topbar">
-        <div class="brand" aria-label="FlowPulse">
-          <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
-          <span>FlowPulse</span>
-        </div>
-        <nav class="control-plane-tabs" aria-label="FlowPulse views">
-          <button type="button" class="control-plane-tab is-active" data-control-mode="architecture" aria-pressed="true">Architecture</button>
-          <button type="button" class="control-plane-tab" data-control-mode="live" aria-pressed="false">Live</button>
-          <button type="button" class="control-plane-tab" data-control-mode="incident" aria-pressed="false">Incident</button>
-        </nav>
-        <output id="control-plane-connection" class="control-plane-connection" aria-live="polite">Connecting to incident workspace</output>
-      </header>
-
-      <main class="control-plane-main">
-        <section class="control-plane-graph-section" aria-labelledby="control-plane-title">
-          <header class="control-plane-graph-header">
-            <div>
-              <p id="control-plane-kicker" class="control-plane-kicker">Server projection</p>
-              <h1 id="control-plane-title">Live system</h1>
-              <p id="control-plane-summary">Waiting for the canonical incident projection.</p>
-            </div>
-            <span id="control-plane-status" class="control-plane-status">Loading</span>
-          </header>
-          <div id="control-plane-degraded" class="control-plane-degraded" role="alert" hidden>
-            <strong>Incident workspace is unavailable</strong>
-            <span id="control-plane-degraded-copy">The canonical control-plane projection could not be read.</span>
-            <button id="control-plane-retry" type="button">Retry</button>
-          </div>
-          <div id="control-plane-canvas" class="control-plane-canvas" role="region" aria-label="Server-projected incident graph" tabindex="0">
-            <p class="control-plane-empty">Waiting for a server projection.</p>
-          </div>
-        </section>
-
-        <aside id="control-plane-decision" class="control-plane-decision" aria-labelledby="control-plane-decision-title" hidden>
-          <header>
-            <p class="control-plane-kicker">Current context</p>
-            <h2 id="control-plane-decision-title">Select an impacted component</h2>
-            <p id="control-plane-decision-copy">A node explanation is created only after you select a red impacted node.</p>
-          </header>
-          <section id="control-plane-conversation" class="control-plane-conversation" aria-live="polite"></section>
-          <form class="control-plane-composer" aria-label="Conversation composer">
-            <label for="control-plane-message">Conversation Manager</label>
-            <textarea id="control-plane-message" rows="2" placeholder="Select an impacted component first." disabled></textarea>
-            <button type="submit" disabled>Send</button>
-          </form>
-        </aside>
-      </main>
-
-      <section id="control-plane-toast" class="control-plane-toast" role="status" aria-live="polite" hidden>
-        <div><strong id="control-plane-toast-title"></strong><span id="control-plane-toast-copy"></span></div>
-        <button id="control-plane-focus" type="button">Focus incident</button>
-      </section>
-    </div>
-
-    <div id="app-shell" class="app-shell is-loading" data-mode="architecture" hidden>
+    <a class="skip-link" href="#twin-canvas">Skip to system canvas</a>
+    <div id="app-shell" class="app-shell is-loading" data-mode="architecture">
       <header class="topbar">
         <div class="brand" aria-label="FlowPulse">
           <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
@@ -193,7 +138,7 @@
 
           <aside id="operations-team-rail" class="operations-team-rail is-architecture-source" aria-label="FlowPulse Team" hidden></aside>
 
-          <section id="incident-strip" class="incident-strip" aria-label="Active incident">
+          <section id="incident-strip" class="incident-strip" aria-label="Active incident" hidden>
             <div class="incident-severity"><span id="severity">SEV-1</span><small>ACTIVE INCIDENT</small></div>
             <div class="incident-copy"><strong id="incident-title">Loading incident</strong><span id="incident-summary">Reading immutable incident state.</span><span id="shared-run-connection" class="shared-run-connection" role="status" hidden></span></div>
             <div class="incident-stage"><span>Investigation</span><strong id="incident-stage">Evidence collection</strong></div>
@@ -212,7 +157,7 @@
         </section>
 
         <section id="timeline-dock" class="timeline-dock" aria-label="Incident timeline" hidden>
-          <div class="transport">
+          <div class="transport" hidden>
             <span class="transport-label">Replay controls</span>
             <button id="restart-button" class="transport-button" type="button">Restart</button>
             <button id="back-button" class="transport-button" type="button">Back</button>
@@ -230,7 +175,7 @@
           <div class="timeline-main">
             <div id="stage-track" class="stage-track" aria-label="Incident stages"></div>
             <label class="visually-hidden" for="timeline-range">Replay timeline position</label>
-            <input id="timeline-range" class="timeline-range" type="range" min="0" max="0" value="0" step="1">
+            <input id="timeline-range" class="timeline-range" type="range" min="0" max="0" value="0" step="1" hidden>
           </div>
 
           <div id="compare-control" class="compare-control" hidden>

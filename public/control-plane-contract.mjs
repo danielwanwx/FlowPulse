@@ -16,6 +16,15 @@ const EXPLANATION_EVENT_STATES = new Set(["STARTED", "COMPLETED", "DEGRADED"]);
 const TRUTH_LABELS = new Set(["DEGRADED", "TEST_DETERMINISTIC", "DEMO", "LIVE"]);
 const NOTIFICATION_TYPES = new Set(["incident.accepted", "incident.updated"]);
 const IDENTITY_KEYS = ["tenant_id", "incident_id", "run_id", "topology_revision", "case_id", "case_revision", "workflow_id", "workflow_run_id", "created_at"];
+const ACTION_TAXONOMY = new Map([
+  ["FIND_CAUSE", { title: "Find Cause", cta: "request_gate_1" }],
+  ["MAP_IMPACT", { title: "Map Impact", cta: "run_read_capability" }],
+  ["REVIEW_EVIDENCE", { title: "Review Evidence", cta: "review_evidence" }],
+  ["APPROVE_PLAN", { title: "Approve Plan", cta: "request_gate_2" }],
+  ["APPLY_FIX", { title: "Apply Fix", cta: "submit_approved_dry_run" }]
+]);
+const ACTION_CTAS = new Set([...ACTION_TAXONOMY.values()].map((item) => item.cta));
+const ACTION_RECEIPT_STATUSES = new Set(["GATE1_GRANTED", "FRESH_READ_COMPLETED"]);
 
 export class ControlPlaneContractError extends Error {
   constructor(code) {
@@ -128,6 +137,56 @@ export function nodeExplanationCommand(projection, componentId) {
   };
 }
 
+export function parseNextBestActions(value) {
+  if (!Array.isArray(value) || value.length > 3) fail("next_best_actions_invalid");
+  const actions = value.map(parseNextBestAction);
+  if (new Set(actions.map((action) => action.action_id)).size !== actions.length) fail("next_best_action_duplicate");
+  if (new Set(actions.map((action) => action.display_order)).size !== actions.length) fail("next_best_action_order_duplicate");
+  if (actions.filter((action) => action.recommended).length > 1) fail("next_best_action_recommended_invalid");
+  return actions.sort((left, right) => left.display_order - right.display_order);
+}
+
+export function parseWorkspaceActionReceipt(value) {
+  exactObject(value, [
+    ...IDENTITY_KEYS, "action_id", "idempotency_key", "status", "external_write_performed", "gate1_lease_id", "reason"
+  ], "workspace_action_receipt_unknown_field", [
+    ...IDENTITY_KEYS, "action_id", "idempotency_key", "status", "reason"
+  ]);
+  parseIdentity(value);
+  assertText(value.action_id, "workspace_action_id_invalid");
+  assertText(value.idempotency_key, "workspace_action_idempotency_invalid");
+  assertEnum(value.status, ACTION_RECEIPT_STATUSES, "workspace_action_status_invalid");
+  assertText(value.reason, "workspace_action_reason_invalid");
+  if (value.external_write_performed !== undefined && value.external_write_performed !== false) fail("workspace_action_write_not_allowed");
+  if (value.gate1_lease_id !== undefined && value.gate1_lease_id !== null) assertText(value.gate1_lease_id, "workspace_action_gate1_lease_invalid");
+  if (!value.gate1_lease_id) fail("workspace_action_gate1_lease_required");
+  return clone(value);
+}
+
+export function parseActionInvocationCommand(value) {
+  exactObject(value, ["incident_id", "run_id", "topology_revision", "projection_revision", "action_id", "idempotency_key"], "workspace_action_command_unknown_field");
+  for (const field of ["incident_id", "run_id", "topology_revision", "action_id", "idempotency_key"]) assertText(value[field], `${field}_invalid`);
+  assertInteger(value.projection_revision, "projection_revision_invalid");
+  return clone(value);
+}
+
+export function actionInvocationCommand(projection, action) {
+  const parsedProjection = parseIncidentProjection(projection);
+  const parsedAction = parseNextBestActions([action])[0];
+  if (!matchesActionProjection(parsedAction, parsedProjection) || Date.parse(parsedAction.expires_at) <= Date.now()) fail("workspace_action_card_stale");
+  return parseActionInvocationCommand({
+    incident_id: parsedAction.incident_id,
+    run_id: parsedAction.run_id,
+    topology_revision: parsedAction.topology_revision,
+    projection_revision: parsedAction.projection_revision,
+    action_id: parsedAction.action_id,
+    // The opaque server action identifier is stable for this canonical card
+    // and deliberately doubles as the idempotency key. The browser does not
+    // invent action authority or a second identity namespace.
+    idempotency_key: parsedAction.action_id
+  });
+}
+
 export function createControlPlaneState() {
   return {
     mode: "live",
@@ -139,6 +198,7 @@ export function createControlPlaneState() {
     focus_status: "idle",
     selected_component_id: null,
     explanation: { status: "idle", receipt: null, key: null },
+    actions: emptyActions(),
     seen_notification_ids: new Set(),
     last_notification_id: null,
     last_case_sequence: 0
@@ -182,6 +242,8 @@ export function controlPlaneReducer(current, action) {
       if (!state.projection || currentMatches || (state.mode === "incident" && toastMatches)) {
         state.projection = projection;
         state.last_case_sequence = Math.max(state.last_case_sequence, projection.sequence);
+        state.actions = emptyActions(state.actions);
+        effects.push({ type: "actions.load", case_id: projection.case_id, identity: projection });
       }
       state.connection = "connected";
       if (state.mode === "incident" && toastMatches) {
@@ -193,6 +255,10 @@ export function controlPlaneReducer(current, action) {
     if (action?.type === "toast.focus") {
       state.mode = "incident";
       state.selected_component_id = null;
+      // Focus is presentation-only. It may select a cached different case,
+      // so discard cards from any prior case rather than letting cross-run
+      // recommendations appear under the new canonical graph.
+      state.actions = emptyActions();
       const cached = state.toast ? state.projections.get(state.toast.incident.case_id) : null;
       if (state.toast && cached && matchesSummarySnapshot(state.toast.incident, cached)) {
         state.projection = cached;
@@ -215,8 +281,73 @@ export function controlPlaneReducer(current, action) {
       state.last_case_sequence = projection.sequence;
       state.selected_component_id = null;
       state.explanation = { status: "idle", receipt: null, key: null };
+      state.actions = emptyActions();
       state.focused_path = [];
       state.focus_status = "idle";
+      return { state, effects };
+    }
+    if (action?.type === "actions.hydrated") {
+      if (!state.projection || !action.identity || !matchesActionProjection(action.identity, state.projection)) {
+        state.connection = "stale";
+        return { state, effects };
+      }
+      const cards = parseNextBestActions(action.actions);
+      if (cards.some((card) => !matchesActionProjection(card, state.projection))) {
+        state.connection = "degraded";
+        state.actions = emptyActions(state.actions);
+        return { state, effects };
+      }
+      const phase = investigateCardPhase(state.actions);
+      if (!cardsMatchInvestigatePhase(cards, phase, state.actions)) {
+        state.actions = { ...state.actions, status: phase === "awaiting_gate1_event" ? phase : "degraded", cards: [], in_flight: null };
+        if (phase !== "awaiting_gate1_event") state.connection = "degraded";
+        return { state, effects };
+      }
+      state.actions = { ...state.actions, status: "ready", cards, in_flight: null };
+      return { state, effects };
+    }
+    if (action?.type === "action.clicked") {
+      if (!state.projection || state.connection !== "connected" || state.actions.in_flight) return { state, effects };
+      const card = state.actions.cards.find((candidate) => candidate.action_id === action.action_id);
+      if (!card || Date.parse(card.expires_at) <= Date.now()) {
+        state.connection = "stale";
+        state.actions = { ...state.actions, cards: [], status: "stale", in_flight: null };
+        return { state, effects };
+      }
+      const phase = investigateCardPhase(state.actions);
+      if (!cardsMatchInvestigatePhase([card], phase, state.actions)) {
+        state.connection = "degraded";
+        state.actions = { ...state.actions, cards: [], status: "degraded", in_flight: null };
+        return { state, effects };
+      }
+      const command = actionInvocationCommand(state.projection, card);
+      state.actions = { ...state.actions, status: "invoking", in_flight: { action_id: card.action_id, command, cta: card.cta } };
+      effects.push({ type: "action.invoke", case_id: state.projection.case_id, action_id: card.action_id, command });
+      return { state, effects };
+    }
+    if (action?.type === "action.receipt") {
+      const receipt = parseWorkspaceActionReceipt(action.receipt);
+      const inFlight = state.actions.in_flight;
+      if (!state.projection || !inFlight || !sameIdentity(state.projection, receipt)
+        || receipt.action_id !== inFlight.action_id || receipt.idempotency_key !== inFlight.command.idempotency_key
+        || (receipt.status === "GATE1_GRANTED" && inFlight.cta !== "request_gate_1")
+        || (receipt.status === "FRESH_READ_COMPLETED" && inFlight.cta !== "run_read_capability")) {
+        state.connection = "stale";
+        state.actions = emptyActions(state.actions);
+        return { state, effects };
+      }
+      const gate1 = receipt.status === "GATE1_GRANTED"
+        ? { receipt, event: matchingActionEvent(state.actions.events, receipt, "workspace.action.gate1_granted") }
+        : state.actions.gate1;
+      state.actions = {
+        ...state.actions,
+        status: receipt.status === "GATE1_GRANTED" ? "awaiting_gate1_event" : "completed",
+        cards: [],
+        in_flight: null,
+        receipt,
+        gate1
+      };
+      effects.push({ type: "projection.load", case_id: state.projection.case_id, identity: null });
       return { state, effects };
     }
     if (action?.type === "node.clicked") {
@@ -229,6 +360,10 @@ export function controlPlaneReducer(current, action) {
       state.selected_component_id = action.component_id;
       state.explanation = { status: "starting", receipt: null, key };
       effects.push({ type: "node-explanation.start", command });
+      // Recommendation cards are a server read, not a fresh capability. This
+      // happens only after the operator selects an impacted node; toast focus
+      // itself remains zero-network and zero-command.
+      effects.push({ type: "actions.load", case_id: state.projection.case_id, identity: state.projection });
       return { state, effects };
     }
     if (action?.type === "explanation.receipt") {
@@ -251,6 +386,12 @@ export function controlPlaneReducer(current, action) {
       }
       if (event.sequence <= state.last_case_sequence || event.projection_revision < state.projection.projection_revision) return { state, effects };
       state.last_case_sequence = event.sequence;
+      if (event.event_type.startsWith("workspace.action.")) {
+        state.actions.events = [...state.actions.events, event].slice(-16);
+        if (state.actions.gate1.receipt && event.event_type === "workspace.action.gate1_granted") {
+          state.actions.gate1 = { ...state.actions.gate1, event: matchingActionEvent(state.actions.events, state.actions.gate1.receipt, "workspace.action.gate1_granted") };
+        }
+      }
       if (event.projection_revision > state.projection.projection_revision) {
         effects.push({ type: "projection.load", case_id: event.case_id, identity: null });
       }
@@ -349,6 +490,37 @@ function parseNodeExplanation(value) {
   return { ...clone(value), evidence_refs };
 }
 
+function parseNextBestAction(value) {
+  exactObject(value, [
+    ...IDENTITY_KEYS, "schema_version", "action_id", "card_version", "taxonomy", "title", "cta", "summary",
+    "display_order", "recommended", "projection_revision", "evidence_revision", "gate_revision", "action_revision",
+    "component_id", "capability", "capability_version", "data_class", "required_permission", "required_gate",
+    "tool_schema_version", "capability_registry_revision", "precondition_version", "precondition_hash", "gate1_lease_id",
+    "evidence_refs", "expires_at"
+  ], "next_best_action_unknown_field", [
+    ...IDENTITY_KEYS, "action_id", "card_version", "taxonomy", "title", "cta", "summary", "display_order",
+    "recommended", "projection_revision", "evidence_revision", "gate_revision", "action_revision", "component_id",
+    "capability", "data_class", "required_permission", "required_gate", "tool_schema_version",
+    "capability_registry_revision", "precondition_version", "precondition_hash", "expires_at"
+  ]);
+  parseIdentity(value);
+  if (value.schema_version !== undefined && value.schema_version !== "flowpulse.next-best-action.v1") fail("next_best_action_schema_invalid");
+  for (const field of [
+    "action_id", "title", "summary", "component_id", "capability", "data_class", "required_permission", "required_gate",
+    "tool_schema_version", "capability_registry_revision", "precondition_version"
+  ]) assertText(value[field], `${field}_invalid`);
+  if (value.capability_version !== undefined && value.capability_version !== null) assertText(value.capability_version, "capability_version_invalid");
+  for (const field of ["card_version", "display_order", "projection_revision", "evidence_revision", "gate_revision", "action_revision"]) assertInteger(value[field], `${field}_invalid`);
+  if (typeof value.recommended !== "boolean") fail("next_best_action_recommended_invalid");
+  const taxonomy = ACTION_TAXONOMY.get(value.taxonomy);
+  if (!taxonomy || !ACTION_CTAS.has(value.cta) || taxonomy.title !== value.title || taxonomy.cta !== value.cta) fail("next_best_action_taxonomy_invalid");
+  if (typeof value.precondition_hash !== "string" || !/^[a-f0-9]{64}$/.test(value.precondition_hash)) fail("next_best_action_precondition_invalid");
+  if (value.gate1_lease_id !== undefined && value.gate1_lease_id !== null) assertText(value.gate1_lease_id, "next_best_action_gate1_lease_invalid");
+  const evidence_refs = stringList(value.evidence_refs === undefined ? [] : value.evidence_refs, "next_best_action_evidence_refs_invalid");
+  assertTimestamp(value.expires_at, "next_best_action_expiry_invalid");
+  return { ...clone(value), evidence_refs };
+}
+
 function parseIdentity(value) {
   for (const field of ["tenant_id", "incident_id", "run_id", "topology_revision", "case_id", "workflow_id", "workflow_run_id"]) assertText(value[field], `${field}_invalid`);
   assertInteger(value.case_revision, "case_revision_invalid");
@@ -357,6 +529,48 @@ function parseIdentity(value) {
 
 function sameIdentity(left, right) {
   return Boolean(left && right) && ["tenant_id", "incident_id", "run_id", "topology_revision", "case_id", "workflow_id", "workflow_run_id"].every((field) => left[field] === right[field]);
+}
+
+function matchesActionProjection(action, projection) {
+  return Boolean(action && projection)
+    && ["tenant_id", "incident_id", "run_id", "topology_revision", "case_id", "case_revision", "workflow_id", "workflow_run_id"].every((field) => action[field] === projection[field])
+    && ["projection_revision", "evidence_revision", "gate_revision", "action_revision"].every((field) => action[field] === projection[field]);
+}
+
+function emptyActions(previous = null) {
+  return {
+    status: "idle",
+    cards: [],
+    in_flight: null,
+    receipt: previous?.receipt || null,
+    gate1: previous?.gate1 || { receipt: null, event: null },
+    events: [...(previous?.events || [])]
+  };
+}
+
+function investigateCardPhase(actions) {
+  const receipt = actions?.gate1?.receipt;
+  if (!receipt) return "before_gate1";
+  if (!actions?.gate1?.event) return "awaiting_gate1_event";
+  return "after_gate1";
+}
+
+function cardsMatchInvestigatePhase(cards, phase, actions) {
+  if (!Array.isArray(cards)) return false;
+  if (cards.length === 0) return true;
+  if (phase === "before_gate1") return cards.every((card) => card.cta === "request_gate_1" && !card.gate1_lease_id);
+  if (phase === "after_gate1") {
+    const leaseId = actions?.gate1?.receipt?.gate1_lease_id;
+    return Boolean(leaseId) && cards.every((card) => card.cta === "run_read_capability" && card.gate1_lease_id === leaseId);
+  }
+  return false;
+}
+
+function matchingActionEvent(events, receipt, expectedType) {
+  if (!receipt) return null;
+  return [...(events || [])].reverse().find((event) => event.event_type === expectedType
+    && event.payload?.action_id === receipt.action_id
+    && event.payload?.idempotency_key === receipt.idempotency_key) || null;
 }
 
 function matchesSummarySnapshot(summary, projection) {
@@ -370,6 +584,13 @@ function copyState(state) {
     ...state,
     focused_path: [...(state.focused_path || [])],
     explanation: { ...state.explanation },
+    actions: {
+      ...(state.actions || emptyActions()),
+      cards: [...(state.actions?.cards || [])],
+      in_flight: state.actions?.in_flight ? { ...state.actions.in_flight, command: { ...state.actions.in_flight.command } } : null,
+      gate1: { ...(state.actions?.gate1 || { receipt: null, event: null }) },
+      events: [...(state.actions?.events || [])]
+    },
     projections: new Map(state.projections || []),
     seen_notification_ids: new Set(state.seen_notification_ids || [])
   };
