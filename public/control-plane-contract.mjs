@@ -337,7 +337,15 @@ export function controlPlaneReducer(current, action) {
       return { state, effects };
     }
     if (action?.type === "actions.hydrated") {
-      if (!state.projection || !action.identity || !matchesActionProjection(action.identity, state.projection)) {
+      if (!state.projection || !action.identity) {
+        state.connection = "stale";
+        return { state, effects };
+      }
+      // Active-case hydration fans out actions reads. A response for an older
+      // case can arrive after the operator selects another canonical case; it
+      // is superseded presentation work, not evidence that this case is stale.
+      if (action.identity.case_id !== state.projection.case_id || action.identity.run_id !== state.projection.run_id) return { state, effects };
+      if (!matchesActionProjection(action.identity, state.projection)) {
         state.connection = "stale";
         return { state, effects };
       }

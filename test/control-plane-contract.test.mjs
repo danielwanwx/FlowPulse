@@ -421,6 +421,35 @@ test("real backend-shaped action cards require the canonical lifecycle stage wit
   assert.throws(() => parseNextBestActions([missingStage]), /next_best_action_unknown_field/);
 });
 
+test("late actions for a different selected case are superseded without disabling the current impacted-node explanation", () => {
+  const priorProjection = {
+    ...projection(),
+    case_id: "case-prior", incident_id: "incident-prior", run_id: "run-prior", topology_revision: "topology-prior-v1",
+    workflow_id: "flowpulse.incident-workspace:tenant-test:run-prior", workflow_run_id: "temporal-prior-run"
+  };
+  const priorAction = {
+    ...nextBestAction(),
+    case_id: priorProjection.case_id, incident_id: priorProjection.incident_id, run_id: priorProjection.run_id,
+    topology_revision: priorProjection.topology_revision, workflow_id: priorProjection.workflow_id,
+    workflow_run_id: priorProjection.workflow_run_id
+  };
+  const targetProjection = projection({ revision: 2, sequence: 2 });
+  let state = controlPlaneReducer(createControlPlaneState(), { type: "projection.hydrated", projection: priorProjection }).state;
+  state = controlPlaneReducer(state, { type: "projection.hydrated", projection: targetProjection }).state;
+  state = controlPlaneReducer(state, { type: "case.select", case_id: targetProjection.case_id }).state;
+
+  const late = controlPlaneReducer(state, { type: "actions.hydrated", identity: priorProjection, actions: [priorAction] });
+  assert.equal(late.state.projection.case_id, targetProjection.case_id);
+  assert.equal(late.state.connection, "connected");
+  assert.equal(late.state.actions.cards.length, 0);
+  const clicked = controlPlaneReducer(late.state, { type: "node.clicked", component_id: "checkout" });
+  assert.equal(clicked.effects[0].type, "node-explanation.start");
+
+  const currentButStale = { ...targetProjection, projection_revision: targetProjection.projection_revision + 1 };
+  const rejected = controlPlaneReducer(state, { type: "actions.hydrated", identity: currentButStale, actions: [nextBestAction({ projection_revision: currentButStale.projection_revision })] });
+  assert.equal(rejected.state.connection, "stale");
+});
+
 test("accepted frozen investigation projection alone advances the canonical presentation to Decide", () => {
   // The frozen backend example intentionally has a classified selected
   // component and an empty impacted path. Result identity binds to the graph

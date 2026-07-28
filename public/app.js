@@ -57,6 +57,7 @@ import {
   recoveryWorkflowProjection,
   topologyIntegrity
 } from "./twin-state.mjs";
+import { connectedLiveTopology } from "./live-topology-renderer.mjs";
 
 try {
   const cookieTheme = document.cookie.split("; ").find((value) => value.startsWith("flowpulse-theme="))?.split("=")[1];
@@ -731,6 +732,7 @@ function setIncidentStage(nextStage) {
 
 function render() {
   if (!state) return;
+  if (els["app-shell"].dataset.controlPlaneMode === "incident") return;
   const focusedIncidentStage = document.activeElement?.closest?.("[data-incident-stage]")?.dataset.incidentStage || null;
   const canvasKey = canvasProjectionKey();
   const shouldRenderCanvas = canvasKey !== renderedCanvasKey;
@@ -1317,7 +1319,7 @@ function renderSourceCanvas(layout, runTopology = null, ariaLabel = null) {
   const source = runTopology
     ? { status: runTopology.source_truth.source_health, label: runTopology.source_truth.label, topology: runTopology.graph, evidence: [], counts: {}, freshness_ms: null }
     : architecture ? architectureSource(architecture) : liveSource(live);
-  const topology = architecture
+  const sourceTopology = architecture
     ? architecture.graph
     : runTopology?.graph
       ? topologyIntegrity({ nodes: runTopology.graph.nodes, edges: runTopology.graph.edges })
@@ -1327,6 +1329,7 @@ function renderSourceCanvas(layout, runTopology = null, ariaLabel = null) {
         edges: [...live.runtime_data.graph.edges, ...(live.runtime_data.supporting_relations || [])]
       })
       : null;
+  const topology = layout === "live" && sourceTopology ? connectedLiveTopology(sourceTopology) : sourceTopology;
   els["compare-handle"].hidden = true;
   els["compare-canvas-range"].hidden = true;
   setAnnotations([]);
@@ -3372,6 +3375,7 @@ function closeDrawer() {
 function setMode(nextMode) {
   stopPlayback();
   if (!state) return;
+  if (nextMode === "incident" && els["app-shell"].dataset.controlPlaneAdapter === "true") return;
   const shared = sharedRunModel();
   const actionByMode = { replay: "view_diagnosis", agents: "open_recovery_console", compare: "compare_recovery" };
   const requiredAction = actionByMode[nextMode];

@@ -1,6 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { applyTopologyNodePositions, topologyLayout } from "../public/control-plane-topology-layout.mjs";
+import { readFile } from "node:fs/promises";
+import { applyTopologyNodePositions, topologyLayout, topologyNodeMetadata } from "../public/control-plane-topology-layout.mjs";
+
+const stylesCss = await readFile(new URL("../public/styles.css", import.meta.url), "utf8");
+const controlPlaneApp = await readFile(new URL("../public/control-plane-app.mjs", import.meta.url), "utf8");
 
 const canonicalNodes = Array.from({ length: 22 }, (_, index) => ({
   component_id: `server-projected-component-${index + 1}`
@@ -56,4 +60,23 @@ test("dense canonical node positions are applied through the DOM style API after
     assert.equal(node.style.values.get("left"), `${position.x}%`);
     assert.equal(node.style.values.get("top"), `${position.y}%`);
   }
+});
+
+test("dense cards bound contract-valid long metadata to the declared row height without losing its accessible text", () => {
+  const runtimeStatus = "s".repeat(512);
+  const metadata = topologyNodeMetadata({
+    membership: "CLASSIFIED",
+    classification_reason: "Relationship unavailable",
+    runtime_status: runtimeStatus
+  });
+  const layout = topologyLayout(canonicalNodes);
+  const firstColumn = [...layout.positions.values()].filter((_, index) => index % 4 === 0);
+
+  assert.equal(metadata, `${runtimeStatus} · Relationship unavailable`);
+  assert.ok(metadata.length > layout.card.width);
+  assert.equal(layout.card.height, 72);
+  assert.ok((firstColumn[1].y - firstColumn[0].y) * layout.canvas.height / 100 > layout.card.height);
+  assert.match(stylesCss, /\.control-plane-twin-node \{ width: 176px; height: 72px; min-height: 72px; overflow: hidden;/);
+  assert.match(stylesCss, /\.control-plane-node-metadata \{[^}]*overflow: hidden;[^}]*text-overflow: ellipsis;[^}]*white-space: nowrap;/);
+  assert.match(controlPlaneApp, /class="control-plane-node-metadata" title="\$\{escapeHtml\(metadata\)\}" aria-label="\$\{escapeHtml\(metadata\)\}"/);
 });

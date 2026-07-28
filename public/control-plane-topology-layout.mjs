@@ -35,6 +35,11 @@ export function applyTopologyNodePositions(container, positions) {
   }
 }
 
+export function topologyNodeMetadata(node) {
+  const kind = node.membership === "CLASSIFIED" ? node.classification_reason : "Connected";
+  return `${node.runtime_status} · ${kind}`;
+}
+
 function spaciousLayout(nodes, columns, rows) {
   return {
     density: "spacious",

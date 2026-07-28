@@ -1,6 +1,6 @@
 import { ControlPlaneClient, ControlPlaneClientError } from "./control-plane-client.mjs";
 import { controlPlaneReducer, createControlPlaneState, investigationPresentation } from "./control-plane-contract.mjs";
-import { applyTopologyNodePositions, topologyLayout } from "./control-plane-topology-layout.mjs";
+import { applyTopologyNodePositions, topologyLayout, topologyNodeMetadata } from "./control-plane-topology-layout.mjs";
 
 // This module intentionally mounts only into the mature app-shell. It owns
 // presentation state, while all incident, gate, card, receipt, and evidence
@@ -18,7 +18,7 @@ const pendingProjections = new Set();
 const pendingActions = new Set();
 const pendingReceipts = new Set();
 
-root.dataset.controlPlane = "true";
+root.dataset.controlPlaneAdapter = "true";
 for (const button of document.querySelectorAll("button.mode-button[data-mode]")) {
   button.addEventListener("click", () => {
     state = { ...state, mode: button.dataset.mode };
@@ -60,7 +60,7 @@ async function bootstrap() {
   } catch (error) {
     reportError(error);
   } finally {
-    root.classList.remove("is-loading");
+    if (state.mode === "incident") root.classList.remove("is-loading");
     render();
   }
 }
@@ -183,7 +183,13 @@ function reportError(error) {
 }
 
 function render() {
+  if (state.mode !== "incident") {
+    delete root.dataset.controlPlaneMode;
+    renderToast();
+    return;
+  }
   const projection = state.projection;
+  root.dataset.controlPlaneMode = "incident";
   root.dataset.mode = state.mode;
   root.classList.toggle("is-loading", !projection && state.connection === "connecting");
   els.environment.textContent = "Control plane / server projection";
@@ -245,7 +251,7 @@ function renderGraph() {
   const layout = topologyLayout(projection.graph.nodes);
   applyTopologyDensity(layout);
   const { positions } = layout;
-  const impacted = new Set(state.mode === "architecture" ? [] : projection.impacted_path);
+  const impacted = new Set(projection.impacted_path);
   const nodeById = new Map(projection.graph.nodes.map((node) => [node.component_id, node]));
   const edges = projection.graph.edges.map((edge, index) => edgeMarkup(edge, positions, impacted, nodeById, index)).join("");
   const nodes = projection.graph.nodes.map((node) => nodeMarkup(node, impacted.has(node.component_id))).join("");
@@ -278,10 +284,10 @@ function clearTopologyDensity() {
 
 function nodeMarkup(node, impacted) {
   const clickable = state.mode === "incident" && impacted && state.connection === "connected" && state.explanation.status !== "starting";
-  const kind = node.membership === "CLASSIFIED" ? node.classification_reason : "Connected";
+  const metadata = topologyNodeMetadata(node);
   return `<button type="button" class="twin-node control-plane-twin-node${impacted ? " is-impact" : ""}${state.selected_component_id === node.component_id ? " is-selected" : ""}" data-control-component="${escapeHtml(node.component_id)}" data-clickable="${clickable}"${clickable ? "" : " disabled"}>
     <span class="node-icon" aria-hidden="true"><i class="ph ${impacted ? "ph-warning-circle" : "ph-cube"}"></i></span>
-    <span class="node-copy"><strong>${escapeHtml(node.display_name)}</strong><small>${escapeHtml(node.runtime_status)} · ${escapeHtml(kind)}</small></span>
+    <span class="node-copy"><strong>${escapeHtml(node.display_name)}</strong><small class="control-plane-node-metadata" title="${escapeHtml(metadata)}" aria-label="${escapeHtml(metadata)}">${escapeHtml(metadata)}</small></span>
   </button>`;
 }
 
