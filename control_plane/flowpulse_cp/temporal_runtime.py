@@ -71,10 +71,15 @@ from .capability_adapters import (
 from .postgres import PostgresCapabilityScopeAuthority
 from .conversation_manager import ConversationManager
 from .provider_gateway import (
+    DeterministicConversationProvider,
     ProviderMode,
     ProviderSettings,
     build_conversation_provider,
     build_investigation_providers,
+)
+from .workspace_investigation import (
+    DeterministicInvestigationCritic,
+    DeterministicInvestigationSynthesizer,
 )
 from .workspace_models import (
     ConversationRole,
@@ -545,6 +550,38 @@ def _s3_store(endpoint: str, bucket: str, access_key: str, secret_key: str) -> S
     return S3ObjectStore(client, bucket)
 
 
+def resolve_worker_provider_dependencies(
+    settings: ProviderSettings,
+    deterministic_test_providers_enabled: bool = False,
+):
+    """Resolve the worker's three provider roles from one explicit truth mode."""
+    deterministic_conversation = (
+        DeterministicConversationProvider()
+        if deterministic_test_providers_enabled
+        else None
+    )
+    deterministic_synthesizer = (
+        DeterministicInvestigationSynthesizer()
+        if deterministic_test_providers_enabled
+        else None
+    )
+    deterministic_critic = (
+        DeterministicInvestigationCritic()
+        if deterministic_test_providers_enabled
+        else None
+    )
+    conversation = build_conversation_provider(
+        settings,
+        deterministic_provider=deterministic_conversation,
+    )
+    synthesis, critic = build_investigation_providers(
+        settings,
+        deterministic_synthesizer=deterministic_synthesizer,
+        deterministic_critic=deterministic_critic,
+    )
+    return conversation, synthesis, critic
+
+
 async def run_worker(
     address: str, task_queue: str, postgres_dsn: str, object_endpoint: str, object_bucket: str,
     object_access_key: str, object_secret_key: str, source_endpoint: str, source_bucket: str, source_prefix: str,
@@ -552,6 +589,7 @@ async def run_worker(
     authorization_service_token: str,
     local_deterministic_evidence: bool = False,
     provider_settings: Optional[ProviderSettings] = None,
+    deterministic_test_providers_enabled: bool = False,
 ) -> None:
     client = await Client.connect(address)
     repository = PostgresCaseRepository(postgres_dsn)
@@ -597,14 +635,17 @@ async def run_worker(
     if resolved_provider_settings.mode in {ProviderMode.TEST, ProviderMode.DEMO}:
         from .workspace_topology import CapturedAstronomyTopologyProvider
         topology_provider = CapturedAstronomyTopologyProvider(resolved_provider_settings.mode)
+    conversation_provider, investigation_synthesizer, investigation_critic = (
+        resolve_worker_provider_dependencies(
+            resolved_provider_settings,
+            deterministic_test_providers_enabled,
+        )
+    )
     conversation_manager = ConversationManager(
-        build_conversation_provider(resolved_provider_settings),
+        conversation_provider,
         capability_registry,
         specialist_roles=[ConversationRole.EVIDENCE_SPECIALIST, ConversationRole.TOPOLOGY_SPECIALIST],
         max_output_tokens=resolved_provider_settings.max_output_tokens,
-    )
-    investigation_synthesizer, investigation_critic = build_investigation_providers(
-        resolved_provider_settings,
     )
     async with Worker(
         client, task_queue=task_queue,

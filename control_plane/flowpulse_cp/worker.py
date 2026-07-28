@@ -18,4 +18,5 @@ if __name__ == "__main__":
         settings.authorization_service_url, settings.authorization_service_token,
         local_deterministic_evidence=os.environ.get("FLOWPULSE_LOCAL_DETERMINISTIC_EVIDENCE") == "1",
         provider_settings=settings.provider_settings,
+        deterministic_test_providers_enabled=settings.deterministic_test_providers_enabled,
     ))

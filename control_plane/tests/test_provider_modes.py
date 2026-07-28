@@ -1,10 +1,12 @@
 """Provider truth-mode seams: no implicit fake or external default exists."""
 
 import asyncio
+import os
 import sys
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 from pydantic import ValidationError
 
@@ -19,6 +21,8 @@ from flowpulse_cp.provider_gateway import (
     build_conversation_provider,
     build_investigation_providers,
 )
+from flowpulse_cp.config import WorkerSettings
+from flowpulse_cp.temporal_runtime import resolve_worker_provider_dependencies
 from flowpulse_cp.workspace_investigation import (
     DeterministicInvestigationCritic,
     DeterministicInvestigationSynthesizer,
@@ -38,6 +42,31 @@ from flowpulse_cp.workspace_models import (
 
 
 NOW = datetime(2026, 7, 26, tzinfo=timezone.utc)
+
+
+def worker_environment(mode=None, deterministic_switch=None):
+    environment = {
+        "FLOWPULSE_TEMPORAL_ADDRESS": "temporal:7233",
+        "FLOWPULSE_POSTGRES_DSN": "postgresql://local",
+        "FLOWPULSE_OBJECT_STORE_ENDPOINT": "http://minio:9000",
+        "FLOWPULSE_OBJECT_STORE_BUCKET": "evidence",
+        "FLOWPULSE_OBJECT_STORE_ACCESS_KEY": "writer",
+        "FLOWPULSE_OBJECT_STORE_SECRET_KEY": "writer-local-only",
+        "FLOWPULSE_SOURCE_READ_ENDPOINT": "http://minio:9000",
+        "FLOWPULSE_SOURCE_READ_BUCKET": "sources",
+        "FLOWPULSE_SOURCE_READ_PREFIX": "controlled",
+        "FLOWPULSE_SOURCE_READ_TENANT_ID": "tenant-a",
+        "FLOWPULSE_SOURCE_READ_ACCESS_KEY": "reader",
+        "FLOWPULSE_SOURCE_READ_SECRET_KEY": "reader-local-only",
+        "FLOWPULSE_AUTHORIZATION_SERVICE_URL": "http://authz:8091",
+        "FLOWPULSE_AUTHORIZATION_SERVICE_TOKEN": "worker-authz-local-only",
+        "FLOWPULSE_TEMPORAL_TASK_QUEUE": "test-queue",
+    }
+    if mode is not None:
+        environment["FLOWPULSE_PROVIDER_MODE"] = mode
+    if deterministic_switch is not None:
+        environment["FLOWPULSE_ENABLE_DETERMINISTIC_TEST_PROVIDERS"] = deterministic_switch
+    return environment
 
 
 def request():
@@ -70,6 +99,100 @@ def request():
 
 
 class ProviderModeTests(unittest.TestCase):
+    def test_worker_explicit_test_opt_in_resolves_all_deterministic_roles(self):
+        with patch.dict(os.environ, worker_environment("test", "1"), clear=True):
+            settings = WorkerSettings.from_environment()
+        self.assertTrue(settings.deterministic_test_providers_enabled)
+
+        conversation, synthesis, critic = resolve_worker_provider_dependencies(
+            settings.provider_settings,
+            settings.deterministic_test_providers_enabled,
+        )
+        result = asyncio.run(conversation.complete(request()))
+        self.assertEqual(ProviderTruthLabel.TEST_DETERMINISTIC, result.truth_label)
+        self.assertEqual("deterministic-test-provider", result.provider_id)
+        self.assertIsInstance(synthesis, DeterministicInvestigationSynthesizer)
+        self.assertEqual(ProviderTruthLabel.TEST_DETERMINISTIC, synthesis.truth_label)
+        self.assertIsInstance(critic, DeterministicInvestigationCritic)
+        self.assertNotEqual(synthesis.provider_id, critic.identity)
+
+    def test_worker_test_mode_without_opt_in_remains_unavailable(self):
+        with patch.dict(os.environ, worker_environment("test"), clear=True):
+            settings = WorkerSettings.from_environment()
+        self.assertFalse(settings.deterministic_test_providers_enabled)
+
+        conversation, synthesis, critic = resolve_worker_provider_dependencies(
+            settings.provider_settings,
+            settings.deterministic_test_providers_enabled,
+        )
+        self.assertEqual(
+            ProviderTruthLabel.DEGRADED,
+            asyncio.run(conversation.complete(request())).truth_label,
+        )
+        self.assertIsInstance(synthesis, UnavailableInvestigationSynthesizer)
+        self.assertIsInstance(critic, UnavailableInvestigationCritic)
+
+    def test_worker_default_mode_remains_standard_and_unavailable(self):
+        with patch.dict(os.environ, worker_environment(), clear=True):
+            settings = WorkerSettings.from_environment()
+        self.assertEqual(ProviderMode.STANDARD, settings.provider_settings.mode)
+        self.assertFalse(settings.deterministic_test_providers_enabled)
+
+        conversation, synthesis, critic = resolve_worker_provider_dependencies(
+            settings.provider_settings,
+            settings.deterministic_test_providers_enabled,
+        )
+        self.assertEqual(
+            "provider_unavailable",
+            asyncio.run(conversation.complete(request())).degraded_code,
+        )
+        self.assertIsInstance(synthesis, UnavailableInvestigationSynthesizer)
+        self.assertIsInstance(critic, UnavailableInvestigationCritic)
+
+    def test_worker_deterministic_switch_is_rejected_outside_test_mode(self):
+        for mode in ("standard", "demo"):
+            with self.subTest(mode=mode), patch.dict(
+                os.environ, worker_environment(mode, "1"), clear=True,
+            ):
+                with self.assertRaisesRegex(
+                    ProviderConfigurationError,
+                    "deterministic_test_providers_require_explicit_test_mode",
+                ):
+                    WorkerSettings.from_environment()
+
+        valid_non_test_settings = (
+            ProviderSettings(mode=ProviderMode.STANDARD),
+            ProviderSettings(mode=ProviderMode.DEMO),
+            ProviderSettings(
+                mode=ProviderMode.LOCAL_OPEN_SOURCE,
+                base_url="http://127.0.0.1:11434/v1",
+                model="local-model",
+            ),
+            ProviderSettings(
+                mode=ProviderMode.OPENAI_COMPATIBLE,
+                base_url="https://provider.invalid/v1",
+                model="configured-model",
+                api_key="test-only-key",
+            ),
+        )
+        for settings in valid_non_test_settings:
+            with self.subTest(resolver_mode=settings.mode):
+                with self.assertRaisesRegex(
+                    ProviderConfigurationError,
+                    "deterministic_provider_requires_explicit_test_mode",
+                ):
+                    resolve_worker_provider_dependencies(settings, True)
+
+    def test_worker_deterministic_switch_rejects_non_boolean_text(self):
+        with patch.dict(
+            os.environ, worker_environment("test", "true"), clear=True,
+        ):
+            with self.assertRaisesRegex(
+                ProviderConfigurationError,
+                "deterministic_test_providers_switch_must_be_0_or_1",
+            ):
+                WorkerSettings.from_environment()
+
     def test_standard_mode_is_typed_degraded_and_cannot_construct_a_deterministic_provider(self):
         fake = DeterministicConversationProvider()
         with self.assertRaisesRegex(ProviderConfigurationError, "deterministic_provider_requires_explicit_test_mode"):

@@ -8,7 +8,11 @@ from typing import Dict, Optional
 from pydantic import ValidationError
 
 from .models import AuthContext
-from .provider_gateway import ProviderSettings
+from .provider_gateway import (
+    ProviderConfigurationError,
+    ProviderMode,
+    ProviderSettings,
+)
 
 
 def required(name: str) -> str:
@@ -82,9 +86,26 @@ class WorkerSettings:
     authorization_service_token: str
     temporal_task_queue: str
     provider_settings: ProviderSettings
+    deterministic_test_providers_enabled: bool
 
     @classmethod
     def from_environment(cls) -> "WorkerSettings":
+        provider_settings = ProviderSettings.from_environment()
+        deterministic_switch = os.environ.get(
+            "FLOWPULSE_ENABLE_DETERMINISTIC_TEST_PROVIDERS", "0",
+        )
+        if deterministic_switch not in {"0", "1"}:
+            raise ProviderConfigurationError(
+                "deterministic_test_providers_switch_must_be_0_or_1",
+            )
+        deterministic_test_providers_enabled = deterministic_switch == "1"
+        if (
+            deterministic_test_providers_enabled
+            and provider_settings.mode != ProviderMode.TEST
+        ):
+            raise ProviderConfigurationError(
+                "deterministic_test_providers_require_explicit_test_mode",
+            )
         return cls(
             temporal_address=required("FLOWPULSE_TEMPORAL_ADDRESS"),
             postgres_dsn=required("FLOWPULSE_POSTGRES_DSN"),
@@ -101,7 +122,8 @@ class WorkerSettings:
             authorization_service_url=required("FLOWPULSE_AUTHORIZATION_SERVICE_URL"),
             authorization_service_token=required("FLOWPULSE_AUTHORIZATION_SERVICE_TOKEN"),
             temporal_task_queue=required("FLOWPULSE_TEMPORAL_TASK_QUEUE"),
-            provider_settings=ProviderSettings.from_environment(),
+            provider_settings=provider_settings,
+            deterministic_test_providers_enabled=deterministic_test_providers_enabled,
         )
 
 
