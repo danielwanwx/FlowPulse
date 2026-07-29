@@ -304,7 +304,10 @@ def create_app(
         case_id: str, request: Request, actor: AuthContext = Depends(trusted_auth_context),
     ) -> IncidentProjection:
         projection = await _workspace_call(
-            _workspace_repository(request), ("workspace_projection", "get_projection"), actor.tenant_id, case_id,
+            _workspace_repository(request),
+            ("workspace_public_projection", "workspace_projection", "get_projection"),
+            actor.tenant_id,
+            case_id,
         )
         if projection is None:
             raise HTTPException(status_code=404, detail="workspace_projection_not_found")

@@ -81,11 +81,33 @@ class WorkspaceContractGeneratorTests(unittest.TestCase):
             )
             self.assertNotIn("reason", decide["investigation_result"])
             self.assertIn("InvestigationResult", openapi["components"]["schemas"])
+            self.assertIn("IncidentFocus", openapi["components"]["schemas"])
+            self.assertIn("ConversationItem", openapi["components"]["schemas"])
+            projection_properties = openapi["components"]["schemas"]["IncidentProjection"]["properties"]
+            self.assertIn("incident_focus", projection_properties)
+            self.assertIn("conversation_items", projection_properties)
+            self.assertIn(
+                "operator_status",
+                openapi["components"]["schemas"]["InvestigationCritic"]["properties"],
+            )
             self.assertEqual(
-                "v1.2-investigate-decide",
+                "v1.3-staff-incident",
                 openapi["x-flowpulse-workspace-contract"]["contract_revision"],
             )
-            self.assertEqual("Checkout", examples["response_examples"]["IncidentProjection"]["graph"]["nodes"][0]["display_name"])
+            self.assertEqual(
+                "checkout",
+                examples["response_examples"]["IncidentProjection"]["incident_focus"]["component_id"],
+            )
+            self.assertEqual(
+                "UNKNOWN",
+                examples["response_examples"]["NodeExplanationReceipt"]["explanation"][
+                    "conversation_items"
+                ][0]["knowledge_state"],
+            )
+            self.assertEqual(
+                "PASS",
+                decide["investigation_result"]["critic"]["operator_status"],
+            )
             self.assertEqual(
                 "incident.accepted", examples["response_examples"]["IncidentNotification"]["event_type"],
             )

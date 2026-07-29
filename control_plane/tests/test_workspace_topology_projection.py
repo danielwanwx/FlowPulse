@@ -64,7 +64,7 @@ class WorkspaceTopologyProjectionTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(22, len(projected.graph.nodes))
-        self.assertEqual(26, len(projected.graph.edges))
+        self.assertEqual(29, len(projected.graph.edges))
         self.assertEqual(
             {
                 "accounting": "Accounting",
@@ -110,6 +110,7 @@ class WorkspaceTopologyProjectionTests(unittest.IsolatedAsyncioTestCase):
                 "checkout->cart",
                 "checkout->currency",
                 "checkout->email",
+                "checkout->kafka",
                 "checkout->payment",
                 "checkout->product-catalog",
                 "checkout->shipping",
@@ -127,6 +128,8 @@ class WorkspaceTopologyProjectionTests(unittest.IsolatedAsyncioTestCase):
                 "frontend-web->frontend-proxy",
                 "load-generator->flagd",
                 "load-generator->frontend-proxy",
+                "kafka->accounting",
+                "kafka->fraud-detection",
                 "payment->flagd",
                 "recommendation->flagd",
                 "recommendation->product-catalog",
@@ -135,12 +138,36 @@ class WorkspaceTopologyProjectionTests(unittest.IsolatedAsyncioTestCase):
             edge_ids,
         )
         self.assertEqual(
-            {"frontend->checkout", "checkout->payment"},
+            {
+                "frontend->checkout",
+                "checkout->payment",
+                "checkout->kafka",
+                "kafka->accounting",
+                "kafka->fraud-detection",
+            },
             edge_ids & {
                 "frontend->checkout", "checkout->payment", "checkout->kafka",
                 "kafka->accounting", "kafka->fraud-detection",
             },
         )
+        self.assertEqual("checkout", projected.incident_focus.component_id)
+        self.assertEqual("service:checkout", projected.incident_focus.canonical_identity)
+        self.assertEqual("KNOWN", projected.incident_focus.affected_user_path_status.value)
+        self.assertEqual(
+            [
+                "frontend->checkout",
+                "checkout->payment",
+                "checkout->kafka",
+                "kafka->accounting",
+                "kafka->fraud-detection",
+            ],
+            projected.incident_focus.incident_relation_edge_ids,
+        )
+        self.assertEqual(
+            len(projected.incident_focus.incident_relation_edge_ids),
+            len(projected.incident_focus.incident_relation_provenance_refs),
+        )
+        self.assertTrue(all(projected.incident_focus.incident_relation_provenance_refs))
         connected = {
             component_id
             for edge in projected.graph.edges
@@ -168,10 +195,15 @@ class WorkspaceTopologyProjectionTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(
             (
-                "checkout->kafka,checkout->payment,frontend->checkout,"
+                "frontend->checkout,checkout->payment,checkout->kafka,"
                 "kafka->accounting,kafka->fraud-detection"
             ),
             events[0].payload["topology_overlay_relation_ids"],
+        )
+        self.assertEqual("checkout", events[0].payload["incident_focus_component_id"])
+        self.assertEqual(
+            events[0].payload["topology_overlay_relation_ids"],
+            events[0].payload["incident_focus_relation_edge_ids"],
         )
         self.assertEqual(64, len(events[0].payload["topology_asset_sha256"]))
 

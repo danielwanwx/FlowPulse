@@ -124,15 +124,42 @@ class WorkspaceProjectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("DEGRADED", outcome["explanation"]["state"])
         self.assertFalse(outcome["explanation"]["fresh_read_performed"])
         self.assertFalse(outcome["explanation"]["fresh_diagnosis_claimed"])
+        self.assertEqual(1, len(outcome["explanation"]["conversation_items"]))
+        item_record = outcome["explanation"]["conversation_items"][0]
+        self.assertEqual(3, item_record["sequence"])
+        self.assertEqual("UNKNOWN", item_record["knowledge_state"])
+        self.assertEqual("checkout", item_record["component_id"])
+        self.assertEqual(outcome["explanation"]["explanation_id"], item_record["explanation_id"])
+        public_projection = await repository.workspace_public_projection("tenant-a", "case-a")
+        self.assertEqual([item_record], [item.dict() for item in public_projection.conversation_items])
+        forged_item = dict(item_record)
+        forged_item["run_id"] = "run-attacker"
+        with self.assertRaisesRegex(
+            Exception, "conversation_item_projection_binding_mismatch",
+        ):
+            IncidentProjection.parse_obj({
+                **public_projection.dict(),
+                "conversation_items": [forged_item],
+            })
         events = await repository.events_after("tenant-a", "case-a", 1)
         self.assertEqual(
             [("node_explanation.started", ExplanationEventStatus.STARTED),
              ("node_explanation.degraded", ExplanationEventStatus.DEGRADED)],
             [(event.event_type, event.explanation_status) for event in events],
         )
+        self.assertEqual(
+            item_record["item_id"],
+            events[-1].payload["conversation_item_ids"],
+        )
         self.assertNotIn(outcome["explanation"]["summary"], [event.payload for event in events])
         duplicate = await dispatcher.dispatch("workspace_node_explanation_activity", packet.dict())
         self.assertEqual(outcome["explanation"]["explanation_id"], duplicate["explanation"]["explanation_id"])
+        self.assertEqual(
+            [item_record],
+            [item.dict() for item in (
+                await repository.workspace_public_projection("tenant-a", "case-a")
+            ).conversation_items],
+        )
 
 
 if __name__ == "__main__":

@@ -179,6 +179,33 @@ class InMemoryWorkspaceRepository:
 
     workspace_projection = get_projection
 
+    async def workspace_conversation_items(self, tenant_id: str, case_id: str):
+        items = [
+            item
+            for explanation in self.explanations.values()
+            if explanation.tenant_id == tenant_id and explanation.case_id == case_id
+            for item in explanation.conversation_items
+        ]
+        return sorted(items, key=lambda item: (item.sequence, item.item_id))
+
+    async def workspace_public_projection(
+        self, tenant_id: str, case_id: str,
+    ) -> Optional[IncidentProjection]:
+        projection = await self.get_projection(tenant_id, case_id)
+        if projection is None:
+            return None
+        recorded = {item.item_id: item for item in projection.conversation_items}
+        for item in await self.workspace_conversation_items(tenant_id, case_id):
+            recorded.setdefault(item.item_id, item)
+        return IncidentProjection.parse_obj({
+            **projection.dict(),
+            "conversation_items": [
+                item.dict() for item in sorted(
+                    recorded.values(), key=lambda item: (item.sequence, item.item_id),
+                )
+            ],
+        })
+
     async def create_workspace_node_explanation_intent(
         self, actor: AuthContext, projection: IncidentProjection, command: NodeExplanationStart,
     ) -> AuthCommandIntent:

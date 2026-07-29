@@ -82,7 +82,7 @@ class WorkspaceWorkflowTests(unittest.IsolatedAsyncioTestCase):
                 persisted = await repository.get_projection("tenant-a", "case-a")
                 self.assertEqual(persisted.dict(), returned)
                 self.assertEqual(22, len(persisted.graph.nodes))
-                self.assertEqual(26, len(persisted.graph.edges))
+                self.assertEqual(29, len(persisted.graph.edges))
                 self.assertEqual(
                     [
                         "frontend", "checkout", "payment",

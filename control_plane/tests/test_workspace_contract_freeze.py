@@ -45,10 +45,16 @@ class WorkspaceContractFreezeTests(unittest.TestCase):
             openapi["components"]["schemas"]["VersionBundle"]["properties"]["card_schema_version"]["default"],
         )
         self.assertEqual(
-            "v1.2-investigate-decide",
+            "v1.3-staff-incident",
             openapi["x-flowpulse-workspace-contract"]["contract_revision"],
         )
         self.assertIn("InvestigationResult", openapi["components"]["schemas"])
+        self.assertIn("IncidentFocus", openapi["components"]["schemas"])
+        self.assertIn("ConversationItem", openapi["components"]["schemas"])
+        self.assertIn(
+            "operator_status",
+            openapi["components"]["schemas"]["InvestigationCritic"]["properties"],
+        )
         event_response = openapi["paths"]["/v1/incidents/{case_id}/events"]["get"]["responses"]["200"]
         self.assertEqual({"text/event-stream"}, set(event_response["content"]))
         global_event_response = openapi["paths"]["/v1/incidents/events"]["get"]["responses"]["200"]

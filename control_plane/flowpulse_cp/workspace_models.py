@@ -90,6 +90,22 @@ class InvestigationClaimKind(str, Enum):
     HYPOTHESIS = "HYPOTHESIS"
 
 
+class AffectedUserPathStatus(str, Enum):
+    KNOWN = "KNOWN"
+    UNKNOWN = "UNKNOWN"
+
+
+class ConversationKnowledgeState(str, Enum):
+    KNOWN = "KNOWN"
+    UNKNOWN = "UNKNOWN"
+
+
+class CriticOperatorStatus(str, Enum):
+    PASS = "PASS"
+    REVISE = "REVISE"
+    ABSTAIN = "ABSTAIN"
+
+
 class ConversationRole(str, Enum):
     """Server-selected roles; provider output never carries one of these values."""
 
@@ -183,6 +199,67 @@ class IncidentRunBinding(StrictModel):
         return values
 
 
+class IncidentFocus(StrictModel):
+    component_id: NonEmpty
+    canonical_identity: NonEmpty
+    rationale: NonEmpty
+    affected_user_path_status: AffectedUserPathStatus
+    affected_user_path_summary: Optional[NonEmpty] = None
+    incident_relation_edge_ids: List[NonEmpty] = Field(min_items=1, max_items=32)
+    incident_relation_provenance_refs: List[NonEmpty] = Field(min_items=1, max_items=32)
+
+    @validator(
+        "incident_relation_edge_ids", "incident_relation_provenance_refs",
+        allow_reuse=True,
+    )
+    def incident_relation_edge_ids_are_unique(cls, value):
+        if len(value) != len(set(value)):
+            raise ValueError("incident_focus_edge_ids_must_be_unique")
+        return value
+
+    @root_validator(allow_reuse=True)
+    def known_path_has_summary(cls, values):
+        status = values.get("affected_user_path_status")
+        summary = values.get("affected_user_path_summary")
+        if status == AffectedUserPathStatus.KNOWN and summary is None:
+            raise ValueError("known_affected_user_path_requires_summary")
+        if status == AffectedUserPathStatus.UNKNOWN and summary is not None:
+            raise ValueError("unknown_affected_user_path_forbids_summary")
+        if len(values.get("incident_relation_edge_ids", [])) != len(
+            values.get("incident_relation_provenance_refs", [])
+        ):
+            raise ValueError("incident_focus_edge_provenance_count_mismatch")
+        return values
+
+
+class ConversationItem(StrictModel):
+    schema_version: NonEmpty = "flowpulse.conversation-item.v1"
+    item_id: NonEmpty
+    sequence: PositiveInt
+    tenant_id: NonEmpty
+    incident_id: NonEmpty
+    run_id: NonEmpty
+    topology_revision: NonEmpty
+    case_id: NonEmpty
+    case_revision: PositiveInt
+    workflow_id: NonEmpty
+    workflow_run_id: NonEmpty
+    projection_revision: PositiveInt
+    component_id: NonEmpty
+    explanation_id: NonEmpty
+    role: ConversationRole = ConversationRole.CONVERSATION_MANAGER
+    knowledge_state: ConversationKnowledgeState
+    summary: NonEmpty
+    evidence_refs: List[NonEmpty] = Field(default_factory=list, max_items=64)
+    created_at: datetime
+
+    @validator("evidence_refs", allow_reuse=True)
+    def conversation_evidence_refs_are_unique(cls, value):
+        if len(value) != len(set(value)):
+            raise ValueError("conversation_item_evidence_refs_must_be_unique")
+        return value
+
+
 class InvestigationEvidenceReference(StrictModel):
     evidence_id: NonEmpty
     source_kind: SourceKind
@@ -218,6 +295,7 @@ class InvestigationCritic(StrictModel):
     critic_id: NonEmpty
     identity: NonEmpty
     decision: VerificationDecision
+    operator_status: CriticOperatorStatus
     reason_codes: List[NonEmpty] = Field(default_factory=list, max_items=16)
     reviewed_claim_ids: List[NonEmpty] = Field(default_factory=list, max_items=64)
     evidence_refs: List[NonEmpty] = Field(default_factory=list, max_items=64)
@@ -227,6 +305,31 @@ class InvestigationCritic(StrictModel):
         if len(value) != len(set(value)):
             raise ValueError("investigation_critic_values_must_be_unique")
         return value
+
+    @root_validator(pre=True, allow_reuse=True)
+    def derive_operator_status_for_compatible_records(cls, values):
+        values = dict(values)
+        decision = values.get("decision")
+        decision_value = decision.value if isinstance(decision, VerificationDecision) else decision
+        expected = {
+            VerificationDecision.PASS.value: CriticOperatorStatus.PASS.value,
+            VerificationDecision.FAIL.value: CriticOperatorStatus.REVISE.value,
+            VerificationDecision.AMBIGUOUS.value: CriticOperatorStatus.ABSTAIN.value,
+        }.get(decision_value)
+        if expected is not None and "operator_status" not in values:
+            values["operator_status"] = expected
+        return values
+
+    @root_validator(allow_reuse=True)
+    def operator_status_matches_verdict(cls, values):
+        expected = {
+            VerificationDecision.PASS: CriticOperatorStatus.PASS,
+            VerificationDecision.FAIL: CriticOperatorStatus.REVISE,
+            VerificationDecision.AMBIGUOUS: CriticOperatorStatus.ABSTAIN,
+        }.get(values.get("decision"))
+        if expected is None or values.get("operator_status") != expected:
+            raise ValueError("investigation_critic_operator_status_mismatch")
+        return values
 
 
 class InvestigationResult(IncidentRunBinding):
@@ -315,6 +418,8 @@ class IncidentProjection(IncidentRunBinding):
     generated_at: datetime
     graph: IncidentGraph
     impacted_path: List[NonEmpty] = Field(default_factory=list)
+    incident_focus: Optional[IncidentFocus] = None
+    conversation_items: List[ConversationItem] = Field(default_factory=list, max_items=128)
     evidence_revision: PositiveInt
     gate_revision: PositiveInt
     action_revision: PositiveInt
@@ -330,6 +435,54 @@ class IncidentProjection(IncidentRunBinding):
             if any(component_id not in known for component_id in value):
                 raise ValueError("impacted_path_references_unknown_component")
         return value
+
+    @root_validator(allow_reuse=True)
+    def focus_and_conversation_are_canonical(cls, values):
+        graph = values.get("graph")
+        if graph is None:
+            return values
+        nodes = {node.component_id: node for node in graph.nodes}
+        edges = {edge.edge_id: edge for edge in graph.edges}
+        focus = values.get("incident_focus")
+        if focus is not None:
+            node = nodes.get(focus.component_id)
+            if (
+                node is None
+                or node.canonical_identity != focus.canonical_identity
+                or node.impact_status != "impacted"
+                or focus.component_id not in values.get("impacted_path", [])
+            ):
+                raise ValueError("incident_focus_component_not_impacted_or_canonical")
+            for edge_id in focus.incident_relation_edge_ids:
+                edge = edges.get(edge_id)
+                if (
+                    edge is None
+                    or nodes[edge.source_component_id].impact_status != "impacted"
+                    or nodes[edge.target_component_id].impact_status != "impacted"
+                ):
+                    raise ValueError("incident_focus_edge_not_impacted")
+        items = values.get("conversation_items", [])
+        sequences = [item.sequence for item in items]
+        item_ids = [item.item_id for item in items]
+        if sequences != sorted(sequences) or len(sequences) != len(set(sequences)):
+            raise ValueError("conversation_items_must_be_strictly_ordered")
+        if len(item_ids) != len(set(item_ids)):
+            raise ValueError("conversation_item_ids_must_be_unique")
+        for item in items:
+            if (
+                item.tenant_id != values.get("tenant_id")
+                or item.incident_id != values.get("incident_id")
+                or item.run_id != values.get("run_id")
+                or item.topology_revision != values.get("topology_revision")
+                or item.case_id != values.get("case_id")
+                or item.case_revision != values.get("case_revision")
+                or item.workflow_id != values.get("workflow_id")
+                or item.workflow_run_id != values.get("workflow_run_id")
+                or item.projection_revision > values.get("projection_revision")
+                or item.component_id not in nodes
+            ):
+                raise ValueError("conversation_item_projection_binding_mismatch")
+        return values
 
     @root_validator(allow_reuse=True)
     def investigation_result_is_bound_to_projection(cls, values):
@@ -577,6 +730,7 @@ class NodeExplanation(IncidentRunBinding):
     state: NodeExplanationState
     summary: NonEmpty
     evidence_refs: List[NonEmpty] = Field(default_factory=list)
+    conversation_items: List[ConversationItem] = Field(default_factory=list, max_items=16)
     fresh_read_performed: StrictBool = False
     fresh_diagnosis_claimed: StrictBool = False
     truth_label: ProviderTruthLabel = ProviderTruthLabel.DEGRADED
@@ -595,6 +749,27 @@ class NodeExplanation(IncidentRunBinding):
             raise ValueError("node_explanation_truth_label_trace_mismatch")
         if values.get("truth_label") != ProviderTruthLabel.DEGRADED and trace is None:
             raise ValueError("node_explanation_non_degraded_requires_conversation_trace")
+        items = values.get("conversation_items", [])
+        sequences = [item.sequence for item in items]
+        if sequences != sorted(sequences) or len(sequences) != len(set(sequences)):
+            raise ValueError("node_explanation_conversation_items_not_ordered")
+        for item in items:
+            if (
+                item.tenant_id != values.get("tenant_id")
+                or item.incident_id != values.get("incident_id")
+                or item.run_id != values.get("run_id")
+                or item.topology_revision != values.get("topology_revision")
+                or item.case_id != values.get("case_id")
+                or item.case_revision != values.get("case_revision")
+                or item.workflow_id != values.get("workflow_id")
+                or item.workflow_run_id != values.get("workflow_run_id")
+                or item.projection_revision != values.get("projection_revision")
+                or item.component_id != values.get("component_id")
+                or item.explanation_id != values.get("explanation_id")
+                or item.summary != values.get("summary")
+                or item.evidence_refs != values.get("evidence_refs")
+            ):
+                raise ValueError("node_explanation_conversation_item_binding_mismatch")
         return values
 
 

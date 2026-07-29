@@ -455,6 +455,40 @@ class PostgresCaseRepository:
             return _persisted_workspace_projection(row["payload"]) if row else None
         return await self._tenant(tenant_id, operation)
 
+    async def workspace_conversation_items(self, tenant_id: str, case_id: str):
+        async def operation(connection: asyncpg.Connection):
+            rows = await connection.fetch(
+                """SELECT payload FROM node_explanations
+                   WHERE tenant_id=$1 AND case_id=$2
+                   ORDER BY projection_revision, created_at, explanation_id""",
+                tenant_id, case_id,
+            )
+            items = [
+                item
+                for row in rows
+                for item in NodeExplanation.parse_obj(_decode(row["payload"])).conversation_items
+            ]
+            return sorted(items, key=lambda item: (item.sequence, item.item_id))
+        return await self._tenant(tenant_id, operation)
+
+    async def workspace_public_projection(
+        self, tenant_id: str, case_id: str,
+    ) -> Optional[IncidentProjection]:
+        projection = await self.workspace_projection(tenant_id, case_id)
+        if projection is None:
+            return None
+        recorded = {item.item_id: item for item in projection.conversation_items}
+        for item in await self.workspace_conversation_items(tenant_id, case_id):
+            recorded.setdefault(item.item_id, item)
+        return IncidentProjection.parse_obj({
+            **projection.dict(),
+            "conversation_items": [
+                item.dict() for item in sorted(
+                    recorded.values(), key=lambda item: (item.sequence, item.item_id),
+                )
+            ],
+        })
+
     async def append_workspace_event(self, event: IncidentEvent) -> IncidentEvent:
         event_id = uuid5(
             NAMESPACE_URL,

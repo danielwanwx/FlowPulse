@@ -10,11 +10,13 @@ from pydantic import ValidationError
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from flowpulse_cp.workspace_models import (
+    AffectedUserPathStatus,
     ClassifiedNodeReason,
     GraphMembership,
     IncidentGraph,
     IncidentGraphEdge,
     IncidentGraphNode,
+    IncidentFocus,
     IncidentProjection,
     IncidentRunBinding,
     NodeExplanationStart,
@@ -121,6 +123,27 @@ class IncidentWorkspaceContractTests(unittest.TestCase):
             status="degraded",
         )])
         self.assertEqual(2, len(graph.nodes))
+
+        focused = projection().dict()
+        focused["graph"] = graph.dict()
+        focused["impacted_path"] = ["checkout", "payments"]
+        focused["incident_focus"] = IncidentFocus(
+            component_id="checkout", canonical_identity="service:checkout",
+            rationale="Checkout is the first shared service on the audited affected user path.",
+            affected_user_path_status=AffectedUserPathStatus.KNOWN,
+            affected_user_path_summary="Checkout and payments are affected.",
+            incident_relation_edge_ids=["checkout-payments"],
+            incident_relation_provenance_refs=[
+                "topology-fixture:test#relation/checkout-payments",
+            ],
+        ).dict()
+        self.assertEqual(
+            "checkout",
+            IncidentProjection.parse_obj(focused).incident_focus.component_id,
+        )
+        focused["incident_focus"]["incident_relation_edge_ids"] = ["missing-edge"]
+        with self.assertRaisesRegex(ValidationError, "incident_focus_edge_not_impacted"):
+            IncidentProjection.parse_obj(focused)
 
     def test_node_explanation_command_uses_public_run_selection_key(self):
         command = NodeExplanationStart(

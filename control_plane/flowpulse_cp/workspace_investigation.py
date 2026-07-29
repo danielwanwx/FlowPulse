@@ -482,6 +482,11 @@ def validate_workspace_investigation_commit(
         or result.critic.critic_id != critic.critic_id
         or result.critic.identity != critic.identity
         or result.critic.decision != critic.decision
+        or result.critic.operator_status.value != {
+            VerificationDecision.PASS: "PASS",
+            VerificationDecision.FAIL: "REVISE",
+            VerificationDecision.AMBIGUOUS: "ABSTAIN",
+        }[critic.decision]
         or result.critic.reason_codes != critic.reason_codes
         or result.critic.reviewed_claim_ids != [item.claim_id for item in result.claims]
         or result.critic.evidence_refs != critic.evidence_refs

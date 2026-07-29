@@ -29,9 +29,12 @@ from .capabilities import (
     ToolCallBudget,
 )
 from .workspace_models import (
+    ConversationItem,
+    ConversationKnowledgeState,
     Gate1ProjectionState,
     IncidentEvent,
     IncidentLifecycleStage,
+    IncidentProjection,
     IncidentRunBinding,
     ExplanationEventStatus,
     InvestigationClaim,
@@ -471,7 +474,15 @@ class WorkspaceActivityDispatcher:
             degraded_code=degraded_code,
             recorded_at=datetime.now(timezone.utc),
         )
-        projection = packet.projection.copy(update={
+        recorded_conversation_items = {
+            item.item_id: item for item in packet.projection.conversation_items
+        }
+        conversation_reader = getattr(self.repository, "workspace_conversation_items", None)
+        if conversation_reader is not None:
+            for item in await conversation_reader(packet.tenant_id, packet.case_id):
+                recorded_conversation_items.setdefault(item.item_id, item)
+        projection = IncidentProjection.parse_obj({
+            **packet.projection.dict(),
             "projection_revision": next_revision,
             "sequence": packet.projection.sequence + 1,
             "action_revision": packet.projection.action_revision + 1,
@@ -479,9 +490,26 @@ class WorkspaceActivityDispatcher:
             "lifecycle_state": lifecycle_state,
             "status": status,
             "investigation_result": result,
+            "conversation_items": [
+                item.dict() for item in sorted(
+                    recorded_conversation_items.values(),
+                    key=lambda item: (item.sequence, item.item_id),
+                )
+            ],
             "degraded_code": degraded_code,
             "generated_at": result.recorded_at,
         })
+        event_payload = {
+            "result_id": result.result_id,
+            "component_id": result.component_id,
+            "lifecycle_stage": result.lifecycle_stage.value,
+            "disposition": result.disposition.value,
+            "conversation_item_ids": ",".join(
+                item.item_id for item in projection.conversation_items
+            ),
+        }
+        if result.critic is not None:
+            event_payload["critic_operator_status"] = result.critic.operator_status.value
         event = IncidentEvent(
             **self._binding(packet).dict(),
             projection_revision=projection.projection_revision,
@@ -491,12 +519,7 @@ class WorkspaceActivityDispatcher:
                 if accepted else "workspace.investigation.degraded"
             ),
             occurred_at=result.recorded_at,
-            payload={
-                "result_id": result.result_id,
-                "component_id": result.component_id,
-                "lifecycle_stage": result.lifecycle_stage.value,
-                "disposition": result.disposition.value,
-            },
+            payload=event_payload,
             evidence_refs=list(projection.evidence_refs),
         )
         commit = WorkspaceInvestigationCommit(
@@ -891,26 +914,57 @@ class WorkspaceActivityDispatcher:
                 conversation = await self.conversation_manager.explain(
                     binding, packet.projection, command, actor=packet.actor,
                 )
+            explanation_id = "node-explanation-{}".format(
+                sha256(selection_key.encode("utf-8")).hexdigest()[:24],
+            )
+            explanation_state = (
+                NodeExplanationState.COMPLETED
+                if conversation is not None and conversation.truth_label.value != "DEGRADED"
+                else NodeExplanationState.DEGRADED
+            )
+            summary = (
+                conversation.summary if conversation is not None
+                else "No provider or read capability is configured; no fresh read or diagnosis was performed."
+            )
+            evidence_refs = (
+                conversation.evidence_refs if conversation is not None else list(packet.projection.evidence_refs)
+            )
+            conversation_item = ConversationItem(
+                item_id="conversation-item-{}".format(
+                    sha256((explanation_id + ":1").encode("utf-8")).hexdigest()[:24],
+                ),
+                sequence=packet.event_sequence + 1,
+                **{
+                    name: getattr(packet, name)
+                    for name in (
+                        "tenant_id", "incident_id", "run_id", "topology_revision", "case_id",
+                        "case_revision", "workflow_id", "workflow_run_id",
+                    )
+                },
+                projection_revision=command.projection_revision,
+                component_id=command.component_id,
+                explanation_id=explanation_id,
+                knowledge_state=(
+                    ConversationKnowledgeState.KNOWN
+                    if explanation_state == NodeExplanationState.COMPLETED
+                    else ConversationKnowledgeState.UNKNOWN
+                ),
+                summary=summary,
+                evidence_refs=evidence_refs,
+                created_at=datetime.now(timezone.utc),
+            )
             explanation = NodeExplanation(
                 **{name: getattr(packet, name) for name in packet.__fields__ if name in {
                     "tenant_id", "incident_id", "run_id", "topology_revision", "case_id", "case_revision",
                     "workflow_id", "workflow_run_id", "created_at",
                 }},
-                explanation_id="node-explanation-{}".format(sha256(selection_key.encode("utf-8")).hexdigest()[:24]),
+                explanation_id=explanation_id,
                 selection_key=selection_key, projection_revision=command.projection_revision,
                 component_id=command.component_id, conversation_schema_version=command.conversation_schema_version,
-                state=(
-                    NodeExplanationState.COMPLETED
-                    if conversation is not None and conversation.truth_label.value != "DEGRADED"
-                    else NodeExplanationState.DEGRADED
-                ),
-                summary=(
-                    conversation.summary if conversation is not None
-                    else "No provider or read capability is configured; no fresh read or diagnosis was performed."
-                ),
-                evidence_refs=(
-                    conversation.evidence_refs if conversation is not None else list(packet.projection.evidence_refs)
-                ),
+                state=explanation_state,
+                summary=summary,
+                evidence_refs=evidence_refs,
+                conversation_items=[conversation_item],
                 fresh_read_performed=False, fresh_diagnosis_claimed=False,
                 truth_label=(conversation.truth_label if conversation is not None else "DEGRADED"),
                 conversation_trace=(conversation.trace if conversation is not None else None),
@@ -920,7 +974,13 @@ class WorkspaceActivityDispatcher:
             await self._append_event(
                 packet,
                 "node_explanation.completed" if stored.state == NodeExplanationState.COMPLETED else "node_explanation.degraded",
-                {"explanation_id": stored.explanation_id, "truth_label": stored.truth_label.value},
+                {
+                    "explanation_id": stored.explanation_id,
+                    "truth_label": stored.truth_label.value,
+                    "conversation_item_ids": ",".join(
+                        item.item_id for item in stored.conversation_items
+                    ),
+                },
                 sequence=packet.event_sequence + 1,
                 explanation_status=(
                     ExplanationEventStatus.COMPLETED

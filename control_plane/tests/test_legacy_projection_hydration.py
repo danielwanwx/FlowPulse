@@ -89,6 +89,8 @@ class FrozenProjectionConnection:
     async def fetch(self, query, *args):
         if "SELECT payload FROM (" in query:
             return [{"payload": copy.deepcopy(self.projection)}]
+        if "SELECT payload FROM node_explanations" in query:
+            return []
         if "SELECT e.payload AS event_payload" in query:
             return [{
                 "event_payload": copy.deepcopy(LEGACY_EVENT),

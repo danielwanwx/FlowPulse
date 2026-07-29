@@ -20,14 +20,19 @@ if str(SOURCE_ROOT) not in sys.path:
 
 from flowpulse_cp.app import create_app
 from flowpulse_cp.workspace_models import (
+    AffectedUserPathStatus,
     ComponentContext,
     ClassifiedNodeReason,
+    ConversationItem,
+    ConversationKnowledgeState,
     GraphMembership,
     IncidentEvent,
     IncidentNotification,
     IncidentNotificationType,
     IncidentGraph,
+    IncidentGraphEdge,
     IncidentGraphNode,
+    IncidentFocus,
     IncidentProjection,
     IncidentLifecycleStage,
     IncidentSummary,
@@ -82,13 +87,33 @@ def _examples():
     projection = IncidentProjection(
         **binding.dict(), projection_revision=1, sequence=1, lifecycle_state=ProjectionState.DEGRADED,
         status="provider_unavailable", generated_at=now,
-        graph=IncidentGraph(nodes=[IncidentGraphNode(
+        graph=IncidentGraph(nodes=[
+            IncidentGraphNode(
+                component_id="frontend", canonical_identity="service:frontend",
+                display_name="Frontend", membership=GraphMembership.CONNECTED,
+                runtime_status="degraded", impact_status="impacted",
+            ),
+            IncidentGraphNode(
+                component_id="checkout", canonical_identity="service:checkout",
+                display_name="Checkout", membership=GraphMembership.CONNECTED,
+                runtime_status="degraded", impact_status="impacted",
+            ),
+        ], edges=[IncidentGraphEdge(
+            edge_id="frontend->checkout", source_component_id="frontend",
+            target_component_id="checkout", status="impacted",
+        )]),
+        impacted_path=["frontend", "checkout"],
+        incident_focus=IncidentFocus(
             component_id="checkout", canonical_identity="service:checkout",
-            display_name="Checkout",
-            membership=GraphMembership.CLASSIFIED,
-            classification_reason=ClassifiedNodeReason.RELATIONSHIP_UNAVAILABLE,
-            runtime_status="unknown", impact_status="unknown",
-        )], edges=[]), operator_title="Checkout latency", operator_summary="Checkout requests are degraded.",
+            rationale="Checkout is the first shared service on the audited affected user path.",
+            affected_user_path_status=AffectedUserPathStatus.KNOWN,
+            affected_user_path_summary="Checkout requests on the affected user path are degraded.",
+            incident_relation_edge_ids=["frontend->checkout"],
+            incident_relation_provenance_refs=[
+                "topology-fixture:example#relation/frontend->checkout",
+            ],
+        ),
+        operator_title="Checkout latency", operator_summary="Checkout requests are degraded.",
         evidence_revision=1, gate_revision=1, action_revision=1,
         evidence_refs=[], degraded_code="provider_unavailable",
     )
@@ -97,13 +122,25 @@ def _examples():
         topology_revision=binding.topology_revision, projection_revision=1,
         component_id="checkout", idempotency_key="example-click-01",
     )
+    explanation_id = "node-explanation-example"
+    explanation_summary = "No provider or read capability is configured; no fresh read or diagnosis was performed."
+    conversation_item = ConversationItem(
+        item_id="conversation-item-example", sequence=2,
+        tenant_id=binding.tenant_id, incident_id=binding.incident_id,
+        run_id=binding.run_id, topology_revision=binding.topology_revision,
+        case_id=binding.case_id, case_revision=binding.case_revision,
+        workflow_id=binding.workflow_id, workflow_run_id=binding.workflow_run_id,
+        projection_revision=1, component_id="checkout", explanation_id=explanation_id,
+        knowledge_state=ConversationKnowledgeState.UNKNOWN, summary=explanation_summary,
+        evidence_refs=[], created_at=now,
+    )
     explanation = NodeExplanation(
-        **binding.dict(), explanation_id="node-explanation-example",
+        **binding.dict(), explanation_id=explanation_id,
         selection_key=command.selection_key(binding.tenant_id), projection_revision=1,
         component_id="checkout", conversation_schema_version=command.conversation_schema_version,
         state=NodeExplanationState.DEGRADED,
-        summary="No provider or read capability is configured; no fresh read or diagnosis was performed.",
-        evidence_refs=[], fresh_read_performed=False, fresh_diagnosis_claimed=False,
+        summary=explanation_summary, evidence_refs=[], conversation_items=[conversation_item],
+        fresh_read_performed=False, fresh_diagnosis_claimed=False,
         degraded_code="provider_unavailable",
     )
     event = IncidentEvent(
@@ -184,6 +221,7 @@ def _examples():
         "status": "investigation_accepted", "generated_at": now,
         "evidence_revision": 2, "action_revision": 4,
         "evidence_refs": [result_evidence.evidence_id],
+        "conversation_items": [conversation_item.dict()],
         "investigation_result": investigation_result, "degraded_code": None,
     }).dict())
     return {
@@ -242,10 +280,10 @@ def generate(output: Path, producer_git_sha: str) -> dict:
     manifest_path = output / "flowpulse-incident-workspace-v1.freeze.json"
     openapi = create_app().openapi()
     openapi["info"]["title"] = "FlowPulse Incident Workspace Contract"
-    openapi["info"]["version"] = "v1.2"
+    openapi["info"]["version"] = "v1.3"
     openapi["x-flowpulse-workspace-contract"] = {
         "schema_version": "flowpulse.incident-workspace.v1",
-        "contract_revision": "v1.2-investigate-decide",
+        "contract_revision": "v1.3-staff-incident",
         "public_identity": ["tenant_id", "incident_id", "run_id", "topology_revision"],
         "internal_correlation": ["case_id", "case_revision", "workflow_id", "workflow_run_id"],
         "provider_mode": "typed_degraded_when_unconfigured",

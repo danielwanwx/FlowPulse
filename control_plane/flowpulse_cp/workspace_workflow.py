@@ -52,6 +52,7 @@ with workflow.unsafe.imports_passed_through():
 WORKSPACE_V2_ACTIONS_PATCH = "workspace-v2-gate1-next-best-actions"
 WORKSPACE_V2_ACTION_COMMIT_PATCH = "workspace-v2-gate1-atomic-action-commit"
 WORKSPACE_V2_INVESTIGATION_PATCH = "workspace-v2-investigation-decide-handoff"
+WORKSPACE_V2_STAFF_INCIDENT_CONTRACT_PATCH = "workspace-v2-staff-incident-contract-v1"
 
 
 @workflow.defn(name=WORKSPACE_V2_WORKFLOW_TYPE)
@@ -74,8 +75,25 @@ class IncidentWorkspaceTemporalWorkflow:
             event_sequence=self._event_sequence, node_explanation=command, actor=actor,
         )
 
+    @staticmethod
+    def _activity_packet_contract(packet: Dict[str, Any]) -> Dict[str, Any]:
+        """Keep pre-v1.3 v2 histories byte-compatible while new runs carry the additive contract."""
+        if workflow.patched(WORKSPACE_V2_STAFF_INCIDENT_CONTRACT_PATCH):
+            return packet
+        projection = packet.get("projection")
+        if projection is None:
+            return packet
+        projection.pop("incident_focus", None)
+        projection.pop("conversation_items", None)
+        critic = (projection.get("investigation_result") or {}).get("critic")
+        if critic is not None:
+            critic.pop("operator_status", None)
+        return packet
+
     async def _activity(self, stage: str, *, command: NodeExplanationStart = None, actor=None) -> WorkspaceActivityOutcome:
-        packet = self._packet(stage, command=command, actor=actor).dict()
+        packet = self._activity_packet_contract(
+            self._packet(stage, command=command, actor=actor).dict(),
+        )
         # Keep parent workspace activity inputs byte-compatible when the old
         # direct update form carried no trusted actor packet.
         if packet.get("actor") is None:
@@ -88,7 +106,8 @@ class IncidentWorkspaceTemporalWorkflow:
 
     async def _action_activity(self, name: str, packet: Dict[str, Any]) -> Dict[str, Any]:
         return await workflow.execute_activity(
-            name, packet, start_to_close_timeout=timedelta(minutes=2),
+            name, self._activity_packet_contract(packet),
+            start_to_close_timeout=timedelta(minutes=2),
         )
 
     @workflow.run

@@ -128,9 +128,9 @@ for schemas.
 The v1.2 producer implementation commit is
 `f92d6f6832f9562cbc8edfd574c19bc0a31acd6b`. The generated bundle is:
 
-- `control_plane/openapi/flowpulse-incident-workspace-v1.openapi.json` — SHA-256 `51b0bc8a8f709b82a7302437a0d4daa941bc50c65c282c61517f093da761c3d3`
-- `control_plane/openapi/flowpulse-incident-workspace-v1.examples.json` — SHA-256 `a0f73ee3ec17a78de0f4eb783e1a6f674c75d58b5dd44bd9779a59094d86f463`
-- `control_plane/openapi/flowpulse-incident-workspace-v1.freeze.json` — SHA-256 `81c74db8114dceceb3b87ff67f721ada159be47e8ef6a9efc088e916f0c329dd`
+- `control_plane/openapi/flowpulse-incident-workspace-v1.openapi.json` — SHA-256 `be260bc4da0ce19f115acd18a3b2e6cac4fef5317ca657da79812af86e4b6573`
+- `control_plane/openapi/flowpulse-incident-workspace-v1.examples.json` — SHA-256 `2ffbc5e19ba54f07219f0b9ca164b4a7c7f7c5e587b248cf27a35f09327e5003`
+- `control_plane/openapi/flowpulse-incident-workspace-v1.freeze.json` — SHA-256 `673e63465e57b3160b313002208e757b80da24837396172f1c2ba0e2dd0bb42b`
 
 The frontend product branch must record these values verbatim, together with
 the public identity and same-origin process-side authentication boundary,

@@ -6,10 +6,12 @@ from typing import Dict, Tuple
 
 from .provider_gateway import ProviderConfigurationError, ProviderMode
 from .workspace_models import (
+    AffectedUserPathStatus,
     ClassifiedNodeReason,
     GraphMembership,
     IncidentGraph,
     IncidentGraphEdge,
+    IncidentFocus,
     IncidentGraphNode,
     IncidentProjection,
 )
@@ -77,12 +79,18 @@ INCIDENT_NODE_IDS = frozenset({
     "accounting", "checkout", "fraud-detection", "frontend", "kafka", "payment",
 })
 INCIDENT_RELATION_IDS = (
-    "checkout->kafka",
-    "checkout->payment",
     "frontend->checkout",
+    "checkout->payment",
+    "checkout->kafka",
     "kafka->accounting",
     "kafka->fraud-detection",
 )
+SUPPORTING_RELATIONS: Tuple[Tuple[str, str, str], ...] = (
+    ("checkout->kafka", "checkout", "kafka"),
+    ("kafka->accounting", "kafka", "accounting"),
+    ("kafka->fraud-detection", "kafka", "fraud-detection"),
+)
+ALL_EDGES = EDGES + SUPPORTING_RELATIONS
 IMPACTED_PATH = (
     "frontend", "checkout", "payment", "kafka", "accounting", "fraud-detection",
 )
@@ -96,6 +104,7 @@ def _asset_sha256() -> str:
             "source_manifest_content_sha256": SOURCE_MANIFEST_CONTENT_SHA256,
             "nodes": NODES,
             "edges": EDGES,
+            "supporting_relations": SUPPORTING_RELATIONS,
             "incident_node_ids": sorted(INCIDENT_NODE_IDS),
             "incident_relation_ids": INCIDENT_RELATION_IDS,
             "impacted_path": IMPACTED_PATH,
@@ -124,9 +133,12 @@ class CapturedAstronomyTopologyProvider:
     def snapshot(self, projection: IncidentProjection) -> IncidentProjection:
         connected = {
             component_id
-            for _, source, target in EDGES
+            for _, source, target in ALL_EDGES
             for component_id in (source, target)
         }
+        provenance_prefix = "topology-fixture:{}@{}#relation/".format(
+            FIXTURE_ID, SOURCE_VERSION,
+        )
         graph = IncidentGraph(
             nodes=[
                 IncidentGraphNode(
@@ -163,13 +175,29 @@ class CapturedAstronomyTopologyProvider:
                         else "observed"
                     ),
                 )
-                for edge_id, source, target in EDGES
+                for edge_id, source, target in ALL_EDGES
             ],
         )
         return IncidentProjection.parse_obj({
             **projection.dict(),
             "graph": graph.dict(),
             "impacted_path": list(IMPACTED_PATH),
+            "incident_focus": IncidentFocus(
+                component_id="checkout",
+                canonical_identity="service:checkout",
+                rationale=(
+                    "Checkout is the first shared service on the audited affected user path."
+                ),
+                affected_user_path_status=AffectedUserPathStatus.KNOWN,
+                affected_user_path_summary=(
+                    "Checkout degradation affects payment processing and downstream "
+                    "Kafka-backed accounting and fraud checks."
+                ),
+                incident_relation_edge_ids=list(INCIDENT_RELATION_IDS),
+                incident_relation_provenance_refs=[
+                    provenance_prefix + edge_id for edge_id in INCIDENT_RELATION_IDS
+                ],
+            ).dict(),
         })
 
     def initialized_event_payload(self, projection: IncidentProjection) -> Dict[str, str]:
@@ -182,4 +210,8 @@ class CapturedAstronomyTopologyProvider:
             "topology_asset_sha256": ASSET_SHA256,
             "topology_overlay_node_ids": ",".join(IMPACTED_PATH),
             "topology_overlay_relation_ids": ",".join(INCIDENT_RELATION_IDS),
+            "incident_focus_component_id": projection.incident_focus.component_id,
+            "incident_focus_relation_edge_ids": ",".join(
+                projection.incident_focus.incident_relation_edge_ids,
+            ),
         }

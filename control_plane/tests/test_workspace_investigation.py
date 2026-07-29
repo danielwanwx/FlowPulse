@@ -119,6 +119,12 @@ class WorkspaceInvestigationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("investigation_accepted", projected.status)
         self.assertEqual(InvestigationDisposition.ACCEPTED, result.disposition)
         self.assertEqual(VerificationDecision.PASS, result.critic.decision)
+        self.assertEqual("PASS", result.critic.operator_status.value)
+        with self.assertRaisesRegex(ValidationError, "investigation_critic_operator_status_mismatch"):
+            type(result.critic).parse_obj({
+                **result.critic.dict(),
+                "operator_status": "REVISE",
+            })
         self.assertEqual({"OBSERVATION", "HYPOTHESIS"}, {claim.kind.value for claim in result.claims})
         self.assertEqual(set(projected.evidence_refs), {evidence.evidence_id for evidence in result.evidence})
         self.assertTrue(all(evidence.freshness.value == "CURRENT" for evidence in result.evidence))
@@ -149,6 +155,10 @@ class WorkspaceInvestigationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(final, repeated)
         events = await repository.workspace_events_after(item.tenant_id, item.case_id, 0)
         self.assertEqual(1, sum(event.event_type == "workspace.investigation.accepted" for event in events))
+        accepted_event = next(
+            event for event in events if event.event_type == "workspace.investigation.accepted"
+        )
+        self.assertEqual("PASS", accepted_event.payload["critic_operator_status"])
         self.assertEqual(1, synthesizer.call_count)
         self.assertEqual(1, critic.call_count)
 
