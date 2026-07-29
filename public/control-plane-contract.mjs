@@ -237,12 +237,13 @@ export function actionInvocationCommand(projection, action) {
   });
 }
 
-export function createControlPlaneState() {
+export function createControlPlaneState({ caseId = null } = {}) {
   return {
     mode: "live",
     connection: "connecting",
     projection: null,
     projections: new Map(),
+    pinned_case_id: caseId,
     toast: null,
     focused_path: [],
     focus_status: "idle",
@@ -289,16 +290,20 @@ export function controlPlaneReducer(current, action) {
       state.projections.set(projection.case_id, projection);
       const toastMatches = state.toast && matchesSummarySnapshot(state.toast.incident, projection);
       const currentMatches = state.projection && sameIdentity(state.projection, projection);
-      if (!state.projection || currentMatches || (state.mode === "incident" && toastMatches)) {
+      const focusedToastMatches = state.focus_status === "loading" && toastMatches;
+      const matchesPinnedCase = !state.pinned_case_id || state.pinned_case_id === projection.case_id;
+      if ((!state.projection && matchesPinnedCase) || currentMatches || focusedToastMatches) {
         state.projection = projection;
         state.last_case_sequence = Math.max(state.last_case_sequence, projection.sequence);
         state.actions = emptyActions(state.actions);
         if (allowsInvestigateActions(projection)) effects.push({ type: "actions.load", case_id: projection.case_id, identity: projection });
       }
       state.connection = "connected";
-      if (state.mode === "incident" && toastMatches) {
+      if (focusedToastMatches) {
+        state.pinned_case_id = projection.case_id;
         state.focused_path = [...projection.impacted_path];
         state.focus_status = "ready";
+        state.toast = null;
       }
       return { state, effects };
     }
@@ -310,11 +315,13 @@ export function controlPlaneReducer(current, action) {
       // recommendations appear under the new canonical graph.
       state.actions = emptyActions();
       const cached = state.toast ? state.projections.get(state.toast.incident.case_id) : null;
+      if (state.toast) state.pinned_case_id = state.toast.incident.case_id;
       if (state.toast && cached && matchesSummarySnapshot(state.toast.incident, cached)) {
         state.projection = cached;
         state.last_case_sequence = cached.sequence;
         state.focused_path = [...cached.impacted_path];
         state.focus_status = "ready";
+        state.toast = null;
       } else {
         state.focused_path = [];
         state.focus_status = "loading";
@@ -328,6 +335,7 @@ export function controlPlaneReducer(current, action) {
         return { state, effects };
       }
       state.projection = projection;
+      state.pinned_case_id = projection.case_id;
       state.last_case_sequence = projection.sequence;
       state.selected_component_id = null;
       state.explanation = { status: "idle", receipt: null, key: null };

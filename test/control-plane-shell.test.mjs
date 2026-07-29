@@ -26,8 +26,16 @@ test("Architecture and Live retain the baseline renderer while the control-plane
   assert.match(legacyApp, /renderSourceCanvas\("architecture"\)/);
   assert.match(legacyApp, /renderSourceCanvas\("live", shared\?\.topology/);
   assert.match(legacyApp, /if \(nextMode === "incident" && els\["app-shell"\]\.dataset\.controlPlaneAdapter === "true"\) return;/);
+  assert.match(legacyApp, /function showToast\(message, error = false\) \{\s*if \(els\["app-shell"\]\.dataset\.controlPlaneMode === "incident"\) return;/);
+  assert.match(controlPlaneApp, /button\.addEventListener\("click", \(\) => \{\s*state = \{ \.\.\.state, mode: button\.dataset\.mode \};\s*render\(\);\s*\}, true\);/);
   assert.match(controlPlaneApp, /if \(state\.mode !== "incident"\) \{[\s\S]*?return;/);
   assert.match(controlPlaneApp, /root\.dataset\.controlPlaneMode = "incident"/);
+  assert.match(controlPlaneApp, /function renderToast\(\) \{\s*const toast = state\.mode === "incident" \? null : state\.toast;/);
+});
+
+test("leaving Incident forces the frozen Architecture or Live renderer to replace control-plane canvas markup", () => {
+  assert.match(legacyApp, /const controlPlaneCanvasIsMounted = Boolean\(els\["canvas-layers"\]\.querySelector\("\.control-plane-twin-layer"\)\);/);
+  assert.match(legacyApp, /const shouldRenderCanvas = canvasKey !== renderedCanvasKey \|\| controlPlaneCanvasIsMounted;/);
 });
 
 test("Live omits zero-degree components and preserves only backend-projected edges", () => {
@@ -60,4 +68,38 @@ test("the decision workspace renders only the projection-owned investigation pre
   assert.match(controlPlaneApp, /investigationEvidenceMarkup\(investigation\.evidence\)/);
   assert.doesNotMatch(controlPlaneApp, /receipt\.reason/);
   assert.doesNotMatch(controlPlaneApp, /workspace\.investigation\.[a-z]+.*summary/);
+});
+
+test("Incident is an evidence-led Investigate to Decide workspace, not a generic control-plane dashboard", () => {
+  const stageRail = controlPlaneApp.slice(controlPlaneApp.indexOf("function stageRailMarkup"), controlPlaneApp.indexOf("function renderDrawer"));
+  const investigationCard = controlPlaneApp.slice(controlPlaneApp.indexOf("function investigationMarkup"), controlPlaneApp.indexOf("function explanationMarkup"));
+
+  assert.match(stageRail, /\["1", "Investigate",[\s\S]*?\["2", "Decide",/);
+  assert.doesNotMatch(stageRail, /\["3", "Execute"|\["4", "Verify"/);
+  assert.match(stageRail, /return \["Investigate", "Decide"\]/);
+  assert.doesNotMatch(controlPlaneApp, /investigation\.stage === "CLOSED" \? "Verify"/);
+  assert.match(controlPlaneApp, /control-plane-twin-node\$\{impacted \? " is-impact" : " is-context"\}/);
+  assert.match(controlPlaneApp, /actionProgressMarkup\(\)/);
+  assert.match(controlPlaneApp, /actionButtonCopy\(card\.cta\)/);
+  assert.match(controlPlaneApp, /function investigationStatus\(investigation\)/);
+  assert.match(controlPlaneApp, /operatorSummaryCopy\(projection\.operator_summary\)/);
+  assert.match(controlPlaneApp, /els\["incident-summary"\]\.textContent = projection\.operator_summary \? operatorSummaryCopy\(projection\.operator_summary\) : projection\.status/);
+  assert.match(investigationCard, /Independent critic/);
+  assert.doesNotMatch(investigationCard, /investigation\.critic\.identity/);
+  assert.doesNotMatch(controlPlaneApp, /Control plane \/ server projection/);
+  assert.match(stylesCss, /\.app-shell\[data-control-plane-mode="incident"\] \.incident-stage-rail \{ grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/);
+  assert.match(stylesCss, /\.control-plane-twin-node\.is-context \{ opacity: .55;/);
+});
+
+test("Incident keeps the header, stage rail, graph, and collaboration panel in separate layout regions", () => {
+  const start = stylesCss.indexOf("/* incident-layout-ownership */");
+  const end = stylesCss.indexOf("/* end-incident-layout-ownership */");
+  const incidentLayout = start >= 0 && end > start ? stylesCss.slice(start, end) : "";
+
+  assert.match(incidentLayout, /\.app-shell\[data-control-plane-mode="incident"\] \.incident-stage-rail \{\s*position: static;/);
+  assert.match(incidentLayout, /\.app-shell\[data-control-plane-mode="incident"\] \.canvas-shell \{[^}]*padding-right: 446px;/);
+  assert.match(incidentLayout, /@media \(max-width: 900px\) \{[\s\S]*?\.app-shell\[data-control-plane-mode="incident"\] \.twin-workspace \{ height: auto; overflow: visible;/);
+  assert.match(incidentLayout, /\.app-shell\[data-control-plane-mode="incident"\] \.context-drawer \{ position: static;[^}]*width: auto;[^}]*height: auto;/);
+  assert.match(incidentLayout, /\.app-shell\[data-control-plane-mode="incident"\] \.twin-scroll \{ flex: 0 0 auto;[^}]*overflow: auto;/);
+  assert.match(incidentLayout, /\.app-shell\[data-control-plane-mode="incident"\] \.canvas-toolbar > div:first-child \{ display: block;/);
 });

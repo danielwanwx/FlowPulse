@@ -735,7 +735,8 @@ function render() {
   if (els["app-shell"].dataset.controlPlaneMode === "incident") return;
   const focusedIncidentStage = document.activeElement?.closest?.("[data-incident-stage]")?.dataset.incidentStage || null;
   const canvasKey = canvasProjectionKey();
-  const shouldRenderCanvas = canvasKey !== renderedCanvasKey;
+  const controlPlaneCanvasIsMounted = Boolean(els["canvas-layers"].querySelector(".control-plane-twin-layer"));
+  const shouldRenderCanvas = canvasKey !== renderedCanvasKey || controlPlaneCanvasIsMounted;
   const previousPositions = shouldRenderCanvas && renderedMode && renderedMode !== mode ? captureCanvasNodePositions() : new Map();
   renderHeader();
   renderMetrics();
@@ -3822,6 +3823,7 @@ function hideError() {
 }
 
 function showToast(message, error = false) {
+  if (els["app-shell"].dataset.controlPlaneMode === "incident") return;
   clearTimeout(toastTimer);
   els.toast.textContent = message;
   els.toast.className = `toast${error ? " error" : ""}`;

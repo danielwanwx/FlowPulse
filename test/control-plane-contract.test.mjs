@@ -57,6 +57,44 @@ function projection({ revision = 1, sequence = revision, impacted = true } = {})
   };
 }
 
+function projectionForCase(caseId, { revision = 1, sequence = revision } = {}) {
+  const suffix = caseId.replace(/[^a-z0-9]/gi, "").slice(-12);
+  return {
+    ...projection({ revision, sequence }),
+    incident_id: `incident-${suffix}`,
+    run_id: `run-${suffix}`,
+    topology_revision: `topology-${suffix}`,
+    case_id: caseId,
+    workflow_id: `flowpulse.incident-workspace:tenant-test:run-${suffix}`,
+    workflow_run_id: `temporal-${suffix}`
+  };
+}
+
+function summaryFor(projectionValue) {
+  return {
+    case_id: projectionValue.case_id,
+    incident_id: projectionValue.incident_id,
+    run_id: projectionValue.run_id,
+    topology_revision: projectionValue.topology_revision,
+    projection_revision: projectionValue.projection_revision,
+    sequence: projectionValue.sequence,
+    lifecycle_state: projectionValue.lifecycle_state,
+    lifecycle_stage: projectionValue.lifecycle_stage,
+    status: projectionValue.status,
+    title: projectionValue.operator_title,
+    summary: projectionValue.operator_summary
+  };
+}
+
+function notificationFor(projectionValue) {
+  return {
+    notification_id: `notification-${projectionValue.case_id}`,
+    event_type: "incident.accepted",
+    occurred_at: "2026-07-26T00:00:00Z",
+    incident: summaryFor(projectionValue)
+  };
+}
+
 function investigationResult({
   disposition = "ACCEPTED",
   lifecycle_stage = disposition === "ACCEPTED" ? "DECIDE" : "INVESTIGATE",
@@ -236,11 +274,11 @@ test("notification passively prefetches projection while focus itself makes no r
 
   const hydrated = controlPlaneReducer(loadingFocus.state, { type: "projection.hydrated", projection: projection() });
   assert.deepEqual(hydrated.state.focused_path, ["checkout", "payment"]);
-  const focused = controlPlaneReducer(hydrated.state, { type: "toast.focus" });
-  assert.equal(focused.effects.length, 0);
-  assert.equal(focused.state.selected_component_id, null);
+  assert.equal(hydrated.state.toast, null, "focused toast is presentation-only and disappears once its cached path is ready");
+  assert.equal(hydrated.effects.length, 1);
+  assert.equal(hydrated.state.selected_component_id, null);
 
-  const clicked = controlPlaneReducer(focused.state, { type: "node.clicked", component_id: "checkout" });
+  const clicked = controlPlaneReducer(hydrated.state, { type: "node.clicked", component_id: "checkout" });
   assert.deepEqual(clicked.effects, [
     { type: "node-explanation.start", command: nodeExplanationCommand(projection(), "checkout") },
     { type: "actions.load", case_id: IDENTITY.case_id, identity: projection() }
@@ -256,6 +294,39 @@ test("notification passively prefetches projection while focus itself makes no r
   });
   assert.equal(newerHydration.state.focus_status, "ready");
   assert.equal(newerHydration.state.projection.projection_revision, 2);
+});
+
+test("a pinned initial case never renders an earlier concurrent active-case hydration", () => {
+  const requested = projectionForCase("case-requested", { revision: 4, sequence: 6 });
+  const earlier = projectionForCase("case-earlier", { revision: 2, sequence: 3 });
+  const boot = controlPlaneReducer(createControlPlaneState({ caseId: requested.case_id }), {
+    type: "summaries.hydrated",
+    summaries: [summaryFor(earlier), summaryFor(requested)]
+  });
+  const notified = controlPlaneReducer(boot.state, {
+    type: "notification.received",
+    notification: notificationFor(earlier)
+  });
+  // The regular Incident tab is not a toast-focus action. An unrelated global
+  // notification must not replace the URL-pinned case while its hydration wins.
+  const incidentTab = { ...notified.state, mode: "incident" };
+
+  const earlierHydration = controlPlaneReducer(incidentTab, {
+    type: "projection.hydrated",
+    projection: earlier,
+    identity: summaryFor(earlier)
+  });
+  assert.equal(earlierHydration.state.projection, null, "the pinned route stays empty rather than briefly rendering another active incident");
+  assert.equal(earlierHydration.state.projections.get(earlier.case_id)?.case_id, earlier.case_id, "the unrelated projection remains available only as a cache entry");
+
+  const requestedHydration = controlPlaneReducer(earlierHydration.state, {
+    type: "projection.hydrated",
+    projection: requested,
+    identity: summaryFor(requested)
+  });
+  assert.equal(requestedHydration.state.projection?.case_id, requested.case_id);
+  assert.equal(requestedHydration.state.projection?.projection_revision, 4);
+  assert.equal(requestedHydration.state.projection?.graph.nodes.length, 3);
 });
 
 test("case SSE and durable receipts are canonical, ordered, and cannot cross-run replace the workspace", () => {

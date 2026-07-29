@@ -4608,11 +4608,14 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .app-shell[data-control-plane-mode="incident"] .control-plane-twin-node:disabled { opacity: 1; }
 .app-shell[data-control-plane-mode="incident"] .control-plane-twin-node:disabled:not(.is-impact) { opacity: .78; }
 .app-shell[data-control-plane-mode="incident"] .control-plane-twin-node.is-impact { border-color: var(--red); box-shadow: 0 0 0 3px color-mix(in srgb, var(--red) 17%, transparent), 0 13px 29px color-mix(in srgb, var(--red) 19%, transparent); }
+.app-shell[data-control-plane-mode="incident"] .control-plane-twin-node.is-context { opacity: .55; filter: saturate(.68); }
+.app-shell[data-control-plane-mode="incident"] .control-plane-edge-map .edge-group:not(.edge-impact) { opacity: .36; }
 .app-shell[data-control-plane-mode="incident"] .control-plane-twin-node.is-selected { box-shadow: 0 0 0 3px color-mix(in srgb, var(--blue) 23%, transparent), 0 13px 29px rgba(11, 11, 12, .12); }
 .app-shell[data-control-plane-mode="incident"] .control-plane-live-pulse { opacity: .8; }
 .app-shell[data-control-plane-mode="incident"] .context-drawer { width: 430px; }
 .app-shell[data-control-plane-mode="incident"] .drawer-tabs { display: none; }
 .app-shell[data-control-plane-mode="incident"] .drawer-content { padding: 14px; }
+.app-shell[data-control-plane-mode="incident"] .incident-stage-rail { grid-template-columns: repeat(2, minmax(0, 1fr)); width: min(304px, calc(100% - var(--flowpulse-control-rail-width) - var(--flowpulse-control-rail-inset-x) * 2 - 36px)); }
 .control-plane-action-list { display: grid; gap: 8px; margin-top: 13px; }
 .control-plane-action-card { padding: 11px; border: 1px solid var(--line-strong); border-left: 3px solid var(--blue); background: var(--control-surface); }
 .control-plane-action-card > span { display: block; color: var(--faint); font-family: var(--mono); font-size: 8px; font-weight: 750; letter-spacing: .06em; }
@@ -4627,6 +4630,33 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
   .app-shell[data-control-plane-mode="incident"] .mode-switch { width: min(100%, 390px); min-width: 0; }
   .app-shell[data-control-plane-mode="incident"] .context-drawer { width: 100%; }
 }
+
+/* incident-layout-ownership */
+/* Keep server-owned Incident content in document flow: the title introduces the
+   stage rail, the rail introduces the graph, and the graph never sits behind
+   the collaboration workspace. */
+.app-shell[data-control-plane-mode="incident"] .canvas-shell { padding-right: 446px; }
+.app-shell[data-control-plane-mode="incident"] .incident-stage-rail {
+  position: static;
+  z-index: auto;
+  flex: 0 0 auto;
+  width: min(304px, calc(100% - 36px));
+  margin: 0 18px 10px;
+}
+@media (max-width: 900px) {
+  .app-shell[data-control-plane-mode="incident"] .twin-workspace { height: auto; overflow: visible; }
+  .app-shell[data-control-plane-mode="incident"] .canvas-shell { height: auto; padding-right: 0; overflow: visible; }
+  .app-shell[data-control-plane-mode="incident"] .canvas-toolbar { flex: 0 0 auto; height: auto; min-height: 64px; padding: 10px 14px; }
+  .app-shell[data-control-plane-mode="incident"] .canvas-toolbar > div:first-child { display: block; }
+  .app-shell[data-control-plane-mode="incident"] .canvas-toolbar h2 { font-size: 15px; }
+  .app-shell[data-control-plane-mode="incident"] .canvas-toolbar p { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+  .app-shell[data-control-plane-mode="incident"] .incident-stage-rail { width: calc(100% - 24px); margin: 0 12px 10px; }
+  .app-shell[data-control-plane-mode="incident"] .twin-scroll { flex: 0 0 auto; min-width: 0; max-width: 100%; height: min(54dvh, 480px); overflow: auto; }
+  .app-shell[data-control-plane-mode="incident"] .incident-strip { position: static; width: auto; margin: 10px 12px 0; }
+  .app-shell[data-control-plane-mode="incident"] .context-drawer { position: static; width: auto; height: auto; max-height: none; margin: 10px 12px 0; border-top: 1px solid var(--line-strong); border-left: 0; background: #f7f9fa; box-shadow: 0 10px 24px rgba(40, 53, 70, .10); }
+  .app-shell[data-control-plane-mode="incident"] .drawer-content { flex: 0 0 auto; overflow: visible; }
+}
+/* end-incident-layout-ownership */
 
 @media (max-width: 900px) { /* narrow-architecture-ownership */
   .app-shell[data-mode] .mode-switch { width: 100%; min-width: 0; }
