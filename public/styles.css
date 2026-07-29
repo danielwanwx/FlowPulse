@@ -3072,6 +3072,7 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
   border: 0;
 }
 .app-shell[data-mode] .mode-switch {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   width: 710px;
   min-width: 710px;
   height: 40px;
@@ -4584,7 +4585,8 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 /* Canonical Incident shell: this is the mature FlowPulse canvas, fed only by
    the control-plane reducer. The former standalone control-plane dashboard is
    intentionally not mounted. */
-.app-shell[data-control-plane-mode="incident"] .mode-switch { grid-template-columns: repeat(3, minmax(0, 1fr)); width: 390px; min-width: 390px; }
+.app-shell[data-control-plane-mode="incident"] .mode-switch { grid-template-columns: repeat(3, minmax(0, 1fr)); width: 710px; min-width: 710px; }
+.app-shell[data-control-plane-mode="incident"] main { grid-template-rows: 64px minmax(0, 1fr); }
 .app-shell[data-control-plane-mode="incident"] .metric-cluster,
 .app-shell[data-control-plane-mode="incident"] .zoom-controls,
 .app-shell[data-control-plane-mode="incident"] .legend-menu,
@@ -4592,6 +4594,7 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .app-shell[data-control-plane-mode="incident"] .canvas-toolbar { grid-template-columns: minmax(0, 1fr); }
 .app-shell[data-control-plane-mode="incident"] .canvas-toolbar p { max-width: 680px; }
 .app-shell[data-control-plane-mode="incident"] .twin-canvas { min-width: 0; width: 100%; }
+.app-shell[data-control-plane-mode="incident"] .control-plane-twin-layer[data-topology-density="focus"] { min-width: 760px; }
 .app-shell[data-control-plane-mode="incident"] .twin-canvas[data-topology-density="dense"] {
   min-width: var(--control-plane-topology-width);
   min-height: var(--control-plane-topology-height);
@@ -4601,6 +4604,8 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .app-shell[data-control-plane-mode="incident"] .control-plane-twin-layer { position: absolute; inset: 0; min-height: 100%; }
 .app-shell[data-control-plane-mode="incident"] .control-plane-canvas-empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); font-size: 12px; }
 .app-shell[data-control-plane-mode="incident"] .control-plane-edge-map { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+.app-shell[data-control-plane-mode="incident"] .control-plane-edge-map .edge-line.is-impact { stroke: color-mix(in srgb, var(--red) 58%, #c5cbd0); stroke-width: .38; opacity: .82; }
+.app-shell[data-control-plane-mode="incident"] .control-plane-edge-map .pulse-flow.is-impact { stroke: color-mix(in srgb, var(--red) 72%, #fff); stroke-width: .22; opacity: .68; }
 .app-shell[data-control-plane-mode="incident"] .control-plane-twin-node { width: 176px; height: 72px; min-height: 72px; overflow: hidden; cursor: default; }
 .app-shell[data-control-plane-mode="incident"] .control-plane-twin-node .node-copy { min-width: 0; }
 .app-shell[data-control-plane-mode="incident"] .control-plane-node-metadata { display: block; overflow: hidden; margin-top: 3px; color: var(--muted); font-size: 9px; line-height: 1.2; text-overflow: ellipsis; white-space: nowrap; }
@@ -4612,10 +4617,30 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .app-shell[data-control-plane-mode="incident"] .control-plane-edge-map .edge-group:not(.edge-impact) { opacity: .36; }
 .app-shell[data-control-plane-mode="incident"] .control-plane-twin-node.is-selected { box-shadow: 0 0 0 3px color-mix(in srgb, var(--blue) 23%, transparent), 0 13px 29px rgba(11, 11, 12, .12); }
 .app-shell[data-control-plane-mode="incident"] .control-plane-live-pulse { opacity: .8; }
-.app-shell[data-control-plane-mode="incident"] .context-drawer { width: 430px; }
+.app-shell[data-control-plane-mode="incident"] .context-drawer { width: 430px; border-left-color: #cfd5da; background: #f7f9fa; box-shadow: -12px 0 28px rgba(40, 53, 70, .10); }
 .app-shell[data-control-plane-mode="incident"] .drawer-tabs { display: none; }
-.app-shell[data-control-plane-mode="incident"] .drawer-content { padding: 14px; }
-.app-shell[data-control-plane-mode="incident"] .incident-stage-rail { grid-template-columns: repeat(2, minmax(0, 1fr)); width: min(304px, calc(100% - var(--flowpulse-control-rail-width) - var(--flowpulse-control-rail-inset-x) * 2 - 36px)); }
+.app-shell[data-control-plane-mode="incident"] .drawer-header { padding: 20px 20px 16px; background: #f7f9fa; }
+.app-shell[data-control-plane-mode="incident"] .drawer-content { gap: 12px; padding: 14px 18px 24px; background: #f7f9fa; }
+.app-shell[data-control-plane-mode="incident"] .incident-stage-rail { grid-template-columns: repeat(2, minmax(0, 1fr)); width: min(430px, calc(100% - var(--flowpulse-control-rail-width) - var(--flowpulse-control-rail-inset-x) * 2 - 36px)); }
+.app-shell[data-control-plane-mode="incident"] .component-context,
+.app-shell[data-control-plane-mode="incident"] .incident-focus-summary { padding: 16px; border: 1px solid #d8dde1; border-left: 3px solid var(--red); border-radius: 8px; background: #fff; }
+.app-shell[data-control-plane-mode="incident"] .incident-focus-summary { display: grid; gap: 8px; }
+.app-shell[data-control-plane-mode="incident"] .incident-focus-summary > span,
+.app-shell[data-control-plane-mode="incident"] .incident-focus-summary div > span { color: var(--faint); font-family: var(--mono); font-size: 9px; font-weight: 750; letter-spacing: .06em; text-transform: uppercase; }
+.app-shell[data-control-plane-mode="incident"] .incident-focus-summary > strong { font-size: 17px; }
+.app-shell[data-control-plane-mode="incident"] .incident-focus-summary p,
+.app-shell[data-control-plane-mode="incident"] .incident-focus-summary small { margin: 0; color: var(--muted); line-height: 1.5; }
+.app-shell[data-control-plane-mode="incident"] .incident-conversation { display: grid; gap: 8px; margin: 14px 0 0; padding: 0; list-style: none; }
+.app-shell[data-control-plane-mode="incident"] .incident-conversation li { padding: 12px; border: 1px solid var(--line); border-radius: 7px; background: #f7f9fa; }
+.app-shell[data-control-plane-mode="incident"] .incident-conversation li > div { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 6px; font-size: 10px; }
+.app-shell[data-control-plane-mode="incident"] .incident-conversation li p { margin: 0; }
+.app-shell[data-control-plane-mode="incident"] .investigation-result { display: grid; gap: 8px; }
+.app-shell[data-control-plane-mode="incident"] .agent-bar-section { border: 1px solid #d8dde1; border-radius: 7px; background: #fff; }
+.app-shell[data-control-plane-mode="incident"] .agent-bar-section > summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 13px; color: var(--strong-copy); cursor: pointer; list-style-position: inside; }
+.app-shell[data-control-plane-mode="incident"] .agent-bar-section > summary strong { color: var(--muted); font-size: 10px; text-transform: uppercase; }
+.app-shell[data-control-plane-mode="incident"] .agent-bar-section > p,
+.app-shell[data-control-plane-mode="incident"] .agent-bar-section > ul { margin: 0; padding: 0 13px 13px; }
+.app-shell[data-control-plane-mode="incident"] .agent-bar-section > ul { padding-left: 28px; }
 .control-plane-action-list { display: grid; gap: 8px; margin-top: 13px; }
 .control-plane-action-card { padding: 11px; border: 1px solid var(--line-strong); border-left: 3px solid var(--blue); background: var(--control-surface); }
 .control-plane-action-card > span { display: block; color: var(--faint); font-family: var(--mono); font-size: 8px; font-weight: 750; letter-spacing: .06em; }
@@ -4627,7 +4652,7 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
   .app-shell[data-control-plane-mode="incident"] .twin-node { transition: none; }
 }
 @media (max-width: 900px) {
-  .app-shell[data-control-plane-mode="incident"] .mode-switch { width: min(100%, 390px); min-width: 0; }
+  .app-shell[data-control-plane-mode="incident"] .mode-switch { width: 100%; min-width: 0; }
   .app-shell[data-control-plane-mode="incident"] .context-drawer { width: 100%; }
 }
 
@@ -4640,7 +4665,7 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
   position: static;
   z-index: auto;
   flex: 0 0 auto;
-  width: min(304px, calc(100% - 36px));
+  width: min(430px, calc(100% - 36px));
   margin: 0 18px 10px;
 }
 @media (max-width: 900px) {
@@ -4651,9 +4676,9 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
   .app-shell[data-control-plane-mode="incident"] .canvas-toolbar h2 { font-size: 15px; }
   .app-shell[data-control-plane-mode="incident"] .canvas-toolbar p { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
   .app-shell[data-control-plane-mode="incident"] .incident-stage-rail { width: calc(100% - 24px); margin: 0 12px 10px; }
-  .app-shell[data-control-plane-mode="incident"] .twin-scroll { flex: 0 0 auto; min-width: 0; max-width: 100%; height: min(54dvh, 480px); overflow: auto; }
+  .app-shell[data-control-plane-mode="incident"] .twin-scroll { flex: 0 0 auto; min-width: 0; max-width: 100%; height: 430px; overflow: auto; }
   .app-shell[data-control-plane-mode="incident"] .incident-strip { position: static; width: auto; margin: 10px 12px 0; }
-  .app-shell[data-control-plane-mode="incident"] .context-drawer { position: static; width: auto; height: auto; max-height: none; margin: 10px 12px 0; border-top: 1px solid var(--line-strong); border-left: 0; background: #f7f9fa; box-shadow: 0 10px 24px rgba(40, 53, 70, .10); }
+  .app-shell[data-control-plane-mode="incident"] .context-drawer { position: static; width: auto; height: auto; max-height: none; margin: 10px 12px 18px; border-top: 1px solid var(--line-strong); border-left: 0; background: #f7f9fa; box-shadow: 0 10px 24px rgba(40, 53, 70, .10); }
   .app-shell[data-control-plane-mode="incident"] .drawer-content { flex: 0 0 auto; overflow: visible; }
 }
 /* end-incident-layout-ownership */

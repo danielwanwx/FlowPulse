@@ -1,7 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { applyTopologyNodePositions, topologyLayout, topologyNodeMetadata } from "../public/control-plane-topology-layout.mjs";
+import {
+  applyTopologyNodePositions,
+  incidentTopologyView,
+  topologyLayout,
+  topologyNodeMetadata
+} from "../public/control-plane-topology-layout.mjs";
 
 const stylesCss = await readFile(new URL("../public/styles.css", import.meta.url), "utf8");
 const controlPlaneApp = await readFile(new URL("../public/control-plane-app.mjs", import.meta.url), "utf8");
@@ -79,4 +84,79 @@ test("dense cards bound contract-valid long metadata to the declared row height 
   assert.match(stylesCss, /\.control-plane-twin-node \{ width: 176px; height: 72px; min-height: 72px; overflow: hidden;/);
   assert.match(stylesCss, /\.control-plane-node-metadata \{[^}]*overflow: hidden;[^}]*text-overflow: ellipsis;[^}]*white-space: nowrap;/);
   assert.match(controlPlaneApp, /class="control-plane-node-metadata" title="\$\{escapeHtml\(metadata\)\}" aria-label="\$\{escapeHtml\(metadata\)\}"/);
+});
+
+test("Incident presents only the server-audited six-node, five-relation focus graph", () => {
+  const impactedPath = ["frontend", "checkout", "payment", "kafka", "accounting", "fraud-detection"];
+  const relationIds = [
+    "incident-relation-frontend-checkout",
+    "incident-relation-checkout-payment",
+    "incident-relation-checkout-kafka",
+    "incident-relation-kafka-accounting",
+    "incident-relation-kafka-fraud-detection"
+  ];
+  const contextNodes = Array.from({ length: 16 }, (_, index) => ({
+    component_id: `context-${index + 1}`,
+    display_name: `Context ${index + 1}`
+  }));
+  const nodes = [
+    ...impactedPath.map((component_id) => ({ component_id, display_name: component_id })),
+    ...contextNodes
+  ];
+  const edges = [
+    { edge_id: relationIds[0], source_component_id: "frontend", target_component_id: "checkout" },
+    { edge_id: relationIds[1], source_component_id: "checkout", target_component_id: "payment" },
+    { edge_id: relationIds[2], source_component_id: "checkout", target_component_id: "kafka" },
+    { edge_id: relationIds[3], source_component_id: "kafka", target_component_id: "accounting" },
+    { edge_id: relationIds[4], source_component_id: "kafka", target_component_id: "fraud-detection" },
+    ...contextNodes.slice(1).map((node, index) => ({
+      edge_id: `context-relation-${index + 1}`,
+      source_component_id: contextNodes[index].component_id,
+      target_component_id: node.component_id
+    })),
+    ...Array.from({ length: 9 }, (_, index) => ({
+      edge_id: `context-extra-${index + 1}`,
+      source_component_id: contextNodes[index].component_id,
+      target_component_id: impactedPath[index % impactedPath.length]
+    }))
+  ];
+
+  const view = incidentTopologyView({
+    graph: { nodes, edges },
+    impacted_path: impactedPath,
+    incident_focus: {
+      component_id: "checkout",
+      incident_relation_edge_ids: relationIds
+    }
+  });
+
+  assert.equal(nodes.length, 22);
+  assert.equal(edges.length, 29);
+  assert.equal(view.available, true);
+  assert.deepEqual(view.nodes.map((node) => node.component_id), impactedPath);
+  assert.deepEqual(view.edges.map((edge) => edge.edge_id), relationIds);
+  assert.deepEqual(view.positions.get("frontend"), { x: 13, y: 46 });
+  assert.deepEqual(view.positions.get("checkout"), { x: 42, y: 46 });
+  assert.deepEqual(view.positions.get("payment"), { x: 76, y: 22 });
+  assert.deepEqual(view.positions.get("kafka"), { x: 65, y: 68 });
+  assert.deepEqual(view.positions.get("accounting"), { x: 88, y: 51 });
+  assert.deepEqual(view.positions.get("fraud-detection"), { x: 88, y: 81 });
+});
+
+test("Incident fails closed when the backend focus contract is absent", () => {
+  const view = incidentTopologyView({
+    graph: {
+      nodes: [{ component_id: "checkout", display_name: "Checkout" }],
+      edges: []
+    },
+    impacted_path: ["checkout"]
+  });
+
+  assert.deepEqual(view, {
+    available: false,
+    reason: "incident_focus_unavailable",
+    nodes: [],
+    edges: [],
+    positions: new Map()
+  });
 });

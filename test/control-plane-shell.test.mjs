@@ -76,14 +76,14 @@ test("Incident is an evidence-led Investigate to Decide workspace, not a generic
 
   assert.match(stageRail, /\["1", "Investigate",[\s\S]*?\["2", "Decide",/);
   assert.doesNotMatch(stageRail, /\["3", "Execute"|\["4", "Verify"/);
-  assert.match(stageRail, /return \["Investigate", "Decide"\]/);
+  assert.match(stageRail, /\["1", "Investigate",[\s\S]*?\["2", "Decide",/);
   assert.doesNotMatch(controlPlaneApp, /investigation\.stage === "CLOSED" \? "Verify"/);
   assert.match(controlPlaneApp, /control-plane-twin-node\$\{impacted \? " is-impact" : " is-context"\}/);
   assert.match(controlPlaneApp, /actionProgressMarkup\(\)/);
   assert.match(controlPlaneApp, /actionButtonCopy\(card\.cta\)/);
   assert.match(controlPlaneApp, /function investigationStatus\(investigation\)/);
   assert.match(controlPlaneApp, /operatorSummaryCopy\(projection\.operator_summary\)/);
-  assert.match(controlPlaneApp, /els\["incident-summary"\]\.textContent = projection\.operator_summary \? operatorSummaryCopy\(projection\.operator_summary\) : projection\.status/);
+  assert.match(controlPlaneApp, /els\["canvas-caption"\]\.textContent = projection\?\.operator_summary \? operatorSummaryCopy\(projection\.operator_summary\)/);
   assert.match(investigationCard, /Independent critic/);
   assert.doesNotMatch(investigationCard, /investigation\.critic\.identity/);
   assert.doesNotMatch(controlPlaneApp, /Control plane \/ server projection/);
@@ -102,4 +102,30 @@ test("Incident keeps the header, stage rail, graph, and collaboration panel in s
   assert.match(incidentLayout, /\.app-shell\[data-control-plane-mode="incident"\] \.context-drawer \{ position: static;[^}]*width: auto;[^}]*height: auto;/);
   assert.match(incidentLayout, /\.app-shell\[data-control-plane-mode="incident"\] \.twin-scroll \{ flex: 0 0 auto;[^}]*overflow: auto;/);
   assert.match(incidentLayout, /\.app-shell\[data-control-plane-mode="incident"\] \.canvas-toolbar > div:first-child \{ display: block;/);
+});
+
+test("Incident reuses the shared workspace chrome and removes duplicate status docks", () => {
+  assert.match(controlPlaneApp, /incidentTopologyView\(projection\)/);
+  assert.match(controlPlaneApp, /els\["incident-strip"\]\.hidden = true;/);
+  assert.match(controlPlaneApp, /els\["timeline-dock"\]\.hidden = true;/);
+  assert.match(stylesCss, /\.app-shell\[data-mode\] \.mode-switch \{\s*grid-template-columns: repeat\(3, minmax\(0, 1fr\)\);/);
+  assert.match(
+    stylesCss,
+    /\.app-shell\[data-control-plane-mode="incident"\] \.mode-switch \{[^}]*width: 710px;[^}]*min-width: 710px;/
+  );
+  assert.doesNotMatch(
+    stylesCss,
+    /\.app-shell\[data-control-plane-mode="incident"\] \.mode-switch \{[^}]*width: 390px;/
+  );
+});
+
+test("Incident collaboration rail renders server focus, durable conversation, and operator critic state", () => {
+  assert.match(controlPlaneApp, /incidentFocusMarkup\(projection\)/);
+  assert.match(controlPlaneApp, /const conversationItems = conversationItemsFor\(projection, node, explanation\.receipt\);/);
+  assert.match(controlPlaneApp, /const conversation = conversationItemsMarkup\(conversationItems\);/);
+  assert.match(controlPlaneApp, /criticOperatorStatusCopy\(investigation\.critic\.operator_status\)/);
+  assert.doesNotMatch(controlPlaneApp, /Select an affected component to start or reuse its recorded explanation\.<\/div>/);
+  assert.match(controlPlaneApp, /<details class="agent-bar-section"><summary><span>Investigation result/);
+  assert.match(controlPlaneApp, /<details class="agent-bar-section"><summary><span>Evidence/);
+  assert.match(controlPlaneApp, /<details class="agent-bar-section"><summary><span>Independent critic/);
 });

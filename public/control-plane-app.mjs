@@ -1,6 +1,10 @@
 import { ControlPlaneClient, ControlPlaneClientError } from "./control-plane-client.mjs";
 import { controlPlaneReducer, createControlPlaneState, investigationPresentation } from "./control-plane-contract.mjs";
-import { applyTopologyNodePositions, topologyLayout, topologyNodeMetadata } from "./control-plane-topology-layout.mjs";
+import {
+  applyTopologyNodePositions,
+  incidentTopologyView,
+  topologyNodeMetadata
+} from "./control-plane-topology-layout.mjs";
 
 // This module intentionally mounts only into the mature app-shell. It owns
 // presentation state, while all incident, gate, card, receipt, and evidence
@@ -249,13 +253,19 @@ function renderGraph() {
     els["canvas-layers"].innerHTML = copy ? `<div class="control-plane-canvas-empty">${escapeHtml(copy)}</div>` : "";
     return;
   }
-  const layout = topologyLayout(projection.graph.nodes);
+  const focusView = incidentTopologyView(projection);
+  if (!focusView.available) {
+    clearTopologyDensity();
+    els["canvas-layers"].innerHTML = '<div class="control-plane-canvas-empty">The server has not published an auditable incident focus.</div>';
+    return;
+  }
+  const layout = { density: "focus", canvas: null, positions: focusView.positions };
   applyTopologyDensity(layout);
   const { positions } = layout;
-  const impacted = new Set(projection.impacted_path);
-  const nodeById = new Map(projection.graph.nodes.map((node) => [node.component_id, node]));
-  const edges = projection.graph.edges.map((edge, index) => edgeMarkup(edge, positions, impacted, nodeById, index)).join("");
-  const nodes = projection.graph.nodes.map((node) => nodeMarkup(node, impacted.has(node.component_id))).join("");
+  const impacted = new Set(focusView.nodes.map((node) => node.component_id));
+  const nodeById = new Map(focusView.nodes.map((node) => [node.component_id, node]));
+  const edges = focusView.edges.map((edge, index) => edgeMarkup(edge, positions, impacted, nodeById, index)).join("");
+  const nodes = focusView.nodes.map((node) => nodeMarkup(node, true)).join("");
   els["canvas-layers"].innerHTML = `<div class="control-plane-twin-layer" data-topology-density="${layout.density}"><svg class="edge-map control-plane-edge-map" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">${edges}</svg>${nodes}</div>`;
   applyTopologyNodePositions(els["canvas-layers"], positions);
 }
@@ -306,23 +316,12 @@ function edgeMarkup(edge, positions, impacted, nodes, index) {
 function renderIncidentChrome() {
   const projection = state.projection;
   const incidentMode = state.mode === "incident";
-  els["incident-strip"].hidden = !projection || !incidentMode;
+  els["incident-strip"].hidden = true;
   els["incident-stage-rail"].hidden = !projection || !incidentMode;
-  els["timeline-dock"].hidden = !projection || !incidentMode;
+  els["timeline-dock"].hidden = true;
   if (!projection || !incidentMode) return;
-  els.severity.textContent = "ACTIVE";
   const investigation = investigationPresentation(projection);
-  els["incident-title"].textContent = projection.operator_title || "Active incident";
-  els["incident-summary"].textContent = projection.operator_summary ? operatorSummaryCopy(projection.operator_summary) : projection.status;
-  els["incident-stage"].textContent = investigationStatus(investigation);
-  els["open-incident-button"].textContent = state.focus_status === "loading" ? "Loading path" : "Incident focused";
-  els["open-incident-button"].disabled = state.focus_status === "loading" || !state.toast;
   els["incident-stage-rail"].innerHTML = stageRailMarkup(investigation);
-  els["stage-track"].style.setProperty("--stage-count", "2");
-  els["stage-track"].innerHTML = stageTrackMarkup();
-  els["timeline-time"].textContent = "Now";
-  els["timeline-title"].textContent = investigation.stage === "DECIDE" ? "Decide" : "Investigate";
-  els["timeline-copy"].textContent = investigationStatus(investigation);
 }
 
 function stageRailMarkup(investigation) {
@@ -334,15 +333,6 @@ function stageRailMarkup(investigation) {
   return stages.map(([number, title, detail, active]) => `<button type="button" class="incident-stage-button${active ? " is-active" : ""}" disabled><span>${number}</span><strong>${title}</strong><small>${escapeHtml(detail)}</small></button>`).join("");
 }
 
-function stageTrackMarkup() {
-  const current = state.projection ? investigationPresentation(state.projection).stage : "INVESTIGATE";
-  const normalized = current === "DECIDE" ? "DECIDE" : "INVESTIGATE";
-  return ["Investigate", "Decide"].map((stage) => {
-    const active = stage.toUpperCase() === normalized;
-    return `<button type="button" class="stage-marker${active ? " is-current" : ""}" disabled><strong>${stage}</strong><span>${active ? "Current" : "Locked"}</span></button>`;
-  }).join("");
-}
-
 function renderDrawer() {
   const projection = state.projection;
   const visible = Boolean(projection && state.mode === "incident");
@@ -350,21 +340,26 @@ function renderDrawer() {
   els["drawer-tabs"].hidden = true;
   if (!visible) return;
   const node = projection.graph.nodes.find((candidate) => candidate.component_id === state.selected_component_id) || null;
+  const focusNode = projection.graph.nodes.find((candidate) => candidate.component_id === projection.incident_focus?.component_id) || null;
   els["context-drawer"].dataset.tone = node && projection.impacted_path.includes(node.component_id) ? "impact" : "service";
-  els["drawer-kind"].textContent = node ? "Selected component" : "Accident reconstruction";
-  els["drawer-title"].textContent = node?.display_name || projection.operator_title || "Incident context";
-  els["drawer-subtitle"].textContent = node ? "Canonical context for this affected component." : "Select an affected component to open its recorded explanation.";
-  els["drawer-content"].innerHTML = `${node ? explanationMarkup(node) : '<div class="drawer-empty">Select an affected component to start or reuse its recorded explanation.</div>'}${actionProgressMarkup()}${actionCardsMarkup()}${investigationMarkup(investigationPresentation(projection))}`;
+  els["drawer-kind"].textContent = node ? "Selected component" : "Incident focus";
+  els["drawer-title"].textContent = node?.display_name || focusNode?.display_name || projection.operator_title || "Incident context";
+  els["drawer-subtitle"].textContent = node
+    ? "Recorded agent context for this affected component."
+    : projection.incident_focus?.rationale || "Waiting for the server focus recommendation.";
+  els["drawer-content"].innerHTML = `${node ? explanationMarkup(projection, node) : incidentFocusMarkup(projection)}${actionProgressMarkup()}${actionCardsMarkup()}${investigationMarkup(investigationPresentation(projection))}`;
 }
 
 function investigationMarkup(investigation) {
   if (!investigation.summary) return "";
   const claims = investigation.claims.map((claim) => `<li><strong>${escapeHtml(titleCase(claim.kind))}</strong><span>${escapeHtml(claim.statement)}</span></li>`).join("");
-  const critic = investigation.critic ? `<p class="investigation-critic"><strong>Independent critic</strong><span>${escapeHtml(criticDecisionCopy(investigation.critic.decision))}</span></p>` : "";
-  return `<section class="detail-record investigation-result is-${escapeHtml(investigation.outcome)}"><header><span>Investigation result</span><span>${escapeHtml(investigationOutcomeCopy(investigation.outcome))}</span></header><p>${escapeHtml(investigation.summary)}</p>${claims ? `<ul class="investigation-claims">${claims}</ul>` : ""}${critic}<p class="investigation-truth">Evidence status: ${escapeHtml(truthLabelCopy(investigation.truth_label))}</p>${investigationEvidenceMarkup(investigation.evidence)}</section>`;
+  const critic = investigation.critic
+    ? `<details class="agent-bar-section"><summary><span>Independent critic</span><strong>${escapeHtml(criticOperatorStatusCopy(investigation.critic.operator_status))}</strong></summary><p>The independent server critic recorded ${escapeHtml(criticOperatorStatusCopy(investigation.critic.operator_status).toLowerCase())} for this investigation result.</p></details>`
+    : "";
+  return `<section class="investigation-result is-${escapeHtml(investigation.outcome)}"><details class="agent-bar-section"><summary><span>Investigation result</span><strong>${escapeHtml(investigationOutcomeCopy(investigation.outcome))}</strong></summary><p>${escapeHtml(investigation.summary)}</p>${claims ? `<ul class="investigation-claims">${claims}</ul>` : ""}<p class="investigation-truth">Evidence status: ${escapeHtml(truthLabelCopy(investigation.truth_label))}</p></details>${investigationEvidenceMarkup(investigation.evidence)}${critic}</section>`;
 }
 
-function explanationMarkup(node) {
+function explanationMarkup(projection, node) {
   const explanation = state.explanation;
   let body = "Select this affected component to read its recorded server explanation.";
   let evidence = [];
@@ -378,7 +373,31 @@ function explanationMarkup(node) {
     evidence = explanation.receipt.explanation.evidence_refs;
     status = explanation.receipt.reused ? "Reused" : explanationStateCopy(explanation.receipt.explanation.state);
   }
-  return `<section class="component-context is-impact"><header><div><span>Conversation Manager</span><strong>${escapeHtml(node.display_name)}</strong></div><small class="component-health">${escapeHtml(status)}</small></header><p>${escapeHtml(body)}</p>${evidenceMarkup(evidence)}</section>`;
+  const conversationItems = conversationItemsFor(projection, node, explanation.receipt);
+  const conversation = conversationItemsMarkup(conversationItems);
+  const summary = conversationItems.length ? "" : `<p>${escapeHtml(body)}</p>`;
+  return `<section class="component-context is-impact"><header><div><span>Conversation Manager</span><strong>${escapeHtml(node.display_name)}</strong></div><small class="component-health">${escapeHtml(status)}</small></header>${summary}${conversation}${evidenceMarkup(evidence)}</section>`;
+}
+
+function incidentFocusMarkup(projection) {
+  const focus = projection.incident_focus;
+  if (!focus) return '<section class="incident-focus-summary is-unavailable"><strong>Incident focus unavailable</strong><p>The server has not published an auditable starting component.</p></section>';
+  const node = projection.graph.nodes.find((candidate) => candidate.component_id === focus.component_id);
+  const path = focus.affected_user_path_status === "KNOWN"
+    ? focus.affected_user_path_summary
+    : "The affected user path is not yet confirmed.";
+  return `<section class="incident-focus-summary"><span>Recommended starting point</span><strong>${escapeHtml(node?.display_name || "Affected component")}</strong><p>${escapeHtml(focus.rationale)}</p><div><span>Affected user path</span><p>${escapeHtml(path)}</p></div><small>Select ${escapeHtml(node?.display_name || "the component")} on the graph to start or reuse its recorded explanation.</small></section>`;
+}
+
+function conversationItemsFor(projection, node, receipt) {
+  const receiptItems = receipt?.explanation?.conversation_items || [];
+  if (receiptItems.length) return receiptItems;
+  return (projection?.conversation_items || []).filter((item) => item.component_id === node.component_id);
+}
+
+function conversationItemsMarkup(items) {
+  if (!items.length) return "";
+  return `<ol class="incident-conversation" aria-label="Recorded agent conversation">${items.map((item) => `<li><div><strong>Conversation Manager</strong><span>${escapeHtml(titleCase(item.knowledge_state))}</span></div><p>${escapeHtml(item.summary)}</p></li>`).join("")}</ol>`;
 }
 
 function actionCardsMarkup() {
@@ -399,7 +418,7 @@ function actionProgressMarkup() {
 function investigationEvidenceMarkup(evidence) {
   if (!evidence.length) return "";
   const details = evidence.map((item) => `<li>${escapeHtml(sourceKindCopy(item.source_kind))} · ${escapeHtml(freshnessCopy(item.freshness))} · ${escapeHtml(authorityCopy(item.authority))} · ${escapeHtml(proofScopeCopy(item.proof_scope))} · ${item.lineage_count ? `${item.lineage_count} parent record${item.lineage_count === 1 ? "" : "s"}` : "direct record"}</li>`).join("");
-  return `<details class="record-disclosure"><summary>Show evidence</summary><ul class="telemetry-provenance">${details}</ul></details>`;
+  return `<details class="agent-bar-section"><summary><span>Evidence</span><strong>${evidence.length} record${evidence.length === 1 ? "" : "s"}</strong></summary><ul class="telemetry-provenance">${details}</ul></details>`;
 }
 
 function evidenceMarkup(evidence) {
@@ -447,8 +466,8 @@ function investigationOutcomeCopy(outcome) {
   return outcome === "accepted" ? "Accepted" : "Needs review";
 }
 
-function criticDecisionCopy(decision) {
-  return ({ PASS: "Passed", FAIL: "Rejected", AMBIGUOUS: "Needs review" })[decision] || "Needs review";
+function criticOperatorStatusCopy(status) {
+  return ({ PASS: "Passed", REVISE: "Revision required", ABSTAIN: "No conclusion" })[status] || "Needs review";
 }
 
 function truthLabelCopy(label) {
