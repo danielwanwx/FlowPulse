@@ -1,6 +1,7 @@
 # Realtime Incident Connectors and Agent Workspace Design
 
-**Status:** Approved direction, design only
+**Status:** User-approved direction; concrete contract draft pending Daniel's
+review and approval
 
 **Date:** 2026-07-29
 
@@ -484,14 +485,41 @@ parse raw samples, choose thresholds, associate components, or infer health.
   "last_signal_at": "2026-07-29T18:03:10Z",
   "resolved_at": null,
   "as_of": "2026-07-29T18:03:15Z",
-  "elapsed_seconds": 490
+  "elapsed_seconds": 490,
+  "freshness": "CURRENT",
+  "fresh_until": "2026-07-29T18:03:45Z",
+  "max_interpolation_seconds": 30
 }
 ```
 
 Temporal owns `started_at`, `resolved_at`, and clock state. The query layer
 computes `as_of` and `elapsed_seconds` from trusted server time without creating
-a lifecycle transition. The frontend may format the supplied seconds but may
-not infer incident start, stop, or resolution.
+a lifecycle transition. Allowed clock states are `RUNNING`, `PAUSED`, and
+`RESOLVED`; `freshness` is `CURRENT`, `STALE`, or `DISCONNECTED`.
+
+To keep the duration visibly continuous, the frontend may interpolate
+display-only elapsed time from the latest trusted
+`(as_of, elapsed_seconds)` anchor using a monotonic local clock. Interpolation
+is allowed only while:
+
+- backend state is `RUNNING`;
+- backend freshness is `CURRENT`;
+- the local monotonic delta is no greater than
+  `max_interpolation_seconds`; and
+- trusted wall time has not passed `fresh_until`.
+
+Every projection or SSE clock update replaces the anchor and resynchronizes the
+display. If the freshness window expires, SSE disconnects beyond that window,
+or the backend reports `STALE`/`DISCONNECTED`, the UI freezes at the last
+bounded value and visibly labels the duration stale or disconnected. A backend
+`PAUSED` or `RESOLVED` state immediately stops interpolation and freezes at the
+backend-supplied `elapsed_seconds`; `RESOLVED` also renders the authoritative
+`resolved_at`.
+
+Interpolation is presentation arithmetic only. It emits no source event,
+evidence, stage, recovery, success, agent activity, projection revision, or
+projection mutation. The frontend may never infer incident start, pause,
+resolution, or lifecycle state from the passage of local time.
 
 ### Dynamic impacted graph and pulses
 
@@ -840,6 +868,12 @@ Each migration:
   without reconnect, resume strictly after a cursor, and cancel promptly.
 - Realtime Signal Bar content, graph pulses, duration state, Monitor/Triage
   activity, and citations are server-projected.
+- Duration tests anchor interpolation to backend `as_of`/`elapsed_seconds`,
+  resynchronize on projection and SSE, cap it at the explicit freshness window,
+  freeze with a visible stale/disconnected state after that window, and stop
+  immediately on backend `PAUSED` or `RESOLVED`.
+- Duration interpolation produces no API command, source event, evidence,
+  lifecycle/stage/recovery/success claim, or projection revision.
 - Reload produces the same active signals/pulses/activities; it does not start a
   connector call or agent turn.
 - A pulse references existing graph nodes/edges and admitted evidence.
@@ -894,6 +928,14 @@ The frontend:
 - renders the server’s connector state, signal order/status/freshness,
   incident-clock state, node/edge impact, pulse IDs/intervals, agent activity,
   and citations;
+- may interpolate only the displayed running duration from the latest trusted
+  server clock anchor with a monotonic local clock, bounded by
+  `fresh_until`/`max_interpolation_seconds`;
+- resynchronizes that display on every projection/SSE clock update, freezes and
+  visibly marks it stale/disconnected when the bounded freshness window is
+  exceeded, and stops immediately when the backend says `PAUSED` or `RESOLVED`;
+- never turns duration interpolation into a source fact, command, projection
+  mutation, lifecycle/stage decision, recovery claim, or success state;
 - uses `display_name`, signal `title`/`display_value`, and citation `label`
   verbatim as bounded operator-facing copy;
 - treats projection reload as canonical and SSE as ordered incremental updates;
@@ -924,7 +966,9 @@ The frontend:
   ordered SSE rather than a regenerated report.
 - **Fake dynamics:** closed. Every pulse, signal, tool activity, and freshness
   state references a durable backend event; unavailable adapters are absent or
-  explicitly unavailable.
+  explicitly unavailable. Duration continuity is limited to bounded
+  display-only interpolation from a trusted server anchor and freezes when that
+  anchor is stale, disconnected, paused, or resolved.
 - **Credential leakage:** closed. Credentials remain in scoped server-side
   stores/workers and are excluded from projection, SSE, browser, examples, and
   model context.
