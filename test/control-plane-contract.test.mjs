@@ -161,6 +161,29 @@ function investigateProjection({ disposition = "ACCEPTED", lifecycle_stage, crit
   };
 }
 
+function conversationItem({
+  sequence = 3,
+  projection_revision = 1,
+  component_id = "checkout",
+  explanation_id = "explanation-test",
+  summary = "Recorded checkout context is available."
+} = {}) {
+  return {
+    ...IDENTITY,
+    schema_version: "flowpulse.conversation-item.v1",
+    item_id: `conversation-item-${sequence}`,
+    sequence,
+    projection_revision,
+    component_id,
+    explanation_id,
+    role: "CONVERSATION_MANAGER",
+    knowledge_state: "KNOWN",
+    summary,
+    evidence_refs: [],
+    created_at: "2026-07-26T00:01:00Z"
+  };
+}
+
 function notification({ notification_id = "notification-1", sequence = 1 } = {}) {
   return {
     notification_id,
@@ -259,6 +282,64 @@ test("contract validator accepts only server identity and connected-or-classifie
   const unclassified = projection();
   unclassified.graph.nodes[2].classification_reason = null;
   assert.throws(() => parseIncidentProjection(unclassified), /classified_node_without_reason/);
+});
+
+test("staff incident projection accepts canonical focus, durable conversation, and critic operator status", () => {
+  const current = investigateProjection({ revision: 4, sequence: 6 });
+  current.incident_focus = {
+    component_id: "checkout",
+    canonical_identity: "service:checkout",
+    rationale: "Checkout is the first shared service on the affected path.",
+    affected_user_path_status: "KNOWN",
+    affected_user_path_summary: "Checkout degradation affects payment processing.",
+    incident_relation_edge_ids: ["checkout-payment"],
+    incident_relation_provenance_refs: ["topology-fixture:test#relation/checkout-payment"]
+  };
+  current.conversation_items = [conversationItem()];
+  current.investigation_result.critic.operator_status = "PASS";
+
+  const parsed = parseIncidentProjection(current);
+  assert.equal(parsed.incident_focus.component_id, "checkout");
+  assert.equal(parsed.conversation_items[0].item_id, "conversation-item-3");
+  assert.equal(investigationPresentation(parsed).critic.operator_status, "PASS");
+
+  const wrongFocus = structuredClone(current);
+  wrongFocus.incident_focus.incident_relation_edge_ids = ["unknown-edge"];
+  assert.throws(() => parseIncidentProjection(wrongFocus), /incident_focus_edge_unknown/);
+
+  const crossRunConversation = structuredClone(current);
+  crossRunConversation.conversation_items[0].run_id = "run-attacker";
+  assert.throws(() => parseIncidentProjection(crossRunConversation), /conversation_item_projection_binding_mismatch/);
+
+  const mismatchedCritic = structuredClone(current);
+  mismatchedCritic.investigation_result.critic.operator_status = "REVISE";
+  assert.throws(() => parseIncidentProjection(mismatchedCritic), /investigation_critic_operator_status_mismatch/);
+
+  const explanationSummary = "Recorded checkout context is available.";
+  const receipt = {
+    reused: true,
+    explanation: {
+      ...IDENTITY,
+      explanation_id: "explanation-test",
+      selection_key: "node_explanation:tenant-test:run-test:1:checkout:flowpulse.node-explanation.v1",
+      projection_revision: 1,
+      component_id: "checkout",
+      conversation_schema_version: "flowpulse.node-explanation.v1",
+      state: "COMPLETED",
+      summary: explanationSummary,
+      evidence_refs: [],
+      conversation_items: [conversationItem({ summary: explanationSummary })],
+      fresh_read_performed: false,
+      fresh_diagnosis_claimed: false,
+      truth_label: "TEST_DETERMINISTIC",
+      conversation_trace: {}
+    }
+  };
+  assert.equal(parseNodeExplanationReceipt(receipt).explanation.conversation_items[0].item_id, "conversation-item-3");
+
+  const mismatchedExplanation = structuredClone(receipt);
+  mismatchedExplanation.explanation.conversation_items[0].summary = "Forged conversation summary.";
+  assert.throws(() => parseNodeExplanationReceipt(mismatchedExplanation), /node_explanation_conversation_item_binding_mismatch/);
 });
 
 test("notification passively prefetches projection while focus itself makes no request or explanation", () => {

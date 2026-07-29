@@ -1,5 +1,5 @@
-// Browser-side, fail-closed boundary for frozen Incident Workspace contract v1.2
-// (backend commit 99f84dfb84fabc6d0b45148f0bc415d419ba1ff4). This module owns no
+// Browser-side, fail-closed boundary for frozen Incident Workspace contract v1.3
+// (backend commit d08b4e342ff0044c0bb13a10e32f3442b85c75df). This module owns no
 // incident truth: it only accepts complete server projections and records local
 // presentation state keyed to their canonical identity.
 
@@ -19,12 +19,17 @@ const TRUTH_LABELS = new Set(["DEGRADED", "TEST_DETERMINISTIC", "DEMO", "LIVE"])
 const INVESTIGATION_DISPOSITIONS = new Set(["ACCEPTED", "DEGRADED", "ABSTAINED", "CRITIC_REJECTED"]);
 const INVESTIGATION_CLAIM_KINDS = new Set(["OBSERVATION", "HYPOTHESIS"]);
 const CRITIC_DECISIONS = new Set(["PASS", "FAIL", "AMBIGUOUS"]);
+const CRITIC_OPERATOR_STATUSES = new Set(["PASS", "REVISE", "ABSTAIN"]);
+const AFFECTED_USER_PATH_STATUSES = new Set(["KNOWN", "UNKNOWN"]);
+const CONVERSATION_ROLES = new Set(["CONVERSATION_MANAGER"]);
+const CONVERSATION_KNOWLEDGE_STATES = new Set(["KNOWN", "UNKNOWN"]);
 const EVIDENCE_AUTHORITIES = new Set(["T0_AUTHORITATIVE_CURRENT", "T1_DIRECT_CURRENT", "T2_DERIVED", "T3_HISTORICAL", "T4_UNTRUSTED"]);
 const EVIDENCE_FRESHNESS = new Set(["CURRENT", "AGING", "STALE", "UNKNOWN"]);
 const EVIDENCE_PROOF_SCOPES = new Set(["CURRENT_OBSERVATION", "REFERENCE_ONLY"]);
 const EVIDENCE_SOURCE_KINDS = new Set(["METRIC", "LOG", "TRACE", "CHANGE", "CONFIG", "TOPOLOGY", "KNOWLEDGE", "SOURCE_READBACK"]);
 const NOTIFICATION_TYPES = new Set(["incident.accepted", "incident.updated"]);
 const IDENTITY_KEYS = ["tenant_id", "incident_id", "run_id", "topology_revision", "case_id", "case_revision", "workflow_id", "workflow_run_id", "created_at"];
+const CORRELATION_KEYS = IDENTITY_KEYS.filter((field) => field !== "created_at");
 const VERSION_BUNDLE_KEYS = [
   "capability_registry_version", "card_schema_version", "context_pack_version", "core_policy_version", "evidence_schema_version",
   "model_policy_version", "policy_version", "role_prompt_version", "schema_version", "tool_schema_version", "workflow_version"
@@ -87,7 +92,8 @@ export function parseIncidentProjection(value) {
     ...IDENTITY_KEYS,
     "schema_version", "projection_revision", "sequence", "lifecycle_state", "status", "operator_title", "operator_summary",
     "generated_at", "graph", "impacted_path", "evidence_revision", "gate_revision", "action_revision",
-    "evidence_refs", "degraded_code", "lifecycle_stage", "gate1_state", "investigation_result"
+    "evidence_refs", "degraded_code", "lifecycle_stage", "gate1_state", "investigation_result", "incident_focus",
+    "conversation_items"
   ], "incident_projection_unknown_field", [
     ...IDENTITY_KEYS, "projection_revision", "sequence", "lifecycle_state", "status", "generated_at", "graph",
     "evidence_revision", "gate_revision", "action_revision"
@@ -114,7 +120,13 @@ export function parseIncidentProjection(value) {
   const gate1_state = value.gate1_state === undefined ? "NONE" : value.gate1_state;
   assertEnum(lifecycle_stage, LIFECYCLE_STAGES, "lifecycle_stage_invalid");
   assertEnum(gate1_state, GATE1_STATES, "gate1_state_invalid");
+  const incident_focus = value.incident_focus === undefined || value.incident_focus === null
+    ? null
+    : parseIncidentFocus(value.incident_focus, graph, impacted_path);
+  const conversation_items = parseConversationItems(value.conversation_items === undefined ? [] : value.conversation_items, value, graph, 128);
   const projection = { ...clone(value), graph, impacted_path, evidence_refs };
+  if (value.incident_focus !== undefined) projection.incident_focus = incident_focus;
+  if (value.conversation_items !== undefined) projection.conversation_items = conversation_items;
   if (value.investigation_result !== undefined && value.investigation_result !== null) {
     projection.investigation_result = parseInvestigationResult(value.investigation_result, projection);
   }
@@ -141,7 +153,11 @@ export function investigationPresentation(value) {
     summary: result.summary,
     claims: result.claims.map(({ kind, statement }) => ({ kind, statement })),
     evidence: result.evidence.map(({ source_kind, observed_at, freshness, authority, proof_scope, parent_evidence_refs }) => ({ source_kind, observed_at, freshness, authority, proof_scope, lineage_count: parent_evidence_refs.length })),
-    critic: result.critic ? { identity: result.critic.identity, decision: result.critic.decision } : null,
+    critic: result.critic ? {
+      identity: result.critic.identity,
+      decision: result.critic.decision,
+      operator_status: result.critic.operator_status
+    } : null,
     truth_label: result.truth_label
   };
 }
@@ -569,17 +585,21 @@ function parseInvestigationEvidence(value) {
 }
 
 function parseInvestigationCritic(value, claims, evidenceIds) {
-  exactObject(value, ["critic_id", "identity", "decision", "evidence_refs", "reason_codes", "reviewed_claim_ids"], "investigation_critic_unknown_field", ["critic_id", "identity", "decision"]);
+  exactObject(value, ["critic_id", "identity", "decision", "operator_status", "evidence_refs", "reason_codes", "reviewed_claim_ids"], "investigation_critic_unknown_field", ["critic_id", "identity", "decision"]);
   assertText(value.critic_id, "investigation_critic_id_invalid");
   assertText(value.identity, "investigation_critic_identity_invalid");
   assertEnum(value.decision, CRITIC_DECISIONS, "investigation_critic_decision_invalid");
+  const expectedOperatorStatus = ({ PASS: "PASS", FAIL: "REVISE", AMBIGUOUS: "ABSTAIN" })[value.decision];
+  const operator_status = value.operator_status === undefined ? expectedOperatorStatus : value.operator_status;
+  assertEnum(operator_status, CRITIC_OPERATOR_STATUSES, "investigation_critic_operator_status_invalid");
+  if (operator_status !== expectedOperatorStatus) fail("investigation_critic_operator_status_mismatch");
   const evidence_refs = stringList(value.evidence_refs === undefined ? [] : value.evidence_refs, "investigation_critic_evidence_invalid");
   if (evidence_refs.some((evidenceId) => !evidenceIds.has(evidenceId))) fail("investigation_critic_evidence_mismatch");
   const reason_codes = stringList(value.reason_codes === undefined ? [] : value.reason_codes, "investigation_critic_reason_invalid");
   const reviewed_claim_ids = stringList(value.reviewed_claim_ids === undefined ? [] : value.reviewed_claim_ids, "investigation_critic_claim_invalid");
   const claimIds = new Set(claims.map((claim) => claim.claim_id));
   if (reviewed_claim_ids.some((claimId) => !claimIds.has(claimId))) fail("investigation_critic_claim_mismatch");
-  return { ...clone(value), evidence_refs, reason_codes, reviewed_claim_ids };
+  return { ...clone(value), operator_status, evidence_refs, reason_codes, reviewed_claim_ids };
 }
 
 function parseVersionBundle(value) {
@@ -662,10 +682,88 @@ function parseGraphEdge(value, componentIds) {
   return clone(value);
 }
 
+function parseIncidentFocus(value, graph, impactedPath) {
+  exactObject(value, [
+    "component_id", "canonical_identity", "rationale", "affected_user_path_status", "affected_user_path_summary",
+    "incident_relation_edge_ids", "incident_relation_provenance_refs"
+  ], "incident_focus_unknown_field", [
+    "component_id", "canonical_identity", "rationale", "affected_user_path_status",
+    "incident_relation_edge_ids", "incident_relation_provenance_refs"
+  ]);
+  assertText(value.component_id, "incident_focus_component_invalid");
+  assertText(value.canonical_identity, "incident_focus_identity_invalid");
+  assertText(value.rationale, "incident_focus_rationale_invalid");
+  assertEnum(value.affected_user_path_status, AFFECTED_USER_PATH_STATUSES, "incident_focus_path_status_invalid");
+  if (value.affected_user_path_summary !== undefined && value.affected_user_path_summary !== null) {
+    assertText(value.affected_user_path_summary, "incident_focus_path_summary_invalid");
+  }
+  if (value.affected_user_path_status === "KNOWN" && !value.affected_user_path_summary) fail("incident_focus_known_path_summary_required");
+  if (value.affected_user_path_status === "UNKNOWN" && value.affected_user_path_summary !== undefined && value.affected_user_path_summary !== null) {
+    fail("incident_focus_unknown_path_summary_forbidden");
+  }
+  const incident_relation_edge_ids = stringList(value.incident_relation_edge_ids, "incident_focus_edge_ids_invalid");
+  const incident_relation_provenance_refs = stringList(value.incident_relation_provenance_refs, "incident_focus_provenance_invalid");
+  if (!incident_relation_edge_ids.length || incident_relation_edge_ids.length > 32
+    || incident_relation_edge_ids.length !== incident_relation_provenance_refs.length) {
+    fail("incident_focus_edge_provenance_mismatch");
+  }
+  const node = graph.nodes.find((candidate) => candidate.component_id === value.component_id);
+  if (!node || node.canonical_identity !== value.canonical_identity || node.impact_status !== "impacted" || !impactedPath.includes(value.component_id)) {
+    fail("incident_focus_component_not_impacted_or_canonical");
+  }
+  const impacted = new Set(impactedPath);
+  const edges = new Map(graph.edges.map((edge) => [edge.edge_id, edge]));
+  for (const edgeId of incident_relation_edge_ids) {
+    const edge = edges.get(edgeId);
+    if (!edge) fail("incident_focus_edge_unknown");
+    if (!impacted.has(edge.source_component_id) || !impacted.has(edge.target_component_id)) fail("incident_focus_edge_not_impacted");
+  }
+  return { ...clone(value), incident_relation_edge_ids, incident_relation_provenance_refs };
+}
+
+function parseConversationItems(value, binding, graph, maxItems) {
+  if (!Array.isArray(value) || value.length > maxItems) fail("conversation_items_invalid");
+  const items = value.map((item) => parseConversationItem(item, binding, graph));
+  const sequences = items.map((item) => item.sequence);
+  const itemIds = items.map((item) => item.item_id);
+  if (sequences.some((sequence, index) => index > 0 && sequence <= sequences[index - 1])) fail("conversation_items_not_ordered");
+  if (new Set(itemIds).size !== itemIds.length) fail("conversation_item_duplicate");
+  return items;
+}
+
+function parseConversationItem(value, binding, graph) {
+  exactObject(value, [
+    ...IDENTITY_KEYS, "schema_version", "item_id", "sequence", "projection_revision", "component_id", "explanation_id",
+    "role", "knowledge_state", "summary", "evidence_refs"
+  ], "conversation_item_unknown_field", [
+    ...IDENTITY_KEYS, "item_id", "sequence", "projection_revision", "component_id", "explanation_id",
+    "knowledge_state", "summary"
+  ]);
+  parseIdentity(value);
+  if (value.schema_version !== undefined && value.schema_version !== "flowpulse.conversation-item.v1") fail("conversation_item_schema_invalid");
+  assertText(value.item_id, "conversation_item_id_invalid");
+  assertInteger(value.sequence, "conversation_item_sequence_invalid");
+  assertInteger(value.projection_revision, "conversation_item_projection_revision_invalid");
+  assertText(value.component_id, "conversation_item_component_invalid");
+  assertText(value.explanation_id, "conversation_item_explanation_invalid");
+  const role = value.role === undefined ? "CONVERSATION_MANAGER" : value.role;
+  assertEnum(role, CONVERSATION_ROLES, "conversation_item_role_invalid");
+  assertEnum(value.knowledge_state, CONVERSATION_KNOWLEDGE_STATES, "conversation_item_knowledge_state_invalid");
+  assertText(value.summary, "conversation_item_summary_invalid");
+  const evidence_refs = stringList(value.evidence_refs === undefined ? [] : value.evidence_refs, "conversation_item_evidence_invalid");
+  if (!CORRELATION_KEYS.every((field) => binding[field] === value[field])
+    || value.projection_revision > binding.projection_revision
+    || !graph.nodes.some((node) => node.component_id === value.component_id)) {
+    fail("conversation_item_projection_binding_mismatch");
+  }
+  return { ...clone(value), role, evidence_refs };
+}
+
 function parseNodeExplanation(value) {
   exactObject(value, [
     ...IDENTITY_KEYS, "explanation_id", "selection_key", "projection_revision", "component_id", "conversation_schema_version",
-    "state", "summary", "evidence_refs", "fresh_read_performed", "fresh_diagnosis_claimed", "degraded_code", "truth_label", "conversation_trace"
+    "state", "summary", "evidence_refs", "fresh_read_performed", "fresh_diagnosis_claimed", "degraded_code", "truth_label",
+    "conversation_trace", "conversation_items"
   ], "node_explanation_unknown_field", [
     ...IDENTITY_KEYS, "explanation_id", "selection_key", "projection_revision", "component_id", "conversation_schema_version",
     "state", "summary"
@@ -684,7 +782,22 @@ function parseNodeExplanation(value) {
   if (value.degraded_code !== undefined && value.degraded_code !== null) assertText(value.degraded_code, "degraded_code_invalid");
   if (value.truth_label !== undefined && value.truth_label !== null) assertEnum(value.truth_label, TRUTH_LABELS, "truth_label_invalid");
   if (value.conversation_trace !== undefined && value.conversation_trace !== null && !plainObject(value.conversation_trace)) fail("conversation_trace_invalid");
-  return { ...clone(value), evidence_refs };
+  const conversation_items = parseConversationItems(
+    value.conversation_items === undefined ? [] : value.conversation_items,
+    { ...value, projection_revision: value.projection_revision },
+    { nodes: [{ component_id: value.component_id }] },
+    16
+  );
+  for (const item of conversation_items) {
+    if (item.projection_revision !== value.projection_revision || item.component_id !== value.component_id
+      || item.explanation_id !== value.explanation_id || item.summary !== value.summary
+      || JSON.stringify(item.evidence_refs) !== JSON.stringify(evidence_refs)) {
+      fail("node_explanation_conversation_item_binding_mismatch");
+    }
+  }
+  const explanation = { ...clone(value), evidence_refs };
+  if (value.conversation_items !== undefined) explanation.conversation_items = conversation_items;
+  return explanation;
 }
 
 function parseNextBestAction(value) {
