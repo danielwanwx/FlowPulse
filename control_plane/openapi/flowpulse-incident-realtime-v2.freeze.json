@@ -5,6 +5,6 @@
   },
   "generated_at": "deterministic-from-source",
   "hash_algorithm": "sha256",
-  "producer_implementation_git_sha": "1e51bec29f0c40c59d4dcc5d1d9ae9f12b782f3c",
+  "producer_implementation_git_sha": "50441b51bfbbd857ac27343f659fc42eb2e6ff62",
   "schema_version": "flowpulse.incident-realtime.freeze.v2"
 }
