@@ -1,0 +1,9 @@
+groups:
+  - name: flowpulse-phase1a-test-deterministic
+    interval: 5s
+    rules:
+      - record: flowpulse_checkout_error_rate
+        expr: vector(0.084)
+        labels:
+          service: checkout
+          truth_label: TEST_DETERMINISTIC

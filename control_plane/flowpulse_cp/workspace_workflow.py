@@ -47,6 +47,13 @@ with workflow.unsafe.imports_passed_through():
         temporal_investigation_finalize_activity,
     )
     from .workspace_versions import WORKSPACE_V2_WORKFLOW_TYPE
+    from .realtime_models import (
+        ConnectorPollResult,
+        RealtimeCommitActivityPacket,
+        RealtimePollActivityPacket,
+        RealtimeUpdateCommand,
+        RealtimeUpdateOutcome,
+    )
 
 
 WORKSPACE_V2_ACTIONS_PATCH = "workspace-v2-gate1-next-best-actions"
@@ -67,6 +74,8 @@ class IncidentWorkspaceTemporalWorkflow:
         self._explanations: Dict[str, Dict[str, Any]] = {}
         self._actions: Dict[str, Dict[str, Any]] = {}
         self._action_receipts: Dict[str, Dict[str, Any]] = {}
+        self._realtime_projection = None
+        self._realtime_receipts: Dict[str, Dict[str, Any]] = {}
         self._lock = asyncio.Lock()
 
     def _packet(self, stage: str, *, command: NodeExplanationStart = None, actor=None) -> WorkspaceActivityPacket:
@@ -335,3 +344,56 @@ class IncidentWorkspaceTemporalWorkflow:
             or command.projection_revision != self._projection.projection_revision
         ):
             raise ValueError("workspace_action_identity_or_revision_mismatch")
+
+    @workflow.update(name="reconcile_realtime_connector")
+    async def reconcile_realtime_connector(self, command_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Read one server-registered connector and accept one typed fact transition."""
+        try:
+            command = RealtimeUpdateCommand.parse_obj(command_data)
+            await workflow.wait_condition(lambda: self._initialized)
+            self._validate_realtime_command(command)
+            async with self._lock:
+                prior = self._realtime_receipts.get(command.idempotency_key)
+                if prior is not None:
+                    return prior
+                self._validate_realtime_command(command)
+                polled = ConnectorPollResult.parse_obj(
+                    await self._action_activity(
+                        "workspace_poll_realtime_connector_activity",
+                        RealtimePollActivityPacket(
+                            command=command, projection=self._projection,
+                        ).dict(),
+                    ),
+                )
+                self._event_sequence += 1
+                outcome = RealtimeUpdateOutcome.parse_obj(
+                    await self._action_activity(
+                        "workspace_commit_realtime_source_event_activity",
+                        RealtimeCommitActivityPacket(
+                            command=command,
+                            projection=self._projection,
+                            prior_realtime_projection=self._realtime_projection,
+                            event_sequence=self._event_sequence,
+                            poll_result=polled,
+                        ).dict(),
+                    ),
+                )
+                if not outcome.accepted or outcome.projection is None or outcome.workspace_projection is None:
+                    raise ValueError(outcome.reason or "realtime_connector_event_not_accepted")
+                self._projection = outcome.workspace_projection
+                self._realtime_projection = outcome.projection
+                payload = outcome.dict()
+                self._realtime_receipts[command.idempotency_key] = payload
+                return payload
+        except (ValidationError, ValueError) as error:
+            return {"accepted": False, "reason": str(error)}
+
+    def _validate_realtime_command(self, command: RealtimeUpdateCommand) -> None:
+        if (
+            command.tenant_id != self._binding.tenant_id
+            or command.case_id != self._binding.case_id
+            or command.incident_id != self._binding.incident_id
+            or command.run_id != self._binding.run_id
+            or command.topology_revision != self._binding.topology_revision
+        ):
+            raise ValueError("realtime_connector_command_binding_mismatch")

@@ -1,0 +1,10 @@
+{
+  "artifacts": {
+    "flowpulse-incident-realtime-v2.examples.json": "92a45443e7ba3740d24aae2b70f4420a2517951acafa08c025926bfbf8d72f16",
+    "flowpulse-incident-realtime-v2.openapi.json": "5087945789d47f5c438288ce494e02513de487b86991dd325749fa85febcb977"
+  },
+  "generated_at": "deterministic-from-source",
+  "hash_algorithm": "sha256",
+  "producer_baseline_git_sha": "638b120b10eab189a0fae1a115534e8870e2d3e3",
+  "schema_version": "flowpulse.incident-realtime.freeze.v2"
+}

@@ -62,6 +62,7 @@ from .workspace_investigation import (
     WorkspaceInvestigationStageRecord,
     validate_workspace_investigation_commit,
 )
+from .realtime_repository import RealtimePostgresMixin
 
 
 T = TypeVar("T")
@@ -176,7 +177,7 @@ def activity_event_identity(packet: TemporalActivityPacket, activity_id: str) ->
     ))
 
 
-class PostgresCaseRepository:
+class PostgresCaseRepository(RealtimePostgresMixin):
     def __init__(self, dsn: str, failure_injector=None) -> None:
         self.dsn = dsn
         self.pool: Optional[asyncpg.Pool] = None

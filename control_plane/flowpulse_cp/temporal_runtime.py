@@ -99,6 +99,19 @@ from .workspace_actions import (
 )
 from .workspace_workflow import IncidentWorkspaceTemporalWorkflow
 from .workspace_registration import workspace_workflow_definitions
+from .realtime_models import RealtimeUpdateCommand, RealtimeUpdateOutcome
+from .realtime_activities import RealtimeActivityDispatcher, build_realtime_activities
+from .realtime_adapters import (
+    BoundedJsonReader,
+    ConfiguredPrometheusConnector,
+    ConnectorEndpointPolicy,
+    UnavailableOtelAdapter,
+)
+from .realtime_models import (
+    ConnectorProvider,
+    ConnectorRegistration,
+    ConnectorTruthLabel,
+)
 
 
 class TemporalStarter:
@@ -219,6 +232,29 @@ class WorkspaceTemporalStarter:
         if projection.workflow_run_id != handle.result_run_id:
             raise RuntimeError("workspace_temporal_run_correlation_mismatch")
         return projection
+
+    async def reconcile_realtime_connector(
+        self, projection: IncidentProjection, connector_id: str, idempotency_key: str,
+        actor_subject_id: str,
+    ) -> RealtimeUpdateOutcome:
+        client = await Client.connect(self.address)
+        handle = client.get_workflow_handle(
+            projection.workflow_id, run_id=projection.workflow_run_id,
+        )
+        response = await handle.execute_update(
+            IncidentWorkspaceTemporalWorkflow.reconcile_realtime_connector,
+            RealtimeUpdateCommand(
+                tenant_id=projection.tenant_id,
+                actor_subject_id=actor_subject_id,
+                case_id=projection.case_id,
+                incident_id=projection.incident_id,
+                run_id=projection.run_id,
+                topology_revision=projection.topology_revision,
+                connector_id=connector_id,
+                idempotency_key=idempotency_key,
+            ).dict(),
+        )
+        return RealtimeUpdateOutcome.parse_obj(response)
 
     async def start_or_reuse_node_explanation(
         self, projection: IncidentProjection, command: NodeExplanationStart, authorization,
@@ -590,6 +626,11 @@ async def run_worker(
     local_deterministic_evidence: bool = False,
     provider_settings: Optional[ProviderSettings] = None,
     deterministic_test_providers_enabled: bool = False,
+    prometheus_url: Optional[str] = None,
+    prometheus_expression: str = "flowpulse_checkout_error_rate",
+    connector_allowed_origins=None,
+    connector_allow_private_origins: bool = False,
+    otel_query_url: Optional[str] = None,
 ) -> None:
     client = await Client.connect(address)
     repository = PostgresCaseRepository(postgres_dsn)
@@ -647,6 +688,52 @@ async def run_worker(
         specialist_roles=[ConversationRole.EVIDENCE_SPECIALIST, ConversationRole.TOPOLOGY_SPECIALIST],
         max_output_tokens=resolved_provider_settings.max_output_tokens,
     )
+    connector_truth_label = (
+        ConnectorTruthLabel.TEST_DETERMINISTIC
+        if resolved_provider_settings.mode == ProviderMode.TEST
+        else ConnectorTruthLabel.LIVE
+    )
+    realtime_adapters = {}
+    if prometheus_url:
+        prometheus_registration = ConnectorRegistration(
+            connector_id="connector-prometheus-primary",
+            tenant_id=source_tenant_id,
+            provider=ConnectorProvider.PROMETHEUS,
+            adapter_version="prometheus-read.v1",
+            data_classes=["METRIC"],
+            capabilities=["METRICS"],
+            freshness_sla_seconds=60,
+            enabled=True,
+            truth_label=connector_truth_label,
+        )
+        await repository.register_realtime_connector(prometheus_registration)
+        endpoint_policy = ConnectorEndpointPolicy(
+            allowed_origins=list(connector_allowed_origins or []),
+            allow_private_origins=connector_allow_private_origins,
+        )
+        realtime_adapters[prometheus_registration.connector_id] = ConfiguredPrometheusConnector(
+            registration=prometheus_registration,
+            base_url=prometheus_url,
+            expression=prometheus_expression,
+            reader=BoundedJsonReader(endpoint_policy),
+            artifact_store=artifacts,
+            repository=repository,
+        )
+    otel_registration = ConnectorRegistration(
+        connector_id="connector-otel-primary",
+        tenant_id=source_tenant_id,
+        provider=ConnectorProvider.OTEL,
+        adapter_version="otel-read.v1",
+        data_classes=["TRACE", "LOG"],
+        capabilities=["TRACES", "LOGS"],
+        freshness_sla_seconds=60,
+        # Phase 1A has no safe OTEL query adapter. A configured URL remains
+        # truthfully unavailable until that bounded adapter is implemented.
+        enabled=False,
+        truth_label=connector_truth_label,
+    )
+    await repository.register_realtime_connector(otel_registration)
+    await UnavailableOtelAdapter(otel_registration, repository).health()
     async with Worker(
         client, task_queue=task_queue,
         workflows=[
@@ -664,6 +751,9 @@ async def run_worker(
                 investigation_synthesizer=investigation_synthesizer,
                 investigation_critic=investigation_critic,
                 topology_provider=topology_provider,
+            ))
+            + build_realtime_activities(RealtimeActivityDispatcher(
+                repository, realtime_adapters,
             ))
         ),
     ):

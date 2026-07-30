@@ -14,7 +14,12 @@ from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
 
 from flowpulse_cp.workspace_activities import WorkspaceActivityDispatcher, build_workspace_activities
-from flowpulse_cp.workspace_models import NodeExplanationStart, WorkspaceNodeExplanationInvocation, WorkspaceWorkflowRequest
+from flowpulse_cp.workspace_models import (
+    IncidentProjection,
+    NodeExplanationStart,
+    WorkspaceNodeExplanationInvocation,
+    WorkspaceWorkflowRequest,
+)
 from flowpulse_cp.workspace_actions import (
     ActionInvocationCommand,
     Gate1LeaseAuthority,
@@ -80,7 +85,7 @@ class WorkspaceWorkflowTests(unittest.IsolatedAsyncioTestCase):
                     IncidentWorkspaceTemporalWorkflow.await_workspace_projection,
                 )
                 persisted = await repository.get_projection("tenant-a", "case-a")
-                self.assertEqual(persisted.dict(), returned)
+                self.assertEqual(persisted, IncidentProjection.parse_obj(returned))
                 self.assertEqual(22, len(persisted.graph.nodes))
                 self.assertEqual(29, len(persisted.graph.edges))
                 self.assertEqual(

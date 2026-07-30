@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 import json
 import os
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from pydantic import ValidationError
 
@@ -87,6 +87,11 @@ class WorkerSettings:
     temporal_task_queue: str
     provider_settings: ProviderSettings
     deterministic_test_providers_enabled: bool
+    prometheus_url: Optional[str]
+    prometheus_expression: str
+    connector_allowed_origins: List[str]
+    connector_allow_private_origins: bool
+    otel_query_url: Optional[str]
 
     @classmethod
     def from_environment(cls) -> "WorkerSettings":
@@ -106,6 +111,21 @@ class WorkerSettings:
             raise ProviderConfigurationError(
                 "deterministic_test_providers_require_explicit_test_mode",
             )
+        private_switch = os.environ.get("FLOWPULSE_CONNECTOR_ALLOW_PRIVATE_ORIGINS", "0")
+        if private_switch not in {"0", "1"}:
+            raise RuntimeError("connector_allow_private_origins_must_be_0_or_1")
+        allow_private = private_switch == "1"
+        if allow_private and provider_settings.mode not in {ProviderMode.TEST, ProviderMode.DEMO}:
+            raise RuntimeError("connector_private_origins_require_test_or_demo_mode")
+        allowed_origins = [
+            item.strip()
+            for item in os.environ.get("FLOWPULSE_CONNECTOR_ALLOWED_ORIGINS", "").split(",")
+            if item.strip()
+        ]
+        prometheus_url = os.environ.get("FLOWPULSE_PROMETHEUS_URL") or None
+        otel_query_url = os.environ.get("FLOWPULSE_OTEL_QUERY_URL") or None
+        if (prometheus_url or otel_query_url) and not allowed_origins:
+            raise RuntimeError("configured_connector_requires_exact_origin_allowlist")
         return cls(
             temporal_address=required("FLOWPULSE_TEMPORAL_ADDRESS"),
             postgres_dsn=required("FLOWPULSE_POSTGRES_DSN"),
@@ -124,6 +144,14 @@ class WorkerSettings:
             temporal_task_queue=required("FLOWPULSE_TEMPORAL_TASK_QUEUE"),
             provider_settings=provider_settings,
             deterministic_test_providers_enabled=deterministic_test_providers_enabled,
+            prometheus_url=prometheus_url,
+            prometheus_expression=os.environ.get(
+                "FLOWPULSE_PROMETHEUS_EXPRESSION",
+                "flowpulse_checkout_error_rate",
+            ),
+            connector_allowed_origins=allowed_origins,
+            connector_allow_private_origins=allow_private,
+            otel_query_url=otel_query_url,
         )
 
 

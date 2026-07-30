@@ -53,12 +53,30 @@ services:
       FLOWPULSE_LOCAL_DETERMINISTIC_EVIDENCE: "1"
       FLOWPULSE_PROVIDER_MODE: ${FLOWPULSE_PROVIDER_MODE:-standard}
       FLOWPULSE_ENABLE_DETERMINISTIC_TEST_PROVIDERS: ${FLOWPULSE_ENABLE_DETERMINISTIC_TEST_PROVIDERS:-0}
+      FLOWPULSE_PROMETHEUS_URL: ${FLOWPULSE_PROMETHEUS_URL:-}
+      FLOWPULSE_PROMETHEUS_EXPRESSION: ${FLOWPULSE_PROMETHEUS_EXPRESSION:-flowpulse_checkout_error_rate}
+      FLOWPULSE_CONNECTOR_ALLOWED_ORIGINS: ${FLOWPULSE_CONNECTOR_ALLOWED_ORIGINS:-}
+      FLOWPULSE_CONNECTOR_ALLOW_PRIVATE_ORIGINS: ${FLOWPULSE_CONNECTOR_ALLOW_PRIVATE_ORIGINS:-0}
+      FLOWPULSE_OTEL_QUERY_URL: ${FLOWPULSE_OTEL_QUERY_URL:-}
     depends_on:
       postgres: {condition: service_healthy}
       migrate: {condition: service_completed_successfully}
       temporal: {condition: service_healthy}
       authz: {condition: service_healthy}
       minio-init: {condition: service_completed_successfully}
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/phase1a.rules.yml:/etc/prometheus/phase1a.rules.yml:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9090/-/ready"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
   authz:
     build:
       context: .

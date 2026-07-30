@@ -283,6 +283,26 @@ if ! ledger_has "011_workspace_subject_scope_guard.sql" && \
   echo "migration_partial_schema_unrecorded:011_workspace_subject_scope_guard.sql" >&2
   exit 1
 fi
+if ! ledger_has "012_connector_registry.sql" && \
+  [ "$(psql -Atq -c "SELECT to_regclass('public.connector_registrations') IS NOT NULL OR to_regclass('public.external_identity_bindings') IS NOT NULL OR to_regclass('public.connector_health_snapshots') IS NOT NULL")" = "t" ]; then
+  echo "migration_partial_schema_unrecorded:012_connector_registry.sql" >&2
+  exit 1
+fi
+if ! ledger_has "013_connector_source_events.sql" && \
+  [ "$(psql -Atq -c "SELECT to_regclass('public.connector_source_events') IS NOT NULL OR to_regclass('public.connector_dispatch_outbox') IS NOT NULL")" = "t" ]; then
+  echo "migration_partial_schema_unrecorded:013_connector_source_events.sql" >&2
+  exit 1
+fi
+if ! ledger_has "014_incident_realtime_projection.sql" && \
+  [ "$(psql -Atq -c "SELECT to_regclass('public.incident_realtime_projections') IS NOT NULL OR to_regclass('public.incident_realtime_events') IS NOT NULL")" = "t" ]; then
+  echo "migration_partial_schema_unrecorded:014_incident_realtime_projection.sql" >&2
+  exit 1
+fi
+if ! ledger_has "015_agent_workspace_activity.sql" && \
+  [ "$(psql -Atq -c "SELECT to_regclass('public.realtime_agent_activities') IS NOT NULL")" = "t" ]; then
+  echo "migration_partial_schema_unrecorded:015_agent_workspace_activity.sql" >&2
+  exit 1
+fi
 
 # Ledger entries must name the exact contiguous source sequence.  This rejects
 # checksum drift, unsupported future versions, and a partially edited ledger.

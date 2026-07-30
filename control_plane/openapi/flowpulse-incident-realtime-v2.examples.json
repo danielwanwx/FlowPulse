@@ -1,0 +1,149 @@
+{
+  "request_examples": {
+    "ConnectorReconcileRequest": {
+      "idempotency_key": "reconcile-example-1"
+    }
+  },
+  "response_examples": {
+    "ConnectorHealthUnavailable": {
+      "adapter_version": "otel-read.v1",
+      "checked_at": "2026-07-29 20:00:00+00:00",
+      "connector_id": "connector-otel-primary",
+      "consecutive_failures": 0,
+      "cursor": null,
+      "fresh_until": null,
+      "health_revision": 1,
+      "lag_seconds": 0,
+      "last_event_observed_at": null,
+      "last_success_at": null,
+      "provider": "OTEL",
+      "reason_code": "otel_query_endpoint_unconfigured",
+      "schema_version": "flowpulse.connector-health.v1",
+      "state": "UNAVAILABLE",
+      "tenant_id": "tenant-example",
+      "truth_label": "TEST_DETERMINISTIC"
+    },
+    "IncidentProjectionV2": {
+      "action_revision": 1,
+      "active_graph_pulses": [],
+      "agent_workspace": {
+        "activities": [],
+        "citations": [],
+        "mode": "READ_ONLY",
+        "workspace_revision": 1
+      },
+      "case_id": "workspace-case-example",
+      "case_revision": 1,
+      "connector_health": [
+        {
+          "adapter_version": "otel-read.v1",
+          "checked_at": "2026-07-29 20:00:00+00:00",
+          "connector_id": "connector-otel-primary",
+          "consecutive_failures": 0,
+          "cursor": null,
+          "fresh_until": null,
+          "health_revision": 1,
+          "lag_seconds": 0,
+          "last_event_observed_at": null,
+          "last_success_at": null,
+          "provider": "OTEL",
+          "reason_code": "otel_query_endpoint_unconfigured",
+          "schema_version": "flowpulse.connector-health.v1",
+          "state": "UNAVAILABLE",
+          "tenant_id": "tenant-example",
+          "truth_label": "TEST_DETERMINISTIC"
+        }
+      ],
+      "connector_revision": 1,
+      "conversation_items": [],
+      "created_at": "2026-07-26 00:00:00+00:00",
+      "degraded_code": "provider_unavailable",
+      "evidence_refs": [],
+      "evidence_revision": 1,
+      "gate1_state": "NONE",
+      "gate_revision": 1,
+      "generated_at": "2026-07-26 00:00:00+00:00",
+      "graph": {
+        "edges": [
+          {
+            "edge_id": "frontend->checkout",
+            "source_component_id": "frontend",
+            "status": "impacted",
+            "target_component_id": "checkout"
+          }
+        ],
+        "nodes": [
+          {
+            "canonical_identity": "service:frontend",
+            "classification_reason": null,
+            "component_id": "frontend",
+            "display_name": "Frontend",
+            "impact_status": "impacted",
+            "membership": "CONNECTED",
+            "runtime_status": "degraded"
+          },
+          {
+            "canonical_identity": "service:checkout",
+            "classification_reason": null,
+            "component_id": "checkout",
+            "display_name": "Checkout",
+            "impact_status": "impacted",
+            "membership": "CONNECTED",
+            "runtime_status": "degraded"
+          }
+        ]
+      },
+      "impacted_path": [
+        "frontend",
+        "checkout"
+      ],
+      "incident_clock": {
+        "as_of": "2026-07-29 20:00:00+00:00",
+        "elapsed_seconds": 0,
+        "fresh_until": "2026-07-29 20:00:30+00:00",
+        "freshness": "CURRENT",
+        "last_signal_at": null,
+        "max_interpolation_seconds": 30,
+        "resolved_at": null,
+        "started_at": "2026-07-29 20:00:00+00:00",
+        "state": "RUNNING"
+      },
+      "incident_focus": {
+        "affected_user_path_status": "KNOWN",
+        "affected_user_path_summary": "Checkout requests on the affected user path are degraded.",
+        "canonical_identity": "service:checkout",
+        "component_id": "checkout",
+        "incident_relation_edge_ids": [
+          "frontend->checkout"
+        ],
+        "incident_relation_provenance_refs": [
+          "topology-fixture:example#relation/frontend->checkout"
+        ],
+        "rationale": "Checkout is the first shared service on the audited affected user path."
+      },
+      "incident_id": "incident-example",
+      "investigation_result": null,
+      "lifecycle_stage": "INVESTIGATE",
+      "lifecycle_state": "DEGRADED",
+      "operator_summary": "Checkout requests are degraded.",
+      "operator_title": "Checkout latency",
+      "projection_revision": 1,
+      "realtime_signals": [],
+      "run_id": "run-example-01",
+      "schema_version": "flowpulse.incident-projection.v2",
+      "sequence": 1,
+      "source_revision": 1,
+      "status": "provider_unavailable",
+      "tenant_id": "tenant-example",
+      "topology_revision": "topology-v1-example",
+      "workflow_id": "flowpulse.incident-workspace:tenant-example:run-example-01",
+      "workflow_run_id": "temporal-run-example"
+    }
+  },
+  "schema_version": "flowpulse.realtime-contract-examples.v2",
+  "truth": {
+    "external_write_performed": false,
+    "fixture_label": "TEST_DETERMINISTIC",
+    "otel_adapter_state": "UNAVAILABLE"
+  }
+}

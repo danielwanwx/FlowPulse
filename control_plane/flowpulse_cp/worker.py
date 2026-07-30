@@ -19,4 +19,9 @@ if __name__ == "__main__":
         local_deterministic_evidence=os.environ.get("FLOWPULSE_LOCAL_DETERMINISTIC_EVIDENCE") == "1",
         provider_settings=settings.provider_settings,
         deterministic_test_providers_enabled=settings.deterministic_test_providers_enabled,
+        prometheus_url=settings.prometheus_url,
+        prometheus_expression=settings.prometheus_expression,
+        connector_allowed_origins=settings.connector_allowed_origins,
+        connector_allow_private_origins=settings.connector_allow_private_origins,
+        otel_query_url=settings.otel_query_url,
     ))
