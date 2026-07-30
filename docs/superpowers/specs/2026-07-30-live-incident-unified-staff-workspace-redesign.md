@@ -238,10 +238,19 @@ It does **not** include complete receipt maps, samples, timeline items, evidence
 bodies, or every historical idempotency key.
 
 Idempotency receipts and realtime dedupe records move to tenant-scoped
-Postgres tables with retention and lookup by stable public identity. Workflow
-state carries only bounded recent-key fingerprints needed for deterministic
-in-flight handling plus durable high-water marks. Raw samples, full activity
-history, and evidence bodies remain referenced in Postgres/MinIO.
+Postgres tables with lookup by stable public identity. Every issued command
+declares a server-owned `idempotency_valid_until` at least as long as its
+action/authorization validity. Full receipts remain available through that
+time. After receipt-detail retention, a compact tombstone containing tenant,
+stable public identity, command type, idempotency-key hash, terminal outcome
+class, and original receipt reference remains for the configured audit/dedupe
+horizon. A retry during the validity window returns the original receipt; a
+retry after command expiry returns `IDEMPOTENCY_KEY_EXPIRED` and never
+re-executes. Tombstone deletion is permitted only after both validity and
+audit/dedupe horizons have elapsed. Workflow state carries only bounded recent
+key fingerprints needed for deterministic in-flight handling plus durable
+high-water marks. Raw samples, full activity history, and evidence bodies
+remain referenced in Postgres/MinIO.
 
 `continue-as-new` preserves the stable public identity, decision state, and
 ordered case event stream. The frontend must not observe a new incident, URL,
@@ -278,8 +287,8 @@ transaction:
 
 1. its canonical per-case projection/event;
 2. its contribution to the tenant Live materialized projection;
-3. a tenant-global Live outbox row with a sequence allocated by a
-   tenant-scoped database sequence/locked counter; and
+3. a tenant-global Live outbox row with a contiguous sequence allocated by a
+   transactionally locked tenant counter row; and
 4. the resulting Live snapshot watermark.
 
 The Live aggregation transaction applies deterministic precedence using
@@ -287,6 +296,8 @@ accepted severity, lifecycle, incident start time, and stable incident ID.
 Concurrent workflows affecting the same component serialize only their
 materialized Live contribution, not their whole workflows. The committed
 tenant-global sequence is the sole order used by Live SSE.
+PostgreSQL `nextval`/non-transactional sequences are not used for this cursor,
+because a rolled-back allocation must not create a false event gap.
 
 `GET Live snapshot` returns a database-consistent materialized snapshot and
 the exact committed global watermark included in that snapshot. Streaming
@@ -300,7 +311,7 @@ sequences.
 
 ### 6.1 Live operational snapshot
 
-Introduce a versioned upstream endpoint and preserve the same-origin BFF:
+Introduce a V3 upstream endpoint and preserve the same-origin BFF:
 
 ```text
 FastAPI: GET /v3/live/snapshot
@@ -322,7 +333,8 @@ The snapshot contains:
 
 Each component overlay contains backend-owned:
 
-- `health_state`: `HEALTHY | DEGRADED | CRITICAL | RECOVERING | UNKNOWN`
+- `impact_state`: `HEALTHY | DEGRADED | CRITICAL | RECOVERING`
+- `data_quality`: `FRESH | DELAYED | STALE | UNKNOWN`
 - highest accepted severity
 - active incident count and ordered incident references
 - unassigned alert-group count
@@ -832,7 +844,7 @@ No “continuous realtime” claim is allowed before Phase 0 passes.
 
 ### Phase 1: one source of truth
 
-- introduce unified V2 Live snapshot/stream
+- introduce unified V3 Live snapshot/stream
 - project active incidents and unassigned alerts onto canonical topology
 - remove the legacy/V2 browser join
 - implement Live quick peek and Incident deep link
