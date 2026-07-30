@@ -692,6 +692,7 @@ class LiveRealtimePostgresTests(unittest.TestCase):
                     source = packet.poll_result.source_event
                     second = source.copy(update={
                         "provider_event_id": "poll:cursor-b",
+                        "edge_ids": [],
                         "normalization_hash": "0" * 64,
                     })
                     second = second.copy(update={"normalization_hash": second.canonical_hash()})
@@ -891,6 +892,25 @@ class LiveRealtimePostgresTests(unittest.TestCase):
                                 "tenant-a", admitted.dispatch.dispatch_id,
                             )
                         ).state,
+                    )
+                    async def component_only_counts(connection):
+                        return await connection.fetchrow(
+                            """SELECT
+                               (SELECT count(*) FROM realtime_signal_records
+                                  WHERE tenant_id=$1 AND source_event_id=$2) AS signals,
+                               (SELECT count(*) FROM realtime_graph_pulses
+                                  WHERE tenant_id=$1 AND source_event_id=$2) AS pulses,
+                               (SELECT count(*) FROM realtime_agent_activities
+                                  WHERE tenant_id=$1 AND source_event_id=$2) AS activities""",
+                            "tenant-a", second.source_event_id,
+                        )
+
+                    component_records = await repository._tenant(
+                        "tenant-a", component_only_counts, subject_id="owner-a",
+                    )
+                    self.assertEqual(
+                        (1, 0, 2),
+                        tuple(component_records.values()),
                     )
                     acknowledged_retry = await repository.admit_source_event(
                         second, valid_dispatch,

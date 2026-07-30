@@ -1696,7 +1696,9 @@ class RealtimePostgresMixin:
                     commit.citation,
                     commit.signal.sequence,
                 ),
-            ) + (
+            )
+            if commit.pulse is not None:
+                record_inserts += (
                 (
                     """INSERT INTO realtime_graph_pulses
                        (tenant_id, case_id, record_id, source_event_id, sequence,
@@ -1706,7 +1708,7 @@ class RealtimePostgresMixin:
                     commit.pulse,
                     commit.pulse.event_sequence,
                 ),
-            ) if commit.pulse is not None else ()
+                )
             for statement, identifier, item, sequence in record_inserts:
                 await connection.execute(
                     statement,
