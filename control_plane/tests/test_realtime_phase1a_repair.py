@@ -4,6 +4,7 @@ import json
 import unittest
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
+from unittest.mock import AsyncMock, patch
 
 from flowpulse_cp.provider_gateway import ProviderMode
 from flowpulse_cp.realtime_activities import RealtimeActivityDispatcher
@@ -146,6 +147,20 @@ class BindingAndFreshnessTruthTests(unittest.IsolatedAsyncioTestCase):
             artifact_store=ArtifactStore(),
             repository=self.repository,
         )
+
+    async def test_runtime_poll_does_not_freeze_receive_time_before_provider_read(self):
+        await self.repository.append_binding(external_binding(edges=[]))
+        expected = object()
+        with patch(
+            "flowpulse_cp.realtime_adapters.PrometheusReadAdapter.poll",
+            new=AsyncMock(return_value=expected),
+        ) as adapter_poll:
+            actual = await self.connector(Reader(payload())).poll(
+                projection(),
+                acl_subjects=["owner-a"],
+            )
+        self.assertIs(expected, actual)
+        self.assertIsNone(adapter_poll.await_args.kwargs["now"])
 
     async def test_missing_or_ambiguous_binding_is_unassigned_without_provider_or_fact(self):
         reader = Reader(payload())
@@ -612,10 +627,13 @@ class OutboxDispatchTests(unittest.IsolatedAsyncioTestCase):
         repository.workspace_active_incidents = workspace_active_incidents
         repository.workspace_projection = workspace_projection
 
+        seen_poll_kwargs = {}
+
         class FailingConnector:
             registration = registration()
 
             async def poll(self, *args, **kwargs):
+                seen_poll_kwargs.update(kwargs)
                 raise ValueError("bad_case_binding")
 
         dispatched = 0
@@ -645,6 +663,7 @@ class OutboxDispatchTests(unittest.IsolatedAsyncioTestCase):
                 "tenant-a", polled.dispatch.dispatch_id,
             )).state,
         )
+        self.assertNotIn("now", seen_poll_kwargs)
 
 
 class ServerBindingTemplateTests(unittest.TestCase):

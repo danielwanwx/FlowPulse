@@ -530,7 +530,7 @@ class ConfiguredPrometheusConnector:
             repository=self.repository,
         ).poll(
             acl_subjects=acl_subjects,
-            now=checked_at,
+            now=now,
             delivery_mode=delivery_mode,
         )
 

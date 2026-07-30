@@ -103,7 +103,6 @@ class RealtimeIngestScheduler:
                     result = await connector.poll(
                         projection,
                         acl_subjects=[self.actor_subject_id],
-                        now=now,
                     )
                 except Exception as error:
                     unavailable += 1
