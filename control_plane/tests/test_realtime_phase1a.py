@@ -259,8 +259,8 @@ class RealtimeRepositoryTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(first.source_event_id, duplicate.source_event_id)
         self.assertTrue(first.accepted)
-        self.assertTrue(duplicate.duplicate)
-        self.assertTrue(lost_ack_retry.duplicate)
+        self.assertEqual(first.receipt, duplicate.receipt)
+        self.assertEqual(first.receipt, lost_ack_retry.receipt)
         self.assertEqual(
             NOW,
             (

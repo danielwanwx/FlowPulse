@@ -159,16 +159,17 @@ class LiveWorkspaceMigrationRunnerTests(unittest.TestCase):
                                 "013_connector_source_events.sql",
                                 "014_incident_realtime_projection.sql",
                                 "015_agent_workspace_activity.sql",
+                                "016_connector_dispatch_revisions.sql",
                             ],
                             [row["filename"] for row in rows],
                         )
                     finally:
                         await check.close()
 
-                    # 015 is the latest established realtime migration.  The
+                    # 016 is the latest established realtime migration.  The
                     # temporary crash/recovery fixture must be the next
                     # contiguous migration.
-                    crash = copied / "016_runner_crash_recovery.sql"
+                    crash = copied / "017_runner_crash_recovery.sql"
                     crash.write_text(
                         "CREATE TABLE runner_crash_marker (id integer PRIMARY KEY);\nSELECT 1 / 0;\n",
                         encoding="utf-8",
@@ -179,7 +180,7 @@ class LiveWorkspaceMigrationRunnerTests(unittest.TestCase):
                     try:
                         self.assertIsNone(await check.fetchval("SELECT to_regclass('public.runner_crash_marker')"))
                         self.assertIsNone(await check.fetchval(
-                            "SELECT checksum_sha256 FROM schema_migrations WHERE filename='016_runner_crash_recovery.sql'"
+                            "SELECT checksum_sha256 FROM schema_migrations WHERE filename='017_runner_crash_recovery.sql'"
                         ))
                     finally:
                         await check.close()
@@ -193,7 +194,7 @@ class LiveWorkspaceMigrationRunnerTests(unittest.TestCase):
                             "SELECT to_regclass('public.runner_crash_marker')::text"
                         ))
                         self.assertIsNotNone(await check.fetchval(
-                            "SELECT checksum_sha256 FROM schema_migrations WHERE filename='016_runner_crash_recovery.sql'"
+                            "SELECT checksum_sha256 FROM schema_migrations WHERE filename='017_runner_crash_recovery.sql'"
                         ))
                     finally:
                         await check.close()
@@ -702,6 +703,7 @@ class LiveWorkspaceMigrationRunnerTests(unittest.TestCase):
                             "013_connector_source_events.sql",
                             "014_incident_realtime_projection.sql",
                             "015_agent_workspace_activity.sql",
+                            "016_connector_dispatch_revisions.sql",
                         ],
                         [row["filename"] for row in rows],
                     )

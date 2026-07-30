@@ -3,7 +3,7 @@
 import copy
 import json
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from typing import Dict, List, Optional, Tuple
 from uuid import NAMESPACE_URL, uuid5
@@ -11,19 +11,28 @@ from uuid import NAMESPACE_URL, uuid5
 from .models import EvidenceEnvelope
 from .policy import validate_evidence_admission
 from .realtime_models import (
+    AgentActivityState,
+    AgentWorkspace,
+    ConnectorAdmissionResult,
     ConnectorDeliveryReceipt,
     ConnectorDeliveryStatus,
     ConnectorDispatch,
+    ConnectorDispatchRevision,
+    ConnectorDispatchState,
     ConnectorHealth,
     ConnectorHealthState,
     ConnectorRegistration,
     ExternalIdentityBinding,
+    IncidentClock,
+    IncidentClockState,
     IncidentProjectionV2,
     RealtimeCommit,
     RealtimeIncidentEvent,
     RealtimeNotification,
     RealtimeSourceEvent,
     RealtimeSummary,
+    RealtimeDeliveryMode,
+    RealtimeEventType,
 )
 from .workspace_models import IncidentProjection
 
@@ -45,16 +54,27 @@ def _delivery_key(event: RealtimeSourceEvent) -> Tuple[str, str, str]:
 def _same_normalized_delivery(
     prior: RealtimeSourceEvent, candidate: RealtimeSourceEvent,
 ) -> bool:
-    return prior.dict(exclude={"received_at"}) == candidate.dict(
-        exclude={"received_at"},
+    return (
+        prior.source_event_id == candidate.source_event_id
+        and prior.delivery_id == candidate.delivery_id
+        and prior.normalization_hash == candidate.normalization_hash
+        and prior.canonical_hash() == candidate.canonical_hash()
     )
 
 
 def _same_dispatch_retry(
     prior: ConnectorDispatch, candidate: ConnectorDispatch,
 ) -> bool:
-    return prior.dict(exclude={"created_at"}) == candidate.dict(
-        exclude={"created_at"},
+    return (
+        prior.dispatch_id == candidate.dispatch_id
+        and prior.tenant_id == candidate.tenant_id
+        and prior.connector_id == candidate.connector_id
+        and prior.source_event_id == candidate.source_event_id
+        and prior.case_id == candidate.case_id
+        and prior.run_id == candidate.run_id
+        and prior.normalization_hash == candidate.normalization_hash
+        and prior.state == candidate.state
+        and prior.attempt == candidate.attempt
     )
 
 
@@ -107,22 +127,89 @@ def _validate_realtime_commit_artifacts(commit: RealtimeCommit) -> None:
         or evidence.raw_artifact_key != source.raw_artifact_ref
     ):
         raise ValueError("realtime_transition_evidence_lineage_mismatch")
-    event = commit.event
+    events = commit.events
+    event = events[-1]
     if (
-        event.source_event_id != source.source_event_id
-        or event.signal.source_event_id != source.source_event_id
-        or event.pulse.source_event_id != source.source_event_id
-        or event.citation.source_event_id != source.source_event_id
-        or event.citation.evidence_id != evidence.evidence_id
-        or event.signal.evidence_refs != [evidence.evidence_id]
-        or event.pulse.evidence_refs != [evidence.evidence_id]
-        or event.activity.source_event_ids != [source.source_event_id]
-        or event.activity.evidence_refs != [evidence.evidence_id]
-        or event.activity.citation_refs != [event.citation.citation_id]
-        or event.activity.external_write_performed
-        or event.activity.truth_label != source.truth_label
+        any(item.source_event_id != source.source_event_id for item in events)
+        or commit.signal.source_event_id != source.source_event_id
+        or commit.citation.source_event_id != source.source_event_id
+        or commit.citation.evidence_id != evidence.evidence_id
+        or commit.signal.evidence_refs != [evidence.evidence_id]
+        or (
+            commit.pulse is not None
+            and (
+                commit.pulse.source_event_id != source.source_event_id
+                or commit.pulse.evidence_refs != [evidence.evidence_id]
+            )
+        )
+        or any(
+            item.source_event_ids != [source.source_event_id]
+            or item.evidence_refs != [evidence.evidence_id]
+            or item.citation_refs != [commit.citation.citation_id]
+            or item.external_write_performed
+            or item.truth_label != source.truth_label
+            for item in commit.activities
+        )
     ):
         raise ValueError("realtime_transition_signal_activity_lineage_mismatch")
+    activity_events = [
+        item.activity for item in events if item.activity is not None
+    ]
+    if (
+        activity_events != commit.activities
+        or [item.state for item in commit.activities] not in (
+            [AgentActivityState.STARTED, AgentActivityState.COMPLETED],
+            [AgentActivityState.STARTED, AgentActivityState.DEGRADED],
+        )
+        or commit.activities[0].activity_key
+        != commit.activities[1].activity_key
+        or [item.state_revision for item in commit.activities] != [1, 2]
+        or commit.activities[0].sequence >= commit.activities[1].sequence
+        or not any(
+            item.event_type == RealtimeEventType.CONNECTOR_HEALTH_CHANGED
+            and item.health == commit.health
+            for item in events
+        )
+        or not any(
+            item.event_type == RealtimeEventType.CONNECTOR_SOURCE_ACCEPTED
+            for item in events
+        )
+        or not any(item.signal == commit.signal for item in events)
+        or not any(item.incident_clock == commit.projection.incident_clock for item in events)
+        or commit.signal.trend != source.trend
+        or commit.signal.component_ids != source.component_ids
+        or commit.signal.edge_ids != source.edge_ids
+        or commit.signal not in commit.projection.realtime_signals
+        or commit.citation not in commit.projection.agent_workspace.citations
+        or any(
+            item not in commit.projection.agent_workspace.activities
+            for item in commit.activities
+        )
+    ):
+        raise ValueError("realtime_transition_typed_event_family_mismatch")
+    pulse_allowed = bool(
+        source.edge_ids
+        and source.freshness.value == "CURRENT"
+        and source.delivery_mode == RealtimeDeliveryMode.LIVE
+    )
+    if (
+        (commit.pulse is not None) != pulse_allowed
+        or (
+            commit.pulse is not None
+            and (
+                commit.pulse.edge_ids != source.edge_ids
+                or commit.pulse.component_ids != source.component_ids
+                or commit.pulse.pulse_kind != "BOUND_EDGE_ACTIVITY"
+                or not any(
+                    item.event_type == RealtimeEventType.GRAPH_PULSE_STARTED
+                    and item.pulse == commit.pulse
+                    for item in events
+                )
+                or commit.pulse not in commit.projection.active_graph_pulses
+            )
+        )
+    ):
+        raise ValueError("realtime_transition_path_pulse_not_evidence_bound")
     expected = commit.prior_projection.copy(update={
         "projection_revision": commit.prior_projection.projection_revision + 1,
         "sequence": event.sequence,
@@ -140,6 +227,17 @@ def _notification_id(event: RealtimeIncidentEvent) -> str:
     return "{}|{}|{:010d}".format(
         event.occurred_at.isoformat(), event.run_id, event.sequence,
     )
+
+
+def _notification_cursor(value: str) -> Tuple[datetime, str, int]:
+    try:
+        occurred_at, run_id, sequence = value.rsplit("|", 2)
+        parsed = datetime.fromisoformat(occurred_at)
+        if parsed.tzinfo is None or not run_id or len(sequence) != 10:
+            raise ValueError
+        return parsed, run_id, int(sequence)
+    except (TypeError, ValueError) as error:
+        raise ValueError("realtime_notification_checkpoint_unknown") from error
 
 
 def _health_at(health: ConnectorHealth, now: datetime) -> ConnectorHealth:
@@ -171,6 +269,10 @@ def _projection_freshness_at(
             if now > item.fresh_until else item
             for item in projection.realtime_signals
         ],
+        "active_graph_pulses": [
+            item for item in projection.active_graph_pulses
+            if item.expires_at > now
+        ],
     })
 
 
@@ -185,6 +287,9 @@ class InMemoryRealtimeRepository:
         self.delivery_events: Dict[Tuple[str, str, str], str] = {}
         self.delivery_receipts: Dict[Tuple[str, str, str], ConnectorDeliveryReceipt] = {}
         self.dispatches: Dict[Tuple[str, str], ConnectorDispatch] = {}
+        self.dispatch_revisions: Dict[Tuple[str, str], List[ConnectorDispatchRevision]] = (
+            defaultdict(list)
+        )
         self.cursor_records: Dict[Tuple[str, str], List[dict]] = defaultdict(list)
         self.reconciliation_records: Dict[Tuple[str, str], dict] = {}
         self.commits: Dict[Tuple[str, str], RealtimeCommit] = {}
@@ -281,9 +386,46 @@ class InMemoryRealtimeRepository:
             and _binding_matches_event(item, event)
         ), None)
 
+    async def resolve_external_identity_binding(
+        self,
+        projection: IncidentProjection,
+        connector_id: str,
+        external_resource_id: str,
+        effective_at: datetime,
+    ) -> ExternalIdentityBinding:
+        matches = [
+            item
+            for item in self.bindings.values()
+            if (
+                item.tenant_id == projection.tenant_id
+                and item.connector_id == connector_id
+                and item.external_resource_id == external_resource_id
+                and item.case_id == projection.case_id
+                and item.incident_id == projection.incident_id
+                and item.run_id == projection.run_id
+                and item.topology_revision == projection.topology_revision
+                and item.valid_from <= effective_at
+                and (item.valid_to is None or effective_at < item.valid_to)
+            )
+        ]
+        if not matches:
+            raise ValueError("external_identity_binding_unassigned")
+        if len(matches) != 1:
+            raise ValueError("external_identity_binding_ambiguous")
+        return matches[0]
+
+    async def recent_source_events_for_binding(
+        self, tenant_id: str, binding_id: str, limit: int = 2,
+    ) -> List[RealtimeSourceEvent]:
+        values = [
+            item for item in self.source_events.values()
+            if item.tenant_id == tenant_id and item.binding_id == binding_id
+        ]
+        return sorted(values, key=lambda item: item.observed_at, reverse=True)[:limit]
+
     async def admit_source_event(
         self, event: RealtimeSourceEvent, dispatch: Optional[ConnectorDispatch] = None,
-    ) -> ConnectorDeliveryReceipt:
+    ) -> ConnectorAdmissionResult:
         _validate_source_event_integrity(event)
         if dispatch is None:
             raise ValueError("connector_dispatch_required")
@@ -307,17 +449,16 @@ class InMemoryRealtimeRepository:
                 or not _same_dispatch_retry(prior_dispatch, dispatch)
             ):
                 raise ValueError("connector_delivery_identity_conflict")
-            return ConnectorDeliveryReceipt(
-                receipt_id="receipt-" + prior.normalization_hash[:24],
-                tenant_id=event.tenant_id,
-                connector_id=event.connector_id,
-                provider_event_id=event.provider_event_id,
-                source_event_id=prior.source_event_id,
-                status=ConnectorDeliveryStatus.DUPLICATE,
-                accepted=True,
-                duplicate=True,
-                normalization_hash=prior.normalization_hash,
-                created_at=prior.received_at,
+            receipt = self.delivery_receipts[identity]
+            authoritative_dispatch = await self.authoritative_dispatch(
+                event.tenant_id, prior_dispatch.dispatch_id,
+            )
+            if authoritative_dispatch is None:
+                raise ValueError("connector_delivery_dispatch_missing")
+            return ConnectorAdmissionResult(
+                receipt=receipt,
+                source_event=prior,
+                dispatch=authoritative_dispatch,
             )
         if (event.tenant_id, event.source_event_id) in self.source_events:
             raise ValueError("source_event_id_conflict")
@@ -346,6 +487,17 @@ class InMemoryRealtimeRepository:
         self.delivery_events[identity] = event.source_event_id
         self.delivery_receipts[identity] = receipt
         self.dispatches[(dispatch.tenant_id, dispatch.dispatch_id)] = dispatch
+        self.dispatch_revisions[(dispatch.tenant_id, dispatch.dispatch_id)].append(
+            ConnectorDispatchRevision(
+                tenant_id=dispatch.tenant_id,
+                dispatch_id=dispatch.dispatch_id,
+                state_revision=1,
+                state=ConnectorDispatchState.PENDING,
+                attempt=dispatch.attempt,
+                receipt_id=receipt.receipt_id,
+                created_at=dispatch.created_at,
+            ),
+        )
         cursor_records = self.cursor_records[(event.tenant_id, event.connector_id)]
         cursor_records.append({
             "cursor_revision": len(cursor_records) + 1,
@@ -359,7 +511,11 @@ class InMemoryRealtimeRepository:
             "case_id": event.case_id,
             "run_id": event.run_id,
         }
-        return receipt
+        return ConnectorAdmissionResult(
+            receipt=receipt,
+            source_event=event,
+            dispatch=dispatch,
+        )
 
     admit_realtime_source_event = admit_source_event
 
@@ -367,6 +523,217 @@ class InMemoryRealtimeRepository:
         return self.source_events.get((tenant_id, source_event_id))
 
     realtime_source_event = source_event
+
+    async def authoritative_dispatch(
+        self, tenant_id: str, dispatch_id: str,
+    ) -> Optional[ConnectorDispatch]:
+        base = self.dispatches.get((tenant_id, dispatch_id))
+        if base is None:
+            return None
+        revisions = self.dispatch_revisions[(tenant_id, dispatch_id)]
+        return base.copy(update={
+            "state": revisions[-1].state if revisions else base.state,
+            "attempt": revisions[-1].attempt if revisions else base.attempt,
+        })
+
+    async def pending_dispatches(
+        self, tenant_id: str, limit: int = 100,
+    ) -> List[ConnectorDispatch]:
+        values = []
+        for item_tenant, dispatch_id in self.dispatches:
+            if item_tenant != tenant_id:
+                continue
+            current = await self.authoritative_dispatch(tenant_id, dispatch_id)
+            if current is not None and current.state == ConnectorDispatchState.PENDING:
+                values.append(current)
+        return sorted(values, key=lambda item: item.created_at)[:limit]
+
+    async def load_connector_fact_family(
+        self,
+        tenant_id: str,
+        source_event_id: str,
+        dispatch_id: str,
+    ):
+        from .realtime_models import ConnectorPollResult
+
+        source = self.source_events.get((tenant_id, source_event_id))
+        dispatch = await self.authoritative_dispatch(tenant_id, dispatch_id)
+        if (
+            source is None
+            or dispatch is None
+            or dispatch.source_event_id != source.source_event_id
+            or dispatch.state not in {
+                ConnectorDispatchState.PENDING,
+                ConnectorDispatchState.ACCEPTED,
+            }
+        ):
+            raise ValueError("connector_dispatch_fact_family_missing")
+        registration = self.registrations[(tenant_id, source.connector_id)]
+        health = self.health_records[(tenant_id, source.connector_id)][-1]
+        receipt = self.delivery_receipts[_delivery_key(source)]
+        return ConnectorPollResult(
+            registration=registration,
+            health=health,
+            receipt=receipt,
+            source_event=source,
+            dispatch=dispatch.copy(update={"state": ConnectorDispatchState.PENDING}),
+        )
+
+    async def mark_dispatch_accepted(
+        self,
+        dispatch: ConnectorDispatch,
+        *,
+        transition_key: str,
+        receipt_id: str,
+        created_at: datetime,
+    ) -> ConnectorDispatch:
+        current = await self.authoritative_dispatch(
+            dispatch.tenant_id, dispatch.dispatch_id,
+        )
+        if current is None:
+            raise ValueError("connector_dispatch_unknown")
+        if current.state == ConnectorDispatchState.ACCEPTED:
+            return current
+        if current.state != ConnectorDispatchState.PENDING:
+            raise ValueError("connector_dispatch_not_pending")
+        records = self.dispatch_revisions[(dispatch.tenant_id, dispatch.dispatch_id)]
+        records.append(ConnectorDispatchRevision(
+            tenant_id=dispatch.tenant_id,
+            dispatch_id=dispatch.dispatch_id,
+            state_revision=len(records) + 1,
+            state=ConnectorDispatchState.ACCEPTED,
+            attempt=current.attempt,
+            receipt_id=receipt_id,
+            transition_key=transition_key,
+            created_at=created_at,
+        ))
+        return current.copy(update={"state": ConnectorDispatchState.ACCEPTED})
+
+    async def accept_pending_dispatch(
+        self,
+        projection: IncidentProjection,
+        source: RealtimeSourceEvent,
+        dispatch: ConnectorDispatch,
+        *,
+        first_event_sequence: int,
+    ):
+        from .realtime_activities import RealtimeActivityDispatcher
+        from .realtime_models import (
+            ConnectorPollResult,
+            RealtimeCommitActivityPacket,
+            RealtimeUpdateCommand,
+        )
+
+        registration = self.registrations[(source.tenant_id, source.connector_id)]
+        health = self.health_records[(source.tenant_id, source.connector_id)][-1]
+        receipt = self.delivery_receipts[_delivery_key(source)]
+        prior_realtime = await self.realtime_projection(
+            source.tenant_id, source.case_id,
+        )
+        command = RealtimeUpdateCommand(
+            tenant_id=source.tenant_id,
+            actor_subject_id=source.acl_subjects[0],
+            case_id=source.case_id,
+            incident_id=source.incident_id,
+            run_id=source.run_id,
+            topology_revision=source.topology_revision,
+            connector_id=source.connector_id,
+            source_event_id=source.source_event_id,
+            dispatch_id=dispatch.dispatch_id,
+            idempotency_key=dispatch.dispatch_id,
+        )
+        return await RealtimeActivityDispatcher(self, {}).dispatch(
+            "workspace_commit_realtime_source_event_activity",
+            RealtimeCommitActivityPacket(
+                command=command,
+                projection=projection,
+                prior_realtime_projection=prior_realtime,
+                first_event_sequence=first_event_sequence,
+                poll_result=ConnectorPollResult(
+                    registration=registration,
+                    health=health,
+                    receipt=receipt,
+                    source_event=source,
+                    dispatch=dispatch,
+                ),
+            ).dict(),
+        )
+
+    async def materialize_realtime_baseline(
+        self, projection: IncidentProjection, *, now: datetime,
+    ) -> IncidentProjectionV2:
+        key = (projection.tenant_id, projection.case_id)
+        prior = self.projections.get(key, [])
+        if prior:
+            return _projection_freshness_at(prior[-1], now)
+        health = await self.connector_health(projection.tenant_id)
+        baseline = IncidentProjectionV2.parse_obj({
+            **projection.dict(),
+            "schema_version": "flowpulse.incident-projection.v2",
+            "source_revision": 1,
+            "connector_revision": max(
+                [item.health_revision for item in health] or [1],
+            ),
+            "incident_clock": IncidentClock(
+                state=IncidentClockState.RUNNING,
+                started_at=projection.created_at,
+                as_of=now,
+                elapsed_seconds=max(
+                    0, int((now - projection.created_at).total_seconds()),
+                ),
+                freshness="STALE",
+                fresh_until=now,
+                max_interpolation_seconds=30,
+            ).dict(),
+            "connector_health": [item.dict() for item in health],
+            "realtime_signals": [],
+            "active_graph_pulses": [],
+            "agent_workspace": AgentWorkspace(
+                workspace_revision=1,
+                activities=[],
+                citations=[],
+            ).dict(),
+        })
+        self.projections[key].append(baseline)
+        return baseline
+
+    async def seed_notification_fixture(
+        self, projection: IncidentProjection, *, count: int, started_at: datetime,
+    ) -> None:
+        baseline = await self.materialize_realtime_baseline(
+            projection, now=started_at,
+        )
+        health = ConnectorHealth(
+            connector_id="fixture-connector",
+            tenant_id=projection.tenant_id,
+            provider="PROMETHEUS",
+            state="UNAVAILABLE",
+            checked_at=started_at,
+            consecutive_failures=0,
+            lag_seconds=0,
+            reason_code="fixture",
+            adapter_version="fixture.v1",
+            health_revision=1,
+            truth_label="TEST_DETERMINISTIC",
+        )
+        for sequence in range(1, count + 1):
+            self.events[(projection.tenant_id, projection.case_id)].append(
+                RealtimeIncidentEvent(
+                    **{
+                        field: getattr(baseline, field)
+                        for field in (
+                            "tenant_id", "incident_id", "run_id",
+                            "topology_revision", "case_id", "case_revision",
+                            "workflow_id", "workflow_run_id", "created_at",
+                        )
+                    },
+                    projection_revision=baseline.projection_revision,
+                    sequence=sequence,
+                    event_type="connector.health.changed",
+                    occurred_at=started_at + timedelta(milliseconds=sequence),
+                    health=health,
+                ),
+            )
 
     async def commit_realtime_transition(self, commit: RealtimeCommit) -> RealtimeCommit:
         _validate_realtime_commit_artifacts(commit)
@@ -390,9 +757,9 @@ class InMemoryRealtimeRepository:
             or projection.incident_id != source.incident_id
             or projection.run_id != source.run_id
             or projection.topology_revision != source.topology_revision
-            or commit.event.source_event_id != source.source_event_id
-            or commit.event.projection_revision != projection.projection_revision
-            or commit.event.sequence != projection.sequence
+            or any(item.source_event_id != source.source_event_id for item in commit.events)
+            or any(item.projection_revision != projection.projection_revision for item in commit.events)
+            or commit.events[-1].sequence != projection.sequence
             or commit.evidence.evidence_id not in projection.evidence_refs
         ):
             raise ValueError("realtime_transition_binding_mismatch")
@@ -404,8 +771,15 @@ class InMemoryRealtimeRepository:
             raise ValueError("realtime_projection_revision_or_sequence_not_monotonic")
         self.evidence[(tenant_id, source.case_id, commit.evidence.evidence_id)] = commit.evidence
         records.append(projection)
-        self.events[(tenant_id, source.case_id)].append(commit.event)
+        self.events[(tenant_id, source.case_id)].extend(commit.events)
         self.commits[key] = commit
+        receipt = self.delivery_receipts[_delivery_key(source)]
+        await self.mark_dispatch_accepted(
+            commit.dispatch,
+            transition_key=commit.transition_key,
+            receipt_id=receipt.receipt_id,
+            created_at=commit.events[-1].occurred_at,
+        )
         return commit
 
     async def realtime_projection(
@@ -453,7 +827,7 @@ class InMemoryRealtimeRepository:
                 if projection is not None:
                     records.append(RealtimeNotification(
                         notification_id=_notification_id(event),
-                        event_type=event.event_type,
+                        event_type=event.event_type.value,
                         occurred_at=event.occurred_at,
                         source_event_id=event.source_event_id,
                         incident=RealtimeSummary.from_projection(projection),
@@ -559,6 +933,121 @@ class RealtimePostgresMixin:
 
     append_binding = append_external_identity_binding
 
+    async def resolve_external_identity_binding(
+        self,
+        projection: IncidentProjection,
+        connector_id: str,
+        external_resource_id: str,
+        effective_at: datetime,
+    ) -> ExternalIdentityBinding:
+        async def operation(connection):
+            rows = await connection.fetch(
+                """SELECT payload FROM external_identity_bindings
+                   WHERE tenant_id=$1 AND connector_id=$2
+                     AND case_id=$3 AND incident_id=$4 AND run_id=$5
+                     AND topology_revision=$6
+                     AND payload->>'external_resource_id'=$7
+                     AND effective_from <= $8
+                     AND (effective_to IS NULL OR $8 < effective_to)
+                   ORDER BY binding_id, binding_revision DESC""",
+                projection.tenant_id, connector_id, projection.case_id,
+                projection.incident_id, projection.run_id,
+                projection.topology_revision, external_resource_id,
+                effective_at,
+            )
+            matches = [
+                ExternalIdentityBinding.parse_obj(_decode(row["payload"]))
+                for row in rows
+            ]
+            if not matches:
+                raise ValueError("external_identity_binding_unassigned")
+            if len(matches) != 1:
+                raise ValueError("external_identity_binding_ambiguous")
+            return matches[0]
+        return await self._tenant(projection.tenant_id, operation)
+
+    async def recent_source_events_for_binding(
+        self, tenant_id: str, binding_id: str, limit: int = 2,
+    ) -> List[RealtimeSourceEvent]:
+        async def operation(connection):
+            rows = await connection.fetch(
+                """SELECT payload FROM connector_source_events
+                   WHERE tenant_id=$1 AND binding_id=$2
+                   ORDER BY observed_at DESC LIMIT $3""",
+                tenant_id, binding_id, limit,
+            )
+            return [
+                RealtimeSourceEvent.parse_obj(_decode(row["payload"]))
+                for row in rows
+            ]
+        return await self._tenant(tenant_id, operation)
+
+    async def materialize_realtime_baseline(
+        self, projection: IncidentProjection, *, now: datetime,
+    ) -> IncidentProjectionV2:
+        health = await self.realtime_connector_health(projection.tenant_id)
+        baseline = IncidentProjectionV2.parse_obj({
+            **projection.dict(),
+            "schema_version": "flowpulse.incident-projection.v2",
+            "source_revision": 1,
+            "connector_revision": max(
+                [item.health_revision for item in health] or [1],
+            ),
+            "incident_clock": IncidentClock(
+                state=IncidentClockState.RUNNING,
+                started_at=projection.created_at,
+                as_of=now,
+                elapsed_seconds=max(
+                    0, int((now - projection.created_at).total_seconds()),
+                ),
+                freshness="STALE",
+                fresh_until=now,
+                max_interpolation_seconds=30,
+            ).dict(),
+            "connector_health": [item.dict() for item in health],
+            "realtime_signals": [],
+            "active_graph_pulses": [],
+            "agent_workspace": AgentWorkspace(
+                workspace_revision=1,
+                activities=[],
+                citations=[],
+            ).dict(),
+        })
+
+        async def operation(connection):
+            await connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtext($1))",
+                "realtime-baseline:{}:{}".format(
+                    projection.tenant_id, projection.case_id,
+                ),
+            )
+            prior = await connection.fetchrow(
+                """SELECT payload FROM incident_realtime_projections
+                   WHERE tenant_id=$1 AND case_id=$2
+                   ORDER BY projection_revision DESC LIMIT 1""",
+                projection.tenant_id, projection.case_id,
+            )
+            if prior is not None:
+                return IncidentProjectionV2.parse_obj(
+                    _decode(prior["payload"]),
+                )
+            await connection.execute(
+                """INSERT INTO incident_realtime_projections
+                   (tenant_id, incident_id, run_id, topology_revision, case_id,
+                    case_revision, workflow_id, workflow_run_id,
+                    projection_revision, sequence, source_revision,
+                    connector_revision, payload, created_at)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb,$14)""",
+                baseline.tenant_id, baseline.incident_id, baseline.run_id,
+                baseline.topology_revision, baseline.case_id,
+                baseline.case_revision, baseline.workflow_id,
+                baseline.workflow_run_id, baseline.projection_revision,
+                baseline.sequence, baseline.source_revision,
+                baseline.connector_revision, _payload(baseline), now,
+            )
+            return baseline
+        return await self._tenant(projection.tenant_id, operation)
+
     async def next_connector_health_revision(self, tenant_id: str, connector_id: str) -> int:
         async def operation(connection):
             value = await connection.fetchval(
@@ -651,7 +1140,7 @@ class RealtimePostgresMixin:
 
     async def admit_realtime_source_event(
         self, event: RealtimeSourceEvent, dispatch: Optional[ConnectorDispatch] = None,
-    ) -> ConnectorDeliveryReceipt:
+    ) -> ConnectorAdmissionResult:
         _validate_source_event_integrity(event)
         if dispatch is None:
             raise ValueError("connector_dispatch_required")
@@ -715,17 +1204,36 @@ class RealtimePostgresMixin:
                     )
                 ):
                     raise ValueError("connector_delivery_identity_conflict")
-                return ConnectorDeliveryReceipt(
-                    receipt_id="receipt-" + stored.normalization_hash[:24],
-                    tenant_id=stored.tenant_id,
-                    connector_id=stored.connector_id,
-                    provider_event_id=stored.provider_event_id,
-                    source_event_id=stored.source_event_id,
-                    status=ConnectorDeliveryStatus.DUPLICATE,
-                    accepted=True,
-                    duplicate=True,
-                    normalization_hash=stored.normalization_hash,
-                    created_at=stored.received_at,
+                stored_dispatch = ConnectorDispatch.parse_obj(
+                    _decode(prior_dispatch["payload"]),
+                )
+                revision_row = await connection.fetchrow(
+                    """SELECT payload FROM connector_dispatch_revisions
+                       WHERE tenant_id=$1 AND dispatch_id=$2
+                       ORDER BY state_revision DESC LIMIT 1""",
+                    event.tenant_id, stored_dispatch.dispatch_id,
+                )
+                if revision_row is not None:
+                    revision = ConnectorDispatchRevision.parse_obj(
+                        _decode(revision_row["payload"]),
+                    )
+                    stored_dispatch = stored_dispatch.copy(update={
+                        "state": revision.state,
+                        "attempt": revision.attempt,
+                    })
+                receipt_row = await connection.fetchrow(
+                    """SELECT payload FROM connector_delivery_receipts
+                       WHERE tenant_id=$1 AND connector_id=$2
+                         AND provider_event_id=$3""",
+                    stored.tenant_id, stored.connector_id,
+                    stored.provider_event_id,
+                )
+                return ConnectorAdmissionResult(
+                    receipt=ConnectorDeliveryReceipt.parse_obj(
+                        _decode(receipt_row["payload"]),
+                    ),
+                    source_event=stored,
+                    dispatch=stored_dispatch,
                 )
             receipt = ConnectorDeliveryReceipt(
                 receipt_id="receipt-" + event.normalization_hash[:24],
@@ -780,6 +1288,25 @@ class RealtimePostgresMixin:
                 dispatch.state.value, dispatch.attempt, _payload(dispatch),
                 dispatch.created_at,
             )
+            pending = ConnectorDispatchRevision(
+                tenant_id=dispatch.tenant_id,
+                dispatch_id=dispatch.dispatch_id,
+                state_revision=1,
+                state=ConnectorDispatchState.PENDING,
+                attempt=dispatch.attempt,
+                receipt_id=receipt.receipt_id,
+                created_at=dispatch.created_at,
+            )
+            await connection.execute(
+                """INSERT INTO connector_dispatch_revisions
+                   (tenant_id, dispatch_id, state_revision, state, attempt,
+                    receipt_id, transition_key, payload, created_at)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9)""",
+                pending.tenant_id, pending.dispatch_id,
+                pending.state_revision, pending.state.value, pending.attempt,
+                pending.receipt_id, pending.transition_key, _payload(pending),
+                pending.created_at,
+            )
             cursor_revision = await connection.fetchval(
                 """SELECT coalesce(max(cursor_revision), 0) + 1
                    FROM connector_poll_cursors
@@ -816,7 +1343,11 @@ class RealtimePostgresMixin:
                 json.dumps(reconciliation_payload, sort_keys=True),
                 event.received_at,
             )
-            return receipt
+            return ConnectorAdmissionResult(
+                receipt=receipt,
+                source_event=event,
+                dispatch=dispatch,
+            )
         return await self._tenant(event.tenant_id, operation)
 
     admit_source_event = admit_realtime_source_event
@@ -834,6 +1365,116 @@ class RealtimePostgresMixin:
         return await self._tenant(tenant_id, operation)
 
     source_event = realtime_source_event
+
+    async def authoritative_dispatch(
+        self, tenant_id: str, dispatch_id: str,
+    ) -> Optional[ConnectorDispatch]:
+        async def operation(connection):
+            row = await connection.fetchrow(
+                """SELECT o.payload AS base, r.payload AS revision
+                   FROM connector_dispatch_outbox o
+                   LEFT JOIN LATERAL (
+                     SELECT payload FROM connector_dispatch_revisions
+                     WHERE tenant_id=o.tenant_id AND dispatch_id=o.dispatch_id
+                     ORDER BY state_revision DESC LIMIT 1
+                   ) r ON true
+                   WHERE o.tenant_id=$1 AND o.dispatch_id=$2""",
+                tenant_id, dispatch_id,
+            )
+            if row is None:
+                return None
+            base = ConnectorDispatch.parse_obj(_decode(row["base"]))
+            if row["revision"] is None:
+                return base
+            revision = ConnectorDispatchRevision.parse_obj(
+                _decode(row["revision"]),
+            )
+            return base.copy(update={
+                "state": revision.state,
+                "attempt": revision.attempt,
+            })
+        return await self._tenant(tenant_id, operation)
+
+    async def pending_dispatches(
+        self, tenant_id: str, limit: int = 100,
+    ) -> List[ConnectorDispatch]:
+        async def operation(connection):
+            rows = await connection.fetch(
+                """SELECT o.payload AS base, r.payload AS revision
+                   FROM connector_dispatch_outbox o
+                   JOIN LATERAL (
+                     SELECT payload FROM connector_dispatch_revisions
+                     WHERE tenant_id=o.tenant_id AND dispatch_id=o.dispatch_id
+                     ORDER BY state_revision DESC LIMIT 1
+                   ) r ON true
+                   WHERE o.tenant_id=$1
+                     AND r.payload->>'state'='PENDING'
+                   ORDER BY o.created_at LIMIT $2""",
+                tenant_id, limit,
+            )
+            result = []
+            for row in rows:
+                base = ConnectorDispatch.parse_obj(_decode(row["base"]))
+                revision = ConnectorDispatchRevision.parse_obj(
+                    _decode(row["revision"]),
+                )
+                result.append(base.copy(update={
+                    "state": revision.state,
+                    "attempt": revision.attempt,
+                }))
+            return result
+        return await self._tenant(tenant_id, operation)
+
+    async def load_connector_fact_family(
+        self,
+        tenant_id: str,
+        source_event_id: str,
+        dispatch_id: str,
+    ):
+        from .realtime_models import ConnectorPollResult
+
+        async def operation(connection):
+            row = await connection.fetchrow(
+                """SELECT s.payload AS source, o.payload AS dispatch,
+                          r.payload AS registration, h.payload AS health,
+                          d.payload AS receipt
+                   FROM connector_source_events s
+                   JOIN connector_dispatch_outbox o
+                     ON o.tenant_id=s.tenant_id
+                    AND o.source_event_id=s.source_event_id
+                   JOIN connector_registrations r
+                     ON r.tenant_id=s.tenant_id
+                    AND r.connector_id=s.connector_id
+                   JOIN connector_delivery_receipts d
+                     ON d.tenant_id=s.tenant_id
+                    AND d.connector_id=s.connector_id
+                    AND d.provider_event_id=s.provider_event_id
+                   JOIN LATERAL (
+                     SELECT payload FROM connector_health_snapshots
+                     WHERE tenant_id=s.tenant_id
+                       AND connector_id=s.connector_id
+                     ORDER BY health_revision DESC LIMIT 1
+                   ) h ON true
+                   WHERE s.tenant_id=$1 AND s.source_event_id=$2
+                     AND o.dispatch_id=$3""",
+                tenant_id, source_event_id, dispatch_id,
+            )
+            if row is None:
+                raise ValueError("connector_dispatch_fact_family_missing")
+            source = RealtimeSourceEvent.parse_obj(_decode(row["source"]))
+            dispatch = ConnectorDispatch.parse_obj(_decode(row["dispatch"]))
+            return ConnectorPollResult(
+                registration=ConnectorRegistration.parse_obj(
+                    _decode(row["registration"]),
+                ),
+                health=ConnectorHealth.parse_obj(_decode(row["health"])),
+                receipt=ConnectorDeliveryReceipt.parse_obj(
+                    _decode(row["receipt"]),
+                ),
+                source_event=source,
+                dispatch=dispatch,
+            )
+        return await self._tenant(tenant_id, operation)
 
     async def commit_realtime_transition(self, commit: RealtimeCommit) -> RealtimeCommit:
         _validate_realtime_commit_artifacts(commit)
@@ -889,9 +1530,12 @@ class RealtimePostgresMixin:
                 or projection.incident_id != source.incident_id
                 or projection.run_id != source.run_id
                 or projection.topology_revision != source.topology_revision
-                or commit.event.projection_revision != projection.projection_revision
-                or commit.event.sequence != projection.sequence
-                or commit.event.source_event_id != source.source_event_id
+                or any(
+                    item.projection_revision != projection.projection_revision
+                    or item.source_event_id != source.source_event_id
+                    for item in commit.events
+                )
+                or commit.events[-1].sequence != projection.sequence
                 or commit.evidence.evidence_id not in projection.evidence_refs
             ):
                 raise ValueError("realtime_transition_binding_mismatch")
@@ -1008,36 +1652,74 @@ class RealtimePostgresMixin:
                 projection.connector_revision, _payload(projection),
                 projection.generated_at,
             )
-            event = commit.event
-            await connection.execute(
-                """INSERT INTO incident_realtime_events
-                   (event_id, tenant_id, incident_id, run_id, topology_revision,
-                    case_id, case_revision, workflow_id, workflow_run_id,
-                    source_event_id, projection_revision, sequence, event_type,
-                    payload, occurred_at)
-                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15)""",
-                uuid5(NAMESPACE_URL, "{}:{}:{}".format(
-                    event.tenant_id, event.run_id, event.sequence,
-                )),
-                event.tenant_id, event.incident_id, event.run_id,
-                event.topology_revision, event.case_id, event.case_revision,
-                event.workflow_id, event.workflow_run_id, event.source_event_id,
-                event.projection_revision, event.sequence, event.event_type,
-                _payload(event), event.occurred_at,
-            )
-            for table, identifier, item in (
-                ("realtime_signal_records", event.signal.signal_id, event.signal),
-                ("realtime_graph_pulses", event.pulse.pulse_id, event.pulse),
-                ("realtime_citations", event.citation.citation_id, event.citation),
-                ("realtime_agent_activities", event.activity.activity_id, event.activity),
-            ):
+            for event in commit.events:
                 await connection.execute(
-                    """INSERT INTO {} (tenant_id, case_id, record_id,
-                       source_event_id, sequence, payload, created_at)
-                       VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7)""".format(table),
-                    event.tenant_id, event.case_id, identifier,
-                    event.source_event_id, event.sequence, _payload(item),
+                    """INSERT INTO incident_realtime_events
+                       (event_id, tenant_id, incident_id, run_id, topology_revision,
+                        case_id, case_revision, workflow_id, workflow_run_id,
+                        source_event_id, projection_revision, sequence, event_type,
+                        payload, occurred_at)
+                       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15)""",
+                    uuid5(NAMESPACE_URL, "{}:{}:{}".format(
+                        event.tenant_id, event.run_id, event.sequence,
+                    )),
+                    event.tenant_id, event.incident_id, event.run_id,
+                    event.topology_revision, event.case_id, event.case_revision,
+                    event.workflow_id, event.workflow_run_id,
+                    event.source_event_id, event.projection_revision,
+                    event.sequence, event.event_type.value, _payload(event),
                     event.occurred_at,
+                )
+            record_inserts = (
+                (
+                    """INSERT INTO realtime_signal_records
+                       (tenant_id, case_id, record_id, source_event_id, sequence,
+                        payload, created_at)
+                       VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7)""",
+                    commit.signal.signal_id,
+                    commit.signal,
+                    commit.signal.sequence,
+                ),
+                (
+                    """INSERT INTO realtime_citations
+                       (tenant_id, case_id, record_id, source_event_id, sequence,
+                        payload, created_at)
+                       VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7)""",
+                    commit.citation.citation_id,
+                    commit.citation,
+                    commit.signal.sequence,
+                ),
+            ) + (
+                (
+                    """INSERT INTO realtime_graph_pulses
+                       (tenant_id, case_id, record_id, source_event_id, sequence,
+                        payload, created_at)
+                       VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7)""",
+                    commit.pulse.pulse_id,
+                    commit.pulse,
+                    commit.pulse.event_sequence,
+                ),
+            ) if commit.pulse is not None else ()
+            for statement, identifier, item, sequence in record_inserts:
+                await connection.execute(
+                    statement,
+                    source.tenant_id, source.case_id, identifier,
+                    source.source_event_id, sequence, _payload(item),
+                    commit.events[-1].occurred_at,
+                )
+            for activity_item in commit.activities:
+                await connection.execute(
+                    """INSERT INTO realtime_agent_activities
+                       (tenant_id, case_id, record_id, source_event_id, sequence,
+                        payload, created_at)
+                       VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7)""",
+                    source.tenant_id, source.case_id,
+                    activity_item.activity_id, source.source_event_id,
+                    activity_item.sequence, _payload(activity_item),
+                    (
+                        activity_item.completed_at
+                        or activity_item.started_at
+                    ),
                 )
             await connection.execute(
                 """INSERT INTO incident_realtime_transitions
@@ -1048,7 +1730,40 @@ class RealtimePostgresMixin:
                 source.tenant_id, source.case_id, source.run_id,
                 commit.transition_key, source.source_event_id,
                 commit.dispatch.dispatch_id, projection.projection_revision,
-                event.sequence, _payload(commit), event.occurred_at,
+                commit.events[-1].sequence, _payload(commit),
+                commit.events[-1].occurred_at,
+            )
+            receipt = await connection.fetchrow(
+                """SELECT payload FROM connector_delivery_receipts
+                   WHERE tenant_id=$1 AND connector_id=$2
+                     AND provider_event_id=$3""",
+                source.tenant_id, source.connector_id,
+                source.provider_event_id,
+            )
+            accepted_revision = ConnectorDispatchRevision(
+                tenant_id=source.tenant_id,
+                dispatch_id=commit.dispatch.dispatch_id,
+                state_revision=2,
+                state=ConnectorDispatchState.ACCEPTED,
+                attempt=commit.dispatch.attempt,
+                receipt_id=ConnectorDeliveryReceipt.parse_obj(
+                    _decode(receipt["payload"]),
+                ).receipt_id,
+                transition_key=commit.transition_key,
+                created_at=commit.events[-1].occurred_at,
+            )
+            await connection.execute(
+                """INSERT INTO connector_dispatch_revisions
+                   (tenant_id, dispatch_id, state_revision, state, attempt,
+                    receipt_id, transition_key, payload, created_at)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9)""",
+                accepted_revision.tenant_id, accepted_revision.dispatch_id,
+                accepted_revision.state_revision,
+                accepted_revision.state.value, accepted_revision.attempt,
+                accepted_revision.receipt_id,
+                accepted_revision.transition_key,
+                _payload(accepted_revision),
+                accepted_revision.created_at,
             )
             return commit
         return await self._tenant(source.tenant_id, operation)
@@ -1114,6 +1829,21 @@ class RealtimePostgresMixin:
         self, tenant_id: str, after: Optional[str] = None,
     ) -> List[RealtimeNotification]:
         async def operation(connection):
+            cursor = None
+            if after is not None:
+                cursor = _notification_cursor(after)
+                exists = await connection.fetchval(
+                    """SELECT EXISTS(
+                         SELECT 1 FROM incident_realtime_events
+                         WHERE tenant_id=$1 AND occurred_at=$2
+                           AND run_id=$3 AND sequence=$4
+                       )""",
+                    tenant_id, cursor[0], cursor[1], cursor[2],
+                )
+                if not exists:
+                    raise ValueError(
+                        "realtime_notification_checkpoint_unknown",
+                    )
             rows = await connection.fetch(
                 """SELECT e.payload AS event, p.payload AS projection
                    FROM incident_realtime_events e
@@ -1123,9 +1853,17 @@ class RealtimePostgresMixin:
                     AND p.topology_revision=e.topology_revision
                     AND p.projection_revision=e.projection_revision
                    WHERE e.tenant_id=$1
+                     AND (
+                       $2::timestamptz IS NULL
+                       OR (e.occurred_at, e.run_id, e.sequence)
+                          > ($2::timestamptz, $3::text, $4::integer)
+                     )
                    ORDER BY e.occurred_at, e.run_id, e.sequence
-                   LIMIT 200""",
+                   LIMIT 100""",
                 tenant_id,
+                cursor[0] if cursor else None,
+                cursor[1] if cursor else "",
+                cursor[2] if cursor else 0,
             )
             records = []
             for row in rows:
@@ -1133,20 +1871,12 @@ class RealtimePostgresMixin:
                 projection = IncidentProjectionV2.parse_obj(_decode(row["projection"]))
                 records.append(RealtimeNotification(
                     notification_id=_notification_id(event),
-                    event_type=event.event_type,
+                    event_type=event.event_type.value,
                     occurred_at=event.occurred_at,
                     source_event_id=event.source_event_id,
                     incident=RealtimeSummary.from_projection(projection),
                 ))
-            if after is not None:
-                positions = [
-                    index for index, item in enumerate(records)
-                    if item.notification_id == after
-                ]
-                if not positions:
-                    raise ValueError("realtime_notification_checkpoint_unknown")
-                records = records[positions[0] + 1:]
-            return records[:100]
+            return records
         return await self._tenant(tenant_id, operation)
 
     async def realtime_evidence(

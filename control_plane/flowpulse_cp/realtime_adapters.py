@@ -12,6 +12,7 @@ from urllib.parse import urlencode, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from .realtime_models import (
+    ConnectorAdmissionResult,
     ConnectorDispatch,
     ConnectorDispatchState,
     ConnectorHealth,
@@ -20,8 +21,11 @@ from .realtime_models import (
     ConnectorProvider,
     ConnectorRegistration,
     ExternalIdentityBinding,
+    RealtimeDeliveryMode,
     RealtimeSourceEvent,
+    RealtimeTrend,
 )
+from .models import EvidenceAuthority, FreshnessStatus, ProofScope
 from .workspace_models import IncidentProjection
 from .realtime_observability import realtime_telemetry
 
@@ -141,6 +145,8 @@ class PrometheusNormalizer:
         raw_artifact_ref: str,
         raw_content_hash: str,
         acl_subjects: List[str],
+        trend: RealtimeTrend = RealtimeTrend.UNKNOWN,
+        delivery_mode: RealtimeDeliveryMode = RealtimeDeliveryMode.LIVE,
     ) -> RealtimeSourceEvent:
         if registration.provider != ConnectorProvider.PROMETHEUS:
             raise ValueError("prometheus_registration_provider_mismatch")
@@ -182,6 +188,10 @@ class PrometheusNormalizer:
             raise ValueError("prometheus_sample_value_invalid") from error
         if numeric < 0 or numeric > 1:
             raise ValueError("prometheus_ratio_sample_out_of_bounds")
+        fresh_until = observed_at + timedelta(
+            seconds=registration.freshness_sla_seconds,
+        )
+        current = fresh_until >= received_at
         event_values = {
             "source_event_id": "pending",
             "schema_version": "flowpulse.connector-source-event.v1",
@@ -205,10 +215,20 @@ class PrometheusNormalizer:
             "effective_at": observed_at,
             "received_at": received_at,
             "display_value": "{:.1f}%".format(numeric * 100),
+            "numeric_value": float(numeric),
             "signal_status": "CRITICAL" if numeric >= 0.05 else "WARNING",
-            "freshness": "CURRENT",
-            "authority": "T0_AUTHORITATIVE_CURRENT",
-            "proof_scope": "CURRENT_OBSERVATION",
+            "trend": trend,
+            "delivery_mode": delivery_mode,
+            "freshness": (
+                FreshnessStatus.CURRENT if current else FreshnessStatus.STALE
+            ),
+            "authority": (
+                EvidenceAuthority.T0 if current else EvidenceAuthority.T1
+            ),
+            "proof_scope": (
+                ProofScope.CURRENT_OBSERVATION
+                if current else ProofScope.REFERENCE_ONLY
+            ),
             "acl_subjects": acl_subjects,
             "normalizer_version": "prometheus-normalizer.v1",
             "normalization_hash": "0" * 64,
@@ -253,6 +273,7 @@ class PrometheusReadAdapter:
         *,
         acl_subjects: List[str],
         now: Optional[datetime] = None,
+        delivery_mode: RealtimeDeliveryMode = RealtimeDeliveryMode.LIVE,
     ) -> ConnectorPollResult:
         checked_at = now or datetime.now(timezone.utc)
         url = self.base_url + "/api/v1/query?" + urlencode({"query": self.expression})
@@ -287,16 +308,70 @@ class PrometheusReadAdapter:
         artifact_ref = self.artifact_store.put(self.registration.tenant_id, raw)
         cursor = "cursor-{}".format(raw_hash[:24])
         received_at = now or datetime.now(timezone.utc)
-        source = self.normalizer.normalize(
-            payload=parsed,
-            registration=self.registration,
-            binding=self.binding,
-            provider_event_id="poll:" + cursor,
-            received_at=received_at,
-            raw_artifact_ref=artifact_ref,
-            raw_content_hash=raw_hash,
-            acl_subjects=acl_subjects,
+        prior_samples = await self.repository.recent_source_events_for_binding(
+            self.registration.tenant_id,
+            self.binding.binding_id,
+            limit=2,
         )
+        trend = RealtimeTrend.UNKNOWN
+        if prior_samples:
+            latest_prior = max(prior_samples, key=lambda item: item.observed_at)
+            candidate_values = parsed.get("data", {}).get("result", [])
+            candidate_samples = []
+            for series in candidate_values:
+                values = series.get("values") or [series.get("value")]
+                candidate_samples.extend(values)
+            if candidate_samples:
+                latest_value = float(max(
+                    candidate_samples, key=lambda item: float(item[0]),
+                )[1])
+                if latest_value > latest_prior.numeric_value:
+                    trend = RealtimeTrend.RISING
+                elif latest_value < latest_prior.numeric_value:
+                    trend = RealtimeTrend.FALLING
+                else:
+                    trend = RealtimeTrend.STABLE
+        try:
+            source = self.normalizer.normalize(
+                payload=parsed,
+                registration=self.registration,
+                binding=self.binding,
+                provider_event_id="poll:" + cursor,
+                received_at=received_at,
+                raw_artifact_ref=artifact_ref,
+                raw_content_hash=raw_hash,
+                acl_subjects=acl_subjects,
+                trend=trend,
+                delivery_mode=delivery_mode,
+            )
+        except (TypeError, ValueError) as error:
+            health = ConnectorHealth(
+                connector_id=self.registration.connector_id,
+                tenant_id=self.registration.tenant_id,
+                provider=self.registration.provider,
+                state=ConnectorHealthState.DEGRADED,
+                checked_at=received_at,
+                consecutive_failures=1,
+                lag_seconds=0,
+                reason_code=type(error).__name__,
+                adapter_version=self.registration.adapter_version,
+                health_revision=await self.repository.next_health_revision(
+                    self.registration.tenant_id, self.registration.connector_id,
+                ),
+                truth_label=self.registration.truth_label,
+            )
+            await self.repository.append_connector_health(health)
+            realtime_telemetry.record(
+                "PROMETHEUS",
+                "normalize",
+                "error",
+                reason_code=type(error).__name__,
+                correlation={
+                    "case_id": self.binding.case_id,
+                    "run_id": self.binding.run_id,
+                },
+            )
+            raise ConnectorReadError("prometheus_normalization_failed") from error
         dispatch = ConnectorDispatch(
             dispatch_id="dispatch-" + source.normalization_hash[:24],
             tenant_id=source.tenant_id,
@@ -309,7 +384,13 @@ class PrometheusReadAdapter:
             attempt=1,
             created_at=received_at,
         )
-        receipt = await self.repository.admit_source_event(source, dispatch=dispatch)
+        admitted: ConnectorAdmissionResult = await self.repository.admit_source_event(
+            source,
+            dispatch=dispatch,
+        )
+        source = admitted.source_event
+        dispatch = admitted.dispatch
+        receipt = admitted.receipt
         if receipt.duplicate:
             realtime_telemetry.record(
                 "PROMETHEUS", "normalize", "duplicate",
@@ -320,25 +401,26 @@ class PrometheusReadAdapter:
                     "run_id": source.run_id,
                 },
             )
-        if receipt.source_event_id != source.source_event_id:
-            source = await self.repository.source_event(
-                source.tenant_id, receipt.source_event_id,
-            )
         lag = max(0, int((received_at - source.observed_at).total_seconds()))
+        stale = source.freshness == FreshnessStatus.STALE
         health = ConnectorHealth(
             connector_id=self.registration.connector_id,
             tenant_id=self.registration.tenant_id,
             provider=self.registration.provider,
-            state=ConnectorHealthState.CONNECTED,
-            checked_at=received_at,
-            last_success_at=received_at,
+            state=(
+                ConnectorHealthState.STALE
+                if stale else ConnectorHealthState.CONNECTED
+            ),
+            checked_at=source.received_at,
+            last_success_at=(None if stale else source.received_at),
             last_event_observed_at=source.observed_at,
             fresh_until=source.observed_at + timedelta(
                 seconds=self.registration.freshness_sla_seconds,
             ),
-            cursor=cursor,
+            cursor="cursor-" + source.raw_content_hash[:24],
             consecutive_failures=0,
             lag_seconds=lag,
+            reason_code=("freshness_sla_exceeded" if stale else None),
             adapter_version=self.registration.adapter_version,
             health_revision=await self.repository.next_health_revision(
                 self.registration.tenant_id, self.registration.connector_id,
@@ -347,7 +429,7 @@ class PrometheusReadAdapter:
         )
         await self.repository.append_connector_health(health)
         realtime_telemetry.record(
-            "PROMETHEUS", "freshness", "success",
+            "PROMETHEUS", "freshness", "stale" if stale else "success",
             lag_seconds=lag,
             queue_depth=1,
             correlation={
@@ -360,6 +442,7 @@ class PrometheusReadAdapter:
         return ConnectorPollResult(
             registration=self.registration,
             health=health,
+            receipt=receipt,
             source_event=source,
             dispatch=dispatch,
         )
@@ -389,42 +472,54 @@ class ConfiguredPrometheusConnector:
         projection: IncidentProjection,
         *,
         acl_subjects: List[str],
+        now: Optional[datetime] = None,
+        delivery_mode: RealtimeDeliveryMode = RealtimeDeliveryMode.LIVE,
     ) -> ConnectorPollResult:
         if projection.tenant_id != self.registration.tenant_id:
             raise ConnectorReadError("connector_tenant_not_configured")
-        component_id = (
-            "checkout"
-            if "checkout" in {item.component_id for item in projection.graph.nodes}
-            else projection.impacted_path[0] if projection.impacted_path else projection.graph.nodes[0].component_id
-        )
-        edge_ids = [
-            edge.edge_id for edge in projection.graph.edges
-            if component_id in {edge.source_component_id, edge.target_component_id}
-        ][:8]
-        binding = ExternalIdentityBinding(
-            binding_id="binding:{}:{}:{}".format(
+        checked_at = now or datetime.now(timezone.utc)
+        try:
+            binding = await self.repository.resolve_external_identity_binding(
+                projection,
                 self.registration.connector_id,
-                projection.run_id,
-                component_id,
-            ),
-            binding_revision=1,
-            tenant_id=projection.tenant_id,
-            connector_id=self.registration.connector_id,
-            provider=self.registration.provider,
-            external_resource_type="metric",
-            external_resource_id=self.expression,
-            case_id=projection.case_id,
-            incident_id=projection.incident_id,
-            run_id=projection.run_id,
-            topology_revision=projection.topology_revision,
-            component_ids=[component_id],
-            edge_ids=edge_ids,
-            valid_from=projection.created_at,
-            status="ACTIVE",
-            provenance_source="SERVER_CONNECTOR_CONFIG",
-        )
-        await self.repository.register_realtime_connector(self.registration)
-        await self.repository.append_external_identity_binding(binding)
+                self.expression,
+                checked_at,
+            )
+        except ValueError as error:
+            reason_code = str(error)
+            health = ConnectorHealth(
+                connector_id=self.registration.connector_id,
+                tenant_id=self.registration.tenant_id,
+                provider=self.registration.provider,
+                state=ConnectorHealthState.UNAVAILABLE,
+                checked_at=checked_at,
+                consecutive_failures=0,
+                lag_seconds=0,
+                reason_code=reason_code,
+                adapter_version=self.registration.adapter_version,
+                health_revision=await self.repository.next_health_revision(
+                    self.registration.tenant_id,
+                    self.registration.connector_id,
+                ),
+                truth_label=self.registration.truth_label,
+            )
+            await self.repository.append_connector_health(health)
+            realtime_telemetry.record(
+                "PROMETHEUS",
+                "poll",
+                "unavailable",
+                reason_code=reason_code,
+                correlation={
+                    "case_id": projection.case_id,
+                    "run_id": projection.run_id,
+                },
+            )
+            return ConnectorPollResult(
+                accepted=False,
+                reason_code=reason_code,
+                registration=self.registration,
+                health=health,
+            )
         return await PrometheusReadAdapter(
             registration=self.registration,
             binding=binding,
@@ -433,7 +528,11 @@ class ConfiguredPrometheusConnector:
             reader=self.reader,
             artifact_store=self.artifact_store,
             repository=self.repository,
-        ).poll(acl_subjects=acl_subjects)
+        ).poll(
+            acl_subjects=acl_subjects,
+            now=checked_at,
+            delivery_mode=delivery_mode,
+        )
 
 
 class UnavailableOtelAdapter:

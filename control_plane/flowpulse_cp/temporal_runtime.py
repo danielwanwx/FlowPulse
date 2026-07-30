@@ -3,7 +3,7 @@
 import asyncio
 from datetime import datetime, timezone
 from hashlib import sha256
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 import boto3
@@ -108,10 +108,13 @@ from .realtime_adapters import (
     UnavailableOtelAdapter,
 )
 from .realtime_models import (
+    ConfiguredBindingTemplate,
     ConnectorProvider,
     ConnectorRegistration,
     ConnectorTruthLabel,
 )
+from .realtime_scheduler import RealtimeIngestScheduler
+from .realtime_observability import realtime_telemetry
 
 
 class TemporalStarter:
@@ -235,7 +238,7 @@ class WorkspaceTemporalStarter:
 
     async def reconcile_realtime_connector(
         self, projection: IncidentProjection, connector_id: str, idempotency_key: str,
-        actor_subject_id: str,
+        actor_subject_id: str, source_event_id: str, dispatch_id: str,
     ) -> RealtimeUpdateOutcome:
         client = await Client.connect(self.address)
         handle = client.get_workflow_handle(
@@ -251,6 +254,8 @@ class WorkspaceTemporalStarter:
                 run_id=projection.run_id,
                 topology_revision=projection.topology_revision,
                 connector_id=connector_id,
+                source_event_id=source_event_id,
+                dispatch_id=dispatch_id,
                 idempotency_key=idempotency_key,
             ).dict(),
         )
@@ -630,7 +635,9 @@ async def run_worker(
     prometheus_expression: str = "flowpulse_checkout_error_rate",
     connector_allowed_origins=None,
     connector_allow_private_origins: bool = False,
-    otel_query_url: Optional[str] = None,
+    prometheus_binding_templates: Optional[List[ConfiguredBindingTemplate]] = None,
+    realtime_scheduler_interval_seconds: float = 0,
+    realtime_actor_subject_id: Optional[str] = None,
 ) -> None:
     client = await Client.connect(address)
     repository = PostgresCaseRepository(postgres_dsn)
@@ -729,11 +736,65 @@ async def run_worker(
         freshness_sla_seconds=60,
         # Phase 1A has no safe OTEL query adapter. A configured URL remains
         # truthfully unavailable until that bounded adapter is implemented.
-        enabled=False,
+        enabled=True,
         truth_label=connector_truth_label,
     )
     await repository.register_realtime_connector(otel_registration)
     await UnavailableOtelAdapter(otel_registration, repository).health()
+
+    async def dispatch_realtime_fact(source, dispatch):
+        projection = await repository.workspace_projection(
+            source.tenant_id, source.case_id,
+        )
+        if projection is None:
+            raise RuntimeError("realtime_dispatch_workspace_projection_missing")
+        handle = client.get_workflow_handle(
+            projection.workflow_id, run_id=projection.workflow_run_id,
+        )
+        response = await handle.execute_update(
+            IncidentWorkspaceTemporalWorkflow.reconcile_realtime_connector,
+            RealtimeUpdateCommand(
+                tenant_id=source.tenant_id,
+                actor_subject_id=(
+                    realtime_actor_subject_id or source.acl_subjects[0]
+                ),
+                case_id=source.case_id,
+                incident_id=source.incident_id,
+                run_id=source.run_id,
+                topology_revision=source.topology_revision,
+                connector_id=source.connector_id,
+                source_event_id=source.source_event_id,
+                dispatch_id=dispatch.dispatch_id,
+                idempotency_key=dispatch.dispatch_id,
+            ).dict(),
+        )
+        outcome = RealtimeUpdateOutcome.parse_obj(response)
+        if not outcome.accepted:
+            raise RuntimeError(outcome.reason or "realtime_dispatch_rejected")
+        return outcome
+
+    scheduler = RealtimeIngestScheduler(
+        repository=repository,
+        connectors=realtime_adapters,
+        temporal_dispatch=dispatch_realtime_fact,
+        tenant_id=source_tenant_id,
+        binding_templates=list(prometheus_binding_templates or []),
+        actor_subject_id=realtime_actor_subject_id or "",
+    )
+
+    async def scheduler_loop():
+        while True:
+            try:
+                await scheduler.run_once()
+            except Exception as error:
+                realtime_telemetry.record(
+                    "PROMETHEUS",
+                    "dispatch",
+                    "error",
+                    reason_code=type(error).__name__,
+                )
+            await asyncio.sleep(realtime_scheduler_interval_seconds)
+
     async with Worker(
         client, task_queue=task_queue,
         workflows=[
@@ -757,7 +818,13 @@ async def run_worker(
             ))
         ),
     ):
+        scheduler_task = (
+            asyncio.create_task(scheduler_loop())
+            if realtime_scheduler_interval_seconds > 0 else None
+        )
         try:
             await asyncio.Future()
         finally:
+            if scheduler_task is not None:
+                scheduler_task.cancel()
             await repository.close()

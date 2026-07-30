@@ -4,7 +4,7 @@ import asyncio
 import json
 import os
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from pathlib import Path
 from uuid import uuid4
@@ -35,11 +35,14 @@ from flowpulse_cp.realtime_models import (
     ConnectorTruthLabel,
     ExternalIdentityBinding,
     RealtimeCommitActivityPacket,
+    RealtimeEventType,
+    RealtimeIncidentEvent,
     RealtimePollActivityPacket,
     RealtimeUpdateCommand,
     RealtimeUpdateOutcome,
 )
 from flowpulse_cp.realtime_repository import InMemoryRealtimeRepository
+from flowpulse_cp.realtime_scheduler import RealtimeIngestScheduler
 from flowpulse_cp.workspace_models import (
     IncidentRunBinding,
     WorkspaceWorkflowRequest,
@@ -174,15 +177,20 @@ async def accepted_transition(repository):
         run_id=prior.run_id,
         topology_revision=prior.topology_revision,
         connector_id=registration.connector_id,
+        source_event_id=source.source_event_id,
+        dispatch_id=dispatch.dispatch_id,
         idempotency_key="reconcile-a",
     )
     packet = RealtimeCommitActivityPacket(
         command=command,
         projection=prior,
-        event_sequence=2,
+        first_event_sequence=2,
         poll_result=ConnectorPollResult(
             registration=registration,
             health=health,
+            receipt=(
+                await repository.admit_source_event(source, dispatch)
+            ).receipt,
             source_event=source,
             dispatch=dispatch,
         ),
@@ -244,11 +252,11 @@ class RealtimeActivityTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(outcome.accepted)
         projection = outcome.projection
         self.assertEqual(prior.projection_revision + 1, projection.projection_revision)
-        self.assertEqual(2, projection.sequence)
+        self.assertEqual(8, projection.sequence)
         self.assertEqual(1, projection.source_revision)
         self.assertEqual(1, len(projection.realtime_signals))
         self.assertEqual(1, len(projection.active_graph_pulses))
-        self.assertEqual(1, len(projection.agent_workspace.activities))
+        self.assertEqual(2, len(projection.agent_workspace.activities))
         self.assertEqual("MONITOR", projection.agent_workspace.activities[0].role.value)
         self.assertFalse(projection.agent_workspace.activities[0].external_write_performed)
         self.assertEqual(
@@ -262,7 +270,7 @@ class RealtimeActivityTests(unittest.IsolatedAsyncioTestCase):
             ),
         )
         self.assertEqual(outcome, duplicate)
-        self.assertEqual(1, len(await repository.realtime_events_after("tenant-a", "case-a", 0)))
+        self.assertEqual(7, len(await repository.realtime_events_after("tenant-a", "case-a", 0)))
 
     async def test_cross_run_commit_fails_without_projection_or_event(self):
         repository = InMemoryRealtimeRepository()
@@ -416,7 +424,7 @@ class RealtimeTemporalWorkflowTests(unittest.IsolatedAsyncioTestCase):
                 )
                 self.assertEqual(first, duplicate)
                 self.assertEqual(
-                    1, len(await facts.realtime_events_after("tenant-a", "case-a", 0)),
+                    7, len(await facts.realtime_events_after("tenant-a", "case-a", 0)),
                 )
                 self.assertEqual(
                     1,
@@ -436,6 +444,7 @@ class FakeRealtimeStarter:
 
     async def reconcile_realtime_connector(
         self, projection, connector_id, idempotency_key, actor_subject_id,
+        source_event_id, dispatch_id,
     ):
         self.calls += 1
         self.actor_subject_id = actor_subject_id
@@ -447,6 +456,9 @@ class RealtimeApiTests(unittest.TestCase):
         self.realtime = InMemoryRealtimeRepository()
         self.workspace = InMemoryWorkspaceRepository()
         prior, outcome, _ = asyncio.run(accepted_transition(self.realtime))
+        for revisions in self.realtime.dispatch_revisions.values():
+            if revisions[-1].state == ConnectorDispatchState.ACCEPTED:
+                revisions.pop()
         asyncio.run(self.workspace.put_binding(binding()))
         asyncio.run(self.workspace.put_projection(prior))
         self.outcome = outcome
@@ -488,6 +500,42 @@ class RealtimeApiTests(unittest.TestCase):
             roles=["owner"],
         )
         self.assertEqual(404, self.client.get("/v2/incidents/case-a/projection").status_code)
+
+    def test_v2_public_reads_materialize_v1_baseline_without_event(self):
+        realtime = InMemoryRealtimeRepository()
+        asyncio.run(realtime.register_connector(ConnectorRegistration(
+            connector_id="connector-otel-primary",
+            tenant_id="tenant-a",
+            provider="OTEL",
+            adapter_version="otel-read.v1",
+            data_classes=["TRACE"],
+            capabilities=["TRACES"],
+            freshness_sla_seconds=60,
+            enabled=True,
+            truth_label="TEST_DETERMINISTIC",
+        )))
+        app = create_app(
+            workspace_repository=self.workspace,
+            realtime_repository=realtime,
+            workspace_starter=self.starter,
+        )
+        app.dependency_overrides[trusted_auth_context] = lambda: AuthContext(
+            tenant_id="tenant-a", subject_id="owner-a", roles=["owner"],
+        )
+        client = TestClient(app)
+        discovered = client.get("/v2/incidents?state=active&limit=20")
+        self.assertEqual(200, discovered.status_code)
+        self.assertEqual(["case-a"], [item["case_id"] for item in discovered.json()])
+        hydrated = client.get("/v2/incidents/case-a/projection")
+        self.assertEqual(200, hydrated.status_code)
+        payload = hydrated.json()
+        self.assertEqual([], payload["realtime_signals"])
+        self.assertEqual([], payload["active_graph_pulses"])
+        self.assertEqual([], payload["agent_workspace"]["activities"])
+        self.assertEqual("UNAVAILABLE", payload["connector_health"][0]["state"])
+        self.assertEqual(
+            [], asyncio.run(realtime.realtime_events_after("tenant-a", "case-a", 0)),
+        )
 
     def test_reconcile_body_cannot_supply_tenant_url_query_or_provider(self):
         invalid = self.client.post(
@@ -551,7 +599,7 @@ class RealtimeApiTests(unittest.TestCase):
             case_id="case-a", after=0, last_event_id=None,
         ))
         self.assertIn("id: 2", case_chunk)
-        self.assertIn("incident.signal.accepted", case_chunk)
+        self.assertIn("connector.health.changed", case_chunk)
         global_chunk = asyncio.run(self._chunk(
             "realtime_incident_notifications",
             after=None, last_event_id=None,
@@ -559,14 +607,14 @@ class RealtimeApiTests(unittest.TestCase):
         self.assertIn("incident-realtime-notification", global_chunk)
         notification_id = asyncio.run(
             self.realtime.realtime_notifications_after("tenant-a"),
-        )[0].notification_id
+        )[-1].notification_id
         resumed_global = asyncio.run(self._chunk(
             "realtime_incident_notifications",
             after=notification_id, last_event_id=None,
         ))
         resumed_case = asyncio.run(self._chunk(
             "realtime_case_events",
-            case_id="case-a", after=2, last_event_id=None,
+            case_id="case-a", after=8, last_event_id=None,
         ))
         self.assertEqual(": heartbeat\n\n", resumed_global)
         self.assertEqual(": heartbeat\n\n", resumed_case)
@@ -666,6 +714,7 @@ class LiveRealtimePostgresTests(unittest.TestCase):
                                (SELECT count(*) FROM connector_delivery_receipts) AS deliveries,
                                (SELECT count(*) FROM connector_source_events) AS sources,
                                (SELECT count(*) FROM connector_dispatch_outbox) AS outbox,
+                               (SELECT count(*) FROM connector_dispatch_revisions) AS dispatch_revisions,
                                (SELECT count(*) FROM connector_poll_cursors) AS cursors,
                                (SELECT count(*) FROM connector_reconciliation_runs) AS reconciliations,
                                (SELECT count(*) FROM incident_realtime_transitions) AS transitions,
@@ -677,9 +726,164 @@ class LiveRealtimePostgresTests(unittest.TestCase):
 
                     row = await repository._tenant("tenant-a", counts, subject_id="owner-a")
                     self.assertEqual(
-                        (1, 1, 1, 1, 1, 1, 1, 1, 1, 1),
+                        (1, 1, 1, 2, 1, 1, 1, 7, 1, 1, 2),
                         tuple(row.values()),
                     )
+                    projection_v2 = outcome.projection
+                    health_event = packet.poll_result.health
+
+                    async def seed_notifications(connection):
+                        for offset in range(275):
+                            sequence = 100 + offset
+                            event = RealtimeIncidentEvent(
+                                **{
+                                    field: getattr(projection_v2, field)
+                                    for field in (
+                                        "tenant_id", "incident_id", "run_id",
+                                        "topology_revision", "case_id",
+                                        "case_revision", "workflow_id",
+                                        "workflow_run_id", "created_at",
+                                    )
+                                },
+                                source_event_id=source.source_event_id,
+                                projection_revision=projection_v2.projection_revision,
+                                sequence=sequence,
+                                event_type=RealtimeEventType.CONNECTOR_HEALTH_CHANGED,
+                                occurred_at=NOW + timedelta(
+                                    milliseconds=sequence,
+                                ),
+                                health=health_event,
+                            )
+                            await connection.execute(
+                                """INSERT INTO incident_realtime_events
+                                   (event_id, tenant_id, incident_id, run_id,
+                                    topology_revision, case_id, case_revision,
+                                    workflow_id, workflow_run_id,
+                                    source_event_id, projection_revision,
+                                    sequence, event_type, payload, occurred_at)
+                                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,
+                                           $12,$13,$14::jsonb,$15)""",
+                                uuid4(), event.tenant_id, event.incident_id,
+                                event.run_id, event.topology_revision,
+                                event.case_id, event.case_revision,
+                                event.workflow_id, event.workflow_run_id,
+                                event.source_event_id,
+                                event.projection_revision, event.sequence,
+                                event.event_type.value, event.json(),
+                                event.occurred_at,
+                            )
+
+                    await repository._tenant(
+                        "tenant-a", seed_notifications, subject_id="owner-a",
+                    )
+                    page1 = await repository.realtime_notifications_after(
+                        "tenant-a",
+                    )
+                    page2 = await repository.realtime_notifications_after(
+                        "tenant-a", page1[-1].notification_id,
+                    )
+                    page3 = await repository.realtime_notifications_after(
+                        "tenant-a", page2[-1].notification_id,
+                    )
+                    self.assertEqual([100, 100, 82], [
+                        len(page1), len(page2), len(page3),
+                    ])
+                    self.assertEqual(282, len({
+                        item.notification_id
+                        for page in (page1, page2, page3)
+                        for item in page
+                    }))
+                    valid_dispatch = invalid_dispatch.copy(update={
+                        "run_id": second.run_id,
+                    })
+                    admitted = await repository.admit_source_event(
+                        second, valid_dispatch,
+                    )
+
+                    class TemporalDispatch:
+                        def __init__(self):
+                            self.calls = 0
+                            self.fail = True
+
+                        async def __call__(self, accepted_source, accepted_dispatch):
+                            self.calls += 1
+                            if self.fail:
+                                raise RuntimeError("temporal_unavailable")
+                            current = await repository.workspace_projection(
+                                accepted_source.tenant_id,
+                                accepted_source.case_id,
+                            )
+                            current_v2 = await repository.realtime_projection(
+                                accepted_source.tenant_id,
+                                accepted_source.case_id,
+                            )
+                            family = await repository.load_connector_fact_family(
+                                accepted_source.tenant_id,
+                                accepted_source.source_event_id,
+                                accepted_dispatch.dispatch_id,
+                            )
+                            return await RealtimeActivityDispatcher(
+                                repository, {},
+                            ).dispatch(
+                                "workspace_commit_realtime_source_event_activity",
+                                RealtimeCommitActivityPacket(
+                                    command=RealtimeUpdateCommand(
+                                        tenant_id=accepted_source.tenant_id,
+                                        actor_subject_id="owner-a",
+                                        case_id=accepted_source.case_id,
+                                        incident_id=accepted_source.incident_id,
+                                        run_id=accepted_source.run_id,
+                                        topology_revision=accepted_source.topology_revision,
+                                        connector_id=accepted_source.connector_id,
+                                        source_event_id=accepted_source.source_event_id,
+                                        dispatch_id=accepted_dispatch.dispatch_id,
+                                        idempotency_key=accepted_dispatch.dispatch_id,
+                                    ),
+                                    projection=current,
+                                    prior_realtime_projection=current_v2,
+                                    first_event_sequence=current.sequence + 1,
+                                    poll_result=family,
+                                ).dict(),
+                            )
+
+                    temporal_dispatch = TemporalDispatch()
+                    scheduler = RealtimeIngestScheduler(
+                        repository=repository,
+                        connectors={},
+                        temporal_dispatch=temporal_dispatch,
+                        tenant_id="tenant-a",
+                        binding_templates=[],
+                    )
+                    await scheduler.dispatch_pending_once()
+                    self.assertEqual(
+                        ConnectorDispatchState.PENDING,
+                        (
+                            await repository.authoritative_dispatch(
+                                "tenant-a", admitted.dispatch.dispatch_id,
+                            )
+                        ).state,
+                    )
+                    temporal_dispatch.fail = False
+                    await scheduler.dispatch_pending_once()
+                    await scheduler.dispatch_pending_once()
+                    self.assertEqual(2, temporal_dispatch.calls)
+                    self.assertEqual(
+                        ConnectorDispatchState.ACCEPTED,
+                        (
+                            await repository.authoritative_dispatch(
+                                "tenant-a", admitted.dispatch.dispatch_id,
+                            )
+                        ).state,
+                    )
+                    acknowledged_retry = await repository.admit_source_event(
+                        second, valid_dispatch,
+                    )
+                    self.assertEqual(
+                        ConnectorDispatchState.ACCEPTED,
+                        acknowledged_retry.dispatch.state,
+                    )
+                    self.assertEqual(second, acknowledged_retry.source_event)
+                    self.assertEqual(admitted.receipt, acknowledged_retry.receipt)
                     self.assertIsNone(
                         await repository.realtime_projection("tenant-b", run_binding.case_id),
                     )

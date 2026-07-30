@@ -13,6 +13,7 @@ from .provider_gateway import (
     ProviderMode,
     ProviderSettings,
 )
+from .realtime_models import ConfiguredBindingTemplate
 
 
 def required(name: str) -> str:
@@ -91,7 +92,9 @@ class WorkerSettings:
     prometheus_expression: str
     connector_allowed_origins: List[str]
     connector_allow_private_origins: bool
-    otel_query_url: Optional[str]
+    prometheus_binding_templates: List[ConfiguredBindingTemplate]
+    realtime_scheduler_interval_seconds: float
+    realtime_actor_subject_id: Optional[str]
 
     @classmethod
     def from_environment(cls) -> "WorkerSettings":
@@ -123,9 +126,35 @@ class WorkerSettings:
             if item.strip()
         ]
         prometheus_url = os.environ.get("FLOWPULSE_PROMETHEUS_URL") or None
-        otel_query_url = os.environ.get("FLOWPULSE_OTEL_QUERY_URL") or None
-        if (prometheus_url or otel_query_url) and not allowed_origins:
+        if prometheus_url and not allowed_origins:
             raise RuntimeError("configured_connector_requires_exact_origin_allowlist")
+        try:
+            templates = [
+                ConfiguredBindingTemplate.parse_obj(item)
+                for item in json.loads(
+                    os.environ.get("FLOWPULSE_PROMETHEUS_BINDINGS_JSON", "[]"),
+                )
+            ]
+        except (json.JSONDecodeError, TypeError, ValidationError) as error:
+            raise RuntimeError("prometheus_binding_templates_invalid") from error
+        try:
+            scheduler_interval = float(
+                os.environ.get(
+                    "FLOWPULSE_REALTIME_SCHEDULER_INTERVAL_SECONDS", "0",
+                ),
+            )
+        except ValueError as error:
+            raise RuntimeError("realtime_scheduler_interval_invalid") from error
+        if scheduler_interval < 0 or scheduler_interval > 300:
+            raise RuntimeError("realtime_scheduler_interval_invalid")
+        if scheduler_interval and (
+            not prometheus_url
+            or not templates
+            or not os.environ.get("FLOWPULSE_REALTIME_ACTOR_SUBJECT_ID")
+        ):
+            raise RuntimeError(
+                "realtime_scheduler_requires_connector_and_binding",
+            )
         return cls(
             temporal_address=required("FLOWPULSE_TEMPORAL_ADDRESS"),
             postgres_dsn=required("FLOWPULSE_POSTGRES_DSN"),
@@ -151,7 +180,11 @@ class WorkerSettings:
             ),
             connector_allowed_origins=allowed_origins,
             connector_allow_private_origins=allow_private,
-            otel_query_url=otel_query_url,
+            prometheus_binding_templates=templates,
+            realtime_scheduler_interval_seconds=scheduler_interval,
+            realtime_actor_subject_id=(
+                os.environ.get("FLOWPULSE_REALTIME_ACTOR_SUBJECT_ID") or None
+            ),
         )
 
 

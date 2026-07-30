@@ -23,5 +23,9 @@ if __name__ == "__main__":
         prometheus_expression=settings.prometheus_expression,
         connector_allowed_origins=settings.connector_allowed_origins,
         connector_allow_private_origins=settings.connector_allow_private_origins,
-        otel_query_url=settings.otel_query_url,
+        prometheus_binding_templates=settings.prometheus_binding_templates,
+        realtime_scheduler_interval_seconds=(
+            settings.realtime_scheduler_interval_seconds
+        ),
+        realtime_actor_subject_id=settings.realtime_actor_subject_id,
     ))

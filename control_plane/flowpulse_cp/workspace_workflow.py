@@ -357,15 +357,29 @@ class IncidentWorkspaceTemporalWorkflow:
                 if prior is not None:
                     return prior
                 self._validate_realtime_command(command)
+                fact_plane_outbox = workflow.patched(
+                    "workspace-v2-realtime-fact-plane-outbox-v1",
+                )
+                if fact_plane_outbox and (
+                    command.source_event_id is None
+                    or command.dispatch_id is None
+                ):
+                    raise ValueError(
+                        "realtime_connector_dispatch_identity_required",
+                    )
                 polled = ConnectorPollResult.parse_obj(
                     await self._action_activity(
-                        "workspace_poll_realtime_connector_activity",
+                        (
+                            "workspace_load_realtime_dispatch_activity"
+                            if fact_plane_outbox
+                            else "workspace_poll_realtime_connector_activity"
+                        ),
                         RealtimePollActivityPacket(
                             command=command, projection=self._projection,
                         ).dict(),
                     ),
                 )
-                self._event_sequence += 1
+                first_event_sequence = self._event_sequence + 1
                 outcome = RealtimeUpdateOutcome.parse_obj(
                     await self._action_activity(
                         "workspace_commit_realtime_source_event_activity",
@@ -373,7 +387,7 @@ class IncidentWorkspaceTemporalWorkflow:
                             command=command,
                             projection=self._projection,
                             prior_realtime_projection=self._realtime_projection,
-                            event_sequence=self._event_sequence,
+                            first_event_sequence=first_event_sequence,
                             poll_result=polled,
                         ).dict(),
                     ),
@@ -382,6 +396,7 @@ class IncidentWorkspaceTemporalWorkflow:
                     raise ValueError(outcome.reason or "realtime_connector_event_not_accepted")
                 self._projection = outcome.workspace_projection
                 self._realtime_projection = outcome.projection
+                self._event_sequence = outcome.projection.sequence
                 payload = outcome.dict()
                 self._realtime_receipts[command.idempotency_key] = payload
                 return payload

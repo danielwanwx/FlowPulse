@@ -91,7 +91,7 @@ class WorkspaceStartPort(Protocol):
 
     async def reconcile_realtime_connector(
         self, projection: IncidentProjection, connector_id: str, idempotency_key: str,
-        actor_subject_id: str,
+        actor_subject_id: str, source_event_id: str, dispatch_id: str,
     ) -> RealtimeUpdateOutcome:
         ...
 
@@ -112,7 +112,7 @@ class WorkspaceUnavailableStarter:
 
     async def reconcile_realtime_connector(
         self, projection: IncidentProjection, connector_id: str, idempotency_key: str,
-        actor_subject_id: str,
+        actor_subject_id: str, source_event_id: str, dispatch_id: str,
     ) -> RealtimeUpdateOutcome:
         raise RuntimeError("workspace_temporal_update_unavailable")
 
@@ -195,11 +195,11 @@ def _realtime_repository(request: Request) -> Any:
     return repository
 
 
-async def _workspace_call(repository: Any, names, *args):
+async def _workspace_call(repository: Any, names, *args, **kwargs):
     for name in names:
         candidate = getattr(repository, name, None)
         if candidate is not None:
-            return await _resolve(candidate(*args))
+            return await _resolve(candidate(*args, **kwargs))
     raise HTTPException(status_code=503, detail="workspace_projection_repository_method_unavailable")
 
 
@@ -257,6 +257,24 @@ def create_app(
     ) -> list[RealtimeSummary]:
         if state != IncidentDiscoveryState.ACTIVE:
             raise HTTPException(status_code=422, detail="realtime_incident_state_not_supported")
+        workspace_summaries = await _workspace_call(
+            _workspace_repository(request),
+            ("workspace_active_incidents", "active_incidents"),
+            actor.tenant_id, limit,
+        )
+        for summary in workspace_summaries:
+            workspace_projection = await _workspace_call(
+                _workspace_repository(request),
+                ("workspace_projection", "get_projection"),
+                actor.tenant_id, summary.case_id,
+            )
+            if workspace_projection is not None:
+                await _workspace_call(
+                    _realtime_repository(request),
+                    ("materialize_realtime_baseline",),
+                    workspace_projection,
+                    now=datetime.now(timezone.utc),
+                )
         return await _workspace_call(
             _realtime_repository(request), ("realtime_active_incidents",),
             actor.tenant_id, limit,
@@ -272,6 +290,19 @@ def create_app(
             _realtime_repository(request), ("realtime_projection",),
             actor.tenant_id, case_id,
         )
+        if projection is None:
+            workspace_projection = await _workspace_call(
+                _workspace_repository(request),
+                ("workspace_projection", "get_projection"),
+                actor.tenant_id, case_id,
+            )
+            if workspace_projection is not None:
+                projection = await _workspace_call(
+                    _realtime_repository(request),
+                    ("materialize_realtime_baseline",),
+                    workspace_projection,
+                    now=datetime.now(timezone.utc),
+                )
         if projection is None:
             raise HTTPException(status_code=404, detail="realtime_projection_not_found")
         return _refresh_realtime_clock(projection, datetime.now(timezone.utc))
@@ -309,9 +340,26 @@ def create_app(
         )
         if projection is None:
             raise HTTPException(status_code=404, detail="workspace_projection_not_found")
+        pending = [
+            item for item in await _workspace_call(
+                _realtime_repository(request), ("pending_dispatches",),
+                actor.tenant_id, 100,
+            )
+            if item.case_id == case_id and item.connector_id == connector_id
+        ]
+        if len(pending) != 1:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "realtime_dispatch_pending_not_found"
+                    if not pending
+                    else "realtime_dispatch_pending_ambiguous"
+                ),
+            )
         try:
             outcome = await workspace_starter.reconcile_realtime_connector(
                 projection, connector_id, body.idempotency_key, actor.subject_id,
+                pending[0].source_event_id, pending[0].dispatch_id,
             )
         except RuntimeError as error:
             raise HTTPException(status_code=503, detail=str(error))

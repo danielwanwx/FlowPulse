@@ -303,6 +303,11 @@ if ! ledger_has "015_agent_workspace_activity.sql" && \
   echo "migration_partial_schema_unrecorded:015_agent_workspace_activity.sql" >&2
   exit 1
 fi
+if ! ledger_has "016_connector_dispatch_revisions.sql" && \
+  [ "$(psql -Atq -c "SELECT to_regclass('public.connector_dispatch_revisions') IS NOT NULL")" = "t" ]; then
+  echo "migration_partial_schema_unrecorded:016_connector_dispatch_revisions.sql" >&2
+  exit 1
+fi
 
 # Ledger entries must name the exact contiguous source sequence.  This rejects
 # checksum drift, unsupported future versions, and a partially edited ledger.
