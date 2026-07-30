@@ -1459,7 +1459,8 @@ class RealtimePostgresMixin:
                      SELECT payload FROM connector_health_snapshots
                      WHERE tenant_id=s.tenant_id
                        AND connector_id=s.connector_id
-                     ORDER BY health_revision DESC LIMIT 1
+                       AND checked_at=(s.payload->>'received_at')::timestamptz
+                     ORDER BY health_revision ASC LIMIT 1
                    ) h ON true
                    WHERE s.tenant_id=$1 AND s.source_event_id=$2
                      AND o.dispatch_id=$3""",

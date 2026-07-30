@@ -799,6 +799,19 @@ class LiveRealtimePostgresTests(unittest.TestCase):
                     admitted = await repository.admit_source_event(
                         second, valid_dispatch,
                     )
+                    await repository.append_connector_health(
+                        packet.poll_result.health.copy(update={
+                            "health_revision": (
+                                await repository.next_health_revision(
+                                    second.tenant_id, second.connector_id,
+                                )
+                            ),
+                            "state": ConnectorHealthState.DEGRADED,
+                            "checked_at": NOW + timedelta(seconds=30),
+                            "last_success_at": None,
+                            "reason_code": "later_unrelated_poll_failed",
+                        }),
+                    )
 
                     class TemporalDispatch:
                         def __init__(self):
@@ -822,6 +835,10 @@ class LiveRealtimePostgresTests(unittest.TestCase):
                                 accepted_source.source_event_id,
                                 accepted_dispatch.dispatch_id,
                             )
+                            if family.health.state != ConnectorHealthState.CONNECTED:
+                                raise AssertionError(
+                                    "dispatch_loaded_unrelated_latest_health",
+                                )
                             return await RealtimeActivityDispatcher(
                                 repository, {},
                             ).dispatch(
