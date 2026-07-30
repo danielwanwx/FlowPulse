@@ -91,7 +91,7 @@ def _examples() -> dict:
     }
 
 
-def generate(output: Path, producer_baseline_sha: str) -> dict:
+def generate(output: Path, producer_implementation_sha: str) -> dict:
     output.mkdir(parents=True, exist_ok=True)
     openapi_path = output / "flowpulse-incident-realtime-v2.openapi.json"
     examples_path = output / "flowpulse-incident-realtime-v2.examples.json"
@@ -118,7 +118,7 @@ def generate(output: Path, producer_baseline_sha: str) -> dict:
     }
     freeze = {
         "schema_version": "flowpulse.incident-realtime.freeze.v2",
-        "producer_baseline_git_sha": producer_baseline_sha,
+        "producer_implementation_git_sha": producer_implementation_sha,
         "hash_algorithm": "sha256",
         "artifacts": hashes,
         "generated_at": "deterministic-from-source",
@@ -130,9 +130,12 @@ def generate(output: Path, producer_baseline_sha: str) -> dict:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--producer-baseline-sha", required=True)
+    parser.add_argument("--producer-implementation-sha", required=True)
     args = parser.parse_args()
-    print(json.dumps(generate(args.output, args.producer_baseline_sha), sort_keys=True))
+    print(json.dumps(
+        generate(args.output, args.producer_implementation_sha),
+        sort_keys=True,
+    ))
 
 
 if __name__ == "__main__":

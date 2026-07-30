@@ -64,6 +64,11 @@
             "title": "Activity Id",
             "type": "string"
           },
+          "activity_key": {
+            "minLength": 1,
+            "title": "Activity Key",
+            "type": "string"
+          },
           "capability": {
             "minLength": 1,
             "title": "Capability",
@@ -144,6 +149,11 @@
           "state": {
             "$ref": "#/components/schemas/AgentActivityState"
           },
+          "state_revision": {
+            "minimum": 1,
+            "title": "State Revision",
+            "type": "integer"
+          },
           "summary": {
             "minLength": 1,
             "title": "Summary",
@@ -165,6 +175,8 @@
         },
         "required": [
           "activity_id",
+          "activity_key",
+          "state_revision",
           "sequence",
           "role",
           "state",
@@ -419,7 +431,7 @@
             "type": "string"
           },
           "consecutive_failures": {
-            "minimum": 0.0,
+            "minimum": 0,
             "title": "Consecutive Failures",
             "type": "integer"
           },
@@ -433,12 +445,12 @@
             "type": "string"
           },
           "health_revision": {
-            "minimum": 1.0,
+            "minimum": 1,
             "title": "Health Revision",
             "type": "integer"
           },
           "lag_seconds": {
-            "minimum": 0.0,
+            "minimum": 0,
             "title": "Lag Seconds",
             "type": "integer"
           },
@@ -3257,6 +3269,23 @@
         "title": "RealtimeCitation",
         "type": "object"
       },
+      "RealtimeEventType": {
+        "description": "An enumeration.",
+        "enum": [
+          "connector.health.changed",
+          "connector.source.accepted",
+          "incident.signal.observed",
+          "incident.signal.stale",
+          "graph.pulse.started",
+          "graph.pulse.expired",
+          "agent.activity.started",
+          "agent.activity.completed",
+          "agent.activity.degraded",
+          "incident.clock.changed"
+        ],
+        "title": "RealtimeEventType",
+        "type": "string"
+      },
       "RealtimeIncidentEvent": {
         "additionalProperties": false,
         "description": "Public run identity and its immutable internal Temporal correlation.",
@@ -3283,9 +3312,13 @@
             "type": "string"
           },
           "event_type": {
-            "minLength": 1,
-            "title": "Event Type",
-            "type": "string"
+            "$ref": "#/components/schemas/RealtimeEventType"
+          },
+          "health": {
+            "$ref": "#/components/schemas/ConnectorHealth"
+          },
+          "incident_clock": {
+            "$ref": "#/components/schemas/IncidentClock"
           },
           "incident_id": {
             "minLength": 1,
@@ -3325,7 +3358,6 @@
             "$ref": "#/components/schemas/RealtimeSignal"
           },
           "source_event_id": {
-            "minLength": 1,
             "title": "Source Event Id",
             "type": "string"
           },
@@ -3360,15 +3392,10 @@
           "workflow_id",
           "workflow_run_id",
           "created_at",
-          "source_event_id",
           "projection_revision",
           "sequence",
           "event_type",
-          "occurred_at",
-          "signal",
-          "pulse",
-          "activity",
-          "citation"
+          "occurred_at"
         ],
         "title": "RealtimeIncidentEvent",
         "type": "object"
@@ -3395,7 +3422,6 @@
             "type": "string"
           },
           "source_event_id": {
-            "minLength": 1,
             "title": "Source Event Id",
             "type": "string"
           }
@@ -3404,7 +3430,6 @@
           "notification_id",
           "event_type",
           "occurred_at",
-          "source_event_id",
           "incident"
         ],
         "title": "RealtimeNotification",
@@ -3513,9 +3538,7 @@
             "type": "string"
           },
           "trend": {
-            "minLength": 1,
-            "title": "Trend",
-            "type": "string"
+            "$ref": "#/components/schemas/RealtimeTrend"
           }
         },
         "required": [
@@ -3626,6 +3649,17 @@
         ],
         "title": "RealtimeSummary",
         "type": "object"
+      },
+      "RealtimeTrend": {
+        "description": "An enumeration.",
+        "enum": [
+          "UNKNOWN",
+          "STABLE",
+          "RISING",
+          "FALLING"
+        ],
+        "title": "RealtimeTrend",
+        "type": "string"
       },
       "RealtimeUpdateOutcome": {
         "additionalProperties": false,

@@ -18,6 +18,7 @@ V1_HASHES = {
     "flowpulse-incident-workspace-v1.freeze.json": "4393b58b3c51bbdf08a26b3b14267cf698444a58765afcd91fe428c812466843",
     "flowpulse-incident-workspace-v1.openapi.json": "be260bc4da0ce19f115acd18a3b2e6cac4fef5317ca657da79812af86e4b6573",
 }
+PRODUCER_IMPLEMENTATION_SHA = "ed11c68ec1f18677d22c901e7c9a6b7138c1cd69"
 
 
 def digest(path):
@@ -34,6 +35,10 @@ class RealtimeContractFreezeTests(unittest.TestCase):
     def test_v2_manifest_hashes_and_all_local_refs_resolve(self):
         manifest = json.loads(
             (ARTIFACTS / "flowpulse-incident-realtime-v2.freeze.json").read_text()
+        )
+        self.assertEqual(
+            PRODUCER_IMPLEMENTATION_SHA,
+            manifest["producer_implementation_git_sha"],
         )
         for filename, expected in manifest["artifacts"].items():
             self.assertEqual(expected, digest(ARTIFACTS / filename))
@@ -72,7 +77,7 @@ class RealtimeContractFreezeTests(unittest.TestCase):
 
     def test_generator_is_reproducible(self):
         with tempfile.TemporaryDirectory() as temp:
-            hashes = generate(Path(temp), "638b120b10eab189a0fae1a115534e8870e2d3e3")
+            hashes = generate(Path(temp), PRODUCER_IMPLEMENTATION_SHA)
             for filename, expected in hashes.items():
                 self.assertEqual(expected, digest(Path(temp) / filename))
             self.assertEqual(
