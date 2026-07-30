@@ -71,6 +71,21 @@ export function incidentTopologyView(projection) {
   return { available: true, reason: null, nodes: selectedNodes, edges: selectedEdges, positions };
 }
 
+export function activePulseEdgeIds(projection, now = Date.now()) {
+  const graphEdges = new Set((projection?.graph?.edges || []).map((edge) => edge.edge_id));
+  const active = new Set();
+  for (const pulse of projection?.active_graph_pulses || []) {
+    if (Date.parse(pulse.expires_at) <= now) continue;
+    for (const edgeId of pulse.edge_ids) if (graphEdges.has(edgeId)) active.add(edgeId);
+  }
+  return active;
+}
+
+export function latestBySequence(items) {
+  if (!Array.isArray(items) || items.length === 0) return null;
+  return items.reduce((latest, item) => item.sequence > latest.sequence ? item : latest);
+}
+
 function spaciousLayout(nodes, columns, rows) {
   return {
     density: "spacious",

@@ -28,6 +28,11 @@ const EVIDENCE_FRESHNESS = new Set(["CURRENT", "AGING", "STALE", "UNKNOWN"]);
 const EVIDENCE_PROOF_SCOPES = new Set(["CURRENT_OBSERVATION", "REFERENCE_ONLY"]);
 const EVIDENCE_SOURCE_KINDS = new Set(["METRIC", "LOG", "TRACE", "CHANGE", "CONFIG", "TOPOLOGY", "KNOWLEDGE", "SOURCE_READBACK"]);
 const NOTIFICATION_TYPES = new Set(["incident.accepted", "incident.updated"]);
+const REALTIME_EVENT_TYPES = new Set([
+  "connector.health.changed", "connector.source.accepted", "incident.signal.observed", "incident.signal.stale",
+  "graph.pulse.started", "graph.pulse.expired", "agent.activity.started", "agent.activity.completed",
+  "agent.activity.degraded", "incident.clock.changed"
+]);
 const IDENTITY_KEYS = ["tenant_id", "incident_id", "run_id", "topology_revision", "case_id", "case_revision", "workflow_id", "workflow_run_id", "created_at"];
 const CORRELATION_KEYS = IDENTITY_KEYS.filter((field) => field !== "created_at");
 const VERSION_BUNDLE_KEYS = [
@@ -60,10 +65,10 @@ export function parseIncidentSummaries(value) {
 export function parseIncidentSummary(value) {
   exactObject(value, [
     "case_id", "incident_id", "run_id", "topology_revision", "projection_revision", "sequence",
-    "lifecycle_state", "lifecycle_stage", "status", "title", "summary"
+    "lifecycle_state", "lifecycle_stage", "status", "title", "summary", "incident_clock", "latest_signal_status", "connector_freshness"
   ], "incident_summary_unknown_field", [
     "case_id", "incident_id", "run_id", "topology_revision", "projection_revision", "sequence",
-    "lifecycle_state", "status", "title", "summary"
+    "lifecycle_state", "title", "summary"
   ]);
   assertText(value.case_id, "case_id_invalid");
   assertText(value.incident_id, "incident_id_invalid");
@@ -73,7 +78,8 @@ export function parseIncidentSummary(value) {
   assertInteger(value.sequence, "sequence_invalid");
   assertEnum(value.lifecycle_state, LIFECYCLE_STATES, "lifecycle_state_invalid");
   if (value.lifecycle_stage !== undefined) assertEnum(value.lifecycle_stage, LIFECYCLE_STAGES, "lifecycle_stage_invalid");
-  assertText(value.status, "incident_status_invalid");
+  if (value.status !== undefined) assertText(value.status, "incident_status_invalid");
+  if (value.incident_clock !== undefined) validateIncidentClock(value.incident_clock);
   assertText(value.title, "incident_title_invalid");
   assertText(value.summary, "incident_summary_invalid");
   return clone(value);
@@ -87,19 +93,29 @@ export function parseIncidentNotification(value) {
   return { notification_id: value.notification_id, event_type: value.event_type, occurred_at: value.occurred_at, incident: parseIncidentSummary(value.incident) };
 }
 
+export function parseRealtimeNotification(value) {
+  exactObject(value, ["notification_id", "event_type", "occurred_at", "source_event_id", "incident"], "realtime_notification_unknown_field", ["notification_id", "event_type", "occurred_at", "incident"]);
+  assertText(value.notification_id, "notification_id_invalid");
+  assertEnum(value.event_type, REALTIME_EVENT_TYPES, "realtime_event_type_invalid");
+  assertTimestamp(value.occurred_at, "notification_occurred_at_invalid");
+  if (value.source_event_id !== undefined && value.source_event_id !== null) assertText(value.source_event_id, "source_event_id_invalid");
+  return { ...clone(value), incident: parseIncidentSummary(value.incident) };
+}
+
 export function parseIncidentProjection(value) {
   exactObject(value, [
     ...IDENTITY_KEYS,
     "schema_version", "projection_revision", "sequence", "lifecycle_state", "status", "operator_title", "operator_summary",
     "generated_at", "graph", "impacted_path", "evidence_revision", "gate_revision", "action_revision",
     "evidence_refs", "degraded_code", "lifecycle_stage", "gate1_state", "investigation_result", "incident_focus",
-    "conversation_items"
+    "conversation_items", "incident_clock", "connector_health", "realtime_signals", "active_graph_pulses",
+    "agent_workspace", "source_revision", "connector_revision"
   ], "incident_projection_unknown_field", [
     ...IDENTITY_KEYS, "projection_revision", "sequence", "lifecycle_state", "status", "generated_at", "graph",
     "evidence_revision", "gate_revision", "action_revision"
   ]);
   parseIdentity(value);
-  if (value.schema_version !== undefined && value.schema_version !== "flowpulse.incident-projection.v1") fail("incident_projection_schema_invalid");
+  if (value.schema_version !== undefined && !["flowpulse.incident-projection.v1", "flowpulse.incident-projection.v2"].includes(value.schema_version)) fail("incident_projection_schema_invalid");
   assertInteger(value.projection_revision, "projection_revision_invalid");
   assertInteger(value.sequence, "sequence_invalid");
   assertEnum(value.lifecycle_state, LIFECYCLE_STATES, "lifecycle_state_invalid");
@@ -125,6 +141,7 @@ export function parseIncidentProjection(value) {
     : parseIncidentFocus(value.incident_focus, graph, impacted_path);
   const conversation_items = parseConversationItems(value.conversation_items === undefined ? [] : value.conversation_items, value, graph, 128);
   const projection = { ...clone(value), graph, impacted_path, evidence_refs };
+  if (value.schema_version === "flowpulse.incident-projection.v2") validateV2Projection(value, componentIds, new Set(graph.edges.map((edge) => edge.edge_id)));
   if (value.incident_focus !== undefined) projection.incident_focus = incident_focus;
   if (value.conversation_items !== undefined) projection.conversation_items = conversation_items;
   if (value.investigation_result !== undefined && value.investigation_result !== null) {
@@ -132,6 +149,86 @@ export function parseIncidentProjection(value) {
   }
   assertTrustedProjectionStage(projection, lifecycle_stage, gate1_state);
   return projection;
+}
+
+function validateV2Projection(value, componentIds, edgeIds) {
+  validateIncidentClock(value.incident_clock);
+  for (const list of ["connector_health", "realtime_signals", "active_graph_pulses"]) if (!Array.isArray(value[list])) fail(`${list}_invalid`);
+  for (const health of value.connector_health) validateConnectorHealth(health, value.tenant_id);
+  for (const signal of value.realtime_signals) {
+    validateRealtimeSignal(signal);
+    for (const id of stringList(signal.component_ids, "signal_components_invalid")) if (!componentIds.has(id)) fail("signal_component_unknown");
+    for (const id of stringList(signal.edge_ids, "signal_edges_invalid")) if (!edgeIds.has(id)) fail("signal_edge_unknown");
+    assertInteger(signal.sequence, "signal_sequence_invalid");
+  }
+  for (const pulse of value.active_graph_pulses) {
+    validateGraphPulse(pulse);
+    for (const id of stringList(pulse.edge_ids, "pulse_edges_invalid")) if (!edgeIds.has(id)) fail("pulse_edge_unknown");
+    assertTimestamp(pulse.expires_at, "pulse_expiry_invalid");
+  }
+  exactObject(value.agent_workspace, ["mode", "workspace_revision", "activities", "citations"], "agent_workspace_unknown_field");
+  if (!Array.isArray(value.agent_workspace.activities) || !Array.isArray(value.agent_workspace.citations)) fail("agent_workspace_invalid");
+  for (const activity of value.agent_workspace.activities) {
+    validateAgentActivity(activity);
+  }
+  for (const citation of value.agent_workspace.citations) {
+    validateRealtimeCitation(citation, value.case_id);
+  }
+}
+
+function validateRealtimeSignal(signal) {
+  exactObject(signal, ["signal_id", "source_event_id", "provider", "source_label", "signal_kind", "title", "display_value", "status", "trend", "component_ids", "edge_ids", "observed_at", "fresh_until", "freshness", "authority", "evidence_refs", "citation_refs", "connector_state", "sequence"], "realtime_signal_unknown_field");
+  for (const key of ["signal_id", "source_event_id", "provider", "source_label", "signal_kind", "title", "display_value", "status", "trend", "freshness", "authority", "connector_state"]) assertText(signal[key], `signal_${key}_invalid`);
+  for (const key of ["component_ids", "edge_ids", "evidence_refs", "citation_refs"]) stringList(signal[key], `signal_${key}_invalid`);
+  for (const key of ["observed_at", "fresh_until"]) assertTimestamp(signal[key], `signal_${key}_invalid`);
+  assertInteger(signal.sequence, "signal_sequence_invalid");
+}
+
+function validateGraphPulse(pulse) {
+  exactObject(pulse, ["pulse_id", "source_event_id", "event_sequence", "edge_ids", "component_ids", "pulse_kind", "severity", "started_at", "expires_at", "evidence_refs"], "graph_pulse_unknown_field");
+  for (const key of ["pulse_id", "source_event_id", "pulse_kind", "severity"]) assertText(pulse[key], `pulse_${key}_invalid`);
+  assertInteger(pulse.event_sequence, "pulse_event_sequence_invalid");
+  if (!stringList(pulse.edge_ids, "pulse_edges_invalid").length) fail("pulse_edges_required");
+  stringList(pulse.component_ids, "pulse_components_invalid");
+  stringList(pulse.evidence_refs, "pulse_evidence_invalid");
+  assertTimestamp(pulse.started_at, "pulse_started_at_invalid");
+  assertTimestamp(pulse.expires_at, "pulse_expiry_invalid");
+}
+
+function validateAgentActivity(activity) {
+  exactObject(activity, ["activity_id", "activity_key", "state_revision", "sequence", "role", "state", "trigger", "capability", "capability_version", "tool_label", "component_ids", "started_at", "completed_at", "summary", "source_event_ids", "evidence_refs", "citation_refs", "truth_label", "external_write_performed", "degraded_code"], "agent_activity_unknown_field");
+  for (const key of ["activity_id", "activity_key", "role", "state", "trigger", "capability", "capability_version", "tool_label", "summary", "truth_label"]) assertText(activity[key], `agent_activity_${key}_invalid`);
+  for (const key of ["state_revision", "sequence"]) assertInteger(activity[key], `agent_activity_${key}_invalid`);
+  for (const key of ["component_ids", "source_event_ids", "evidence_refs", "citation_refs"]) stringList(activity[key], `agent_activity_${key}_invalid`);
+  assertTimestamp(activity.started_at, "agent_activity_started_at_invalid");
+  if (activity.completed_at !== null) assertTimestamp(activity.completed_at, "agent_activity_completed_at_invalid");
+  if (activity.external_write_performed !== false) fail("agent_activity_write_invalid");
+  if (activity.degraded_code !== null) assertText(activity.degraded_code, "agent_activity_degraded_code_invalid");
+}
+
+function validateRealtimeCitation(citation, caseId) {
+  exactObject(citation, ["citation_id", "provider", "evidence_id", "source_event_id", "label", "observed_at", "freshness", "safe_detail_path"], "citation_unknown_field");
+  for (const key of ["citation_id", "provider", "evidence_id", "source_event_id", "label", "freshness", "safe_detail_path"]) assertText(citation[key], `citation_${key}_invalid`);
+  assertTimestamp(citation.observed_at, "citation_observed_at_invalid");
+  if (!citation.safe_detail_path.startsWith(`/v2/incidents/${caseId}/evidence/`)) fail("citation_path_invalid");
+}
+
+function validateConnectorHealth(health, tenantId) {
+  exactObject(health, ["schema_version", "connector_id", "tenant_id", "provider", "state", "checked_at", "last_success_at", "last_event_observed_at", "fresh_until", "cursor", "consecutive_failures", "lag_seconds", "reason_code", "adapter_version", "health_revision", "truth_label"], "connector_health_unknown_field");
+  if (health.schema_version !== "flowpulse.connector-health.v1" || health.tenant_id !== tenantId) fail("connector_health_identity_invalid");
+  for (const key of ["connector_id", "tenant_id", "provider", "state", "checked_at", "adapter_version", "truth_label"]) assertText(health[key], `connector_health_${key}_invalid`);
+  assertTimestamp(health.checked_at, "connector_health_checked_at_invalid");
+  for (const key of ["consecutive_failures", "lag_seconds", "health_revision"]) if (!Number.isSafeInteger(health[key]) || health[key] < 0) fail(`connector_health_${key}_invalid`);
+  for (const key of ["last_success_at", "last_event_observed_at", "fresh_until"]) if (health[key] !== null) assertTimestamp(health[key], `connector_health_${key}_invalid`);
+  if (health.cursor !== null) assertText(health.cursor, "connector_health_cursor_invalid");
+  if (health.reason_code !== null) assertText(health.reason_code, "connector_health_reason_invalid");
+}
+
+function validateIncidentClock(clock) {
+  exactObject(clock, ["state", "started_at", "last_signal_at", "resolved_at", "as_of", "elapsed_seconds", "freshness", "fresh_until", "max_interpolation_seconds"], "incident_clock_unknown_field");
+  for (const key of ["started_at", "as_of", "fresh_until"]) assertTimestamp(clock[key], `incident_clock_${key}_invalid`);
+  if (!Number.isSafeInteger(clock.elapsed_seconds) || clock.elapsed_seconds < 0) fail("incident_clock_elapsed_invalid");
+  assertInteger(clock.max_interpolation_seconds, "incident_clock_interpolation_invalid");
 }
 
 // This is a presentation-safe read model. It has no authority to advance a
@@ -179,6 +276,50 @@ export function parseIncidentEvent(value) {
   if (value.explanation_status !== undefined && value.explanation_status !== null) assertEnum(value.explanation_status, EXPLANATION_EVENT_STATES, "explanation_event_status_invalid");
   const payload = stringRecord(value.payload === undefined ? {} : value.payload, "event_payload_invalid");
   return { ...clone(value), evidence_refs, payload };
+}
+
+export function parseRealtimeIncidentEvent(value) {
+  const payloadKeys = ["signal", "pulse", "activity", "citation", "health", "incident_clock"];
+  exactObject(value, [...IDENTITY_KEYS, "schema_version", "source_event_id", "projection_revision", "sequence", "event_type", "occurred_at", ...payloadKeys], "realtime_event_unknown_field", [...IDENTITY_KEYS, "projection_revision", "sequence", "event_type", "occurred_at"]);
+  parseIdentity(value);
+  if (value.schema_version !== undefined && value.schema_version !== "flowpulse.incident-realtime-event.v2") fail("realtime_event_schema_invalid");
+  if (value.source_event_id !== undefined && value.source_event_id !== null) assertText(value.source_event_id, "source_event_id_invalid");
+  assertInteger(value.projection_revision, "projection_revision_invalid");
+  assertInteger(value.sequence, "sequence_invalid");
+  assertEnum(value.event_type, REALTIME_EVENT_TYPES, "realtime_event_type_invalid");
+  assertTimestamp(value.occurred_at, "event_occurred_at_invalid");
+  const present = payloadKeys.filter((key) => value[key] !== undefined && value[key] !== null);
+  const allowed = realtimePayloadKeys(value.event_type);
+  if (present.some((key) => !allowed.has(key))) fail("realtime_event_payload_mismatch");
+  if (value.event_type === "connector.health.changed" && !present.includes("health")) fail("realtime_event_health_required");
+  if (value.event_type === "connector.source.accepted" && !value.source_event_id) fail("realtime_event_source_required");
+  if (value.event_type.startsWith("incident.signal.") && !present.includes("signal")) fail("realtime_event_signal_required");
+  if (value.event_type.startsWith("graph.pulse.") && !present.includes("pulse")) fail("realtime_event_pulse_required");
+  if (value.event_type.startsWith("agent.activity.") && !present.includes("activity")) fail("realtime_event_activity_required");
+  if (value.event_type === "incident.clock.changed" && !present.includes("incident_clock")) fail("realtime_event_clock_required");
+  if (value.signal) validateRealtimeSignal(value.signal);
+  if (value.pulse) validateGraphPulse(value.pulse);
+  if (value.activity) validateAgentActivity(value.activity);
+  if (value.citation) validateRealtimeCitation(value.citation, value.case_id);
+  if (value.health) validateConnectorHealth(value.health, value.tenant_id);
+  if (value.incident_clock) validateIncidentClock(value.incident_clock);
+  const expectedActivityState = {
+    "agent.activity.started": "STARTED",
+    "agent.activity.completed": "COMPLETED",
+    "agent.activity.degraded": "DEGRADED"
+  }[value.event_type];
+  if (expectedActivityState && value.activity.state !== expectedActivityState) fail("realtime_event_activity_state_mismatch");
+  return clone(value);
+}
+
+function realtimePayloadKeys(type) {
+  if (type === "connector.health.changed") return new Set(["health"]);
+  if (type === "connector.source.accepted") return new Set();
+  if (type.startsWith("incident.signal.")) return new Set(["signal", "citation"]);
+  if (type === "graph.pulse.started") return new Set(["pulse", "citation"]);
+  if (type === "graph.pulse.expired") return new Set(["pulse"]);
+  if (type.startsWith("agent.activity.")) return new Set(["activity", "citation"]);
+  return new Set(["incident_clock"]);
 }
 
 export function parseNodeExplanationReceipt(value) {
@@ -284,7 +425,14 @@ export function controlPlaneReducer(current, action) {
       return { state, effects };
     }
     if (action?.type === "notification.received") {
-      const notification = parseIncidentNotification(action.notification);
+      const notification = REALTIME_EVENT_TYPES.has(action.notification?.event_type)
+        ? parseRealtimeNotification(action.notification)
+        : parseIncidentNotification(action.notification);
+      if (state.projection && notification.incident.case_id === state.projection.case_id
+        && !["incident_id", "run_id", "topology_revision", "case_id"].every((field) => notification.incident[field] === state.projection[field])) {
+        state.connection = "stale";
+        return { state, effects };
+      }
       if (state.seen_notification_ids.has(notification.notification_id)) return { state, effects };
       state.seen_notification_ids.add(notification.notification_id);
       state.last_notification_id = notification.notification_id;
@@ -467,7 +615,9 @@ export function controlPlaneReducer(current, action) {
       return { state, effects };
     }
     if (action?.type === "case.event") {
-      const event = parseIncidentEvent(action.event);
+      const event = action.event?.schema_version === "flowpulse.incident-realtime-event.v2"
+        ? parseRealtimeIncidentEvent(action.event)
+        : parseIncidentEvent(action.event);
       if (!state.projection || !sameIdentity(state.projection, event)) {
         state.connection = "stale";
         return { state, effects };

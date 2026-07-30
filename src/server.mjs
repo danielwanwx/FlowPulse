@@ -136,8 +136,8 @@ const server = createServer(async (request, response) => {
     // compatibility/demo write guard: the allowlisted node-explanation update
     // is owned and revalidated by the separate Temporal service, never by the
     // local replay runtime.
-    if (url.pathname.startsWith("/api/control-plane/v1")) {
-      return proxyControlPlaneV1(request, response, url);
+    if (url.pathname.startsWith("/api/control-plane/v1") || url.pathname.startsWith("/api/control-plane/v2")) {
+      return proxyControlPlane(request, response, url);
     }
     if (activeDemoWriteBlocked(request.method, url.pathname)) {
       return json(response, 409, { error: "demo_mode_active" });
@@ -1061,7 +1061,7 @@ function autonomyFailure(code, field_path) { const error = new InsufficientEvide
 // exposes a small fixed route set rather than a general-purpose proxy. The
 // upstream trusted bearer is process-only; nothing from it is serialized or
 // placed in a browser-visible configuration response.
-async function proxyControlPlaneV1(request, response, url) {
+async function proxyControlPlane(request, response, url) {
   const route = await controlPlaneRoute(request, url);
   if (!route) return json(response, 404, { error: "Not found" });
   if (route.error) return json(response, 400, { error: "control_plane_request_invalid" });
@@ -1108,6 +1108,7 @@ async function proxyControlPlaneV1(request, response, url) {
 }
 
 async function controlPlaneRoute(request, url) {
+  if (url.pathname.startsWith("/api/control-plane/v2")) return controlPlaneV2Route(request, url);
   const prefix = "/api/control-plane/v1";
   const path = url.pathname;
   if (!path.startsWith(prefix) || !controlPlaneMethod(request.method)) return null;
@@ -1163,6 +1164,43 @@ async function controlPlaneRoute(request, url) {
   if (receipt && request.method === "GET") {
     if (url.search) return queryError();
     return { method: "GET", path: `/v1/incidents/${encodeURIComponent(receipt[0])}/node-explanations/${encodeURIComponent(receipt[1])}`, body: null, sse: false };
+  }
+  return null;
+}
+
+function controlPlaneV2Route(request, url) {
+  const prefix = "/api/control-plane/v2";
+  const path = url.pathname;
+  if (request.method !== "GET") return null;
+  const queryError = () => ({ error: true });
+  const forwardedLastEventId = controlPlaneEventCursor(request.headers["last-event-id"]);
+  if (path === `${prefix}/incidents`) {
+    if (!onlySearchParams(url, ["state", "limit"])) return queryError();
+    const state = url.searchParams.get("state") || "active";
+    const limit = url.searchParams.get("limit") || "20";
+    if (state !== "active" || !validControlPlaneInteger(limit, 1, 50)) return queryError();
+    return { method: "GET", path: `/v2/incidents?state=active&limit=${limit}`, body: null, sse: false };
+  }
+  if (path === `${prefix}/incidents/events`) {
+    if (!onlySearchParams(url, ["after"]) || (url.searchParams.has("after") && !validControlPlaneCursor(url.searchParams.get("after"))) || forwardedLastEventId === false) return queryError();
+    const after = url.searchParams.get("after");
+    return { method: "GET", path: `/v2/incidents/events${after ? `?after=${encodeURIComponent(after)}` : ""}`, body: null, sse: true, lastEventId: forwardedLastEventId || null };
+  }
+  const projection = matchControlPlanePath(path, /^\/api\/control-plane\/v2\/incidents\/([^/]+)\/projection$/);
+  if (projection) {
+    if (url.search) return queryError();
+    return { method: "GET", path: `/v2/incidents/${encodeURIComponent(projection)}/projection`, body: null, sse: false };
+  }
+  const events = matchControlPlanePath(path, /^\/api\/control-plane\/v2\/incidents\/([^/]+)\/events$/);
+  if (events) {
+    if (!onlySearchParams(url, ["after"]) || (url.searchParams.has("after") && !validControlPlaneInteger(url.searchParams.get("after"), 0, Number.MAX_SAFE_INTEGER)) || forwardedLastEventId === false) return queryError();
+    const after = url.searchParams.get("after");
+    return { method: "GET", path: `/v2/incidents/${encodeURIComponent(events)}/events${after !== null ? `?after=${after}` : ""}`, body: null, sse: true, lastEventId: forwardedLastEventId || null };
+  }
+  const evidence = matchControlPlanePath(path, /^\/api\/control-plane\/v2\/incidents\/([^/]+)\/evidence\/([^/]+)$/);
+  if (evidence) {
+    if (url.search) return queryError();
+    return { method: "GET", path: `/v2/incidents/${encodeURIComponent(evidence[0])}/evidence/${encodeURIComponent(evidence[1])}`, body: null, sse: false };
   }
   return null;
 }

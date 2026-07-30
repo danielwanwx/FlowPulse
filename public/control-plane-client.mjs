@@ -3,6 +3,8 @@ import {
   parseActionInvocationCommand,
   parseIncidentEvent,
   parseIncidentNotification,
+  parseRealtimeIncidentEvent,
+  parseRealtimeNotification,
   parseIncidentProjection,
   parseIncidentSummaries,
   parseNextBestActions,
@@ -10,8 +12,9 @@ import {
   parseWorkspaceActionReceipt
 } from "./control-plane-contract.mjs";
 
-export const CONTROL_PLANE_API_VERSION = "v1";
+export const CONTROL_PLANE_API_VERSION = "v2";
 const ROOT = `/api/control-plane/${CONTROL_PLANE_API_VERSION}`;
+const V1_ROOT = "/api/control-plane/v1";
 
 export class ControlPlaneClientError extends Error {
   constructor(code, status = null) {
@@ -44,7 +47,7 @@ export class ControlPlaneClient {
 
   actions(caseId) {
     assertPathId(caseId);
-    return this.json(`${ROOT}/incidents/${encodeURIComponent(caseId)}/actions`, {}, parseNextBestActions);
+    return this.json(`${V1_ROOT}/incidents/${encodeURIComponent(caseId)}/actions`, {}, parseNextBestActions);
   }
 
   async invokeAction(caseId, actionId, command) {
@@ -58,7 +61,7 @@ export class ControlPlaneClient {
       throw error;
     }
     if (parsed.action_id !== actionId) throw new ControlPlaneClientError("control_plane_identity_mismatch");
-    return this.json(`${ROOT}/incidents/${encodeURIComponent(caseId)}/actions/${encodeURIComponent(actionId)}`, {
+    return this.json(`${V1_ROOT}/incidents/${encodeURIComponent(caseId)}/actions/${encodeURIComponent(actionId)}`, {
       method: "POST",
       headers: { accept: "application/json", "content-type": "application/json" },
       body: JSON.stringify(parsed)
@@ -67,7 +70,7 @@ export class ControlPlaneClient {
 
   async startNodeExplanation(caseId, command) {
     assertPathId(caseId);
-    return this.json(`${ROOT}/incidents/${encodeURIComponent(caseId)}/node-explanations`, {
+    return this.json(`${V1_ROOT}/incidents/${encodeURIComponent(caseId)}/node-explanations`, {
       method: "POST",
       headers: { accept: "application/json", "content-type": "application/json" },
       body: JSON.stringify(command)
@@ -77,14 +80,14 @@ export class ControlPlaneClient {
   async nodeExplanationReceipt(caseId, explanationId) {
     assertPathId(caseId);
     assertPathId(explanationId);
-    return this.json(`${ROOT}/incidents/${encodeURIComponent(caseId)}/node-explanations/${encodeURIComponent(explanationId)}`, {}, parseNodeExplanationReceipt);
+    return this.json(`${V1_ROOT}/incidents/${encodeURIComponent(caseId)}/node-explanations/${encodeURIComponent(explanationId)}`, {}, parseNodeExplanationReceipt);
   }
 
   subscribeGlobal({ after = null, onNotification, onConnection }) {
     return this.subscribe({
       path: `${ROOT}/incidents/events${after ? `?after=${encodeURIComponent(after)}` : ""}`,
-      eventName: "incident-notification",
-      parse: parseIncidentNotification,
+      eventName: "incident-realtime-notification",
+      parse: parseRealtimeNotification,
       onEvent: onNotification,
       onConnection
     });
@@ -95,8 +98,8 @@ export class ControlPlaneClient {
     if (!Number.isSafeInteger(after) || after < 0) throw new ControlPlaneClientError("control_plane_cursor_invalid");
     return this.subscribe({
       path: `${ROOT}/incidents/${encodeURIComponent(caseId)}/events?after=${after}`,
-      eventName: "incident-event",
-      parse: parseIncidentEvent,
+      eventName: "incident-realtime-event",
+      parse: parseRealtimeIncidentEvent,
       onEvent,
       onConnection
     });

@@ -98,7 +98,7 @@ test("Incident keeps the header, stage rail, graph, and collaboration panel in s
 
   assert.match(incidentLayout, /\.app-shell\[data-control-plane-mode="incident"\] \.incident-stage-rail \{\s*position: static;/);
   assert.match(incidentLayout, /\.app-shell\[data-control-plane-mode="incident"\] \.canvas-shell \{[^}]*padding-right: 446px;/);
-  assert.match(incidentLayout, /@media \(max-width: 900px\) \{[\s\S]*?\.app-shell\[data-control-plane-mode="incident"\] \.twin-workspace \{ height: auto; overflow: visible;/);
+  assert.match(incidentLayout, /@media \(max-width: 900px\) \{[\s\S]*?\.app-shell\[data-control-plane-mode="incident"\] \.twin-workspace \{ display: block; height: auto; overflow: visible;/);
   assert.match(incidentLayout, /\.app-shell\[data-control-plane-mode="incident"\] \.context-drawer \{ position: static;[^}]*width: auto;[^}]*height: auto;/);
   assert.match(incidentLayout, /\.app-shell\[data-control-plane-mode="incident"\] \.twin-scroll \{ flex: 0 0 auto;[^}]*overflow: auto;/);
   assert.match(incidentLayout, /\.app-shell\[data-control-plane-mode="incident"\] \.canvas-toolbar > div:first-child \{ display: block;/);

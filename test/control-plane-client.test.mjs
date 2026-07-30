@@ -36,7 +36,7 @@ test("versioned browser client uses only same-origin BFF paths and validates JSO
     }
   });
   assert.deepEqual(await client.activeIncidents(), [summary]);
-  assert.deepEqual(calls, [{ path: "/api/control-plane/v1/incidents?state=active&limit=20", options: { headers: { accept: "application/json" } } }]);
+  assert.deepEqual(calls, [{ path: "/api/control-plane/v2/incidents?state=active&limit=20", options: { headers: { accept: "application/json" } } }]);
   assert.doesNotMatch(JSON.stringify(calls), /authorization|bearer/i);
 });
 
@@ -50,7 +50,7 @@ test("browser-bound fetch receives the global receiver before the client sends i
   const client = new ControlPlaneClient({ fetch: browserReceiverFetch });
   assert.deepEqual(await client.activeIncidents(), [summary]);
   assert.equal(calls.length, 1);
-  assert.equal(calls[0].path, "/api/control-plane/v1/incidents?state=active&limit=20");
+  assert.equal(calls[0].path, "/api/control-plane/v2/incidents?state=active&limit=20");
 });
 
 test("client fails closed for redacted BFF errors and malformed projection responses", async () => {
@@ -86,20 +86,33 @@ test("SSE subscriptions accept ordered contract frames, retain the resume cursor
     onConnection: (state, cursor) => connections.push({ state, cursor })
   });
   const source = sources[0];
-  assert.equal(source.path, "/api/control-plane/v1/incidents/events");
-  source.emit("incident-notification", {
+  assert.equal(source.path, "/api/control-plane/v2/incidents/events");
+  source.emit("incident-realtime-notification", {
     notification_id: "notification-1",
-    event_type: "incident.accepted",
+    event_type: "incident.signal.observed",
     occurred_at: "2026-07-26T00:00:00Z",
+    source_event_id: "source-1",
     incident: summary
   }, "cursor-1");
   assert.deepEqual(received, [{ value: {
-    notification_id: "notification-1", event_type: "incident.accepted", occurred_at: "2026-07-26T00:00:00Z", incident: summary
+    notification_id: "notification-1", event_type: "incident.signal.observed", occurred_at: "2026-07-26T00:00:00Z", source_event_id: "source-1", incident: summary
   }, cursor: "cursor-1" }]);
   assert.equal(subscription.lastEventId(), "cursor-1");
-  source.emit("incident-notification", { notification_id: "bad" }, "cursor-2");
+  source.emit("incident-realtime-notification", { notification_id: "bad" }, "cursor-2");
   assert.equal(source.closed, true);
   assert.deepEqual(connections.at(-1), { state: "degraded", cursor: "cursor-1" });
+
+  const caseEvents = [];
+  client.subscribeCase({ caseId: "case-test", after: 26, onEvent: (value, cursor) => caseEvents.push({ value, cursor }) });
+  const caseSource = sources[1];
+  assert.equal(caseSource.path, "/api/control-plane/v2/incidents/case-test/events?after=26");
+  const realtimeEvent = {
+    ...identity, schema_version: "flowpulse.incident-realtime-event.v2", source_event_id: "source-1",
+    projection_revision: 2, sequence: 27, event_type: "connector.source.accepted", occurred_at: "2026-07-26T00:00:00Z",
+    signal: null, pulse: null, activity: null, citation: null, health: null, incident_clock: null
+  };
+  caseSource.emit("incident-realtime-event", realtimeEvent, "27");
+  assert.deepEqual(caseEvents, [{ value: realtimeEvent, cursor: "27" }]);
 });
 
 test("client reads server-issued cards and submits only an opaque canonical action command", async () => {

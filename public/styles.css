@@ -4669,7 +4669,7 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
   margin: 0 18px 10px;
 }
 @media (max-width: 900px) {
-  .app-shell[data-control-plane-mode="incident"] .twin-workspace { height: auto; overflow: visible; }
+  .app-shell[data-control-plane-mode="incident"] .twin-workspace { display: block; height: auto; overflow: visible; }
   .app-shell[data-control-plane-mode="incident"] .canvas-shell { height: auto; padding-right: 0; overflow: visible; }
   .app-shell[data-control-plane-mode="incident"] .canvas-toolbar { flex: 0 0 auto; height: auto; min-height: 64px; padding: 10px 14px; }
   .app-shell[data-control-plane-mode="incident"] .canvas-toolbar > div:first-child { display: block; }

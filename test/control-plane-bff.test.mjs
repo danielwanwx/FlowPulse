@@ -87,6 +87,26 @@ test("unconfigured BFF visibly fails closed without a local compatibility respon
   assert.deepEqual(await response.json(), { error: "control_plane_unavailable" });
 });
 
+test("V2 BFF is read-only, allowlisted, and keeps the trusted bearer server-side", async (context) => {
+  const upstream = await startUpstream(context);
+  const frontend = await startFrontend(context, upstream.baseUrl);
+  for (const [browserPath, upstreamPath] of [
+    ["/api/control-plane/v2/incidents?state=active&limit=20", "/v2/incidents"],
+    ["/api/control-plane/v2/incidents/case-test/projection", "/v2/incidents/case-test/projection"],
+    ["/api/control-plane/v2/incidents/case-test/evidence/evidence-test", "/v2/incidents/case-test/evidence/evidence-test"]
+  ]) {
+    const response = await fetch(frontend.baseUrl + browserPath);
+    assert.equal(response.status, 200);
+    assert.equal(upstream.requests.at(-1).pathname, upstreamPath);
+    assert.equal(upstream.requests.at(-1).authorization, "Bearer trusted-server-only-test-token");
+    assert.doesNotMatch(await response.text(), /trusted-server-only-test-token/);
+  }
+  const count = upstream.requests.length;
+  const blocked = await fetch(`${frontend.baseUrl}/api/control-plane/v2/connectors/connector-test/reconcile`, { method: "POST" });
+  assert.equal(blocked.status, 404);
+  assert.equal(upstream.requests.length, count);
+});
+
 test("BFF exposes only exact canonical Workspace Action routes and rejects forged action scope", async (context) => {
   const upstream = await startUpstream(context);
   const frontend = await startFrontend(context, upstream.baseUrl);

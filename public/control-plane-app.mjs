@@ -2,7 +2,9 @@ import { ControlPlaneClient, ControlPlaneClientError } from "./control-plane-cli
 import { controlPlaneReducer, createControlPlaneState, investigationPresentation } from "./control-plane-contract.mjs";
 import {
   applyTopologyNodePositions,
+  activePulseEdgeIds,
   incidentTopologyView,
+  latestBySequence,
   topologyNodeMetadata
 } from "./control-plane-topology-layout.mjs";
 
@@ -21,6 +23,9 @@ let lastError = null;
 const pendingProjections = new Set();
 const pendingActions = new Set();
 const pendingReceipts = new Set();
+setInterval(() => {
+  if (state.mode === "incident" && state.projection?.schema_version === "flowpulse.incident-projection.v2") render();
+}, 1000);
 
 root.dataset.controlPlaneAdapter = "true";
 for (const button of document.querySelectorAll("button.mode-button[data-mode]")) {
@@ -94,6 +99,7 @@ async function runEffect(effect) {
     return;
   }
   if (effect.type === "actions.load") {
+    if (state.projection?.schema_version === "flowpulse.incident-projection.v2") return;
     const key = `${effect.case_id}:${effect.identity.projection_revision}:${effect.identity.action_revision}`;
     if (pendingActions.has(key)) return;
     pendingActions.add(key);
@@ -264,7 +270,8 @@ function renderGraph() {
   const { positions } = layout;
   const impacted = new Set(focusView.nodes.map((node) => node.component_id));
   const nodeById = new Map(focusView.nodes.map((node) => [node.component_id, node]));
-  const edges = focusView.edges.map((edge, index) => edgeMarkup(edge, positions, impacted, nodeById, index)).join("");
+  const pulseEdges = activePulseEdgeIds(projection);
+  const edges = focusView.edges.map((edge, index) => edgeMarkup(edge, positions, impacted, nodeById, index, pulseEdges)).join("");
   const nodes = focusView.nodes.map((node) => nodeMarkup(node, true)).join("");
   els["canvas-layers"].innerHTML = `<div class="control-plane-twin-layer" data-topology-density="${layout.density}"><svg class="edge-map control-plane-edge-map" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">${edges}</svg>${nodes}</div>`;
   applyTopologyNodePositions(els["canvas-layers"], positions);
@@ -294,7 +301,7 @@ function clearTopologyDensity() {
 }
 
 function nodeMarkup(node, impacted) {
-  const clickable = state.mode === "incident" && impacted && state.connection === "connected" && state.explanation.status !== "starting";
+  const clickable = state.projection?.schema_version !== "flowpulse.incident-projection.v2" && state.mode === "incident" && impacted && state.connection === "connected" && state.explanation.status !== "starting";
   const metadata = topologyNodeMetadata(node);
   return `<button type="button" class="twin-node control-plane-twin-node${impacted ? " is-impact" : " is-context"}${state.selected_component_id === node.component_id ? " is-selected" : ""}" data-control-component="${escapeHtml(node.component_id)}" data-clickable="${clickable}"${clickable ? "" : " disabled"}>
     <span class="node-icon" aria-hidden="true"><i class="ph ${impacted ? "ph-warning-circle" : "ph-cube"}"></i></span>
@@ -302,14 +309,16 @@ function nodeMarkup(node, impacted) {
   </button>`;
 }
 
-function edgeMarkup(edge, positions, impacted, nodes, index) {
+function edgeMarkup(edge, positions, impacted, nodes, index, pulseEdges = new Set()) {
   const source = positions.get(edge.source_component_id);
   const target = positions.get(edge.target_component_id);
   if (!source || !target || !nodes.has(edge.source_component_id) || !nodes.has(edge.target_component_id)) return "";
   const isImpacted = impacted.has(edge.source_component_id) && impacted.has(edge.target_component_id);
   const middle = (source.x + target.x) / 2;
   const path = `M ${source.x} ${source.y} C ${middle} ${source.y}, ${middle} ${target.y}, ${target.x} ${target.y}`;
-  const active = state.mode === "live" && ["active", "healthy", "degraded"].includes(edge.status);
+  const active = state.mode === "live"
+    ? ["active", "healthy", "degraded"].includes(edge.status)
+    : pulseEdges.has(edge.edge_id);
   return `<g class="edge-group${isImpacted ? " edge-impact" : ""}"><path class="edge-line${isImpacted ? " is-impact" : ""}" d="${path}"/><path class="pulse-flow${isImpacted ? " is-impact" : ""}${active ? " control-plane-live-pulse" : ""} pulse-slot-${index % 6}" d="${path}"/></g>`;
 }
 
@@ -320,8 +329,11 @@ function renderIncidentChrome() {
   els["incident-stage-rail"].hidden = !projection || !incidentMode;
   els["timeline-dock"].hidden = true;
   if (!projection || !incidentMode) return;
-  const investigation = investigationPresentation(projection);
-  els["incident-stage-rail"].innerHTML = stageRailMarkup(investigation);
+  if (projection.schema_version === "flowpulse.incident-projection.v2") {
+    els["incident-stage-rail"].innerHTML = `<button type="button" class="incident-stage-button is-active" disabled><span>1</span><strong>${escapeHtml(titleCase(projection.lifecycle_stage))}</strong><small>Backend lifecycle stage</small></button>`;
+    return;
+  }
+  els["incident-stage-rail"].innerHTML = stageRailMarkup(investigationPresentation(projection));
 }
 
 function stageRailMarkup(investigation) {
@@ -339,6 +351,10 @@ function renderDrawer() {
   els["context-drawer"].hidden = !visible;
   els["drawer-tabs"].hidden = true;
   if (!visible) return;
+  if (projection.schema_version === "flowpulse.incident-projection.v2") {
+    renderV2Drawer(projection);
+    return;
+  }
   const node = projection.graph.nodes.find((candidate) => candidate.component_id === state.selected_component_id) || null;
   const focusNode = projection.graph.nodes.find((candidate) => candidate.component_id === projection.incident_focus?.component_id) || null;
   els["context-drawer"].dataset.tone = node && projection.impacted_path.includes(node.component_id) ? "impact" : "service";
@@ -348,6 +364,38 @@ function renderDrawer() {
     ? "Recorded agent context for this affected component."
     : projection.incident_focus?.rationale || "Waiting for the server focus recommendation.";
   els["drawer-content"].innerHTML = `${node ? explanationMarkup(projection, node) : incidentFocusMarkup(projection)}${actionProgressMarkup()}${actionCardsMarkup()}${investigationMarkup(investigationPresentation(projection))}`;
+}
+
+function renderV2Drawer(projection) {
+  const signal = latestBySequence(projection.realtime_signals);
+  const activities = projection.agent_workspace.activities;
+  const activity = latestBySequence(activities);
+  const health = projection.connector_health.map((connector) => `<li><strong>${escapeHtml(titleCase(connector.provider))}</strong><span>${escapeHtml(titleCase(connector.state))}</span><small>${escapeHtml(connector.reason_code || connector.truth_label)}</small></li>`).join("");
+  const citations = projection.agent_workspace.citations.slice(-4).map((citation) => `<li><strong>${escapeHtml(citation.label)}</strong><span>${escapeHtml(titleCase(citation.freshness))}</span></li>`).join("");
+  els["context-drawer"].dataset.tone = signal?.status === "CRITICAL" ? "impact" : "service";
+  els["drawer-kind"].textContent = "Live agent workspace";
+  els["drawer-title"].textContent = projection.operator_title || "Incident activity";
+  const clock = projectedIncidentClock(projection.incident_clock);
+  els["drawer-subtitle"].textContent = `${titleCase(clock.freshness)} · ${formatElapsed(clock.elapsed_seconds)}`;
+  els["drawer-content"].innerHTML = `
+    <section class="component-context is-impact"><header><div><span>Current signal</span><strong>${escapeHtml(signal?.title || "No current signal")}</strong></div><small class="component-health">${escapeHtml(signal?.display_value || "Unavailable")}</small></header><p>${signal ? `${escapeHtml(titleCase(signal.status))} · ${escapeHtml(titleCase(signal.trend))} · ${escapeHtml(signal.source_label)}` : "The backend has not published a signal."}</p></section>
+    <section class="component-context"><header><div><span>Agent activity</span><strong>${escapeHtml(activity?.tool_label || "No activity")}</strong></div><small class="component-health">${escapeHtml(activity ? titleCase(activity.state) : "Empty")}</small></header><p>${escapeHtml(activity?.summary || "The backend has not published agent activity.")}</p></section>
+    <details class="agent-bar-section"><summary><span>Connector health</span><strong>${projection.connector_health.length}</strong></summary><ul class="investigation-claims">${health || "<li>No connector health published.</li>"}</ul></details>
+    <details class="agent-bar-section"><summary><span>Citations</span><strong>${projection.agent_workspace.citations.length}</strong></summary><ul class="investigation-claims">${citations || "<li>No citations published.</li>"}</ul></details>`;
+}
+
+function formatElapsed(seconds) {
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}m ${seconds % 60}s elapsed`;
+}
+
+function projectedIncidentClock(clock, now = Date.now()) {
+  const delta = Math.max(0, Math.floor((now - Date.parse(clock.as_of)) / 1000));
+  const bounded = Math.min(delta, clock.max_interpolation_seconds);
+  return {
+    elapsed_seconds: clock.elapsed_seconds + bounded,
+    freshness: now > Date.parse(clock.fresh_until) ? "STALE" : clock.freshness
+  };
 }
 
 function investigationMarkup(investigation) {

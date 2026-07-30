@@ -2,11 +2,30 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import {
+  activePulseEdgeIds,
   applyTopologyNodePositions,
   incidentTopologyView,
+  latestBySequence,
   topologyLayout,
   topologyNodeMetadata
 } from "../public/control-plane-topology-layout.mjs";
+
+test("component-only signals never pulse edges and backend pulses stop at expiry", () => {
+  const projection = {
+    graph: { edges: [{ edge_id: "edge-1" }] },
+    realtime_signals: [{ component_ids: ["checkout"], edge_ids: [] }],
+    active_graph_pulses: [{ edge_ids: ["edge-1"], expires_at: "2026-07-30T00:00:20Z" }]
+  };
+  assert.deepEqual([...activePulseEdgeIds(projection, Date.parse("2026-07-30T00:00:19Z"))], ["edge-1"]);
+  assert.deepEqual([...activePulseEdgeIds(projection, Date.parse("2026-07-30T00:00:20Z"))], []);
+  assert.deepEqual([...activePulseEdgeIds({ ...projection, active_graph_pulses: [] }, Date.parse("2026-07-30T00:00:19Z"))], []);
+});
+
+test("V2 signal and activity selection uses canonical sequence rather than array order", () => {
+  assert.equal(latestBySequence([{ sequence: 58, id: "current" }, { sequence: 4, id: "oldest" }]).id, "current");
+  assert.equal(latestBySequence([{ sequence: 29, id: "started" }, { sequence: 30, id: "completed" }]).id, "completed");
+  assert.equal(latestBySequence([]), null);
+});
 
 const stylesCss = await readFile(new URL("../public/styles.css", import.meta.url), "utf8");
 const controlPlaneApp = await readFile(new URL("../public/control-plane-app.mjs", import.meta.url), "utf8");
