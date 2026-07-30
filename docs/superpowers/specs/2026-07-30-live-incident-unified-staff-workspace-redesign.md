@@ -113,6 +113,62 @@ Operational sample
 
 The browser may display each level but may not promote one level to another.
 
+### 4.1 Normative state machines
+
+Alert state is:
+
+```text
+FIRING -> ACKNOWLEDGED -> RESOLVED
+   \------------------------^
+```
+
+An acknowledged alert may return to `FIRING` only through a new admitted
+provider event. A resolved alert does not reopen in place: a later recurrence
+creates a new alert occurrence linked by `recurrence_of`.
+
+Alert-group state is:
+
+```text
+OPEN -> ACKNOWLEDGED -> RESOLVED
+```
+
+Correlation is backend policy owned, tenant scoped, revisioned, and
+idempotent by admitted provider identities plus correlation-policy revision.
+Zero matches leave an alert unassigned. Multiple equally valid matches leave
+it ambiguous and unassigned. Merge and split operations create durable
+supersession relations and timeline events; they never rewrite historical
+membership.
+
+Incident lifecycle is:
+
+```text
+DECLARED -> INVESTIGATING -> MITIGATING -> MONITORING -> RESOLVED -> CLOSED
+```
+
+`DECLARED`, `INVESTIGATING`, and `MITIGATING` may move backward when accepted
+facts require it. `MONITORING` may return to `MITIGATING` or `INVESTIGATING`.
+A `RESOLVED` incident may be reopened to `INVESTIGATING` only by an authorized,
+audited command within policy; a `CLOSED` incident never reopens and a
+recurrence creates a related incident. Alert state and incident lifecycle are
+separate fields and transitions.
+
+Impact state is:
+
+```text
+HEALTHY | DEGRADED | CRITICAL | RECOVERING
+```
+
+Data quality is an orthogonal field:
+
+```text
+FRESH | DELAYED | STALE | UNKNOWN
+```
+
+`UNKNOWN` and `STALE` are therefore not competing health values. When data
+quality is insufficient, the last accepted impact state may be shown only with
+its observed time and a prominent quality state; it cannot be represented as
+current health.
+
 ## 5. Authority and runtime architecture
 
 ```text
@@ -142,14 +198,54 @@ Providers / collectors
 Every incident workflow must use deterministic `continue-as-new` before
 Temporal history approaches the configured safety threshold.
 
-The carry-forward state includes canonical identity, lifecycle, durable action
-state, role assignments, projection references, event sequence, connector
-cursors, active timers, and idempotency records. Raw samples, full activity
-history, and evidence bodies remain referenced in Postgres/MinIO rather than
-copied into workflow input.
+The identity contract is split explicitly:
 
-`continue-as-new` must preserve the public workflow identity and ordered case
-event stream. The frontend must not observe a new incident or reset.
+- `incident_run_id` is FlowPulse's stable public run identity. It is immutable
+  for the life of the Incident Workspace and remains in browser URLs,
+  projections, evidence bindings, commands, and authorization assertions.
+- `temporal_workflow_id` is the stable Temporal workflow identity used by
+  `continue-as-new`.
+- `temporal_run_id` identifies one physical Temporal execution generation. It
+  is control-plane internal and changes on every rollover.
+- `temporal_generation` is a monotonic FlowPulse generation number used for
+  audit and compare-and-swap updates.
+
+`IncidentRunBinding` must therefore stop treating one immutable
+`workflow_run_id` as both the public run and current execution. It stores the
+stable `incident_run_id` and `temporal_workflow_id`, plus an atomically
+replaceable `(temporal_run_id, temporal_generation)` current-execution pointer.
+The previous execution generations remain append-only audit records.
+
+The workflow writes the next current-execution pointer through an idempotent
+Postgres compare-and-swap activity during rollover initialization. The pointer
+may advance only from generation `N` to `N+1` for the same tenant, incident,
+public run, and workflow ID. Scheduler liveness checks resolve the current
+pointer immediately before describing or signalling the exact execution. A
+closed generation is never cached as the durable incident identity.
+
+Browser commands and authorization assertions bind to stable
+`incident_run_id`, `temporal_workflow_id`, and the appropriate
+`decision_revision`; they do not bind to `temporal_run_id`. The control plane
+resolves and validates the current execution generation before delivery.
+Commands admitted before rollover remain idempotently admissible after
+rollover when their decision preconditions still hold. Delivery receipts record
+the physical generation that accepted the command.
+
+Carry-forward state is deliberately bounded. It includes canonical identity,
+lifecycle, current revision watermarks, role references, active durable-action
+references, connector cursor watermarks, and bounded active timer descriptors.
+It does **not** include complete receipt maps, samples, timeline items, evidence
+bodies, or every historical idempotency key.
+
+Idempotency receipts and realtime dedupe records move to tenant-scoped
+Postgres tables with retention and lookup by stable public identity. Workflow
+state carries only bounded recent-key fingerprints needed for deterministic
+in-flight handling plus durable high-water marks. Raw samples, full activity
+history, and evidence bodies remain referenced in Postgres/MinIO.
+
+`continue-as-new` preserves the stable public identity, decision state, and
+ordered case event stream. The frontend must not observe a new incident, URL,
+sequence reset, or authorization boundary.
 
 ### 5.3 Separate revision domains
 
@@ -169,15 +265,49 @@ against `decision_revision`.
 When a changed fact materially alters an action's preconditions, Temporal marks
 the action `REVALIDATION_REQUIRED` and explains the invalidated condition.
 
+The minimal `decision_revision` migration is a Phase 0 runtime-correctness
+requirement. It includes backend action issuance/validation, authorization
+assertions, receipts, and the V3 browser action route. Richer Gate and
+execution UX remains Phase 4.
+
+### 5.4 Tenant-global Live ordering
+
+Per-incident workflows do not allocate the Live global sequence themselves.
+Every accepted incident/alert/impact change writes, in one Postgres
+transaction:
+
+1. its canonical per-case projection/event;
+2. its contribution to the tenant Live materialized projection;
+3. a tenant-global Live outbox row with a sequence allocated by a
+   tenant-scoped database sequence/locked counter; and
+4. the resulting Live snapshot watermark.
+
+The Live aggregation transaction applies deterministic precedence using
+accepted severity, lifecycle, incident start time, and stable incident ID.
+Concurrent workflows affecting the same component serialize only their
+materialized Live contribution, not their whole workflows. The committed
+tenant-global sequence is the sole order used by Live SSE.
+
+`GET Live snapshot` returns a database-consistent materialized snapshot and
+the exact committed global watermark included in that snapshot. Streaming
+starts strictly after that watermark. An event committed after the snapshot
+transaction is therefore delivered by SSE; one committed before or at the
+watermark is already represented in the snapshot. Gap recovery rehydrates a
+new snapshot and watermark rather than merging incomparable workflow-local
+sequences.
+
 ## 6. Unified read contracts
 
 ### 6.1 Live operational snapshot
 
-Introduce an additive V2 endpoint:
+Introduce a versioned upstream endpoint and preserve the same-origin BFF:
 
 ```text
-GET /api/v2/live/snapshot
-GET /api/v2/live/events?after=<sequence>
+FastAPI: GET /v3/live/snapshot
+FastAPI: GET /v3/live/events?after=<sequence>
+
+Browser: GET /api/control-plane/v3/live/snapshot
+Browser: GET /api/control-plane/v3/live/events?after=<sequence>
 ```
 
 The snapshot contains:
@@ -244,12 +374,21 @@ gaps, continue a stale line, or convert a provider failure into zero.
 Recommended endpoints:
 
 ```text
-GET /api/v2/cases/{case_id}/series?series_id=...&from=...&to=...&step=...
-GET /api/v2/cases/{case_id}/series/events?after=<sequence>
+FastAPI: GET /v3/cases/{case_id}/series?series_id=...&from=...&to=...&step=...
+FastAPI: GET /v3/cases/{case_id}/series/events?after=<sequence>
+
+Browser: GET /api/control-plane/v3/cases/{case_id}/series?...
+Browser: GET /api/control-plane/v3/cases/{case_id}/series/events?...
 ```
 
 The main incident snapshot contains only small overview series. Detailed panes
 query bounded windows on demand.
+
+Series requests use UTC instants, reject reversed or excessive ranges, cap
+series count/sample count/response bytes, and return explicit partial results.
+`NaN`, positive infinity, and negative infinity are encoded as typed missing
+samples with a reason; they are never emitted as invalid JSON or displayed as
+zero.
 
 ### 6.4 Datum-level freshness
 
@@ -419,6 +558,9 @@ closed, or restored. The product does not create browser popup windows.
 Pane state is encoded in safe route/query state so a responder can copy a deep
 link. Sensitive filters or raw evidence content are never placed in the URL.
 Server-owned incident facts are not persisted as browser workspace state.
+Route state is capped in encoded size and pane count. Unknown, unauthorized,
+deleted, or version-incompatible panes recover to Overview with a named notice;
+they do not prevent the incident from loading.
 
 ### 9.3 Shared investigation context
 
@@ -479,7 +621,10 @@ Incident supports explicit command roles:
 
 Role assignment, reassignment, and handoff are durable timeline events.
 Permissions may be further restricted by role but are never expanded by the
-frontend.
+frontend. Tenant/account ACL is evaluated first; an incident role may narrow
+available operations or grant only permissions explicitly allowed by the
+tenant's role policy. A role can never override a tenant denial, evidence ACL,
+capability policy, or separation-of-duty requirement.
 
 Tasks contain owner, status, priority, due/next-check time, related hypothesis
 or action, and completion evidence. Core states are:
@@ -647,6 +792,29 @@ Every new record is tenant-scoped, revisioned, provenance-bearing, and subject
 to existing ACL and audit rules. Raw logs, traces, credentials, and unsafe
 provider links are never copied into generic projection fields.
 
+### 17.1 Schema version and compatibility
+
+The frozen `flowpulse.incident-projection.v2` remains immutable. This redesign
+introduces `flowpulse.incident-projection.v3`, V3 command/assertion schemas, and
+the `/v3` upstream plus `/api/control-plane/v3` browser BFF namespaces.
+
+V2 and V3 run side by side during migration:
+
+- V2 clients continue to receive the frozen V2 projection and V2 event
+  envelopes.
+- V3 capability discovery declares supported projection, command, series, and
+  stream schema versions.
+- A V3 client refuses to combine V2 Live state with a V3 incident.
+- The BFF validates and redacts each version independently and never forwards
+  browser-supplied provider credentials.
+- Unsupported or downgraded schemas fail closed with an explicit
+  compatibility state.
+- V2 removal requires telemetry showing no supported V2 clients and a
+  separately approved cutover.
+
+The server may build both versioned projections from the same accepted durable
+facts, but one response/envelope has exactly one declared schema.
+
 ## 18. Migration sequence
 
 ### Phase 0: runtime correctness
@@ -654,7 +822,11 @@ provider links are never copied into generic projection fields.
 - implement and prove `continue-as-new`
 - add workflow liveness and history-size observability
 - preserve SSE sequence and idempotency across runs
-- repair action/projection revision collision
+- introduce minimal `decision_revision`
+- migrate action issuance, authorization assertions, command validation, and
+  receipts off realtime `projection_revision`
+- enable the V3 browser/BFF action route
+- preserve old-card behavior explicitly across workflow rollover
 
 No “continuous realtime” claim is allowed before Phase 0 passes.
 
@@ -683,7 +855,7 @@ No “continuous realtime” claim is allowed before Phase 0 passes.
 
 - roles, tasks, communications, handoff
 - Gate 1 focused flow
-- independent decision revisions and revalidation
+- material-precondition revalidation and rich action UX
 - execution/verification UI only for separately authorized capabilities
 
 Each phase must leave Live and Incident internally consistent. Temporary
@@ -732,6 +904,21 @@ compatibility states must be explicitly labelled and cannot mix authorities.
    unless a material precondition changes.
 9. Reconnect after dropped SSE and verify no duplicate durable actions.
 10. Verify the 451x859 layout has no page-level horizontal overflow.
+11. Roll over while a command is in flight; retry it before and after rollover
+    and verify one durable receipt against the stable public identity.
+12. Reconnect SSE across rollover and verify no sequence reset or event loss.
+13. Commit two incident workflows concurrently against one Live component and
+    verify deterministic aggregate state and tenant-global order.
+14. Commit a Live change during snapshot creation and verify the snapshot
+    watermark plus SSE represents it exactly once.
+15. Resolve, recur, merge, and split alerts/groups and verify immutable
+    historical membership and explicit supersession.
+16. Verify the browser BFF rejects direct provider credentials and does not
+    expose upstream secrets.
+17. Load old V2 clients, unsupported V3 clients, and downgraded envelopes and
+    verify the compatibility/fail-closed matrix.
+18. Cross retention boundaries for timeline, hypotheses, tasks, and
+    idempotency receipts and verify pagination plus duplicate prevention.
 
 Acceptance evidence includes canonical IDs, revisions, sequence ranges,
 workflow history/run data, connector health, API request/status records, and
