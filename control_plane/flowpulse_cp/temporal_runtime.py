@@ -736,7 +736,7 @@ async def run_worker(
         freshness_sla_seconds=60,
         # Phase 1A has no safe OTEL query adapter. A configured URL remains
         # truthfully unavailable until that bounded adapter is implemented.
-        enabled=True,
+        enabled=False,
         truth_label=connector_truth_label,
     )
     await repository.register_realtime_connector(otel_registration)
