@@ -9,8 +9,10 @@ from threading import Lock
 from typing import Dict, Optional
 
 
-SAFE_PROVIDERS = {"PROMETHEUS", "OTEL"}
-SAFE_OPERATIONS = {"poll", "normalize", "dispatch", "commit", "freshness"}
+SAFE_PROVIDERS = {"PROMETHEUS", "OTEL", "TEMPORAL"}
+SAFE_OPERATIONS = {
+    "poll", "normalize", "dispatch", "commit", "freshness", "eligibility",
+}
 SAFE_OUTCOMES = {
     "success", "error", "duplicate", "conflict", "stale", "unavailable",
     "pending", "accepted",

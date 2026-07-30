@@ -2,7 +2,7 @@
 
 import asyncio
 from datetime import datetime, timedelta, timezone
-from typing import Any, Awaitable, Callable, Dict, List
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from .realtime_models import ConfiguredBindingTemplate, ConnectorDispatchState
 from .realtime_observability import realtime_telemetry
@@ -36,6 +36,7 @@ class RealtimeIngestScheduler:
         tenant_id: str,
         binding_templates: List[ConfiguredBindingTemplate],
         actor_subject_id: str = "",
+        workflow_eligible: Optional[Callable[[Any], Awaitable[bool]]] = None,
         dispatch_timeout_seconds: float = 5.0,
         retry_delay_seconds: float = 5.0,
         clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
@@ -46,6 +47,7 @@ class RealtimeIngestScheduler:
         self.tenant_id = tenant_id
         self.binding_templates = list(binding_templates)
         self.actor_subject_id = actor_subject_id
+        self.workflow_eligible = workflow_eligible
         self.dispatch_timeout_seconds = dispatch_timeout_seconds
         self.retry_delay_seconds = retry_delay_seconds
         self.clock = clock
@@ -155,12 +157,44 @@ class RealtimeIngestScheduler:
         )
         polled = 0
         unavailable = 0
+        ineligible = 0
         now = datetime.now(timezone.utc)
         for summary in summaries:
             projection = await self.repository.workspace_projection(
                 self.tenant_id, summary.case_id,
             )
             if projection is None:
+                continue
+            if self.workflow_eligible is None:
+                ineligible += 1
+                continue
+            try:
+                eligible = await self.workflow_eligible(projection)
+            except Exception as error:
+                ineligible += 1
+                realtime_telemetry.record(
+                    "TEMPORAL",
+                    "eligibility",
+                    "error",
+                    reason_code=type(error).__name__,
+                    correlation={
+                        "case_id": projection.case_id,
+                        "run_id": projection.run_id,
+                    },
+                )
+                continue
+            if not eligible:
+                ineligible += 1
+                realtime_telemetry.record(
+                    "TEMPORAL",
+                    "eligibility",
+                    "unavailable",
+                    reason_code="workflow_execution_not_running",
+                    correlation={
+                        "case_id": projection.case_id,
+                        "run_id": projection.run_id,
+                    },
+                )
                 continue
             for connector_id, connector in self.connectors.items():
                 try:
@@ -201,5 +235,6 @@ class RealtimeIngestScheduler:
         return {
             "polled": polled,
             "unavailable": unavailable,
+            "ineligible": ineligible,
             "dispatched": dispatched,
         }

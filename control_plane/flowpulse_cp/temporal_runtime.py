@@ -8,7 +8,7 @@ from uuid import uuid4
 
 import boto3
 from temporalio import activity
-from temporalio.client import Client
+from temporalio.client import Client, WorkflowExecutionStatus
 from temporalio.service import RPCError, RPCStatusCode
 from temporalio.worker import Worker
 
@@ -790,6 +790,13 @@ async def run_worker(
             )
         return outcome
 
+    async def workflow_eligible(projection):
+        description = await client.get_workflow_handle(
+            projection.workflow_id,
+            run_id=projection.workflow_run_id,
+        ).describe()
+        return description.status == WorkflowExecutionStatus.RUNNING
+
     scheduler = RealtimeIngestScheduler(
         repository=repository,
         connectors=realtime_adapters,
@@ -797,6 +804,7 @@ async def run_worker(
         tenant_id=source_tenant_id,
         binding_templates=list(prometheus_binding_templates or []),
         actor_subject_id=realtime_actor_subject_id or "",
+        workflow_eligible=workflow_eligible,
     )
 
     async def scheduler_loop():

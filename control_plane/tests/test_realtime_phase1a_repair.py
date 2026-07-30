@@ -864,9 +864,10 @@ class OutboxDispatchTests(unittest.IsolatedAsyncioTestCase):
             temporal_dispatch=temporal_dispatch,
             tenant_id="tenant-a",
             binding_templates=[],
+            workflow_eligible=AsyncMock(return_value=True),
         ).run_once()
         self.assertEqual(
-            {"polled": 0, "unavailable": 1, "dispatched": 1},
+            {"polled": 0, "unavailable": 1, "ineligible": 0, "dispatched": 1},
             result,
         )
         self.assertEqual(1, dispatched)
@@ -877,6 +878,62 @@ class OutboxDispatchTests(unittest.IsolatedAsyncioTestCase):
             )).state,
         )
         self.assertNotIn("now", seen_poll_kwargs)
+
+    async def test_closed_workflow_is_skipped_before_connector_poll(self):
+        repository = InMemoryRealtimeRepository()
+        await repository.register_connector(registration())
+
+        closed = projection()
+        open_projection = projection().copy(update={
+            "incident_id": "incident-open",
+            "run_id": "run-open",
+            "case_id": "case-open",
+            "workflow_id": "flowpulse.incident-workspace:tenant-a:run-open",
+            "workflow_run_id": "temporal-run-open",
+        })
+
+        async def workspace_active_incidents(tenant_id, limit):
+            return [
+                type("Summary", (), {"case_id": closed.case_id})(),
+                type("Summary", (), {"case_id": open_projection.case_id})(),
+            ]
+
+        async def workspace_projection(tenant_id, case_id):
+            return (
+                closed
+                if case_id == closed.case_id
+                else open_projection
+            )
+
+        repository.workspace_active_incidents = workspace_active_incidents
+        repository.workspace_projection = workspace_projection
+
+        polled_cases = []
+
+        class RecordingConnector:
+            registration = registration()
+
+            async def poll(self, item, **kwargs):
+                polled_cases.append(item.case_id)
+                raise ValueError("stop_after_poll_proof")
+
+        async def workflow_eligible(item):
+            return item.case_id == open_projection.case_id
+
+        result = await RealtimeIngestScheduler(
+            repository=repository,
+            connectors={"recording": RecordingConnector()},
+            temporal_dispatch=AsyncMock(),
+            tenant_id="tenant-a",
+            binding_templates=[],
+            workflow_eligible=workflow_eligible,
+        ).run_once()
+
+        self.assertEqual([open_projection.case_id], polled_cases)
+        self.assertEqual(
+            {"polled": 0, "unavailable": 1, "ineligible": 1, "dispatched": 0},
+            result,
+        )
 
 
 class ServerBindingTemplateTests(unittest.TestCase):
