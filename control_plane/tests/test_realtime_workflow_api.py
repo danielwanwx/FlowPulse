@@ -871,6 +871,7 @@ class LiveRealtimePostgresTests(unittest.TestCase):
                         temporal_dispatch=temporal_dispatch,
                         tenant_id="tenant-a",
                         binding_templates=[],
+                        retry_delay_seconds=0,
                     )
                     await scheduler.dispatch_pending_once()
                     self.assertEqual(

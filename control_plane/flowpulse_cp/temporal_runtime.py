@@ -9,6 +9,7 @@ from uuid import uuid4
 import boto3
 from temporalio import activity
 from temporalio.client import Client
+from temporalio.service import RPCError, RPCStatusCode
 from temporalio.worker import Worker
 
 from .activities import ControlActivityDispatcher, build_temporal_activities
@@ -113,7 +114,10 @@ from .realtime_models import (
     ConnectorRegistration,
     ConnectorTruthLabel,
 )
-from .realtime_scheduler import RealtimeIngestScheduler
+from .realtime_scheduler import (
+    RealtimeIngestScheduler,
+    TerminalRealtimeDispatchError,
+)
 from .realtime_observability import realtime_telemetry
 
 
@@ -751,26 +755,39 @@ async def run_worker(
         handle = client.get_workflow_handle(
             projection.workflow_id, run_id=projection.workflow_run_id,
         )
-        response = await handle.execute_update(
-            IncidentWorkspaceTemporalWorkflow.reconcile_realtime_connector,
-            RealtimeUpdateCommand(
-                tenant_id=source.tenant_id,
-                actor_subject_id=(
-                    realtime_actor_subject_id or source.acl_subjects[0]
-                ),
-                case_id=source.case_id,
-                incident_id=source.incident_id,
-                run_id=source.run_id,
-                topology_revision=source.topology_revision,
-                connector_id=source.connector_id,
-                source_event_id=source.source_event_id,
-                dispatch_id=dispatch.dispatch_id,
-                idempotency_key=dispatch.dispatch_id,
-            ).dict(),
-        )
+        try:
+            response = await handle.execute_update(
+                IncidentWorkspaceTemporalWorkflow.reconcile_realtime_connector,
+                RealtimeUpdateCommand(
+                    tenant_id=source.tenant_id,
+                    actor_subject_id=(
+                        realtime_actor_subject_id or source.acl_subjects[0]
+                    ),
+                    case_id=source.case_id,
+                    incident_id=source.incident_id,
+                    run_id=source.run_id,
+                    topology_revision=source.topology_revision,
+                    connector_id=source.connector_id,
+                    source_event_id=source.source_event_id,
+                    dispatch_id=dispatch.dispatch_id,
+                    idempotency_key=dispatch.dispatch_id,
+                ).dict(),
+            )
+        except RPCError as error:
+            if error.status == RPCStatusCode.NOT_FOUND:
+                raise TerminalRealtimeDispatchError(
+                    "temporal_workflow_execution_already_completed",
+                    error_type="temporalio.service.RPCError",
+                    error_code=RPCStatusCode.NOT_FOUND.name,
+                ) from error
+            raise
         outcome = RealtimeUpdateOutcome.parse_obj(response)
         if not outcome.accepted:
-            raise RuntimeError(outcome.reason or "realtime_dispatch_rejected")
+            raise TerminalRealtimeDispatchError(
+                "temporal_realtime_update_rejected",
+                error_type="RealtimeUpdateOutcome",
+                error_code="REJECTED",
+            )
         return outcome
 
     scheduler = RealtimeIngestScheduler(

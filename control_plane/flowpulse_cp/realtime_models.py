@@ -378,6 +378,9 @@ class ConnectorDispatchRevision(StrictModel):
     transition_key: Optional[StrictStr] = None
     created_at: datetime
     reason_code: Optional[StrictStr] = None
+    error_type: Optional[StrictStr] = None
+    error_code: Optional[StrictStr] = None
+    retry_after: Optional[datetime] = None
 
 
 ConnectorAdmissionResult.update_forward_refs(ConnectorDispatch=ConnectorDispatch)

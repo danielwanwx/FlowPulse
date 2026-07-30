@@ -594,16 +594,85 @@ class InMemoryRealtimeRepository:
         })
 
     async def pending_dispatches(
-        self, tenant_id: str, limit: int = 100,
+        self,
+        tenant_id: str,
+        limit: int = 100,
+        now: Optional[datetime] = None,
     ) -> List[ConnectorDispatch]:
+        trusted_now = now or datetime.now(timezone.utc)
         values = []
         for item_tenant, dispatch_id in self.dispatches:
             if item_tenant != tenant_id:
                 continue
             current = await self.authoritative_dispatch(tenant_id, dispatch_id)
-            if current is not None and current.state == ConnectorDispatchState.PENDING:
+            revisions = self.dispatch_revisions[(tenant_id, dispatch_id)]
+            retry_after = revisions[-1].retry_after if revisions else None
+            if (
+                current is not None
+                and current.state == ConnectorDispatchState.PENDING
+                and (retry_after is None or retry_after <= trusted_now)
+            ):
                 values.append(current)
-        return sorted(values, key=lambda item: item.created_at)[:limit]
+        selected = []
+        runs = set()
+        for current in sorted(
+            values,
+            key=lambda item: (item.created_at, item.dispatch_id),
+            reverse=True,
+        ):
+            run_key = (current.case_id, current.run_id)
+            if run_key in runs:
+                continue
+            selected.append(current)
+            runs.add(run_key)
+            if len(selected) >= limit:
+                break
+        return selected
+
+    async def record_dispatch_failure(
+        self,
+        dispatch: ConnectorDispatch,
+        *,
+        reason_code: str,
+        error_type: str,
+        error_code: str,
+        terminal: bool,
+        created_at: datetime,
+        retry_after: Optional[datetime] = None,
+    ) -> ConnectorDispatch:
+        current = await self.authoritative_dispatch(
+            dispatch.tenant_id, dispatch.dispatch_id,
+        )
+        if current is None:
+            raise ValueError("connector_dispatch_unknown")
+        if current.state != ConnectorDispatchState.PENDING:
+            return current
+        records = self.dispatch_revisions[
+            (dispatch.tenant_id, dispatch.dispatch_id)
+        ]
+        records.append(ConnectorDispatchRevision(
+            tenant_id=dispatch.tenant_id,
+            dispatch_id=dispatch.dispatch_id,
+            state_revision=len(records) + 1,
+            state=(
+                ConnectorDispatchState.REJECTED
+                if terminal else ConnectorDispatchState.PENDING
+            ),
+            attempt=current.attempt + 1,
+            receipt_id=records[-1].receipt_id if records else None,
+            created_at=created_at,
+            reason_code=reason_code,
+            error_type=error_type,
+            error_code=error_code,
+            retry_after=None if terminal else retry_after,
+        ))
+        return current.copy(update={
+            "state": (
+                ConnectorDispatchState.REJECTED
+                if terminal else ConnectorDispatchState.PENDING
+            ),
+            "attempt": current.attempt + 1,
+        })
 
     async def load_connector_fact_family(
         self,
@@ -614,9 +683,11 @@ class InMemoryRealtimeRepository:
         from .realtime_models import ConnectorPollResult
 
         source = self.source_events.get((tenant_id, source_event_id))
+        base_dispatch = self.dispatches.get((tenant_id, dispatch_id))
         dispatch = await self.authoritative_dispatch(tenant_id, dispatch_id)
         if (
             source is None
+            or base_dispatch is None
             or dispatch is None
             or dispatch.source_event_id != source.source_event_id
             or dispatch.state not in {
@@ -633,7 +704,9 @@ class InMemoryRealtimeRepository:
             health=health,
             receipt=receipt,
             source_event=source,
-            dispatch=dispatch.copy(update={"state": ConnectorDispatchState.PENDING}),
+            dispatch=base_dispatch.copy(update={
+                "state": ConnectorDispatchState.PENDING,
+            }),
         )
 
     async def mark_dispatch_accepted(
@@ -684,6 +757,9 @@ class InMemoryRealtimeRepository:
         registration = self.registrations[(source.tenant_id, source.connector_id)]
         health = self.health_records[(source.tenant_id, source.connector_id)][-1]
         receipt = self.delivery_receipts[_delivery_key(source)]
+        base_dispatch = self.dispatches[
+            (dispatch.tenant_id, dispatch.dispatch_id)
+        ]
         prior_realtime = await self.realtime_projection(
             source.tenant_id, source.case_id,
         )
@@ -711,7 +787,9 @@ class InMemoryRealtimeRepository:
                     health=health,
                     receipt=receipt,
                     source_event=source,
-                    dispatch=dispatch,
+                    dispatch=base_dispatch.copy(update={
+                        "state": ConnectorDispatchState.PENDING,
+                    }),
                 ),
             ).dict(),
         )
@@ -1402,21 +1480,40 @@ class RealtimePostgresMixin:
         return await self._tenant(tenant_id, operation)
 
     async def pending_dispatches(
-        self, tenant_id: str, limit: int = 100,
+        self,
+        tenant_id: str,
+        limit: int = 100,
+        now: Optional[datetime] = None,
     ) -> List[ConnectorDispatch]:
+        trusted_now = now or datetime.now(timezone.utc)
+
         async def operation(connection):
             rows = await connection.fetch(
-                """SELECT o.payload AS base, r.payload AS revision
-                   FROM connector_dispatch_outbox o
-                   JOIN LATERAL (
-                     SELECT payload FROM connector_dispatch_revisions
-                     WHERE tenant_id=o.tenant_id AND dispatch_id=o.dispatch_id
-                     ORDER BY state_revision DESC LIMIT 1
-                   ) r ON true
-                   WHERE o.tenant_id=$1
-                     AND r.payload->>'state'='PENDING'
-                   ORDER BY o.created_at LIMIT $2""",
-                tenant_id, limit,
+                """SELECT base, revision FROM (
+                     SELECT o.payload AS base, r.payload AS revision,
+                            row_number() OVER (
+                              PARTITION BY o.case_id, o.run_id
+                              ORDER BY o.created_at DESC, o.dispatch_id DESC
+                            ) AS run_position
+                     FROM connector_dispatch_outbox o
+                     JOIN LATERAL (
+                       SELECT payload FROM connector_dispatch_revisions
+                       WHERE tenant_id=o.tenant_id
+                         AND dispatch_id=o.dispatch_id
+                       ORDER BY state_revision DESC LIMIT 1
+                     ) r ON true
+                     WHERE o.tenant_id=$1
+                       AND r.payload->>'state'='PENDING'
+                       AND coalesce(
+                         (r.payload->>'retry_after')::timestamptz,
+                         '-infinity'::timestamptz
+                       ) <= $3
+                   ) pending
+                   WHERE run_position=1
+                   ORDER BY (base->>'created_at')::timestamptz DESC,
+                            (base->>'dispatch_id') DESC
+                   LIMIT $2""",
+                tenant_id, limit, trusted_now,
             )
             result = []
             for row in rows:
@@ -1430,6 +1527,85 @@ class RealtimePostgresMixin:
                 }))
             return result
         return await self._tenant(tenant_id, operation)
+
+    async def record_dispatch_failure(
+        self,
+        dispatch: ConnectorDispatch,
+        *,
+        reason_code: str,
+        error_type: str,
+        error_code: str,
+        terminal: bool,
+        created_at: datetime,
+        retry_after: Optional[datetime] = None,
+    ) -> ConnectorDispatch:
+        async def operation(connection):
+            await connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtext($1))",
+                "connector-dispatch:{}:{}".format(
+                    dispatch.tenant_id, dispatch.dispatch_id,
+                ),
+            )
+            row = await connection.fetchrow(
+                """SELECT o.payload AS base, r.payload AS revision
+                   FROM connector_dispatch_outbox o
+                   JOIN LATERAL (
+                     SELECT payload FROM connector_dispatch_revisions
+                     WHERE tenant_id=o.tenant_id
+                       AND dispatch_id=o.dispatch_id
+                     ORDER BY state_revision DESC LIMIT 1
+                   ) r ON true
+                   WHERE o.tenant_id=$1 AND o.dispatch_id=$2""",
+                dispatch.tenant_id, dispatch.dispatch_id,
+            )
+            if row is None:
+                raise ValueError("connector_dispatch_unknown")
+            base = ConnectorDispatch.parse_obj(_decode(row["base"]))
+            latest = ConnectorDispatchRevision.parse_obj(
+                _decode(row["revision"]),
+            )
+            current = base.copy(update={
+                "state": latest.state,
+                "attempt": latest.attempt,
+            })
+            if current.state != ConnectorDispatchState.PENDING:
+                return current
+            revision = ConnectorDispatchRevision(
+                tenant_id=dispatch.tenant_id,
+                dispatch_id=dispatch.dispatch_id,
+                state_revision=latest.state_revision + 1,
+                state=(
+                    ConnectorDispatchState.REJECTED
+                    if terminal else ConnectorDispatchState.PENDING
+                ),
+                attempt=current.attempt + 1,
+                receipt_id=latest.receipt_id,
+                created_at=created_at,
+                reason_code=reason_code,
+                error_type=error_type,
+                error_code=error_code,
+                retry_after=None if terminal else retry_after,
+            )
+            await connection.execute(
+                """INSERT INTO connector_dispatch_revisions
+                   (tenant_id, dispatch_id, state_revision, state, attempt,
+                    receipt_id, transition_key, payload, created_at)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9)""",
+                revision.tenant_id,
+                revision.dispatch_id,
+                revision.state_revision,
+                revision.state.value,
+                revision.attempt,
+                revision.receipt_id,
+                revision.transition_key,
+                _payload(revision),
+                revision.created_at,
+            )
+            return current.copy(update={
+                "state": revision.state,
+                "attempt": revision.attempt,
+            })
+        return await self._tenant(dispatch.tenant_id, operation)
 
     async def load_connector_fact_family(
         self,
@@ -1495,6 +1671,12 @@ class RealtimePostgresMixin:
             await connection.execute(
                 "SELECT pg_advisory_xact_lock(hashtext($1))",
                 "realtime-projection:{}:{}".format(source.tenant_id, source.case_id),
+            )
+            await connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtext($1))",
+                "connector-dispatch:{}:{}".format(
+                    source.tenant_id, commit.dispatch.dispatch_id,
+                ),
             )
             prior = await connection.fetchrow(
                 """SELECT payload FROM incident_realtime_transitions
@@ -1749,12 +1931,25 @@ class RealtimePostgresMixin:
                 source.tenant_id, source.connector_id,
                 source.provider_event_id,
             )
+            latest_dispatch_revision_row = await connection.fetchrow(
+                """SELECT payload FROM connector_dispatch_revisions
+                   WHERE tenant_id=$1 AND dispatch_id=$2
+                   ORDER BY state_revision DESC LIMIT 1""",
+                source.tenant_id, commit.dispatch.dispatch_id,
+            )
+            if latest_dispatch_revision_row is None:
+                raise ValueError("connector_dispatch_revision_missing")
+            latest_dispatch_revision = ConnectorDispatchRevision.parse_obj(
+                _decode(latest_dispatch_revision_row["payload"]),
+            )
+            if latest_dispatch_revision.state != ConnectorDispatchState.PENDING:
+                raise ValueError("connector_dispatch_not_pending")
             accepted_revision = ConnectorDispatchRevision(
                 tenant_id=source.tenant_id,
                 dispatch_id=commit.dispatch.dispatch_id,
-                state_revision=2,
+                state_revision=latest_dispatch_revision.state_revision + 1,
                 state=ConnectorDispatchState.ACCEPTED,
-                attempt=commit.dispatch.attempt,
+                attempt=latest_dispatch_revision.attempt,
                 receipt_id=ConnectorDeliveryReceipt.parse_obj(
                     _decode(receipt["payload"]),
                 ).receipt_id,

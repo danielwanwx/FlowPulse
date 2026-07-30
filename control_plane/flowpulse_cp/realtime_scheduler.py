@@ -1,10 +1,27 @@
 """Bounded server-owned connector polling and durable outbox dispatch."""
 
-from datetime import datetime, timezone
+import asyncio
+from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Dict, List
 
 from .realtime_models import ConfiguredBindingTemplate, ConnectorDispatchState
 from .realtime_observability import realtime_telemetry
+
+
+class TerminalRealtimeDispatchError(RuntimeError):
+    """A dispatch failure that cannot succeed for this immutable target."""
+
+    def __init__(
+        self,
+        reason_code: str,
+        *,
+        error_type: str = "",
+        error_code: str = "",
+    ) -> None:
+        super().__init__(reason_code)
+        self.reason_code = reason_code
+        self.error_type = error_type
+        self.error_code = error_code
 
 
 class RealtimeIngestScheduler:
@@ -19,6 +36,9 @@ class RealtimeIngestScheduler:
         tenant_id: str,
         binding_templates: List[ConfiguredBindingTemplate],
         actor_subject_id: str = "",
+        dispatch_timeout_seconds: float = 5.0,
+        retry_delay_seconds: float = 5.0,
+        clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     ) -> None:
         self.repository = repository
         self.connectors = dict(connectors)
@@ -26,24 +46,75 @@ class RealtimeIngestScheduler:
         self.tenant_id = tenant_id
         self.binding_templates = list(binding_templates)
         self.actor_subject_id = actor_subject_id
+        self.dispatch_timeout_seconds = dispatch_timeout_seconds
+        self.retry_delay_seconds = retry_delay_seconds
+        self.clock = clock
 
     async def dispatch_pending_once(self, limit: int = 100) -> int:
-        accepted = 0
-        for dispatch in await self.repository.pending_dispatches(
-            self.tenant_id, limit=limit,
-        ):
+        dispatches = await self.repository.pending_dispatches(
+            self.tenant_id, limit=limit, now=self.clock(),
+        )
+
+        async def dispatch_one(dispatch) -> int:
             if dispatch.state != ConnectorDispatchState.PENDING:
-                continue
+                return 0
             source = await self.repository.source_event(
                 self.tenant_id, dispatch.source_event_id,
             )
             if source is None:
-                raise ValueError("connector_dispatch_source_missing")
+                await self.repository.record_dispatch_failure(
+                    dispatch,
+                    reason_code="connector_dispatch_source_missing",
+                    error_type="ValueError",
+                    error_code="SOURCE_NOT_FOUND",
+                    terminal=True,
+                    created_at=self.clock(),
+                )
+                return 0
             try:
-                await self.temporal_dispatch(source, dispatch)
+                await asyncio.wait_for(
+                    self.temporal_dispatch(source, dispatch),
+                    timeout=self.dispatch_timeout_seconds,
+                )
+            except TerminalRealtimeDispatchError as error:
+                await self.repository.record_dispatch_failure(
+                    dispatch,
+                    reason_code=error.reason_code,
+                    error_type=error.error_type or type(error).__name__,
+                    error_code=error.error_code or "TERMINAL",
+                    terminal=True,
+                    created_at=self.clock(),
+                )
+                realtime_telemetry.record(
+                    source.provider.value,
+                    "dispatch",
+                    "error",
+                    reason_code=error.reason_code,
+                    queue_depth=0,
+                    correlation={
+                        "delivery_id": source.delivery_id,
+                        "source_event_id": source.source_event_id,
+                        "case_id": source.case_id,
+                        "run_id": source.run_id,
+                    },
+                )
+                return 0
             except Exception as error:
-                # The append-only PENDING state is authoritative until Temporal
-                # accepts and commits the transition. A later tick retries it.
+                now = self.clock()
+                await self.repository.record_dispatch_failure(
+                    dispatch,
+                    reason_code=type(error).__name__,
+                    error_type=(
+                        type(error).__module__ + "." + type(error).__name__
+                    ),
+                    error_code="RETRYABLE",
+                    terminal=False,
+                    created_at=now,
+                    retry_after=now + timedelta(
+                        seconds=self.retry_delay_seconds
+                        * min(2 ** max(dispatch.attempt - 1, 0), 32),
+                    ),
+                )
                 realtime_telemetry.record(
                     source.provider.value,
                     "dispatch",
@@ -57,7 +128,7 @@ class RealtimeIngestScheduler:
                         "run_id": source.run_id,
                     },
                 )
-                continue
+                return 0
             realtime_telemetry.record(
                 source.provider.value,
                 "dispatch",
@@ -70,8 +141,13 @@ class RealtimeIngestScheduler:
                     "run_id": source.run_id,
                 },
             )
-            accepted += 1
-        return accepted
+            return 1
+
+        if not dispatches:
+            return 0
+        return sum(await asyncio.gather(*(
+            dispatch_one(dispatch) for dispatch in dispatches
+        )))
 
     async def run_once(self) -> Dict[str, int]:
         summaries = await self.repository.workspace_active_incidents(

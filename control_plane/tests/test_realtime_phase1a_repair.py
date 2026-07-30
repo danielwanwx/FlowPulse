@@ -1,5 +1,6 @@
 """Acceptance regressions for the Phase 1A fact-plane correction."""
 
+import asyncio
 import json
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -34,7 +35,10 @@ from flowpulse_cp.realtime_repository import (
     InMemoryRealtimeRepository,
     _is_pre_truth_v2_projection,
 )
-from flowpulse_cp.realtime_scheduler import RealtimeIngestScheduler
+from flowpulse_cp.realtime_scheduler import (
+    RealtimeIngestScheduler,
+    TerminalRealtimeDispatchError,
+)
 from flowpulse_cp.workspace_models import IncidentRunBinding, initial_projection
 from flowpulse_cp.workspace_topology import CapturedAstronomyTopologyProvider
 
@@ -542,6 +546,214 @@ class EventAndPaginationTests(unittest.IsolatedAsyncioTestCase):
 
 
 class OutboxDispatchTests(unittest.IsolatedAsyncioTestCase):
+    async def admit_pending(self, repository, *, suffix, run_id, case_id, created_at):
+        binding = external_binding(suffix=suffix).copy(update={
+            "binding_id": "binding-" + suffix,
+            "case_id": case_id,
+            "incident_id": "incident-" + suffix,
+            "run_id": run_id,
+            "topology_revision": "topology-" + suffix,
+        })
+        await repository.append_binding(binding)
+        source = PrometheusNormalizer().normalize(
+            payload=payload(observed_at=created_at, value="0.0" + str(len(suffix))),
+            registration=registration(),
+            binding=binding,
+            provider_event_id="poll:" + suffix,
+            received_at=created_at,
+            raw_artifact_ref="tenant-a/sha256/" + suffix[0] * 64,
+            raw_content_hash=suffix[0] * 64,
+            acl_subjects=["owner-a"],
+        )
+        dispatch = ConnectorDispatch(
+            dispatch_id="dispatch-" + source.normalization_hash[:24],
+            tenant_id=source.tenant_id,
+            connector_id=source.connector_id,
+            source_event_id=source.source_event_id,
+            case_id=source.case_id,
+            run_id=source.run_id,
+            normalization_hash=source.normalization_hash,
+            state=ConnectorDispatchState.PENDING,
+            attempt=1,
+            created_at=created_at,
+        )
+        return await repository.admit_source_event(source, dispatch)
+
+    async def test_terminal_poison_is_rejected_and_does_not_block_other_run(self):
+        repository = InMemoryRealtimeRepository()
+        await repository.register_connector(registration())
+        poison = await self.admit_pending(
+            repository,
+            suffix="b",
+            run_id="run-b",
+            case_id="case-b",
+            created_at=NOW,
+        )
+        healthy = await self.admit_pending(
+            repository,
+            suffix="c",
+            run_id="run-c",
+            case_id="case-c",
+            created_at=NOW + timedelta(milliseconds=1),
+        )
+
+        async def temporal_dispatch(source, dispatch):
+            if dispatch.dispatch_id == poison.dispatch.dispatch_id:
+                raise TerminalRealtimeDispatchError(
+                    "temporal_workflow_execution_not_found_or_completed",
+                )
+            await repository.mark_dispatch_accepted(
+                dispatch,
+                transition_key="transition-" + dispatch.dispatch_id,
+                receipt_id="receipt-" + source.normalization_hash[:24],
+                created_at=NOW + timedelta(seconds=1),
+            )
+
+        accepted = await RealtimeIngestScheduler(
+            repository=repository,
+            connectors={},
+            temporal_dispatch=temporal_dispatch,
+            tenant_id="tenant-a",
+            binding_templates=[],
+            dispatch_timeout_seconds=0.1,
+        ).dispatch_pending_once()
+
+        self.assertEqual(1, accepted)
+        self.assertEqual(
+            ConnectorDispatchState.REJECTED,
+            (await repository.authoritative_dispatch(
+                "tenant-a", poison.dispatch.dispatch_id,
+            )).state,
+        )
+        poison_revision = repository.dispatch_revisions[
+            ("tenant-a", poison.dispatch.dispatch_id)
+        ][-1]
+        self.assertEqual(
+            "temporal_workflow_execution_not_found_or_completed",
+            poison_revision.reason_code,
+        )
+        self.assertEqual(
+            ConnectorDispatchState.ACCEPTED,
+            (await repository.authoritative_dispatch(
+                "tenant-a", healthy.dispatch.dispatch_id,
+            )).state,
+        )
+
+    async def test_retryable_poison_backs_off_without_starving_other_run(self):
+        repository = InMemoryRealtimeRepository()
+        await repository.register_connector(registration())
+        poison = await self.admit_pending(
+            repository,
+            suffix="d",
+            run_id="run-d",
+            case_id="case-d",
+            created_at=NOW,
+        )
+        healthy = await self.admit_pending(
+            repository,
+            suffix="e",
+            run_id="run-e",
+            case_id="case-e",
+            created_at=NOW + timedelta(milliseconds=1),
+        )
+        poison_calls = 0
+
+        async def temporal_dispatch(source, dispatch):
+            nonlocal poison_calls
+            if dispatch.dispatch_id == poison.dispatch.dispatch_id:
+                poison_calls += 1
+                await asyncio.sleep(1)
+            await repository.mark_dispatch_accepted(
+                dispatch,
+                transition_key="transition-" + dispatch.dispatch_id,
+                receipt_id="receipt-" + source.normalization_hash[:24],
+                created_at=NOW + timedelta(seconds=1),
+            )
+
+        scheduler = RealtimeIngestScheduler(
+            repository=repository,
+            connectors={},
+            temporal_dispatch=temporal_dispatch,
+            tenant_id="tenant-a",
+            binding_templates=[],
+            dispatch_timeout_seconds=0.01,
+            retry_delay_seconds=30,
+            clock=lambda: NOW + timedelta(seconds=2),
+        )
+        accepted = await scheduler.dispatch_pending_once()
+        await scheduler.dispatch_pending_once()
+
+        self.assertEqual(1, accepted)
+        self.assertEqual(1, poison_calls)
+        self.assertEqual(
+            ConnectorDispatchState.PENDING,
+            (await repository.authoritative_dispatch(
+                "tenant-a", poison.dispatch.dispatch_id,
+            )).state,
+        )
+        retry = repository.dispatch_revisions[
+            ("tenant-a", poison.dispatch.dispatch_id)
+        ][-1]
+        self.assertEqual(2, retry.attempt)
+        self.assertEqual("TimeoutError", retry.reason_code)
+        self.assertEqual(NOW + timedelta(seconds=32), retry.retry_after)
+        self.assertEqual(
+            ConnectorDispatchState.ACCEPTED,
+            (await repository.authoritative_dispatch(
+                "tenant-a", healthy.dispatch.dispatch_id,
+            )).state,
+        )
+
+    async def test_backlogged_run_dispatches_newest_eligible_source_first(self):
+        repository = InMemoryRealtimeRepository()
+        await repository.register_connector(registration())
+        older = await self.admit_pending(
+            repository,
+            suffix="f",
+            run_id="run-f",
+            case_id="case-f",
+            created_at=NOW,
+        )
+        newest = await self.admit_pending(
+            repository,
+            suffix="9",
+            run_id="run-f",
+            case_id="case-f",
+            created_at=NOW + timedelta(minutes=5),
+        )
+        dispatched = []
+
+        async def temporal_dispatch(source, dispatch):
+            dispatched.append(dispatch.dispatch_id)
+            await repository.mark_dispatch_accepted(
+                dispatch,
+                transition_key="transition-" + dispatch.dispatch_id,
+                receipt_id="receipt-" + source.normalization_hash[:24],
+                created_at=NOW + timedelta(minutes=5, seconds=1),
+            )
+
+        await RealtimeIngestScheduler(
+            repository=repository,
+            connectors={},
+            temporal_dispatch=temporal_dispatch,
+            tenant_id="tenant-a",
+            binding_templates=[],
+        ).dispatch_pending_once()
+
+        self.assertEqual([newest.dispatch.dispatch_id], dispatched)
+        self.assertEqual(
+            ConnectorDispatchState.PENDING,
+            (await repository.authoritative_dispatch(
+                "tenant-a", older.dispatch.dispatch_id,
+            )).state,
+        )
+        self.assertEqual(
+            ConnectorDispatchState.ACCEPTED,
+            (await repository.authoritative_dispatch(
+                "tenant-a", newest.dispatch.dispatch_id,
+            )).state,
+        )
+
     async def test_temporal_unavailable_leaves_pending_then_retry_dispatches_once(self):
         repository = InMemoryRealtimeRepository()
         await repository.register_connector(registration())
@@ -579,6 +791,7 @@ class OutboxDispatchTests(unittest.IsolatedAsyncioTestCase):
             temporal_dispatch=temporal.dispatch,
             tenant_id="tenant-a",
             binding_templates=[],
+            retry_delay_seconds=0,
         )
         await scheduler.dispatch_pending_once()
         self.assertEqual(
