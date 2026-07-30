@@ -33,6 +33,18 @@ const REALTIME_EVENT_TYPES = new Set([
   "graph.pulse.started", "graph.pulse.expired", "agent.activity.started", "agent.activity.completed",
   "agent.activity.degraded", "incident.clock.changed"
 ]);
+const CONNECTOR_PROVIDERS = new Set(["PROMETHEUS", "OTEL"]);
+const CONNECTOR_STATES = new Set(["CONNECTED", "DEGRADED", "STALE", "UNAVAILABLE", "MISCONFIGURED", "DISABLED"]);
+const CONNECTOR_TRUTH_LABELS = new Set(["LIVE", "TEST_DETERMINISTIC"]);
+const REALTIME_SIGNAL_KINDS = new Set(["ERROR_RATE"]);
+const REALTIME_SIGNAL_STATUSES = new Set(["INFO", "WARNING", "CRITICAL"]);
+const REALTIME_TRENDS = new Set(["UNKNOWN", "STABLE", "RISING", "FALLING"]);
+const INCIDENT_CLOCK_STATES = new Set(["RUNNING", "PAUSED", "RESOLVED"]);
+const AGENT_ROLES = new Set(["MONITOR", "TRIAGE"]);
+const AGENT_ACTIVITY_STATES = new Set(["STARTED", "COMPLETED", "DEGRADED", "REJECTED"]);
+const AGENT_TRIGGERS = new Set(["CONNECTOR_EVENT"]);
+const AGENT_CAPABILITIES = new Set(["METRICS"]);
+const GRAPH_PULSE_KINDS = new Set(["PROPAGATION"]);
 const IDENTITY_KEYS = ["tenant_id", "incident_id", "run_id", "topology_revision", "case_id", "case_revision", "workflow_id", "workflow_run_id", "created_at"];
 const CORRELATION_KEYS = IDENTITY_KEYS.filter((field) => field !== "created_at");
 const VERSION_BUNDLE_KEYS = [
@@ -99,7 +111,20 @@ export function parseRealtimeNotification(value) {
   assertEnum(value.event_type, REALTIME_EVENT_TYPES, "realtime_event_type_invalid");
   assertTimestamp(value.occurred_at, "notification_occurred_at_invalid");
   if (value.source_event_id !== undefined && value.source_event_id !== null) assertText(value.source_event_id, "source_event_id_invalid");
-  return { ...clone(value), incident: parseIncidentSummary(value.incident) };
+  return { ...clone(value), incident: parseRealtimeSummary(value.incident) };
+}
+
+export function parseRealtimeSummary(value) {
+  exactObject(value, ["case_id", "incident_id", "run_id", "topology_revision", "projection_revision", "sequence", "lifecycle_state", "lifecycle_stage", "title", "summary", "incident_clock", "latest_signal_status", "connector_freshness"], "realtime_summary_unknown_field", ["case_id", "incident_id", "run_id", "topology_revision", "projection_revision", "sequence", "lifecycle_state", "lifecycle_stage", "title", "summary", "incident_clock", "connector_freshness"]);
+  for (const key of ["case_id", "incident_id", "run_id", "topology_revision", "title", "summary"]) assertText(value[key], `realtime_summary_${key}_invalid`);
+  assertInteger(value.projection_revision, "projection_revision_invalid");
+  assertInteger(value.sequence, "sequence_invalid");
+  assertEnum(value.lifecycle_state, LIFECYCLE_STATES, "lifecycle_state_invalid");
+  assertEnum(value.lifecycle_stage, LIFECYCLE_STAGES, "lifecycle_stage_invalid");
+  validateIncidentClock(value.incident_clock);
+  assertEnum(value.connector_freshness, EVIDENCE_FRESHNESS, "connector_freshness_invalid");
+  if (value.latest_signal_status !== undefined && value.latest_signal_status !== null) assertEnum(value.latest_signal_status, REALTIME_SIGNAL_STATUSES, "latest_signal_status_invalid");
+  return clone(value);
 }
 
 export function parseIncidentProjection(value) {
@@ -130,7 +155,9 @@ export function parseIncidentProjection(value) {
   assertInteger(value.evidence_revision, "evidence_revision_invalid");
   assertInteger(value.gate_revision, "gate_revision_invalid");
   assertInteger(value.action_revision, "action_revision_invalid");
-  const evidence_refs = stringList(value.evidence_refs === undefined ? [] : value.evidence_refs, "evidence_refs_invalid");
+  const evidence_refs = value.schema_version === "flowpulse.incident-projection.v2"
+    ? boundedStringList(value.evidence_refs === undefined ? [] : value.evidence_refs, 0, 2048, "evidence_refs_invalid")
+    : stringList(value.evidence_refs === undefined ? [] : value.evidence_refs, "evidence_refs_invalid");
   if (value.degraded_code !== undefined && value.degraded_code !== null) assertText(value.degraded_code, "degraded_code_invalid");
   const lifecycle_stage = value.lifecycle_stage === undefined ? "INVESTIGATE" : value.lifecycle_stage;
   const gate1_state = value.gate1_state === undefined ? "NONE" : value.gate1_state;
@@ -152,6 +179,7 @@ export function parseIncidentProjection(value) {
 }
 
 function validateV2Projection(value, componentIds, edgeIds) {
+  for (const key of ["source_revision", "connector_revision"]) assertInteger(value[key], `${key}_invalid`);
   validateIncidentClock(value.incident_clock);
   for (const list of ["connector_health", "realtime_signals", "active_graph_pulses"]) if (!Array.isArray(value[list])) fail(`${list}_invalid`);
   for (const health of value.connector_health) validateConnectorHealth(health, value.tenant_id);
@@ -166,7 +194,9 @@ function validateV2Projection(value, componentIds, edgeIds) {
     for (const id of stringList(pulse.edge_ids, "pulse_edges_invalid")) if (!edgeIds.has(id)) fail("pulse_edge_unknown");
     assertTimestamp(pulse.expires_at, "pulse_expiry_invalid");
   }
-  exactObject(value.agent_workspace, ["mode", "workspace_revision", "activities", "citations"], "agent_workspace_unknown_field");
+  exactObject(value.agent_workspace, ["mode", "workspace_revision", "activities", "citations"], "agent_workspace_unknown_field", ["mode", "workspace_revision", "activities", "citations"]);
+  if (value.agent_workspace.mode !== "READ_ONLY") fail("agent_workspace_mode_invalid");
+  assertInteger(value.agent_workspace.workspace_revision, "agent_workspace_revision_invalid");
   if (!Array.isArray(value.agent_workspace.activities) || !Array.isArray(value.agent_workspace.citations)) fail("agent_workspace_invalid");
   for (const activity of value.agent_workspace.activities) {
     validateAgentActivity(activity);
@@ -177,58 +207,84 @@ function validateV2Projection(value, componentIds, edgeIds) {
 }
 
 function validateRealtimeSignal(signal) {
-  exactObject(signal, ["signal_id", "source_event_id", "provider", "source_label", "signal_kind", "title", "display_value", "status", "trend", "component_ids", "edge_ids", "observed_at", "fresh_until", "freshness", "authority", "evidence_refs", "citation_refs", "connector_state", "sequence"], "realtime_signal_unknown_field");
-  for (const key of ["signal_id", "source_event_id", "provider", "source_label", "signal_kind", "title", "display_value", "status", "trend", "freshness", "authority", "connector_state"]) assertText(signal[key], `signal_${key}_invalid`);
-  for (const key of ["component_ids", "edge_ids", "evidence_refs", "citation_refs"]) stringList(signal[key], `signal_${key}_invalid`);
+  exactObject(signal, ["signal_id", "source_event_id", "provider", "source_label", "signal_kind", "title", "display_value", "status", "trend", "component_ids", "edge_ids", "observed_at", "fresh_until", "freshness", "authority", "evidence_refs", "citation_refs", "connector_state", "sequence"], "realtime_signal_unknown_field", ["signal_id", "source_event_id", "provider", "source_label", "signal_kind", "title", "display_value", "status", "trend", "component_ids", "observed_at", "fresh_until", "freshness", "authority", "evidence_refs", "citation_refs", "connector_state", "sequence"]);
+  for (const key of ["signal_id", "source_event_id", "source_label", "title", "display_value"]) assertText(signal[key], `signal_${key}_invalid`);
+  assertEnum(signal.provider, CONNECTOR_PROVIDERS, "signal_provider_invalid");
+  assertEnum(signal.signal_kind, REALTIME_SIGNAL_KINDS, "signal_kind_invalid");
+  assertEnum(signal.status, REALTIME_SIGNAL_STATUSES, "signal_status_invalid");
+  assertEnum(signal.trend, REALTIME_TRENDS, "signal_trend_invalid");
+  assertEnum(signal.freshness, EVIDENCE_FRESHNESS, "signal_freshness_invalid");
+  assertEnum(signal.authority, EVIDENCE_AUTHORITIES, "signal_authority_invalid");
+  assertEnum(signal.connector_state, CONNECTOR_STATES, "signal_connector_state_invalid");
+  for (const key of ["component_ids", "evidence_refs", "citation_refs"]) if (!boundedStringList(signal[key], 1, 32, `signal_${key}_invalid`).length) fail(`signal_${key}_invalid`);
+  boundedStringList(signal.edge_ids || [], 0, 32, "signal_edge_ids_invalid");
   for (const key of ["observed_at", "fresh_until"]) assertTimestamp(signal[key], `signal_${key}_invalid`);
   assertInteger(signal.sequence, "signal_sequence_invalid");
 }
 
 function validateGraphPulse(pulse) {
-  exactObject(pulse, ["pulse_id", "source_event_id", "event_sequence", "edge_ids", "component_ids", "pulse_kind", "severity", "started_at", "expires_at", "evidence_refs"], "graph_pulse_unknown_field");
-  for (const key of ["pulse_id", "source_event_id", "pulse_kind", "severity"]) assertText(pulse[key], `pulse_${key}_invalid`);
+  exactObject(pulse, ["pulse_id", "source_event_id", "event_sequence", "edge_ids", "component_ids", "pulse_kind", "severity", "started_at", "expires_at", "evidence_refs"], "graph_pulse_unknown_field", ["pulse_id", "source_event_id", "event_sequence", "component_ids", "pulse_kind", "severity", "started_at", "expires_at", "evidence_refs"]);
+  for (const key of ["pulse_id", "source_event_id"]) assertText(pulse[key], `pulse_${key}_invalid`);
+  assertEnum(pulse.pulse_kind, GRAPH_PULSE_KINDS, "pulse_kind_invalid");
+  assertEnum(pulse.severity, REALTIME_SIGNAL_STATUSES, "pulse_severity_invalid");
   assertInteger(pulse.event_sequence, "pulse_event_sequence_invalid");
-  if (!stringList(pulse.edge_ids, "pulse_edges_invalid").length) fail("pulse_edges_required");
-  stringList(pulse.component_ids, "pulse_components_invalid");
-  stringList(pulse.evidence_refs, "pulse_evidence_invalid");
+  if (!boundedStringList(pulse.edge_ids || [], 1, 32, "pulse_edges_invalid").length) fail("pulse_edges_required");
+  boundedStringList(pulse.component_ids, 1, 32, "pulse_components_invalid");
+  boundedStringList(pulse.evidence_refs, 1, 32, "pulse_evidence_invalid");
   assertTimestamp(pulse.started_at, "pulse_started_at_invalid");
   assertTimestamp(pulse.expires_at, "pulse_expiry_invalid");
 }
 
 function validateAgentActivity(activity) {
-  exactObject(activity, ["activity_id", "activity_key", "state_revision", "sequence", "role", "state", "trigger", "capability", "capability_version", "tool_label", "component_ids", "started_at", "completed_at", "summary", "source_event_ids", "evidence_refs", "citation_refs", "truth_label", "external_write_performed", "degraded_code"], "agent_activity_unknown_field");
-  for (const key of ["activity_id", "activity_key", "role", "state", "trigger", "capability", "capability_version", "tool_label", "summary", "truth_label"]) assertText(activity[key], `agent_activity_${key}_invalid`);
+  exactObject(activity, ["activity_id", "activity_key", "state_revision", "sequence", "role", "state", "trigger", "capability", "capability_version", "tool_label", "component_ids", "started_at", "completed_at", "summary", "source_event_ids", "evidence_refs", "citation_refs", "truth_label", "external_write_performed", "degraded_code"], "agent_activity_unknown_field", ["activity_id", "activity_key", "state_revision", "sequence", "role", "state", "trigger", "capability", "capability_version", "tool_label", "component_ids", "started_at", "summary", "source_event_ids", "evidence_refs", "citation_refs", "truth_label"]);
+  for (const key of ["activity_id", "activity_key", "capability_version", "tool_label", "summary"]) assertText(activity[key], `agent_activity_${key}_invalid`);
+  assertEnum(activity.role, AGENT_ROLES, "agent_activity_role_invalid");
+  assertEnum(activity.state, AGENT_ACTIVITY_STATES, "agent_activity_state_invalid");
+  assertEnum(activity.trigger, AGENT_TRIGGERS, "agent_activity_trigger_invalid");
+  assertEnum(activity.capability, AGENT_CAPABILITIES, "agent_activity_capability_invalid");
+  assertEnum(activity.truth_label, CONNECTOR_TRUTH_LABELS, "agent_activity_truth_invalid");
   for (const key of ["state_revision", "sequence"]) assertInteger(activity[key], `agent_activity_${key}_invalid`);
   for (const key of ["component_ids", "source_event_ids", "evidence_refs", "citation_refs"]) stringList(activity[key], `agent_activity_${key}_invalid`);
   assertTimestamp(activity.started_at, "agent_activity_started_at_invalid");
-  if (activity.completed_at !== null) assertTimestamp(activity.completed_at, "agent_activity_completed_at_invalid");
-  if (activity.external_write_performed !== false) fail("agent_activity_write_invalid");
-  if (activity.degraded_code !== null) assertText(activity.degraded_code, "agent_activity_degraded_code_invalid");
+  if (activity.completed_at !== undefined && activity.completed_at !== null) assertTimestamp(activity.completed_at, "agent_activity_completed_at_invalid");
+  if (activity.external_write_performed !== undefined && activity.external_write_performed !== false) fail("agent_activity_write_invalid");
+  if (activity.degraded_code !== undefined && activity.degraded_code !== null) assertText(activity.degraded_code, "agent_activity_degraded_code_invalid");
+  if (activity.state === "COMPLETED" && !activity.completed_at) fail("agent_activity_completed_at_required");
+  if (activity.state === "DEGRADED" && !activity.degraded_code) fail("agent_activity_degraded_code_required");
 }
 
 function validateRealtimeCitation(citation, caseId) {
   exactObject(citation, ["citation_id", "provider", "evidence_id", "source_event_id", "label", "observed_at", "freshness", "safe_detail_path"], "citation_unknown_field");
-  for (const key of ["citation_id", "provider", "evidence_id", "source_event_id", "label", "freshness", "safe_detail_path"]) assertText(citation[key], `citation_${key}_invalid`);
+  for (const key of ["citation_id", "evidence_id", "source_event_id", "label", "safe_detail_path"]) assertText(citation[key], `citation_${key}_invalid`);
+  assertEnum(citation.provider, CONNECTOR_PROVIDERS, "citation_provider_invalid");
+  assertEnum(citation.freshness, EVIDENCE_FRESHNESS, "citation_freshness_invalid");
   assertTimestamp(citation.observed_at, "citation_observed_at_invalid");
   if (!citation.safe_detail_path.startsWith(`/v2/incidents/${caseId}/evidence/`)) fail("citation_path_invalid");
 }
 
 function validateConnectorHealth(health, tenantId) {
-  exactObject(health, ["schema_version", "connector_id", "tenant_id", "provider", "state", "checked_at", "last_success_at", "last_event_observed_at", "fresh_until", "cursor", "consecutive_failures", "lag_seconds", "reason_code", "adapter_version", "health_revision", "truth_label"], "connector_health_unknown_field");
-  if (health.schema_version !== "flowpulse.connector-health.v1" || health.tenant_id !== tenantId) fail("connector_health_identity_invalid");
-  for (const key of ["connector_id", "tenant_id", "provider", "state", "checked_at", "adapter_version", "truth_label"]) assertText(health[key], `connector_health_${key}_invalid`);
+  exactObject(health, ["schema_version", "connector_id", "tenant_id", "provider", "state", "checked_at", "last_success_at", "last_event_observed_at", "fresh_until", "cursor", "consecutive_failures", "lag_seconds", "reason_code", "adapter_version", "health_revision", "truth_label"], "connector_health_unknown_field", ["connector_id", "tenant_id", "provider", "state", "checked_at", "consecutive_failures", "lag_seconds", "adapter_version", "health_revision", "truth_label"]);
+  if ((health.schema_version !== undefined && health.schema_version !== "flowpulse.connector-health.v1") || health.tenant_id !== tenantId) fail("connector_health_identity_invalid");
+  for (const key of ["connector_id", "tenant_id", "adapter_version"]) assertText(health[key], `connector_health_${key}_invalid`);
+  assertEnum(health.provider, CONNECTOR_PROVIDERS, "connector_health_provider_invalid");
+  assertEnum(health.state, CONNECTOR_STATES, "connector_health_state_invalid");
+  assertEnum(health.truth_label, CONNECTOR_TRUTH_LABELS, "connector_health_truth_invalid");
   assertTimestamp(health.checked_at, "connector_health_checked_at_invalid");
   for (const key of ["consecutive_failures", "lag_seconds", "health_revision"]) if (!Number.isSafeInteger(health[key]) || health[key] < 0) fail(`connector_health_${key}_invalid`);
-  for (const key of ["last_success_at", "last_event_observed_at", "fresh_until"]) if (health[key] !== null) assertTimestamp(health[key], `connector_health_${key}_invalid`);
-  if (health.cursor !== null) assertText(health.cursor, "connector_health_cursor_invalid");
-  if (health.reason_code !== null) assertText(health.reason_code, "connector_health_reason_invalid");
+  for (const key of ["last_success_at", "last_event_observed_at", "fresh_until"]) if (health[key] !== undefined && health[key] !== null) assertTimestamp(health[key], `connector_health_${key}_invalid`);
+  if (health.cursor !== undefined && health.cursor !== null) assertText(health.cursor, "connector_health_cursor_invalid");
+  if (health.reason_code !== undefined && health.reason_code !== null) assertText(health.reason_code, "connector_health_reason_invalid");
 }
 
 function validateIncidentClock(clock) {
-  exactObject(clock, ["state", "started_at", "last_signal_at", "resolved_at", "as_of", "elapsed_seconds", "freshness", "fresh_until", "max_interpolation_seconds"], "incident_clock_unknown_field");
+  exactObject(clock, ["state", "started_at", "last_signal_at", "resolved_at", "as_of", "elapsed_seconds", "freshness", "fresh_until", "max_interpolation_seconds"], "incident_clock_unknown_field", ["state", "started_at", "as_of", "elapsed_seconds", "freshness", "fresh_until", "max_interpolation_seconds"]);
+  assertEnum(clock.state, INCIDENT_CLOCK_STATES, "incident_clock_state_invalid");
+  assertEnum(clock.freshness, EVIDENCE_FRESHNESS, "incident_clock_freshness_invalid");
   for (const key of ["started_at", "as_of", "fresh_until"]) assertTimestamp(clock[key], `incident_clock_${key}_invalid`);
+  for (const key of ["last_signal_at", "resolved_at"]) if (clock[key] !== undefined && clock[key] !== null) assertTimestamp(clock[key], `incident_clock_${key}_invalid`);
   if (!Number.isSafeInteger(clock.elapsed_seconds) || clock.elapsed_seconds < 0) fail("incident_clock_elapsed_invalid");
   assertInteger(clock.max_interpolation_seconds, "incident_clock_interpolation_invalid");
+  if (clock.max_interpolation_seconds > 60) fail("incident_clock_interpolation_invalid");
 }
 
 // This is a presentation-safe read model. It has no authority to advance a
@@ -280,9 +336,9 @@ export function parseIncidentEvent(value) {
 
 export function parseRealtimeIncidentEvent(value) {
   const payloadKeys = ["signal", "pulse", "activity", "citation", "health", "incident_clock"];
-  exactObject(value, [...IDENTITY_KEYS, "schema_version", "source_event_id", "projection_revision", "sequence", "event_type", "occurred_at", ...payloadKeys], "realtime_event_unknown_field", [...IDENTITY_KEYS, "projection_revision", "sequence", "event_type", "occurred_at"]);
+  exactObject(value, [...IDENTITY_KEYS, "schema_version", "source_event_id", "projection_revision", "sequence", "event_type", "occurred_at", ...payloadKeys], "realtime_event_unknown_field", [...IDENTITY_KEYS, "schema_version", "source_event_id", "projection_revision", "sequence", "event_type", "occurred_at"]);
   parseIdentity(value);
-  if (value.schema_version !== undefined && value.schema_version !== "flowpulse.incident-realtime-event.v2") fail("realtime_event_schema_invalid");
+  if (value.schema_version !== "flowpulse.incident-realtime-event.v2") fail("realtime_event_schema_invalid");
   if (value.source_event_id !== undefined && value.source_event_id !== null) assertText(value.source_event_id, "source_event_id_invalid");
   assertInteger(value.projection_revision, "projection_revision_invalid");
   assertInteger(value.sequence, "sequence_invalid");
@@ -989,7 +1045,7 @@ function parseIdentity(value) {
 }
 
 function sameIdentity(left, right) {
-  return Boolean(left && right) && ["tenant_id", "incident_id", "run_id", "topology_revision", "case_id", "workflow_id", "workflow_run_id"].every((field) => left[field] === right[field]);
+  return Boolean(left && right) && ["tenant_id", "incident_id", "run_id", "topology_revision", "case_id", "case_revision", "workflow_id", "workflow_run_id", "created_at"].every((field) => left[field] === right[field]);
 }
 
 function matchesActionProjection(action, projection) {
@@ -1064,6 +1120,16 @@ function copyState(state) {
 
 function stringList(value, code) {
   if (!Array.isArray(value) || value.length > 100) fail(code);
+  const copied = value.map((entry) => {
+    assertText(entry, code);
+    return entry;
+  });
+  if (new Set(copied).size !== copied.length) fail(code);
+  return copied;
+}
+
+function boundedStringList(value, min, max, code) {
+  if (!Array.isArray(value) || value.length < min || value.length > max) fail(code);
   const copied = value.map((entry) => {
     assertText(entry, code);
     return entry;

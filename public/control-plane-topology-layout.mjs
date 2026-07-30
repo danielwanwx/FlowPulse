@@ -86,6 +86,19 @@ export function latestBySequence(items) {
   return items.reduce((latest, item) => item.sequence > latest.sequence ? item : latest);
 }
 
+export function projectIncidentClock(clock, now = Date.now()) {
+  const current = clock.state === "RUNNING" && clock.freshness === "CURRENT";
+  if (!current) return { elapsed_seconds: clock.elapsed_seconds, freshness: clock.freshness };
+  const asOf = Date.parse(clock.as_of);
+  const freshUntil = Date.parse(clock.fresh_until);
+  const authoritySeconds = Math.max(0, Math.floor((Math.min(now, freshUntil) - asOf) / 1000));
+  const bounded = Math.min(authoritySeconds, clock.max_interpolation_seconds);
+  return {
+    elapsed_seconds: clock.elapsed_seconds + bounded,
+    freshness: now > freshUntil ? "STALE" : "CURRENT"
+  };
+}
+
 function spaciousLayout(nodes, columns, rows) {
   return {
     density: "spacious",

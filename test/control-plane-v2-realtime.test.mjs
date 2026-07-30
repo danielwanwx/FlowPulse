@@ -54,11 +54,16 @@ test("V2 realtime parsers accept each exact event payload and reject mismatches"
   assert.throws(() => parseRealtimeIncidentEvent(event("connector.source.accepted", { signal })), ControlPlaneContractError);
   assert.throws(() => parseRealtimeIncidentEvent(event("graph.pulse.started", { pulse: { ...pulse, edge_ids: [] } })), ControlPlaneContractError);
   assert.throws(() => parseRealtimeIncidentEvent({ ...event("incident.clock.changed", { incident_clock: clock }), extra: true }), ControlPlaneContractError);
+  assert.throws(() => parseRealtimeIncidentEvent({ ...event("incident.signal.observed", { signal }), schema_version: undefined }), ControlPlaneContractError);
+  assert.throws(() => parseRealtimeIncidentEvent(event("incident.signal.observed", { signal: { ...signal, status: "SEVERE" } })), ControlPlaneContractError);
+  assert.throws(() => parseRealtimeIncidentEvent(event("agent.activity.completed", { activity })), ControlPlaneContractError);
 });
 
 test("V2 notification and reducer dedupe ordered events, fail closed across identity, and reload canonical projection only", () => {
   const notification = { notification_id: "notification-1", event_type: "incident.signal.observed", occurred_at: "2026-07-30T00:00:10Z", source_event_id: "source-1", incident: summary };
   assert.equal(parseRealtimeNotification(notification).incident.case_id, "case-test");
+  assert.throws(() => parseRealtimeNotification({ ...notification, incident: { ...summary, lifecycle_stage: undefined } }), ControlPlaneContractError);
+  assert.throws(() => parseRealtimeNotification({ ...notification, incident: { ...summary, connector_freshness: "CONNECTED" } }), ControlPlaneContractError);
   const projection = { ...identity, schema_version: "flowpulse.incident-projection.v2", projection_revision: 2, sequence: 10 };
   let state = { ...createControlPlaneState(), projection, projections: new Map([["case-test", projection]]), last_case_sequence: 10, connection: "connected" };
   let reduced = controlPlaneReducer(state, { type: "case.event", event: event("incident.signal.observed", { signal, citation }, 11) });
@@ -69,4 +74,13 @@ test("V2 notification and reducer dedupe ordered events, fail closed across iden
   const crossed = controlPlaneReducer(reduced.state, { type: "case.event", event: { ...event("incident.signal.observed", { signal, citation }, 12), tenant_id: "tenant-other" } });
   assert.equal(crossed.state.connection, "stale");
   assert.deepEqual(crossed.effects, []);
+  for (const mismatch of [
+    { case_revision: 2 },
+    { created_at: "2026-07-30T00:00:01Z" }
+  ]) {
+    const rejected = controlPlaneReducer(reduced.state, { type: "case.event", event: { ...event("incident.signal.observed", { signal, citation }, 12), ...mismatch } });
+    assert.equal(rejected.state.connection, "stale");
+    assert.equal(rejected.state.last_case_sequence, 11);
+    assert.deepEqual(rejected.effects, []);
+  }
 });

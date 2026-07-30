@@ -6,6 +6,7 @@ import {
   applyTopologyNodePositions,
   incidentTopologyView,
   latestBySequence,
+  projectIncidentClock,
   topologyLayout,
   topologyNodeMetadata
 } from "../public/control-plane-topology-layout.mjs";
@@ -25,6 +26,20 @@ test("V2 signal and activity selection uses canonical sequence rather than array
   assert.equal(latestBySequence([{ sequence: 58, id: "current" }, { sequence: 4, id: "oldest" }]).id, "current");
   assert.equal(latestBySequence([{ sequence: 29, id: "started" }, { sequence: 30, id: "completed" }]).id, "completed");
   assert.equal(latestBySequence([]), null);
+});
+
+test("incident clock interpolation never exceeds backend freshness authority", () => {
+  const base = { state: "RUNNING", freshness: "CURRENT", as_of: "2026-07-30T00:00:00Z", fresh_until: "2026-07-30T00:00:20Z", elapsed_seconds: 100, max_interpolation_seconds: 10 };
+  assert.deepEqual(projectIncidentClock(base, Date.parse("2026-07-30T00:00:05Z")), { elapsed_seconds: 105, freshness: "CURRENT" });
+  assert.deepEqual(projectIncidentClock(base, Date.parse("2026-07-30T00:00:30Z")), { elapsed_seconds: 110, freshness: "STALE" });
+  assert.equal(projectIncidentClock({ ...base, fresh_until: "2026-07-30T00:00:04Z" }, Date.parse("2026-07-30T00:00:08Z")).elapsed_seconds, 104);
+  for (const frozen of [
+    { state: "PAUSED", freshness: "CURRENT" },
+    { state: "RESOLVED", freshness: "CURRENT" },
+    { state: "RUNNING", freshness: "STALE" },
+    { state: "RUNNING", freshness: "UNKNOWN" },
+    { state: "RUNNING", freshness: "DISCONNECTED" }
+  ]) assert.equal(projectIncidentClock({ ...base, ...frozen }, Date.parse("2026-07-30T00:00:05Z")).elapsed_seconds, 100);
 });
 
 const stylesCss = await readFile(new URL("../public/styles.css", import.meta.url), "utf8");

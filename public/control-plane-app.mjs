@@ -5,6 +5,7 @@ import {
   activePulseEdgeIds,
   incidentTopologyView,
   latestBySequence,
+  projectIncidentClock,
   topologyNodeMetadata
 } from "./control-plane-topology-layout.mjs";
 
@@ -200,6 +201,10 @@ function render() {
   }
   const projection = state.projection;
   root.dataset.controlPlaneMode = "incident";
+  if (projection) {
+    root.dataset.projectionRevision = String(projection.projection_revision);
+    root.dataset.projectionSequence = String(projection.sequence);
+  }
   root.dataset.mode = state.mode;
   root.classList.toggle("is-loading", !projection && state.connection === "connecting");
   els.environment.textContent = "Incident workspace";
@@ -375,7 +380,7 @@ function renderV2Drawer(projection) {
   els["context-drawer"].dataset.tone = signal?.status === "CRITICAL" ? "impact" : "service";
   els["drawer-kind"].textContent = "Live agent workspace";
   els["drawer-title"].textContent = projection.operator_title || "Incident activity";
-  const clock = projectedIncidentClock(projection.incident_clock);
+  const clock = projectIncidentClock(projection.incident_clock);
   els["drawer-subtitle"].textContent = `${titleCase(clock.freshness)} · ${formatElapsed(clock.elapsed_seconds)}`;
   els["drawer-content"].innerHTML = `
     <section class="component-context is-impact"><header><div><span>Current signal</span><strong>${escapeHtml(signal?.title || "No current signal")}</strong></div><small class="component-health">${escapeHtml(signal?.display_value || "Unavailable")}</small></header><p>${signal ? `${escapeHtml(titleCase(signal.status))} · ${escapeHtml(titleCase(signal.trend))} · ${escapeHtml(signal.source_label)}` : "The backend has not published a signal."}</p></section>
@@ -387,15 +392,6 @@ function renderV2Drawer(projection) {
 function formatElapsed(seconds) {
   const minutes = Math.floor(seconds / 60);
   return `${minutes}m ${seconds % 60}s elapsed`;
-}
-
-function projectedIncidentClock(clock, now = Date.now()) {
-  const delta = Math.max(0, Math.floor((now - Date.parse(clock.as_of)) / 1000));
-  const bounded = Math.min(delta, clock.max_interpolation_seconds);
-  return {
-    elapsed_seconds: clock.elapsed_seconds + bounded,
-    freshness: now > Date.parse(clock.fresh_until) ? "STALE" : clock.freshness
-  };
 }
 
 function investigationMarkup(investigation) {

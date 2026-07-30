@@ -4,8 +4,10 @@ import { ControlPlaneClient, ControlPlaneClientError } from "../public/control-p
 
 const summary = {
   case_id: "case-test", incident_id: "incident-test", run_id: "run-test", topology_revision: "topology-test-v1",
-  projection_revision: 1, sequence: 1, lifecycle_state: "DEGRADED", status: "provider_unavailable",
-  title: "Checkout latency", summary: "Checkout requests are degraded."
+  projection_revision: 1, sequence: 1, lifecycle_state: "DEGRADED", lifecycle_stage: "INVESTIGATE",
+  title: "Checkout latency", summary: "Checkout requests are degraded.",
+  incident_clock: { state: "RUNNING", started_at: "2026-07-26T00:00:00Z", last_signal_at: null, resolved_at: null, as_of: "2026-07-26T00:00:00Z", elapsed_seconds: 0, freshness: "CURRENT", fresh_until: "2026-07-26T00:00:30Z", max_interpolation_seconds: 30 },
+  latest_signal_status: null, connector_freshness: "CURRENT"
 };
 
 const identity = {
