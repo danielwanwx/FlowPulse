@@ -18,7 +18,7 @@ V1_HASHES = {
     "flowpulse-incident-workspace-v1.freeze.json": "4393b58b3c51bbdf08a26b3b14267cf698444a58765afcd91fe428c812466843",
     "flowpulse-incident-workspace-v1.openapi.json": "be260bc4da0ce19f115acd18a3b2e6cac4fef5317ca657da79812af86e4b6573",
 }
-PRODUCER_IMPLEMENTATION_SHA = "ed11c68ec1f18677d22c901e7c9a6b7138c1cd69"
+PRODUCER_IMPLEMENTATION_SHA = "5d1e657e20871ee7f7b281074467d6347b68e1d8"
 
 
 def digest(path):
