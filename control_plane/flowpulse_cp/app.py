@@ -262,6 +262,7 @@ def create_app(
             ("workspace_active_incidents", "active_incidents"),
             actor.tenant_id, limit,
         )
+        projections = []
         for summary in workspace_summaries:
             workspace_projection = await _workspace_call(
                 _workspace_repository(request),
@@ -269,16 +270,18 @@ def create_app(
                 actor.tenant_id, summary.case_id,
             )
             if workspace_projection is not None:
-                await _workspace_call(
+                projections.append(await _workspace_call(
                     _realtime_repository(request),
                     ("materialize_realtime_baseline",),
                     workspace_projection,
                     now=datetime.now(timezone.utc),
-                )
-        return await _workspace_call(
-            _realtime_repository(request), ("realtime_active_incidents",),
-            actor.tenant_id, limit,
-        )
+                ))
+        return [
+            RealtimeSummary.from_projection(item)
+            for item in sorted(
+                projections, key=lambda value: value.sequence, reverse=True,
+            )[:limit]
+        ]
 
     @app.get("/v2/incidents/{case_id}/projection", response_model=IncidentProjectionV2)
     async def get_realtime_projection(

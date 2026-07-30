@@ -29,7 +29,10 @@ from flowpulse_cp.realtime_models import (
     RealtimeTrend,
     RealtimeUpdateCommand,
 )
-from flowpulse_cp.realtime_repository import InMemoryRealtimeRepository
+from flowpulse_cp.realtime_repository import (
+    InMemoryRealtimeRepository,
+    _is_pre_truth_v2_projection,
+)
 from flowpulse_cp.realtime_scheduler import RealtimeIngestScheduler
 from flowpulse_cp.workspace_models import IncidentRunBinding, initial_projection
 from flowpulse_cp.workspace_topology import CapturedAstronomyTopologyProvider
@@ -302,6 +305,31 @@ class BindingAndFreshnessTruthTests(unittest.IsolatedAsyncioTestCase):
 
 
 class BaselineAndRetryTests(unittest.IsolatedAsyncioTestCase):
+    def test_legacy_projection_predicate_is_exact_and_does_not_mask_current_invalid_data(self):
+        legacy = {
+            "schema_version": "flowpulse.incident-projection.v2",
+            "agent_workspace": {
+                "activities": [{
+                    "activity_id": "legacy-activity",
+                    "state": "COMPLETED",
+                }],
+            },
+        }
+        self.assertTrue(_is_pre_truth_v2_projection(legacy))
+        self.assertFalse(_is_pre_truth_v2_projection({
+            **legacy,
+            "agent_workspace": {
+                "activities": [{
+                    "activity_id": "current-but-invalid",
+                    "activity_key": "activity-key",
+                }],
+            },
+        }))
+        self.assertFalse(_is_pre_truth_v2_projection({
+            "schema_version": "flowpulse.incident-projection.v2",
+            "agent_workspace": {"activities": []},
+        }))
+
     async def test_v1_case_materializes_empty_v2_without_lifecycle_transition(self):
         repository = InMemoryRealtimeRepository()
         await repository.register_connector(registration())

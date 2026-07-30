@@ -47,6 +47,63 @@ def _decode(value):
     return value
 
 
+def _is_pre_truth_v2_projection(payload: dict) -> bool:
+    """Identify only the pre-Phase-1A V2 activity shape.
+
+    Those local projections were written before activity keys and append-only
+    state revisions became required.  Their connector artifacts are not
+    authoritative under the current contract, so reads fall back to a clean
+    V1-derived baseline without rewriting the historical row.
+    """
+    workspace = payload.get("agent_workspace")
+    activities = workspace.get("activities") if isinstance(workspace, dict) else None
+    return bool(
+        payload.get("schema_version") == "flowpulse.incident-projection.v2"
+        and isinstance(activities, list)
+        and activities
+        and all(
+            isinstance(item, dict)
+            and "activity_key" not in item
+            and "state_revision" not in item
+            for item in activities
+        )
+    )
+
+
+def _baseline_projection(
+    projection: IncidentProjection,
+    health: List[ConnectorHealth],
+    now: datetime,
+) -> IncidentProjectionV2:
+    return IncidentProjectionV2.parse_obj({
+        **projection.dict(),
+        "schema_version": "flowpulse.incident-projection.v2",
+        "source_revision": 1,
+        "connector_revision": max(
+            [item.health_revision for item in health] or [1],
+        ),
+        "incident_clock": IncidentClock(
+            state=IncidentClockState.RUNNING,
+            started_at=projection.created_at,
+            as_of=now,
+            elapsed_seconds=max(
+                0, int((now - projection.created_at).total_seconds()),
+            ),
+            freshness="STALE",
+            fresh_until=now,
+            max_interpolation_seconds=30,
+        ).dict(),
+        "connector_health": [item.dict() for item in health],
+        "realtime_signals": [],
+        "active_graph_pulses": [],
+        "agent_workspace": AgentWorkspace(
+            workspace_revision=1,
+            activities=[],
+            citations=[],
+        ).dict(),
+    })
+
+
 def _delivery_key(event: RealtimeSourceEvent) -> Tuple[str, str, str]:
     return (event.tenant_id, event.connector_id, event.provider_event_id)
 
@@ -667,33 +724,7 @@ class InMemoryRealtimeRepository:
         if prior:
             return _projection_freshness_at(prior[-1], now)
         health = await self.connector_health(projection.tenant_id)
-        baseline = IncidentProjectionV2.parse_obj({
-            **projection.dict(),
-            "schema_version": "flowpulse.incident-projection.v2",
-            "source_revision": 1,
-            "connector_revision": max(
-                [item.health_revision for item in health] or [1],
-            ),
-            "incident_clock": IncidentClock(
-                state=IncidentClockState.RUNNING,
-                started_at=projection.created_at,
-                as_of=now,
-                elapsed_seconds=max(
-                    0, int((now - projection.created_at).total_seconds()),
-                ),
-                freshness="STALE",
-                fresh_until=now,
-                max_interpolation_seconds=30,
-            ).dict(),
-            "connector_health": [item.dict() for item in health],
-            "realtime_signals": [],
-            "active_graph_pulses": [],
-            "agent_workspace": AgentWorkspace(
-                workspace_revision=1,
-                activities=[],
-                citations=[],
-            ).dict(),
-        })
+        baseline = _baseline_projection(projection, health, now)
         self.projections[key].append(baseline)
         return baseline
 
@@ -986,33 +1017,7 @@ class RealtimePostgresMixin:
         self, projection: IncidentProjection, *, now: datetime,
     ) -> IncidentProjectionV2:
         health = await self.realtime_connector_health(projection.tenant_id)
-        baseline = IncidentProjectionV2.parse_obj({
-            **projection.dict(),
-            "schema_version": "flowpulse.incident-projection.v2",
-            "source_revision": 1,
-            "connector_revision": max(
-                [item.health_revision for item in health] or [1],
-            ),
-            "incident_clock": IncidentClock(
-                state=IncidentClockState.RUNNING,
-                started_at=projection.created_at,
-                as_of=now,
-                elapsed_seconds=max(
-                    0, int((now - projection.created_at).total_seconds()),
-                ),
-                freshness="STALE",
-                fresh_until=now,
-                max_interpolation_seconds=30,
-            ).dict(),
-            "connector_health": [item.dict() for item in health],
-            "realtime_signals": [],
-            "active_graph_pulses": [],
-            "agent_workspace": AgentWorkspace(
-                workspace_revision=1,
-                activities=[],
-                citations=[],
-            ).dict(),
-        })
+        baseline = _baseline_projection(projection, health, now)
 
         async def operation(connection):
             await connection.execute(
@@ -1028,9 +1033,10 @@ class RealtimePostgresMixin:
                 projection.tenant_id, projection.case_id,
             )
             if prior is not None:
-                return IncidentProjectionV2.parse_obj(
-                    _decode(prior["payload"]),
-                )
+                payload = _decode(prior["payload"])
+                if _is_pre_truth_v2_projection(payload):
+                    return baseline
+                return IncidentProjectionV2.parse_obj(payload)
             await connection.execute(
                 """INSERT INTO incident_realtime_projections
                    (tenant_id, incident_id, run_id, topology_revision, case_id,
@@ -1778,12 +1784,14 @@ class RealtimePostgresMixin:
                    ORDER BY projection_revision DESC LIMIT 1""",
                 tenant_id, case_id,
             )
-            return (
-                _projection_freshness_at(
-                    IncidentProjectionV2.parse_obj(_decode(row["payload"])),
-                    datetime.now(timezone.utc),
-                )
-                if row else None
+            if row is None:
+                return None
+            payload = _decode(row["payload"])
+            if _is_pre_truth_v2_projection(payload):
+                return None
+            return _projection_freshness_at(
+                IncidentProjectionV2.parse_obj(payload),
+                datetime.now(timezone.utc),
             )
         return await self._tenant(tenant_id, operation)
 
@@ -1792,14 +1800,22 @@ class RealtimePostgresMixin:
     ) -> List[RealtimeIncidentEvent]:
         async def operation(connection):
             rows = await connection.fetch(
-                """SELECT payload FROM incident_realtime_events
-                   WHERE tenant_id=$1 AND case_id=$2 AND sequence>$3
-                   ORDER BY sequence LIMIT 100""",
+                """SELECT e.payload AS event, p.payload AS projection
+                   FROM incident_realtime_events e
+                   JOIN incident_realtime_projections p
+                     ON p.tenant_id=e.tenant_id
+                    AND p.case_id=e.case_id
+                    AND p.projection_revision=e.projection_revision
+                   WHERE e.tenant_id=$1 AND e.case_id=$2 AND e.sequence>$3
+                   ORDER BY e.sequence LIMIT 100""",
                 tenant_id, case_id, after,
             )
             return [
-                RealtimeIncidentEvent.parse_obj(_decode(row["payload"]))
+                RealtimeIncidentEvent.parse_obj(_decode(row["event"]))
                 for row in rows
+                if not _is_pre_truth_v2_projection(
+                    _decode(row["projection"]),
+                )
             ]
         return await self._tenant(tenant_id, operation)
 
@@ -1815,7 +1831,9 @@ class RealtimePostgresMixin:
                 tenant_id,
             )
             projections = [
-                IncidentProjectionV2.parse_obj(_decode(row["payload"])) for row in rows
+                IncidentProjectionV2.parse_obj(_decode(row["payload"]))
+                for row in rows
+                if not _is_pre_truth_v2_projection(_decode(row["payload"]))
             ]
             projections.sort(key=lambda item: item.sequence, reverse=True)
             now = datetime.now(timezone.utc)
@@ -1867,8 +1885,11 @@ class RealtimePostgresMixin:
             )
             records = []
             for row in rows:
+                projection_payload = _decode(row["projection"])
+                if _is_pre_truth_v2_projection(projection_payload):
+                    continue
                 event = RealtimeIncidentEvent.parse_obj(_decode(row["event"]))
-                projection = IncidentProjectionV2.parse_obj(_decode(row["projection"]))
+                projection = IncidentProjectionV2.parse_obj(projection_payload)
                 records.append(RealtimeNotification(
                     notification_id=_notification_id(event),
                     event_type=event.event_type.value,
