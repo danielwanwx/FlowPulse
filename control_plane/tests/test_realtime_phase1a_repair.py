@@ -590,6 +590,62 @@ class OutboxDispatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(2, temporal.calls)
         self.assertEqual(1, len(repository.commits))
 
+    async def test_one_bad_case_does_not_starve_pending_temporal_dispatch(self):
+        repository = InMemoryRealtimeRepository()
+        await repository.register_connector(registration())
+        await repository.append_binding(external_binding())
+        polled = await ConfiguredPrometheusConnector(
+            registration(),
+            "https://metrics.example.test",
+            "flowpulse_checkout_error_rate",
+            Reader(payload()),
+            ArtifactStore(),
+            repository,
+        ).poll(projection(), acl_subjects=["owner-a"], now=NOW)
+
+        async def workspace_active_incidents(tenant_id, limit):
+            return [type("Summary", (), {"case_id": "case-a"})()]
+
+        async def workspace_projection(tenant_id, case_id):
+            return projection()
+
+        repository.workspace_active_incidents = workspace_active_incidents
+        repository.workspace_projection = workspace_projection
+
+        class FailingConnector:
+            registration = registration()
+
+            async def poll(self, *args, **kwargs):
+                raise ValueError("bad_case_binding")
+
+        dispatched = 0
+
+        async def temporal_dispatch(source, dispatch):
+            nonlocal dispatched
+            dispatched += 1
+            return await repository.accept_pending_dispatch(
+                projection(), source, dispatch, first_event_sequence=2,
+            )
+
+        result = await RealtimeIngestScheduler(
+            repository=repository,
+            connectors={"failing": FailingConnector()},
+            temporal_dispatch=temporal_dispatch,
+            tenant_id="tenant-a",
+            binding_templates=[],
+        ).run_once()
+        self.assertEqual(
+            {"polled": 0, "unavailable": 1, "dispatched": 1},
+            result,
+        )
+        self.assertEqual(1, dispatched)
+        self.assertEqual(
+            ConnectorDispatchState.ACCEPTED,
+            (await repository.authoritative_dispatch(
+                "tenant-a", polled.dispatch.dispatch_id,
+            )).state,
+        )
+
 
 class ServerBindingTemplateTests(unittest.TestCase):
     def test_binding_template_is_explicit_and_caller_cannot_supply_scope(self):

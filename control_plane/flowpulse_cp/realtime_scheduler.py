@@ -86,24 +86,38 @@ class RealtimeIngestScheduler:
             )
             if projection is None:
                 continue
-            await self.repository.materialize_realtime_baseline(
-                projection, now=now,
-            )
             for connector_id, connector in self.connectors.items():
-                for template in self.binding_templates:
-                    binding = template.materialize(
-                        connector.registration,
+                try:
+                    await self.repository.materialize_realtime_baseline(
+                        projection, now=now,
+                    )
+                    for template in self.binding_templates:
+                        binding = template.materialize(
+                            connector.registration,
+                            projection,
+                            valid_from=projection.created_at,
+                        )
+                        await self.repository.append_external_identity_binding(
+                            binding,
+                        )
+                    result = await connector.poll(
                         projection,
-                        valid_from=projection.created_at,
+                        acl_subjects=[self.actor_subject_id],
+                        now=now,
                     )
-                    await self.repository.append_external_identity_binding(
-                        binding,
+                except Exception as error:
+                    unavailable += 1
+                    realtime_telemetry.record(
+                        connector.registration.provider.value,
+                        "poll",
+                        "error",
+                        reason_code=type(error).__name__,
+                        correlation={
+                            "case_id": projection.case_id,
+                            "run_id": projection.run_id,
+                        },
                     )
-                result = await connector.poll(
-                    projection,
-                    acl_subjects=[self.actor_subject_id],
-                    now=now,
-                )
+                    continue
                 if result.accepted:
                     polled += 1
                 else:
