@@ -57,12 +57,13 @@ els["timeline-current"].addEventListener("click", () => {
 });
 
 render();
-await bootstrap();
+void bootstrap();
 
 async function bootstrap() {
   closeSubscriptions();
   lastError = null;
   dispatch({ type: "connection.reconnecting" });
+  void loadPinnedCase();
   try {
     const summaries = await client.activeIncidents();
     dispatch({ type: "summaries.hydrated", summaries });
@@ -73,6 +74,11 @@ async function bootstrap() {
     if (state.mode === "incident") root.classList.remove("is-loading");
     render();
   }
+}
+
+async function loadPinnedCase() {
+  if (!initialCaseId) return;
+  await runEffect({ type: "projection.load", case_id: initialCaseId, identity: null });
 }
 
 function dispatch(action) {

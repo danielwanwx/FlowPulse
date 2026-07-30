@@ -22,6 +22,19 @@ test("the established FlowPulse shell is the only visible standard-path workspac
   assert.match(controlPlaneApp, /new ControlPlaneClient\(\)/);
 });
 
+test("a pinned Incident URL hydrates without waiting for global discovery or module evaluation", () => {
+  assert.match(controlPlaneApp, /render\(\);\s*void bootstrap\(\);/);
+  const bootstrapBody = controlPlaneApp.slice(
+    controlPlaneApp.indexOf("async function bootstrap()"),
+    controlPlaneApp.indexOf("\nfunction dispatch(", controlPlaneApp.indexOf("async function bootstrap()"))
+  );
+  assert.ok(
+    bootstrapBody.indexOf("void loadPinnedCase()") < bootstrapBody.indexOf("await client.activeIncidents()"),
+    "the pinned projection must start before global incident discovery"
+  );
+  assert.match(controlPlaneApp, /async function loadPinnedCase\(\)[\s\S]*runEffect\(\{ type: "projection\.load", case_id: initialCaseId, identity: null \}\)/);
+});
+
 test("Architecture and Live retain the baseline renderer while the control-plane adapter owns Incident only", () => {
   assert.match(legacyApp, /renderSourceCanvas\("architecture"\)/);
   assert.match(legacyApp, /renderSourceCanvas\("live", shared\?\.topology/);
