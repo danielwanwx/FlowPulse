@@ -8,6 +8,11 @@ import {
   projectIncidentClock,
   topologyNodeMetadata
 } from "./control-plane-topology-layout.mjs";
+import {
+  conciseTimestamp,
+  formatIncidentDuration,
+  incidentWorkspaceSnapshot
+} from "./incident-workspace.mjs";
 
 // This module intentionally mounts only into the mature app-shell. It owns
 // presentation state, while all incident, gate, card, receipt, and evidence
@@ -21,12 +26,13 @@ let globalSubscription = null;
 let caseSubscription = null;
 let streamedCaseId = null;
 let lastError = null;
+let workspacePane = "overview";
+let selectedCitationId = null;
+let selectedIncidentComponentId = null;
+const v2LegacyVisibility = new Map();
 const pendingProjections = new Set();
 const pendingActions = new Set();
 const pendingReceipts = new Set();
-setInterval(() => {
-  if (state.mode === "incident" && state.projection?.schema_version === "flowpulse.incident-projection.v2") render();
-}, 1000);
 
 root.dataset.controlPlaneAdapter = "true";
 for (const button of document.querySelectorAll("button.mode-button[data-mode]")) {
@@ -51,6 +57,44 @@ els["canvas-layers"].addEventListener("click", (event) => {
 els["drawer-content"].addEventListener("click", (event) => {
   const card = event.target.closest("[data-control-action]");
   if (card && !card.disabled) dispatch({ type: "action.clicked", action_id: card.dataset.controlAction });
+});
+els["incident-workspace"].addEventListener("click", (event) => {
+  const pane = event.target.closest("[data-incident-pane]");
+  if (pane) {
+    workspacePane = pane.dataset.incidentPane;
+    if (workspacePane !== "evidence") selectedCitationId = null;
+    render();
+    return;
+  }
+  const citation = event.target.closest("[data-incident-citation]");
+  if (citation) {
+    workspacePane = "evidence";
+    selectedCitationId = citation.dataset.incidentCitation;
+    render();
+    return;
+  }
+  const node = event.target.closest("[data-incident-node]");
+  if (node) {
+    workspacePane = "component";
+    selectedIncidentComponentId = node.dataset.incidentNode;
+    dispatch({ type: "node.clicked", component_id: node.dataset.incidentNode });
+    return;
+  }
+  const component = event.target.closest("[data-incident-component]");
+  if (component) {
+    workspacePane = "component";
+    selectedIncidentComponentId = component.dataset.incidentComponent;
+    render();
+    return;
+  }
+  const card = event.target.closest("[data-control-action]");
+  if (card && !card.disabled) dispatch({ type: "action.clicked", action_id: card.dataset.controlAction });
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape" || els["incident-workspace"].hidden || workspacePane === "overview") return;
+  workspacePane = "overview";
+  selectedCitationId = null;
+  render();
 });
 els["timeline-current"].addEventListener("click", () => {
   if (state.toast) dispatch({ type: "toast.focus" });
@@ -106,7 +150,6 @@ async function runEffect(effect) {
     return;
   }
   if (effect.type === "actions.load") {
-    if (state.projection?.schema_version === "flowpulse.incident-projection.v2") return;
     const key = `${effect.case_id}:${effect.identity.projection_revision}:${effect.identity.action_revision}`;
     if (pendingActions.has(key)) return;
     pendingActions.add(key);
@@ -201,7 +244,10 @@ function reportError(error) {
 
 function render() {
   if (state.mode !== "incident") {
+    restoreLegacyV2Chrome();
     delete root.dataset.controlPlaneMode;
+    delete root.dataset.incidentWorkspace;
+    els["incident-workspace"].hidden = true;
     renderToast();
     return;
   }
@@ -234,10 +280,176 @@ function render() {
   renderModeButtons();
   renderError();
   renderToast();
+  if (projection?.schema_version === "flowpulse.incident-projection.v2") {
+    renderV2IncidentWorkspace(projection);
+    hideLegacyV2IncidentChrome();
+    if (projection) persistCaseId(projection.case_id);
+    return;
+  }
+  restoreLegacyV2Chrome();
+  delete root.dataset.incidentWorkspace;
+  els["incident-workspace"].hidden = true;
   renderGraph();
   renderIncidentChrome();
   renderDrawer();
   if (projection) persistCaseId(projection.case_id);
+}
+
+function hideLegacyV2IncidentChrome() {
+  for (const element of legacyV2ChromeElements()) {
+    if (!v2LegacyVisibility.has(element)) v2LegacyVisibility.set(element, element.hidden);
+    element.hidden = true;
+  }
+}
+
+function restoreLegacyV2Chrome() {
+  for (const [element, wasHidden] of v2LegacyVisibility) element.hidden = wasHidden;
+  v2LegacyVisibility.clear();
+}
+
+function legacyV2ChromeElements() {
+  return [
+    document.querySelector(".canvas-shell"),
+    els["operations-team-rail"],
+    els["incident-strip"],
+    els["context-drawer"],
+    els["timeline-dock"],
+    els["incident-stage-rail"]
+  ].filter(Boolean);
+}
+
+function renderV2IncidentWorkspace(projection) {
+  root.dataset.incidentWorkspace = "v2";
+  els["incident-workspace"].hidden = false;
+  const snapshot = incidentWorkspaceSnapshot(projection);
+  const signal = snapshot.signal;
+  const clock = snapshot.clock;
+  const selectedNode = projection.graph.nodes.find((node) => node.component_id === state.selected_component_id) || null;
+  const focus = projection.incident_focus || null;
+  const pane = ["metrics", "activity", "evidence", "component"].includes(workspacePane) ? workspacePane : "overview";
+  const isFresh = clock?.freshness === "CURRENT" && state.connection === "connected";
+  const actionCards = state.actions.cards;
+  const affected = snapshot.affectedNodes.length ? snapshot.affectedNodes : projection.graph.nodes;
+  const evidenceCount = snapshot.citations.length;
+  const activity = snapshot.activities[0] || null;
+  const signalTitle = signal?.title || "No current signal published";
+  const signalValue = signal?.display_value || "Unavailable";
+  const sourceFreshness = signal?.freshness || clock?.freshness || "UNKNOWN";
+  const currentStatus = signal?.status || projection.status;
+  els["incident-workspace"].innerHTML = `
+    <div class="iw-shell" data-freshness="${escapeHtml(String(sourceFreshness).toLowerCase())}">
+      <header class="iw-heading">
+        <div class="iw-heading-copy">
+          <div class="iw-eyebrow"><span class="iw-status-dot ${isFresh ? "is-current" : "is-stale"}"></span><span>${escapeHtml(titleCase(sourceFreshness))} server projection</span><span>Sequence ${projection.sequence}</span></div>
+          <h2>${escapeHtml(projection.operator_title || projection.incident_id)}</h2>
+          <p>${escapeHtml(projection.operator_summary || "The server has not published an operator summary.")}</p>
+        </div>
+        <div class="iw-heading-actions" aria-label="Incident workspace panels">
+          <button type="button" class="iw-panel-button" data-incident-pane="metrics"><span>Metric history</span><strong>${escapeHtml(signalValue)}</strong></button>
+          <button type="button" class="iw-panel-button" data-incident-pane="activity"><span>Agent activity</span><strong>${snapshot.activities.length}</strong></button>
+          <button type="button" class="iw-panel-button" data-incident-pane="evidence"><span>Evidence</span><strong>${evidenceCount}</strong></button>
+        </div>
+      </header>
+
+      <div class="iw-stage-line" aria-label="Canonical incident state">
+        <span class="iw-stage-chip is-${escapeHtml(String(projection.lifecycle_stage).toLowerCase())}">${escapeHtml(titleCase(projection.lifecycle_stage))}</span>
+        <span>Lifecycle owned by Temporal</span>
+        <span>Connector ${escapeHtml(titleCase(projection.connector_health[0]?.state || "unknown"))}</span>
+        <span>${escapeHtml(titleCase(projection.status))}</span>
+      </div>
+
+      <div class="iw-overview-grid">
+        <section class="iw-card iw-signal-card" aria-labelledby="iw-signal-title">
+          <div class="iw-card-label">Current alert</div>
+          <div class="iw-signal-main"><div><h3 id="iw-signal-title">${escapeHtml(signalTitle)}</h3><p>${escapeHtml(titleCase(currentStatus))} · ${escapeHtml(titleCase(signal?.trend || "unknown"))} · ${escapeHtml(signal?.source_label || "Source unavailable")}</p></div><strong>${escapeHtml(signalValue)}</strong></div>
+          <dl class="iw-fact-row"><div><dt>Observed</dt><dd>${escapeHtml(conciseTimestamp(signal?.observed_at))}</dd></div><div><dt>Evidence</dt><dd>${signal?.evidence_refs?.length || 0} linked records</dd></div><div><dt>Authority</dt><dd>${escapeHtml(signal?.authority ? authorityCopy(signal.authority) : "Unavailable")}</dd></div></dl>
+          <button type="button" class="iw-inline-link" data-incident-pane="metrics">Inspect server-owned time series <span aria-hidden="true">→</span></button>
+        </section>
+
+        <section class="iw-card iw-clock-card" aria-labelledby="iw-clock-title">
+          <div class="iw-card-label">Incident clock</div>
+          <h3 id="iw-clock-title">${escapeHtml(clock ? formatIncidentDuration(clock.elapsed_seconds) : "Unavailable")}</h3>
+          <p>${clock?.freshness === "CURRENT" ? "Bounded from the server clock anchor." : "Frozen because the server clock is not current."}</p>
+          <dl class="iw-fact-row"><div><dt>Clock state</dt><dd>${escapeHtml(titleCase(projection.incident_clock?.state || "unknown"))}</dd></div><div><dt>Last signal</dt><dd>${escapeHtml(conciseTimestamp(projection.incident_clock?.last_signal_at))}</dd></div><div><dt>Fresh until</dt><dd>${escapeHtml(conciseTimestamp(projection.incident_clock?.fresh_until))}</dd></div></dl>
+        </section>
+
+        <section class="iw-card iw-investigation-card" aria-labelledby="iw-investigation-title">
+          <div class="iw-card-label">Investigate → Decide</div>
+          <h3 id="iw-investigation-title">${escapeHtml(investigationTitle(projection))}</h3>
+          <p>${escapeHtml(investigationCopy(projection))}</p>
+          ${actionCards.length ? `<div class="iw-action-list">${actionCards.map((card) => `<article><div><span>Server-issued action</span><strong>${escapeHtml(card.title)}</strong><p>${escapeHtml(card.summary)}</p></div><button type="button" class="button" data-control-action="${escapeHtml(card.action_id)}"${state.actions.in_flight ? " disabled" : ""}>${escapeHtml(actionButtonCopy(card.cta))}</button></article>`).join("")}</div>` : `<div class="iw-no-action"><span>Next action</span><strong>No server-issued action is available</strong><p>The workspace will only show an action after the backend signs and revalidates it.</p></div>`}
+        </section>
+
+        <section class="iw-card iw-path-card" aria-labelledby="iw-path-title">
+          <div class="iw-card-heading"><div><div class="iw-card-label">Affected path</div><h3 id="iw-path-title">${escapeHtml(focus?.affected_user_path_status === "KNOWN" ? "Known user impact path" : "Impact path under investigation")}</h3></div><button type="button" class="iw-inline-link" data-incident-pane="component">Open component detail <span aria-hidden="true">→</span></button></div>
+          <p>${escapeHtml(focus?.affected_user_path_summary || focus?.rationale || "The server has not published a confirmed user-path summary.")}</p>
+          <div class="iw-topology" role="list" aria-label="Affected components">
+            ${affected.map((node, index) => {
+              const inspectable = projection.impacted_path.includes(node.component_id);
+              const target = inspectable
+                ? `data-incident-node="${escapeHtml(node.component_id)}"`
+                : `data-incident-component="${escapeHtml(node.component_id)}"`;
+              return `<button type="button" class="iw-node ${node.impact_status === "impacted" ? "is-impacted" : ""}" ${target}><span>${String(index + 1).padStart(2, "0")}</span><strong>${escapeHtml(node.display_name)}</strong><small>${escapeHtml(node.impact_status)} · ${escapeHtml(node.runtime_status)}</small></button>`;
+            }).join("")}
+          </div>
+          <div class="iw-relation-list">${projection.graph.edges.filter((edge) => affected.some((node) => node.component_id === edge.source_component_id) && affected.some((node) => node.component_id === edge.target_component_id)).slice(0, 5).map((edge) => `<span>${escapeHtml(edge.source_component_id)} <b>→</b> ${escapeHtml(edge.target_component_id)}</span>`).join("")}</div>
+        </section>
+
+        <section class="iw-card iw-activity-preview" aria-labelledby="iw-activity-title">
+          <div class="iw-card-heading"><div><div class="iw-card-label">Agent workspace</div><h3 id="iw-activity-title">${escapeHtml(activity?.tool_label || "No activity published")}</h3></div><button type="button" class="iw-inline-link" data-incident-pane="activity">View activity <span aria-hidden="true">→</span></button></div>
+          <p>${escapeHtml(activity?.summary || "The server has not published agent activity for this incident.")}</p>
+          <div class="iw-activity-meta"><span>${escapeHtml(titleCase(activity?.role || "unknown"))}</span><span>${escapeHtml(titleCase(activity?.state || "unknown"))}</span><span>${escapeHtml(conciseTimestamp(activity?.completed_at || activity?.started_at))}</span></div>
+        </section>
+      </div>
+      ${incidentPaneMarkup(pane, projection, snapshot, selectedNode)}
+    </div>`;
+}
+
+function incidentPaneMarkup(pane, projection, snapshot, selectedNode) {
+  if (pane === "overview") return "";
+  const title = ({ metrics: "Metric history", activity: "Agent activity", evidence: "Evidence records", component: "Component quick peek" })[pane];
+  let content = "";
+  if (pane === "metrics") {
+    const points = snapshot.chart.points.map((point) => `${point.x},${point.y}`).join(" ");
+    const latest = snapshot.signal;
+    content = `<div class="iw-metric-detail"><div class="iw-chart-summary"><span>Current value</span><strong>${escapeHtml(latest?.display_value || "Unavailable")}</strong><small>${escapeHtml(latest?.title || "No current server signal")}</small></div><div class="iw-chart" role="img" aria-label="Server-owned metric samples"><svg viewBox="0 0 560 156" preserveAspectRatio="none"><path class="iw-chart-grid" d="M0 26H560M0 78H560M0 130H560"/>${points ? `<polyline points="${points}"/>${snapshot.chart.points.map((point) => `<circle cx="${point.x}" cy="${point.y}" r="3"/>`).join("")}` : ""}</svg>${points ? "" : "<p>No numeric sample was published by the backend.</p>"}</div><div class="iw-chart-range"><span>${snapshot.chart.min === null ? "No numeric sample" : `${snapshot.chart.min}${snapshot.chart.unit}`}</span><span>${snapshot.chart.max === null ? "" : `${snapshot.chart.max}${snapshot.chart.unit}`}</span><span>${snapshot.chart.points.length} server samples</span></div></div>`;
+  } else if (pane === "activity") {
+    content = `<ol class="iw-activity-list">${snapshot.activities.slice(0, 16).map((item) => `<li><div><strong>${escapeHtml(item.tool_label)}</strong><span>${escapeHtml(titleCase(item.state))}</span></div><p>${escapeHtml(item.summary)}</p><small>${escapeHtml(titleCase(item.role))} · ${escapeHtml(conciseTimestamp(item.completed_at || item.started_at))} · ${item.evidence_refs.length} linked records</small></li>`).join("") || "<li>No agent activity was published by the backend.</li>"}</ol>`;
+  } else if (pane === "evidence") {
+    const selected = snapshot.citations.find((citation) => citation.citation_id === selectedCitationId) || null;
+    content = `${selected ? `<section class="iw-evidence-selected"><span>Selected citation</span><strong>${escapeHtml(selected.label)}</strong><p>${escapeHtml(titleCase(selected.provider))} · ${escapeHtml(titleCase(selected.freshness))} · observed ${escapeHtml(conciseTimestamp(selected.observed_at))}</p><code>${escapeHtml(selected.evidence_id)}</code></section>` : ""}<ul class="iw-evidence-list">${snapshot.citations.slice(0, 20).map((citation) => `<li><button type="button" data-incident-citation="${escapeHtml(citation.citation_id)}"><span>${escapeHtml(titleCase(citation.provider))}</span><strong>${escapeHtml(citation.label)}</strong><small>${escapeHtml(titleCase(citation.freshness))} · ${escapeHtml(conciseTimestamp(citation.observed_at))}</small></button></li>`).join("") || "<li>No citations were published by the backend.</li>"}</ul>`;
+  } else {
+    const node = selectedNode
+      || projection.graph.nodes.find((item) => item.component_id === selectedIncidentComponentId)
+      || projection.graph.nodes.find((item) => item.component_id === projection.incident_focus?.component_id)
+      || projection.graph.nodes[0]
+      || null;
+    const relationships = node ? projection.graph.edges.filter((edge) => edge.source_component_id === node.component_id || edge.target_component_id === node.component_id) : [];
+    const explanation = state.explanation.receipt?.explanation;
+    const explanationAvailable = Boolean(node && projection.impacted_path.includes(node.component_id));
+    const explanationCopy = explanation?.component_id === node?.component_id
+      ? explanation.summary
+      : state.explanation.status === "starting"
+        ? "Starting the server-owned component explanation."
+        : explanationAvailable
+          ? "This component is eligible for a server-owned explanation."
+          : "The current projection has not opened a server-side explanation for this component.";
+    content = node ? `<div class="iw-component-detail"><div class="iw-component-status"><span>${escapeHtml(node.impact_status)}</span><h3>${escapeHtml(node.display_name)}</h3><p>${escapeHtml(node.runtime_status)} · ${escapeHtml(node.membership === "CLASSIFIED" ? node.classification_reason : "Connected to the incident graph")}</p></div><section><span>Server explanation</span><p>${escapeHtml(explanationCopy)}</p></section><section><span>Recorded relations</span><ul>${relationships.map((edge) => `<li>${escapeHtml(edge.source_component_id)} → ${escapeHtml(edge.target_component_id)} · ${escapeHtml(edge.status)}</li>`).join("") || "<li>No relation was published for this component.</li>"}</ul></section></div>` : "<p>The server has not published a component for this view.</p>";
+  }
+  return `<section class="iw-pane-layer" role="dialog" aria-modal="true" aria-label="${escapeHtml(title)}"><div class="iw-pane"><header><div><span>Incident workspace</span><h2>${escapeHtml(title)}</h2></div><button type="button" class="icon-button" data-incident-pane="overview" aria-label="Close ${escapeHtml(title)}">Close</button></header>${content}</div></section>`;
+}
+
+function investigationTitle(projection) {
+  if (projection.investigation_result?.disposition === "ACCEPTED") return "Investigation accepted by the server";
+  if (projection.investigation_result) return "Investigation needs review";
+  return "Evidence collection is active";
+}
+
+function investigationCopy(projection) {
+  if (projection.investigation_result?.summary) return projection.investigation_result.summary;
+  return projection.lifecycle_stage === "DECIDE"
+    ? "The server advanced this incident to the decision stage."
+    : "No conclusion is shown until the backend records an evidence-backed result.";
 }
 
 function renderModeButtons() {
