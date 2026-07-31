@@ -221,6 +221,11 @@ def create_app(
         app.state.repository = created or repository
         app.state.workspace_repository = created or workspace_repository
         app.state.realtime_repository = created or realtime_repository
+        bind_execution_repository = getattr(
+            workspace_starter, "bind_execution_repository", None,
+        )
+        if callable(bind_execution_repository):
+            bind_execution_repository(app.state.workspace_repository)
         try:
             yield
         finally:

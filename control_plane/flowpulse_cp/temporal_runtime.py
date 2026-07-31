@@ -212,6 +212,23 @@ class WorkspaceTemporalStarter:
     def __init__(self, address: str, task_queue: str) -> None:
         self.address = address
         self.task_queue = task_queue
+        self._execution_repository = None
+
+    def bind_execution_repository(self, repository: Any) -> None:
+        """Bind the API's read model after its lifecycle has opened it."""
+        self._execution_repository = repository
+
+    async def _workspace_handle(self, client: Client, projection: IncidentProjection):
+        if self._execution_repository is None:
+            return client.get_workflow_handle(
+                projection.workflow_id, run_id=projection.workflow_run_id,
+            )
+        target = await resolve_temporal_execution_target_v3(
+            self._execution_repository, projection,
+        )
+        return client.get_workflow_handle(
+            target.temporal_workflow_id, run_id=target.temporal_run_id,
+        )
 
     async def start_workspace(self, intake: WorkspaceIntake, actor: AuthContext) -> IncidentProjection:
         now = datetime.now(timezone.utc)
@@ -246,9 +263,7 @@ class WorkspaceTemporalStarter:
         actor_subject_id: str, source_event_id: str, dispatch_id: str,
     ) -> RealtimeUpdateOutcome:
         client = await Client.connect(self.address)
-        handle = client.get_workflow_handle(
-            projection.workflow_id, run_id=projection.workflow_run_id,
-        )
+        handle = await self._workspace_handle(client, projection)
         response = await handle.execute_update(
             IncidentWorkspaceTemporalWorkflow.reconcile_realtime_connector,
             RealtimeUpdateCommand(
@@ -270,7 +285,7 @@ class WorkspaceTemporalStarter:
         self, projection: IncidentProjection, command: NodeExplanationStart, authorization,
     ) -> NodeExplanationReceipt:
         client = await Client.connect(self.address)
-        handle = client.get_workflow_handle(projection.workflow_id, run_id=projection.workflow_run_id)
+        handle = await self._workspace_handle(client, projection)
         response = await handle.execute_update(
             IncidentWorkspaceTemporalWorkflow.start_or_reuse_node_explanation,
             WorkspaceNodeExplanationInvocation(command=command, authorization=authorization).dict(),
@@ -283,7 +298,7 @@ class WorkspaceTemporalStarter:
         self, projection: IncidentProjection, command: ActionInvocationCommand, authorization,
     ) -> WorkspaceActionReceipt:
         client = await Client.connect(self.address)
-        handle = client.get_workflow_handle(projection.workflow_id, run_id=projection.workflow_run_id)
+        handle = await self._workspace_handle(client, projection)
         response = await handle.execute_update(
             IncidentWorkspaceTemporalWorkflow.invoke_next_best_action,
             WorkspaceActionInvocation(command=command, authorization=authorization).dict(),

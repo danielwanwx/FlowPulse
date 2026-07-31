@@ -16,6 +16,7 @@ from flowpulse_cp.workspace_activities import (
     WorkspaceActivityDispatcher,
     workspace_activity_surface,
 )
+from flowpulse_cp.temporal_runtime import WorkspaceTemporalStarter
 
 
 NOW = datetime(2026, 7, 30, 22, 0, tzinfo=timezone.utc)
@@ -134,6 +135,33 @@ class WorkspaceV3IdentityTests(unittest.TestCase):
             self.assertEqual("temporal-run-1", target.temporal_run_id)
             self.assertEqual(1, target.temporal_generation)
             self.assertEqual("V2_IMMUTABLE_BINDING", target.source)
+
+        import asyncio
+        asyncio.run(scenario())
+
+    def test_api_update_handle_follows_the_current_execution_pointer(self):
+        class Repository:
+            async def current_temporal_execution_v3(self, tenant_id, incident_run_id):
+                return pointer("temporal-run-2", 2)
+
+        class Projection:
+            tenant_id = "tenant-a"
+            run_id = "run-public-a"
+            workflow_id = "workflow-a"
+            workflow_run_id = "temporal-run-1"
+
+        class Client:
+            def get_workflow_handle(self, workflow_id, *, run_id):
+                return {"workflow_id": workflow_id, "run_id": run_id}
+
+        async def scenario():
+            starter = WorkspaceTemporalStarter("temporal:7233", "test-queue")
+            starter.bind_execution_repository(Repository())
+            handle = await starter._workspace_handle(Client(), Projection())
+            self.assertEqual(
+                {"workflow_id": "workflow-a", "run_id": "temporal-run-2"},
+                handle,
+            )
 
         import asyncio
         asyncio.run(scenario())
