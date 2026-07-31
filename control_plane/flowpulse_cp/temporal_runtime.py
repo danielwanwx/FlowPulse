@@ -99,6 +99,7 @@ from .workspace_actions import (
     WorkspaceActionReceipt,
 )
 from .workspace_workflow import IncidentWorkspaceTemporalWorkflow
+from .workspace_v3_models import resolve_temporal_execution_target_v3
 from .workspace_registration import workspace_workflow_definitions
 from .realtime_models import RealtimeUpdateCommand, RealtimeUpdateOutcome
 from .realtime_activities import RealtimeActivityDispatcher, build_realtime_activities
@@ -752,8 +753,11 @@ async def run_worker(
         )
         if projection is None:
             raise RuntimeError("realtime_dispatch_workspace_projection_missing")
+        target = await resolve_temporal_execution_target_v3(
+            repository, projection,
+        )
         handle = client.get_workflow_handle(
-            projection.workflow_id, run_id=projection.workflow_run_id,
+            target.temporal_workflow_id, run_id=target.temporal_run_id,
         )
         try:
             response = await handle.execute_update(
@@ -791,9 +795,12 @@ async def run_worker(
         return outcome
 
     async def workflow_eligible(projection):
+        target = await resolve_temporal_execution_target_v3(
+            repository, projection,
+        )
         description = await client.get_workflow_handle(
-            projection.workflow_id,
-            run_id=projection.workflow_run_id,
+            target.temporal_workflow_id,
+            run_id=target.temporal_run_id,
         ).describe()
         return description.status == WorkflowExecutionStatus.RUNNING
 

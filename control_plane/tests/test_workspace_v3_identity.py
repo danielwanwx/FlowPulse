@@ -8,6 +8,7 @@ from flowpulse_cp.workspace_v3_models import (
     IncidentExecutionIdentityV3,
     TemporalExecutionPointerV3,
     TemporalExecutionRolloverV3,
+    resolve_temporal_execution_target_v3,
 )
 
 
@@ -84,6 +85,52 @@ class WorkspaceV3IdentityTests(unittest.TestCase):
 
         self.assertNotIn("projection_revision", command.dict())
         self.assertEqual(64, len(command.canonical_hash()))
+
+    def test_execution_target_prefers_current_v3_pointer(self):
+        class Repository:
+            async def current_temporal_execution_v3(self, tenant_id, incident_run_id):
+                self.lookup = (tenant_id, incident_run_id)
+                return pointer("temporal-run-2", 2)
+
+        class Binding:
+            tenant_id = "tenant-a"
+            run_id = "run-public-a"
+            workflow_id = "workflow-a"
+            workflow_run_id = "temporal-run-1"
+
+        async def scenario():
+            repository = Repository()
+            target = await resolve_temporal_execution_target_v3(
+                repository, Binding(),
+            )
+            self.assertEqual(("tenant-a", "run-public-a"), repository.lookup)
+            self.assertEqual("temporal-run-2", target.temporal_run_id)
+            self.assertEqual(2, target.temporal_generation)
+            self.assertEqual("V3_CURRENT_POINTER", target.source)
+
+        import asyncio
+        asyncio.run(scenario())
+
+    def test_execution_target_falls_back_to_frozen_v2_binding(self):
+        class Repository:
+            pass
+
+        class Binding:
+            tenant_id = "tenant-a"
+            run_id = "run-public-a"
+            workflow_id = "workflow-a"
+            workflow_run_id = "temporal-run-1"
+
+        async def scenario():
+            target = await resolve_temporal_execution_target_v3(
+                Repository(), Binding(),
+            )
+            self.assertEqual("temporal-run-1", target.temporal_run_id)
+            self.assertEqual(1, target.temporal_generation)
+            self.assertEqual("V2_IMMUTABLE_BINDING", target.source)
+
+        import asyncio
+        asyncio.run(scenario())
 
 
 if __name__ == "__main__":

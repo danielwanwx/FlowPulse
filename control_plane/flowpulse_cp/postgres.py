@@ -62,6 +62,11 @@ from .workspace_investigation import (
     WorkspaceInvestigationStageRecord,
     validate_workspace_investigation_commit,
 )
+from .workspace_v3_models import (
+    IncidentExecutionIdentityV3,
+    TemporalExecutionPointerV3,
+    TemporalExecutionRolloverV3,
+)
 from .realtime_repository import RealtimePostgresMixin
 
 
@@ -286,6 +291,134 @@ class PostgresCaseRepository(RealtimePostgresMixin):
                 tenant_id, case_id,
             )
             return _workspace_binding(_decode(row["payload"])) if row else None
+        return await self._tenant(tenant_id, operation)
+
+    async def put_incident_execution_v3(
+        self,
+        identity: IncidentExecutionIdentityV3,
+        pointer: TemporalExecutionPointerV3,
+    ) -> TemporalExecutionPointerV3:
+        """Create one stable identity and its first physical execution."""
+        if (
+            identity.tenant_id != pointer.tenant_id
+            or identity.incident_run_id != pointer.incident_run_id
+            or identity.temporal_workflow_id != pointer.temporal_workflow_id
+            or pointer.temporal_generation != 1
+        ):
+            raise PolicyViolation("workspace_v3_initial_execution_identity_mismatch")
+
+        async def operation(connection: asyncpg.Connection) -> TemporalExecutionPointerV3:
+            await connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+                "{}:{}".format(identity.tenant_id, identity.incident_run_id),
+            )
+            existing = await connection.fetchrow(
+                """SELECT payload FROM incident_execution_identities_v3
+                   WHERE tenant_id=$1 AND incident_run_id=$2""",
+                identity.tenant_id, identity.incident_run_id,
+            )
+            if existing is not None:
+                current_identity = IncidentExecutionIdentityV3.parse_obj(_decode(existing["payload"]))
+                current_pointer = await connection.fetchrow(
+                    """SELECT payload FROM temporal_execution_pointers_v3
+                       WHERE tenant_id=$1 AND incident_run_id=$2""",
+                    identity.tenant_id, identity.incident_run_id,
+                )
+                if current_identity != identity or current_pointer is None:
+                    raise PolicyViolation("workspace_v3_execution_identity_rebound")
+                parsed = TemporalExecutionPointerV3.parse_obj(_decode(current_pointer["payload"]))
+                if parsed != pointer:
+                    raise PolicyViolation("workspace_v3_initial_execution_pointer_mismatch")
+                return parsed
+            await connection.execute(
+                """INSERT INTO incident_execution_identities_v3
+                   (tenant_id, incident_run_id, incident_id, topology_revision,
+                    case_id, case_revision, temporal_workflow_id, payload, created_at)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9)""",
+                identity.tenant_id, identity.incident_run_id, identity.incident_id,
+                identity.topology_revision, identity.case_id, identity.case_revision,
+                identity.temporal_workflow_id, _payload(identity), identity.created_at,
+            )
+            await connection.execute(
+                """INSERT INTO temporal_execution_generations_v3
+                   (tenant_id, incident_run_id, temporal_generation,
+                    temporal_workflow_id, temporal_run_id, payload, created_at)
+                   VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7)""",
+                pointer.tenant_id, pointer.incident_run_id, pointer.temporal_generation,
+                pointer.temporal_workflow_id, pointer.temporal_run_id,
+                _payload(pointer), pointer.updated_at,
+            )
+            await connection.execute(
+                """INSERT INTO temporal_execution_pointers_v3
+                   (tenant_id, incident_run_id, temporal_generation,
+                    temporal_workflow_id, temporal_run_id, payload, updated_at)
+                   VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7)""",
+                pointer.tenant_id, pointer.incident_run_id, pointer.temporal_generation,
+                pointer.temporal_workflow_id, pointer.temporal_run_id,
+                _payload(pointer), pointer.updated_at,
+            )
+            return pointer
+
+        return await self._tenant(identity.tenant_id, operation)
+
+    async def current_temporal_execution_v3(
+        self, tenant_id: str, incident_run_id: str,
+    ) -> Optional[TemporalExecutionPointerV3]:
+        async def operation(connection: asyncpg.Connection) -> Optional[TemporalExecutionPointerV3]:
+            row = await connection.fetchrow(
+                """SELECT payload FROM temporal_execution_pointers_v3
+                   WHERE tenant_id=$1 AND incident_run_id=$2""",
+                tenant_id, incident_run_id,
+            )
+            return TemporalExecutionPointerV3.parse_obj(_decode(row["payload"])) if row else None
+
+        return await self._tenant(tenant_id, operation)
+
+    async def rollover_temporal_execution_v3(
+        self, rollover: TemporalExecutionRolloverV3,
+    ) -> TemporalExecutionPointerV3:
+        """Atomically advance exactly one physical Temporal generation."""
+        tenant_id = rollover.identity.tenant_id
+
+        async def operation(connection: asyncpg.Connection) -> TemporalExecutionPointerV3:
+            row = await connection.fetchrow(
+                """SELECT payload FROM temporal_execution_pointers_v3
+                   WHERE tenant_id=$1 AND incident_run_id=$2 FOR UPDATE""",
+                tenant_id, rollover.identity.incident_run_id,
+            )
+            if row is None:
+                raise PolicyViolation("workspace_v3_execution_pointer_missing")
+            current = TemporalExecutionPointerV3.parse_obj(_decode(row["payload"]))
+            if current != rollover.expected:
+                if current == rollover.replacement:
+                    return current
+                raise PolicyViolation("workspace_v3_execution_pointer_cas_conflict")
+            replacement = rollover.replacement
+            await connection.execute(
+                """INSERT INTO temporal_execution_generations_v3
+                   (tenant_id, incident_run_id, temporal_generation,
+                    temporal_workflow_id, temporal_run_id, payload, created_at)
+                   VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7)""",
+                replacement.tenant_id, replacement.incident_run_id,
+                replacement.temporal_generation, replacement.temporal_workflow_id,
+                replacement.temporal_run_id, _payload(replacement),
+                replacement.updated_at,
+            )
+            status = await connection.execute(
+                """UPDATE temporal_execution_pointers_v3
+                   SET temporal_generation=$3, temporal_run_id=$4,
+                       payload=$5::jsonb, updated_at=$6
+                   WHERE tenant_id=$1 AND incident_run_id=$2
+                     AND temporal_generation=$7 AND temporal_run_id=$8""",
+                replacement.tenant_id, replacement.incident_run_id,
+                replacement.temporal_generation, replacement.temporal_run_id,
+                _payload(replacement), replacement.updated_at,
+                current.temporal_generation, current.temporal_run_id,
+            )
+            if status != "UPDATE 1":
+                raise PolicyViolation("workspace_v3_execution_pointer_cas_conflict")
+            return replacement
+
         return await self._tenant(tenant_id, operation)
 
     async def workspace_binding_by_public_identity(

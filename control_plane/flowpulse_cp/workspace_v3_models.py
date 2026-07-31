@@ -6,6 +6,7 @@ remain unchanged while the persistence and Temporal migration is implemented.
 
 from datetime import datetime
 from hashlib import sha256
+from typing import Any
 
 from pydantic import root_validator
 
@@ -88,6 +89,46 @@ class TemporalExecutionRolloverV3(StrictModel):
         if replacement.temporal_run_id == expected.temporal_run_id:
             raise ValueError("temporal_rollover_requires_new_physical_run")
         return values
+
+
+class TemporalExecutionTargetV3(StrictModel):
+    """Resolved execution target used immediately before describe/signal."""
+
+    temporal_workflow_id: NonEmpty
+    temporal_run_id: NonEmpty
+    temporal_generation: PositiveInt
+    source: NonEmpty
+
+
+async def resolve_temporal_execution_target_v3(
+    repository: Any, binding: Any,
+) -> TemporalExecutionTargetV3:
+    """Prefer the V3 current pointer and fall back to a frozen V2 binding."""
+    resolver = getattr(repository, "current_temporal_execution_v3", None)
+    pointer = (
+        await resolver(binding.tenant_id, binding.run_id)
+        if callable(resolver)
+        else None
+    )
+    if pointer is not None:
+        if (
+            pointer.tenant_id != binding.tenant_id
+            or pointer.incident_run_id != binding.run_id
+            or pointer.temporal_workflow_id != binding.workflow_id
+        ):
+            raise ValueError("workspace_v3_execution_target_binding_mismatch")
+        return TemporalExecutionTargetV3(
+            temporal_workflow_id=pointer.temporal_workflow_id,
+            temporal_run_id=pointer.temporal_run_id,
+            temporal_generation=pointer.temporal_generation,
+            source="V3_CURRENT_POINTER",
+        )
+    return TemporalExecutionTargetV3(
+        temporal_workflow_id=binding.workflow_id,
+        temporal_run_id=binding.workflow_run_id,
+        temporal_generation=1,
+        source="V2_IMMUTABLE_BINDING",
+    )
 
 
 class ActionInvocationCommandV3(StrictModel):
