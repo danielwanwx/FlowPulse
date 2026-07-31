@@ -176,10 +176,9 @@ class RealtimeActivityDispatcher:
                 existing = await self.repository.workspace_projection_v3(
                     stored.projection.tenant_id, stored.projection.case_id,
                 )
-                if existing is None:
-                    # The first accepted fact creates Detect. Later facts must
-                    # refresh the canonical V3 telemetry domain without ever
-                    # behaving like a user workflow command.
+                if existing is None and stored.projection.impacted_path:
+                    # The first impact-bearing fact creates Detect. Later facts
+                    # refresh telemetry without behaving like a user command.
                     await coordinator.bootstrap(
                         stored.projection,
                         actor_subject_id=stored.source_event.acl_subjects[0],

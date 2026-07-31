@@ -81,7 +81,8 @@ export function buildV3LocalConfig({
   const nodeBaseUrl = `http://host.docker.internal:${uiPort}`;
   const browserBaseUrl = `http://127.0.0.1:${uiPort}`;
   const controlPlaneUrl = "http://127.0.0.1:8090";
-  const tenantId = environment.FLOWPULSE_V3_TENANT_ID || "tenant-v3-local";
+  const tenantId = environment.FLOWPULSE_V3_TENANT_ID
+    || `tenant-v3-${producerGitSha.slice(0, 12)}`;
   const ownerSubjectId = environment.FLOWPULSE_V3_OWNER_SUBJECT_ID || "owner-v3-local";
   const runtimeEnvironment = {
     ...environment,
