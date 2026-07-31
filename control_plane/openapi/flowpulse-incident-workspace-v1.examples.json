@@ -1,0 +1,3995 @@
+{
+  "identity_note": "run_id and topology_revision are backend-owned public identities; case_id, workflow_id, and workflow_run_id are internal correlations. run_id is never derived from a Temporal ID.",
+  "model_schemas": {
+    "ActionInvocationCommand": {
+      "additionalProperties": false,
+      "description": "The complete browser command: opaque action plus canonical identity only.",
+      "properties": {
+        "action_id": {
+          "minLength": 1,
+          "title": "Action Id",
+          "type": "string"
+        },
+        "idempotency_key": {
+          "minLength": 1,
+          "title": "Idempotency Key",
+          "type": "string"
+        },
+        "incident_id": {
+          "minLength": 1,
+          "title": "Incident Id",
+          "type": "string"
+        },
+        "projection_revision": {
+          "minimum": 1,
+          "title": "Projection Revision",
+          "type": "integer"
+        },
+        "run_id": {
+          "minLength": 1,
+          "title": "Run Id",
+          "type": "string"
+        },
+        "topology_revision": {
+          "minLength": 1,
+          "title": "Topology Revision",
+          "type": "string"
+        }
+      },
+      "required": [
+        "incident_id",
+        "run_id",
+        "topology_revision",
+        "projection_revision",
+        "action_id",
+        "idempotency_key"
+      ],
+      "title": "ActionInvocationCommand",
+      "type": "object"
+    },
+    "ComponentContext": {
+      "additionalProperties": false,
+      "definitions": {
+        "ClassifiedNodeReason": {
+          "description": "An enumeration.",
+          "enum": [
+            "External dependency",
+            "Data store",
+            "Control plane",
+            "Observed boundary",
+            "Relationship unavailable"
+          ],
+          "title": "ClassifiedNodeReason",
+          "type": "string"
+        },
+        "GraphMembership": {
+          "description": "An enumeration.",
+          "enum": [
+            "CONNECTED",
+            "CLASSIFIED"
+          ],
+          "title": "GraphMembership",
+          "type": "string"
+        },
+        "IncidentGraphNode": {
+          "additionalProperties": false,
+          "properties": {
+            "canonical_identity": {
+              "minLength": 1,
+              "title": "Canonical Identity",
+              "type": "string"
+            },
+            "classification_reason": {
+              "$ref": "#/definitions/ClassifiedNodeReason"
+            },
+            "component_id": {
+              "minLength": 1,
+              "title": "Component Id",
+              "type": "string"
+            },
+            "display_name": {
+              "minLength": 1,
+              "title": "Display Name",
+              "type": "string"
+            },
+            "impact_status": {
+              "minLength": 1,
+              "title": "Impact Status",
+              "type": "string"
+            },
+            "membership": {
+              "$ref": "#/definitions/GraphMembership"
+            },
+            "runtime_status": {
+              "minLength": 1,
+              "title": "Runtime Status",
+              "type": "string"
+            }
+          },
+          "required": [
+            "component_id",
+            "canonical_identity",
+            "display_name",
+            "membership",
+            "runtime_status",
+            "impact_status"
+          ],
+          "title": "IncidentGraphNode",
+          "type": "object"
+        }
+      },
+      "description": "Strict, read-only context for one canonical component in a projection.",
+      "properties": {
+        "case_id": {
+          "minLength": 1,
+          "title": "Case Id",
+          "type": "string"
+        },
+        "case_revision": {
+          "minimum": 1,
+          "title": "Case Revision",
+          "type": "integer"
+        },
+        "component": {
+          "$ref": "#/definitions/IncidentGraphNode"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "evidence_refs": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "fresh_read_performed": {
+          "default": false,
+          "title": "Fresh Read Performed",
+          "type": "boolean"
+        },
+        "incident_id": {
+          "minLength": 1,
+          "title": "Incident Id",
+          "type": "string"
+        },
+        "projection_revision": {
+          "minimum": 1,
+          "title": "Projection Revision",
+          "type": "integer"
+        },
+        "run_id": {
+          "minLength": 1,
+          "title": "Run Id",
+          "type": "string"
+        },
+        "schema_version": {
+          "default": "flowpulse.component-context.v1",
+          "minLength": 1,
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "tenant_id": {
+          "minLength": 1,
+          "title": "Tenant Id",
+          "type": "string"
+        },
+        "topology_revision": {
+          "minLength": 1,
+          "title": "Topology Revision",
+          "type": "string"
+        },
+        "workflow_id": {
+          "minLength": 1,
+          "title": "Workflow Id",
+          "type": "string"
+        },
+        "workflow_run_id": {
+          "minLength": 1,
+          "title": "Workflow Run Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tenant_id",
+        "incident_id",
+        "run_id",
+        "topology_revision",
+        "case_id",
+        "case_revision",
+        "workflow_id",
+        "workflow_run_id",
+        "created_at",
+        "projection_revision",
+        "component"
+      ],
+      "title": "ComponentContext",
+      "type": "object"
+    },
+    "ConversationTrace": {
+      "additionalProperties": false,
+      "definitions": {
+        "ConversationRole": {
+          "description": "Server-selected roles; provider output never carries one of these values.",
+          "enum": [
+            "CONVERSATION_MANAGER",
+            "EVIDENCE_SPECIALIST",
+            "TOPOLOGY_SPECIALIST"
+          ],
+          "title": "ConversationRole",
+          "type": "string"
+        },
+        "PromptBundle": {
+          "additionalProperties": false,
+          "properties": {
+            "layers": {
+              "items": {
+                "$ref": "#/definitions/PromptLayer"
+              },
+              "maxItems": 3,
+              "minItems": 2,
+              "title": "Layers",
+              "type": "array"
+            },
+            "prompt_hash": {
+              "pattern": "^[a-f0-9]{64}$",
+              "title": "Prompt Hash",
+              "type": "string"
+            },
+            "role": {
+              "$ref": "#/definitions/ConversationRole"
+            },
+            "schema_version": {
+              "default": "flowpulse.prompt-bundle.v1",
+              "minLength": 1,
+              "title": "Schema Version",
+              "type": "string"
+            }
+          },
+          "required": [
+            "role",
+            "layers",
+            "prompt_hash"
+          ],
+          "title": "PromptBundle",
+          "type": "object"
+        },
+        "PromptLayer": {
+          "additionalProperties": false,
+          "properties": {
+            "content_hash": {
+              "pattern": "^[a-f0-9]{64}$",
+              "title": "Content Hash",
+              "type": "string"
+            },
+            "layer": {
+              "minLength": 1,
+              "title": "Layer",
+              "type": "string"
+            },
+            "version": {
+              "minLength": 1,
+              "title": "Version",
+              "type": "string"
+            }
+          },
+          "required": [
+            "layer",
+            "version",
+            "content_hash"
+          ],
+          "title": "PromptLayer",
+          "type": "object"
+        },
+        "ProviderTruthLabel": {
+          "description": "Truth label surfaced with every conversation result, never inferred by a client.",
+          "enum": [
+            "DEGRADED",
+            "TEST_DETERMINISTIC",
+            "DEMO",
+            "LIVE"
+          ],
+          "title": "ProviderTruthLabel",
+          "type": "string"
+        },
+        "VersionBundle": {
+          "additionalProperties": false,
+          "description": "Server-owned versions pinned to every completed provider conversation.",
+          "properties": {
+            "capability_registry_version": {
+              "default": "capability-registry.v1",
+              "minLength": 1,
+              "title": "Capability Registry Version",
+              "type": "string"
+            },
+            "card_schema_version": {
+              "default": "flowpulse.next-best-action.v1",
+              "minLength": 1,
+              "title": "Card Schema Version",
+              "type": "string"
+            },
+            "context_pack_version": {
+              "default": "conversation-context-pack.v1",
+              "minLength": 1,
+              "title": "Context Pack Version",
+              "type": "string"
+            },
+            "core_policy_version": {
+              "default": "conversation-core-policy.v1",
+              "minLength": 1,
+              "title": "Core Policy Version",
+              "type": "string"
+            },
+            "evidence_schema_version": {
+              "default": "flowpulse.evidence-envelope.v1",
+              "minLength": 1,
+              "title": "Evidence Schema Version",
+              "type": "string"
+            },
+            "model_policy_version": {
+              "default": "provider-policy.v1",
+              "minLength": 1,
+              "title": "Model Policy Version",
+              "type": "string"
+            },
+            "policy_version": {
+              "default": "capability-policy.v1",
+              "minLength": 1,
+              "title": "Policy Version",
+              "type": "string"
+            },
+            "role_prompt_version": {
+              "default": "conversation-role-prompts.v1",
+              "minLength": 1,
+              "title": "Role Prompt Version",
+              "type": "string"
+            },
+            "schema_version": {
+              "default": "flowpulse.version-bundle.v1",
+              "minLength": 1,
+              "title": "Schema Version",
+              "type": "string"
+            },
+            "tool_schema_version": {
+              "default": "capability-tool-schema.v1",
+              "minLength": 1,
+              "title": "Tool Schema Version",
+              "type": "string"
+            },
+            "workflow_version": {
+              "default": "flowpulse.incident-workspace.v2",
+              "minLength": 1,
+              "title": "Workflow Version",
+              "type": "string"
+            }
+          },
+          "title": "VersionBundle",
+          "type": "object"
+        }
+      },
+      "description": "Safe durable metadata; raw prompts, credentials, and model payloads stay out.",
+      "properties": {
+        "available_capabilities": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Available Capabilities",
+          "type": "array"
+        },
+        "context_hash": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Context Hash",
+          "type": "string"
+        },
+        "input_tokens": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Input Tokens",
+          "type": "integer"
+        },
+        "model_id": {
+          "title": "Model Id",
+          "type": "string"
+        },
+        "output_tokens": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Output Tokens",
+          "type": "integer"
+        },
+        "prompt_bundles": {
+          "items": {
+            "$ref": "#/definitions/PromptBundle"
+          },
+          "maxItems": 3,
+          "minItems": 1,
+          "title": "Prompt Bundles",
+          "type": "array"
+        },
+        "provider_call_count": {
+          "minimum": 0,
+          "title": "Provider Call Count",
+          "type": "integer"
+        },
+        "provider_id": {
+          "minLength": 1,
+          "title": "Provider Id",
+          "type": "string"
+        },
+        "recorded_context_accesses": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Recorded Context Accesses",
+          "type": "integer"
+        },
+        "schema_version": {
+          "default": "flowpulse.conversation-trace.v1",
+          "minLength": 1,
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "specialist_roles": {
+          "items": {
+            "$ref": "#/definitions/ConversationRole"
+          },
+          "maxItems": 2,
+          "type": "array"
+        },
+        "tool_calls": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Tool Calls",
+          "type": "integer"
+        },
+        "truth_label": {
+          "$ref": "#/definitions/ProviderTruthLabel"
+        },
+        "version_bundle": {
+          "$ref": "#/definitions/VersionBundle"
+        }
+      },
+      "required": [
+        "truth_label",
+        "provider_id",
+        "version_bundle",
+        "prompt_bundles",
+        "context_hash",
+        "provider_call_count"
+      ],
+      "title": "ConversationTrace",
+      "type": "object"
+    },
+    "IncidentEvent": {
+      "additionalProperties": false,
+      "definitions": {
+        "ExplanationEventStatus": {
+          "description": "An enumeration.",
+          "enum": [
+            "STARTED",
+            "COMPLETED",
+            "DEGRADED"
+          ],
+          "title": "ExplanationEventStatus",
+          "type": "string"
+        }
+      },
+      "description": "Public run identity and its immutable internal Temporal correlation.",
+      "properties": {
+        "case_id": {
+          "minLength": 1,
+          "title": "Case Id",
+          "type": "string"
+        },
+        "case_revision": {
+          "minimum": 1,
+          "title": "Case Revision",
+          "type": "integer"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "event_type": {
+          "minLength": 1,
+          "title": "Event Type",
+          "type": "string"
+        },
+        "evidence_refs": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "explanation_status": {
+          "$ref": "#/definitions/ExplanationEventStatus"
+        },
+        "incident_id": {
+          "minLength": 1,
+          "title": "Incident Id",
+          "type": "string"
+        },
+        "occurred_at": {
+          "format": "date-time",
+          "title": "Occurred At",
+          "type": "string"
+        },
+        "payload": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Payload",
+          "type": "object"
+        },
+        "projection_revision": {
+          "minimum": 1,
+          "title": "Projection Revision",
+          "type": "integer"
+        },
+        "run_id": {
+          "minLength": 1,
+          "title": "Run Id",
+          "type": "string"
+        },
+        "schema_version": {
+          "default": "flowpulse.incident-event.v1",
+          "minLength": 1,
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "sequence": {
+          "minimum": 1,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "tenant_id": {
+          "minLength": 1,
+          "title": "Tenant Id",
+          "type": "string"
+        },
+        "topology_revision": {
+          "minLength": 1,
+          "title": "Topology Revision",
+          "type": "string"
+        },
+        "workflow_id": {
+          "minLength": 1,
+          "title": "Workflow Id",
+          "type": "string"
+        },
+        "workflow_run_id": {
+          "minLength": 1,
+          "title": "Workflow Run Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tenant_id",
+        "incident_id",
+        "run_id",
+        "topology_revision",
+        "case_id",
+        "case_revision",
+        "workflow_id",
+        "workflow_run_id",
+        "created_at",
+        "projection_revision",
+        "sequence",
+        "event_type",
+        "occurred_at"
+      ],
+      "title": "IncidentEvent",
+      "type": "object"
+    },
+    "IncidentNotification": {
+      "additionalProperties": false,
+      "definitions": {
+        "IncidentLifecycleStage": {
+          "description": "An enumeration.",
+          "enum": [
+            "INVESTIGATE",
+            "DECIDE",
+            "EXECUTE",
+            "VERIFY",
+            "CLOSED",
+            "NEEDS_HUMAN"
+          ],
+          "title": "IncidentLifecycleStage",
+          "type": "string"
+        },
+        "IncidentNotificationType": {
+          "description": "An enumeration.",
+          "enum": [
+            "incident.accepted",
+            "incident.updated"
+          ],
+          "title": "IncidentNotificationType",
+          "type": "string"
+        },
+        "IncidentSummary": {
+          "additionalProperties": false,
+          "description": "Bounded, operator-facing discovery record derived from a projection.",
+          "properties": {
+            "case_id": {
+              "minLength": 1,
+              "title": "Case Id",
+              "type": "string"
+            },
+            "incident_id": {
+              "minLength": 1,
+              "title": "Incident Id",
+              "type": "string"
+            },
+            "lifecycle_stage": {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/IncidentLifecycleStage"
+                }
+              ],
+              "default": "INVESTIGATE"
+            },
+            "lifecycle_state": {
+              "$ref": "#/definitions/ProjectionState"
+            },
+            "projection_revision": {
+              "minimum": 1,
+              "title": "Projection Revision",
+              "type": "integer"
+            },
+            "run_id": {
+              "minLength": 1,
+              "title": "Run Id",
+              "type": "string"
+            },
+            "sequence": {
+              "minimum": 1,
+              "title": "Sequence",
+              "type": "integer"
+            },
+            "status": {
+              "minLength": 1,
+              "title": "Status",
+              "type": "string"
+            },
+            "summary": {
+              "minLength": 1,
+              "title": "Summary",
+              "type": "string"
+            },
+            "title": {
+              "minLength": 1,
+              "title": "Title",
+              "type": "string"
+            },
+            "topology_revision": {
+              "minLength": 1,
+              "title": "Topology Revision",
+              "type": "string"
+            }
+          },
+          "required": [
+            "case_id",
+            "incident_id",
+            "run_id",
+            "topology_revision",
+            "projection_revision",
+            "sequence",
+            "lifecycle_state",
+            "status",
+            "title",
+            "summary"
+          ],
+          "title": "IncidentSummary",
+          "type": "object"
+        },
+        "ProjectionState": {
+          "description": "An enumeration.",
+          "enum": [
+            "INITIALIZING",
+            "ACTIVE",
+            "DEGRADED",
+            "AWAITING_OWNER",
+            "BLOCKED",
+            "NEEDS_HUMAN",
+            "ABSTAINED"
+          ],
+          "title": "ProjectionState",
+          "type": "string"
+        }
+      },
+      "description": "One durable, tenant-scoped browser notification cursor and hydration summary.",
+      "properties": {
+        "event_type": {
+          "$ref": "#/definitions/IncidentNotificationType"
+        },
+        "incident": {
+          "$ref": "#/definitions/IncidentSummary"
+        },
+        "notification_id": {
+          "minLength": 1,
+          "title": "Notification Id",
+          "type": "string"
+        },
+        "occurred_at": {
+          "format": "date-time",
+          "title": "Occurred At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "notification_id",
+        "event_type",
+        "occurred_at",
+        "incident"
+      ],
+      "title": "IncidentNotification",
+      "type": "object"
+    },
+    "IncidentProjection": {
+      "additionalProperties": false,
+      "definitions": {
+        "AffectedUserPathStatus": {
+          "description": "An enumeration.",
+          "enum": [
+            "KNOWN",
+            "UNKNOWN"
+          ],
+          "title": "AffectedUserPathStatus",
+          "type": "string"
+        },
+        "ClassifiedNodeReason": {
+          "description": "An enumeration.",
+          "enum": [
+            "External dependency",
+            "Data store",
+            "Control plane",
+            "Observed boundary",
+            "Relationship unavailable"
+          ],
+          "title": "ClassifiedNodeReason",
+          "type": "string"
+        },
+        "ConversationItem": {
+          "additionalProperties": false,
+          "properties": {
+            "case_id": {
+              "minLength": 1,
+              "title": "Case Id",
+              "type": "string"
+            },
+            "case_revision": {
+              "minimum": 1,
+              "title": "Case Revision",
+              "type": "integer"
+            },
+            "component_id": {
+              "minLength": 1,
+              "title": "Component Id",
+              "type": "string"
+            },
+            "created_at": {
+              "format": "date-time",
+              "title": "Created At",
+              "type": "string"
+            },
+            "evidence_refs": {
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "maxItems": 64,
+              "title": "Evidence Refs",
+              "type": "array"
+            },
+            "explanation_id": {
+              "minLength": 1,
+              "title": "Explanation Id",
+              "type": "string"
+            },
+            "incident_id": {
+              "minLength": 1,
+              "title": "Incident Id",
+              "type": "string"
+            },
+            "item_id": {
+              "minLength": 1,
+              "title": "Item Id",
+              "type": "string"
+            },
+            "knowledge_state": {
+              "$ref": "#/definitions/ConversationKnowledgeState"
+            },
+            "projection_revision": {
+              "minimum": 1,
+              "title": "Projection Revision",
+              "type": "integer"
+            },
+            "role": {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/ConversationRole"
+                }
+              ],
+              "default": "CONVERSATION_MANAGER"
+            },
+            "run_id": {
+              "minLength": 1,
+              "title": "Run Id",
+              "type": "string"
+            },
+            "schema_version": {
+              "default": "flowpulse.conversation-item.v1",
+              "minLength": 1,
+              "title": "Schema Version",
+              "type": "string"
+            },
+            "sequence": {
+              "minimum": 1,
+              "title": "Sequence",
+              "type": "integer"
+            },
+            "summary": {
+              "minLength": 1,
+              "title": "Summary",
+              "type": "string"
+            },
+            "tenant_id": {
+              "minLength": 1,
+              "title": "Tenant Id",
+              "type": "string"
+            },
+            "topology_revision": {
+              "minLength": 1,
+              "title": "Topology Revision",
+              "type": "string"
+            },
+            "workflow_id": {
+              "minLength": 1,
+              "title": "Workflow Id",
+              "type": "string"
+            },
+            "workflow_run_id": {
+              "minLength": 1,
+              "title": "Workflow Run Id",
+              "type": "string"
+            }
+          },
+          "required": [
+            "item_id",
+            "sequence",
+            "tenant_id",
+            "incident_id",
+            "run_id",
+            "topology_revision",
+            "case_id",
+            "case_revision",
+            "workflow_id",
+            "workflow_run_id",
+            "projection_revision",
+            "component_id",
+            "explanation_id",
+            "knowledge_state",
+            "summary",
+            "created_at"
+          ],
+          "title": "ConversationItem",
+          "type": "object"
+        },
+        "ConversationKnowledgeState": {
+          "description": "An enumeration.",
+          "enum": [
+            "KNOWN",
+            "UNKNOWN"
+          ],
+          "title": "ConversationKnowledgeState",
+          "type": "string"
+        },
+        "ConversationRole": {
+          "description": "Server-selected roles; provider output never carries one of these values.",
+          "enum": [
+            "CONVERSATION_MANAGER",
+            "EVIDENCE_SPECIALIST",
+            "TOPOLOGY_SPECIALIST"
+          ],
+          "title": "ConversationRole",
+          "type": "string"
+        },
+        "CriticOperatorStatus": {
+          "description": "An enumeration.",
+          "enum": [
+            "PASS",
+            "REVISE",
+            "ABSTAIN"
+          ],
+          "title": "CriticOperatorStatus",
+          "type": "string"
+        },
+        "EvidenceAuthority": {
+          "description": "An enumeration.",
+          "enum": [
+            "T0_AUTHORITATIVE_CURRENT",
+            "T1_DIRECT_CURRENT",
+            "T2_DERIVED",
+            "T3_HISTORICAL",
+            "T4_UNTRUSTED"
+          ],
+          "title": "EvidenceAuthority",
+          "type": "string"
+        },
+        "FreshnessStatus": {
+          "description": "An enumeration.",
+          "enum": [
+            "CURRENT",
+            "AGING",
+            "STALE",
+            "UNKNOWN"
+          ],
+          "title": "FreshnessStatus",
+          "type": "string"
+        },
+        "Gate1ProjectionState": {
+          "description": "An enumeration.",
+          "enum": [
+            "NONE",
+            "ACTIVE",
+            "CONSUMED",
+            "INVALIDATED"
+          ],
+          "title": "Gate1ProjectionState",
+          "type": "string"
+        },
+        "GraphMembership": {
+          "description": "An enumeration.",
+          "enum": [
+            "CONNECTED",
+            "CLASSIFIED"
+          ],
+          "title": "GraphMembership",
+          "type": "string"
+        },
+        "IncidentFocus": {
+          "additionalProperties": false,
+          "properties": {
+            "affected_user_path_status": {
+              "$ref": "#/definitions/AffectedUserPathStatus"
+            },
+            "affected_user_path_summary": {
+              "minLength": 1,
+              "title": "Affected User Path Summary",
+              "type": "string"
+            },
+            "canonical_identity": {
+              "minLength": 1,
+              "title": "Canonical Identity",
+              "type": "string"
+            },
+            "component_id": {
+              "minLength": 1,
+              "title": "Component Id",
+              "type": "string"
+            },
+            "incident_relation_edge_ids": {
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "maxItems": 32,
+              "minItems": 1,
+              "title": "Incident Relation Edge Ids",
+              "type": "array"
+            },
+            "incident_relation_provenance_refs": {
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "maxItems": 32,
+              "minItems": 1,
+              "title": "Incident Relation Provenance Refs",
+              "type": "array"
+            },
+            "rationale": {
+              "minLength": 1,
+              "title": "Rationale",
+              "type": "string"
+            }
+          },
+          "required": [
+            "component_id",
+            "canonical_identity",
+            "rationale",
+            "affected_user_path_status",
+            "incident_relation_edge_ids",
+            "incident_relation_provenance_refs"
+          ],
+          "title": "IncidentFocus",
+          "type": "object"
+        },
+        "IncidentGraph": {
+          "additionalProperties": false,
+          "properties": {
+            "edges": {
+              "items": {
+                "$ref": "#/definitions/IncidentGraphEdge"
+              },
+              "title": "Edges",
+              "type": "array"
+            },
+            "nodes": {
+              "items": {
+                "$ref": "#/definitions/IncidentGraphNode"
+              },
+              "title": "Nodes",
+              "type": "array"
+            }
+          },
+          "required": [
+            "nodes",
+            "edges"
+          ],
+          "title": "IncidentGraph",
+          "type": "object"
+        },
+        "IncidentGraphEdge": {
+          "additionalProperties": false,
+          "properties": {
+            "edge_id": {
+              "minLength": 1,
+              "title": "Edge Id",
+              "type": "string"
+            },
+            "source_component_id": {
+              "minLength": 1,
+              "title": "Source Component Id",
+              "type": "string"
+            },
+            "status": {
+              "minLength": 1,
+              "title": "Status",
+              "type": "string"
+            },
+            "target_component_id": {
+              "minLength": 1,
+              "title": "Target Component Id",
+              "type": "string"
+            }
+          },
+          "required": [
+            "edge_id",
+            "source_component_id",
+            "target_component_id",
+            "status"
+          ],
+          "title": "IncidentGraphEdge",
+          "type": "object"
+        },
+        "IncidentGraphNode": {
+          "additionalProperties": false,
+          "properties": {
+            "canonical_identity": {
+              "minLength": 1,
+              "title": "Canonical Identity",
+              "type": "string"
+            },
+            "classification_reason": {
+              "$ref": "#/definitions/ClassifiedNodeReason"
+            },
+            "component_id": {
+              "minLength": 1,
+              "title": "Component Id",
+              "type": "string"
+            },
+            "display_name": {
+              "minLength": 1,
+              "title": "Display Name",
+              "type": "string"
+            },
+            "impact_status": {
+              "minLength": 1,
+              "title": "Impact Status",
+              "type": "string"
+            },
+            "membership": {
+              "$ref": "#/definitions/GraphMembership"
+            },
+            "runtime_status": {
+              "minLength": 1,
+              "title": "Runtime Status",
+              "type": "string"
+            }
+          },
+          "required": [
+            "component_id",
+            "canonical_identity",
+            "display_name",
+            "membership",
+            "runtime_status",
+            "impact_status"
+          ],
+          "title": "IncidentGraphNode",
+          "type": "object"
+        },
+        "IncidentLifecycleStage": {
+          "description": "An enumeration.",
+          "enum": [
+            "INVESTIGATE",
+            "DECIDE",
+            "EXECUTE",
+            "VERIFY",
+            "CLOSED",
+            "NEEDS_HUMAN"
+          ],
+          "title": "IncidentLifecycleStage",
+          "type": "string"
+        },
+        "InvestigationClaim": {
+          "additionalProperties": false,
+          "properties": {
+            "claim_id": {
+              "minLength": 1,
+              "title": "Claim Id",
+              "type": "string"
+            },
+            "evidence_refs": {
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "maxItems": 32,
+              "minItems": 1,
+              "title": "Evidence Refs",
+              "type": "array"
+            },
+            "kind": {
+              "$ref": "#/definitions/InvestigationClaimKind"
+            },
+            "statement": {
+              "minLength": 1,
+              "title": "Statement",
+              "type": "string"
+            }
+          },
+          "required": [
+            "claim_id",
+            "kind",
+            "statement",
+            "evidence_refs"
+          ],
+          "title": "InvestigationClaim",
+          "type": "object"
+        },
+        "InvestigationClaimKind": {
+          "description": "An enumeration.",
+          "enum": [
+            "OBSERVATION",
+            "HYPOTHESIS"
+          ],
+          "title": "InvestigationClaimKind",
+          "type": "string"
+        },
+        "InvestigationCritic": {
+          "additionalProperties": false,
+          "properties": {
+            "critic_id": {
+              "minLength": 1,
+              "title": "Critic Id",
+              "type": "string"
+            },
+            "decision": {
+              "$ref": "#/definitions/VerificationDecision"
+            },
+            "evidence_refs": {
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "maxItems": 64,
+              "title": "Evidence Refs",
+              "type": "array"
+            },
+            "identity": {
+              "minLength": 1,
+              "title": "Identity",
+              "type": "string"
+            },
+            "operator_status": {
+              "$ref": "#/definitions/CriticOperatorStatus"
+            },
+            "reason_codes": {
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "maxItems": 16,
+              "title": "Reason Codes",
+              "type": "array"
+            },
+            "reviewed_claim_ids": {
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "maxItems": 64,
+              "title": "Reviewed Claim Ids",
+              "type": "array"
+            }
+          },
+          "required": [
+            "critic_id",
+            "identity",
+            "decision",
+            "operator_status"
+          ],
+          "title": "InvestigationCritic",
+          "type": "object"
+        },
+        "InvestigationDisposition": {
+          "description": "An enumeration.",
+          "enum": [
+            "ACCEPTED",
+            "DEGRADED",
+            "ABSTAINED",
+            "CRITIC_REJECTED"
+          ],
+          "title": "InvestigationDisposition",
+          "type": "string"
+        },
+        "InvestigationEvidenceReference": {
+          "additionalProperties": false,
+          "properties": {
+            "authority": {
+              "$ref": "#/definitions/EvidenceAuthority"
+            },
+            "evidence_id": {
+              "minLength": 1,
+              "title": "Evidence Id",
+              "type": "string"
+            },
+            "freshness": {
+              "$ref": "#/definitions/FreshnessStatus"
+            },
+            "observed_at": {
+              "format": "date-time",
+              "title": "Observed At",
+              "type": "string"
+            },
+            "parent_evidence_refs": {
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "title": "Parent Evidence Refs",
+              "type": "array"
+            },
+            "proof_scope": {
+              "$ref": "#/definitions/ProofScope"
+            },
+            "source_kind": {
+              "$ref": "#/definitions/SourceKind"
+            }
+          },
+          "required": [
+            "evidence_id",
+            "source_kind",
+            "observed_at",
+            "freshness",
+            "authority",
+            "proof_scope"
+          ],
+          "title": "InvestigationEvidenceReference",
+          "type": "object"
+        },
+        "InvestigationResult": {
+          "additionalProperties": false,
+          "description": "Backend-owned, evidence-backed outcome accepted or rejected by Temporal.",
+          "properties": {
+            "case_id": {
+              "minLength": 1,
+              "title": "Case Id",
+              "type": "string"
+            },
+            "case_revision": {
+              "minimum": 1,
+              "title": "Case Revision",
+              "type": "integer"
+            },
+            "claims": {
+              "items": {
+                "$ref": "#/definitions/InvestigationClaim"
+              },
+              "maxItems": 64,
+              "title": "Claims",
+              "type": "array"
+            },
+            "component_id": {
+              "minLength": 1,
+              "title": "Component Id",
+              "type": "string"
+            },
+            "created_at": {
+              "format": "date-time",
+              "title": "Created At",
+              "type": "string"
+            },
+            "critic": {
+              "$ref": "#/definitions/InvestigationCritic"
+            },
+            "degraded_code": {
+              "title": "Degraded Code",
+              "type": "string"
+            },
+            "disposition": {
+              "$ref": "#/definitions/InvestigationDisposition"
+            },
+            "evidence": {
+              "items": {
+                "$ref": "#/definitions/InvestigationEvidenceReference"
+              },
+              "maxItems": 64,
+              "title": "Evidence",
+              "type": "array"
+            },
+            "evidence_revision": {
+              "minimum": 1,
+              "title": "Evidence Revision",
+              "type": "integer"
+            },
+            "incident_id": {
+              "minLength": 1,
+              "title": "Incident Id",
+              "type": "string"
+            },
+            "lifecycle_stage": {
+              "$ref": "#/definitions/IncidentLifecycleStage"
+            },
+            "projection_revision": {
+              "minimum": 1,
+              "title": "Projection Revision",
+              "type": "integer"
+            },
+            "recorded_at": {
+              "format": "date-time",
+              "title": "Recorded At",
+              "type": "string"
+            },
+            "result_id": {
+              "minLength": 1,
+              "title": "Result Id",
+              "type": "string"
+            },
+            "run_id": {
+              "minLength": 1,
+              "title": "Run Id",
+              "type": "string"
+            },
+            "schema_version": {
+              "default": "flowpulse.investigation-result.v1",
+              "minLength": 1,
+              "title": "Schema Version",
+              "type": "string"
+            },
+            "source_action_id": {
+              "minLength": 1,
+              "title": "Source Action Id",
+              "type": "string"
+            },
+            "source_activity_identity": {
+              "minLength": 1,
+              "title": "Source Activity Identity",
+              "type": "string"
+            },
+            "source_idempotency_key": {
+              "minLength": 1,
+              "title": "Source Idempotency Key",
+              "type": "string"
+            },
+            "summary": {
+              "minLength": 1,
+              "title": "Summary",
+              "type": "string"
+            },
+            "synthesis_activity_id": {
+              "minLength": 1,
+              "title": "Synthesis Activity Id",
+              "type": "string"
+            },
+            "synthesis_id": {
+              "minLength": 1,
+              "title": "Synthesis Id",
+              "type": "string"
+            },
+            "synthesis_model_id": {
+              "minLength": 1,
+              "title": "Synthesis Model Id",
+              "type": "string"
+            },
+            "synthesis_provider_id": {
+              "minLength": 1,
+              "title": "Synthesis Provider Id",
+              "type": "string"
+            },
+            "tenant_id": {
+              "minLength": 1,
+              "title": "Tenant Id",
+              "type": "string"
+            },
+            "topology_revision": {
+              "minLength": 1,
+              "title": "Topology Revision",
+              "type": "string"
+            },
+            "truth_label": {
+              "$ref": "#/definitions/ProviderTruthLabel"
+            },
+            "version_bundle": {
+              "$ref": "#/definitions/VersionBundle"
+            },
+            "workflow_id": {
+              "minLength": 1,
+              "title": "Workflow Id",
+              "type": "string"
+            },
+            "workflow_run_id": {
+              "minLength": 1,
+              "title": "Workflow Run Id",
+              "type": "string"
+            }
+          },
+          "required": [
+            "tenant_id",
+            "incident_id",
+            "run_id",
+            "topology_revision",
+            "case_id",
+            "case_revision",
+            "workflow_id",
+            "workflow_run_id",
+            "created_at",
+            "result_id",
+            "component_id",
+            "source_action_id",
+            "source_idempotency_key",
+            "source_activity_identity",
+            "synthesis_id",
+            "synthesis_activity_id",
+            "synthesis_provider_id",
+            "projection_revision",
+            "evidence_revision",
+            "lifecycle_stage",
+            "disposition",
+            "summary",
+            "truth_label",
+            "version_bundle",
+            "recorded_at"
+          ],
+          "title": "InvestigationResult",
+          "type": "object"
+        },
+        "ProjectionState": {
+          "description": "An enumeration.",
+          "enum": [
+            "INITIALIZING",
+            "ACTIVE",
+            "DEGRADED",
+            "AWAITING_OWNER",
+            "BLOCKED",
+            "NEEDS_HUMAN",
+            "ABSTAINED"
+          ],
+          "title": "ProjectionState",
+          "type": "string"
+        },
+        "ProofScope": {
+          "description": "An enumeration.",
+          "enum": [
+            "CURRENT_OBSERVATION",
+            "REFERENCE_ONLY"
+          ],
+          "title": "ProofScope",
+          "type": "string"
+        },
+        "ProviderTruthLabel": {
+          "description": "Truth label surfaced with every conversation result, never inferred by a client.",
+          "enum": [
+            "DEGRADED",
+            "TEST_DETERMINISTIC",
+            "DEMO",
+            "LIVE"
+          ],
+          "title": "ProviderTruthLabel",
+          "type": "string"
+        },
+        "SourceKind": {
+          "description": "An enumeration.",
+          "enum": [
+            "METRIC",
+            "LOG",
+            "TRACE",
+            "CHANGE",
+            "CONFIG",
+            "TOPOLOGY",
+            "KNOWLEDGE",
+            "SOURCE_READBACK"
+          ],
+          "title": "SourceKind",
+          "type": "string"
+        },
+        "VerificationDecision": {
+          "description": "An enumeration.",
+          "enum": [
+            "PASS",
+            "FAIL",
+            "AMBIGUOUS"
+          ],
+          "title": "VerificationDecision",
+          "type": "string"
+        },
+        "VersionBundle": {
+          "additionalProperties": false,
+          "description": "Server-owned versions pinned to every completed provider conversation.",
+          "properties": {
+            "capability_registry_version": {
+              "default": "capability-registry.v1",
+              "minLength": 1,
+              "title": "Capability Registry Version",
+              "type": "string"
+            },
+            "card_schema_version": {
+              "default": "flowpulse.next-best-action.v1",
+              "minLength": 1,
+              "title": "Card Schema Version",
+              "type": "string"
+            },
+            "context_pack_version": {
+              "default": "conversation-context-pack.v1",
+              "minLength": 1,
+              "title": "Context Pack Version",
+              "type": "string"
+            },
+            "core_policy_version": {
+              "default": "conversation-core-policy.v1",
+              "minLength": 1,
+              "title": "Core Policy Version",
+              "type": "string"
+            },
+            "evidence_schema_version": {
+              "default": "flowpulse.evidence-envelope.v1",
+              "minLength": 1,
+              "title": "Evidence Schema Version",
+              "type": "string"
+            },
+            "model_policy_version": {
+              "default": "provider-policy.v1",
+              "minLength": 1,
+              "title": "Model Policy Version",
+              "type": "string"
+            },
+            "policy_version": {
+              "default": "capability-policy.v1",
+              "minLength": 1,
+              "title": "Policy Version",
+              "type": "string"
+            },
+            "role_prompt_version": {
+              "default": "conversation-role-prompts.v1",
+              "minLength": 1,
+              "title": "Role Prompt Version",
+              "type": "string"
+            },
+            "schema_version": {
+              "default": "flowpulse.version-bundle.v1",
+              "minLength": 1,
+              "title": "Schema Version",
+              "type": "string"
+            },
+            "tool_schema_version": {
+              "default": "capability-tool-schema.v1",
+              "minLength": 1,
+              "title": "Tool Schema Version",
+              "type": "string"
+            },
+            "workflow_version": {
+              "default": "flowpulse.incident-workspace.v2",
+              "minLength": 1,
+              "title": "Workflow Version",
+              "type": "string"
+            }
+          },
+          "title": "VersionBundle",
+          "type": "object"
+        }
+      },
+      "description": "Public run identity and its immutable internal Temporal correlation.",
+      "properties": {
+        "action_revision": {
+          "minimum": 1,
+          "title": "Action Revision",
+          "type": "integer"
+        },
+        "case_id": {
+          "minLength": 1,
+          "title": "Case Id",
+          "type": "string"
+        },
+        "case_revision": {
+          "minimum": 1,
+          "title": "Case Revision",
+          "type": "integer"
+        },
+        "conversation_items": {
+          "items": {
+            "$ref": "#/definitions/ConversationItem"
+          },
+          "maxItems": 128,
+          "title": "Conversation Items",
+          "type": "array"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "degraded_code": {
+          "title": "Degraded Code",
+          "type": "string"
+        },
+        "evidence_refs": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "evidence_revision": {
+          "minimum": 1,
+          "title": "Evidence Revision",
+          "type": "integer"
+        },
+        "gate1_state": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/Gate1ProjectionState"
+            }
+          ],
+          "default": "NONE"
+        },
+        "gate_revision": {
+          "minimum": 1,
+          "title": "Gate Revision",
+          "type": "integer"
+        },
+        "generated_at": {
+          "format": "date-time",
+          "title": "Generated At",
+          "type": "string"
+        },
+        "graph": {
+          "$ref": "#/definitions/IncidentGraph"
+        },
+        "impacted_path": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Impacted Path",
+          "type": "array"
+        },
+        "incident_focus": {
+          "$ref": "#/definitions/IncidentFocus"
+        },
+        "incident_id": {
+          "minLength": 1,
+          "title": "Incident Id",
+          "type": "string"
+        },
+        "investigation_result": {
+          "$ref": "#/definitions/InvestigationResult"
+        },
+        "lifecycle_stage": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/IncidentLifecycleStage"
+            }
+          ],
+          "default": "INVESTIGATE"
+        },
+        "lifecycle_state": {
+          "$ref": "#/definitions/ProjectionState"
+        },
+        "operator_summary": {
+          "default": "An active incident requires attention.",
+          "minLength": 1,
+          "title": "Operator Summary",
+          "type": "string"
+        },
+        "operator_title": {
+          "default": "Incident active",
+          "minLength": 1,
+          "title": "Operator Title",
+          "type": "string"
+        },
+        "projection_revision": {
+          "minimum": 1,
+          "title": "Projection Revision",
+          "type": "integer"
+        },
+        "run_id": {
+          "minLength": 1,
+          "title": "Run Id",
+          "type": "string"
+        },
+        "schema_version": {
+          "default": "flowpulse.incident-projection.v1",
+          "minLength": 1,
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "sequence": {
+          "minimum": 1,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "status": {
+          "minLength": 1,
+          "title": "Status",
+          "type": "string"
+        },
+        "tenant_id": {
+          "minLength": 1,
+          "title": "Tenant Id",
+          "type": "string"
+        },
+        "topology_revision": {
+          "minLength": 1,
+          "title": "Topology Revision",
+          "type": "string"
+        },
+        "workflow_id": {
+          "minLength": 1,
+          "title": "Workflow Id",
+          "type": "string"
+        },
+        "workflow_run_id": {
+          "minLength": 1,
+          "title": "Workflow Run Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tenant_id",
+        "incident_id",
+        "run_id",
+        "topology_revision",
+        "case_id",
+        "case_revision",
+        "workflow_id",
+        "workflow_run_id",
+        "created_at",
+        "projection_revision",
+        "sequence",
+        "lifecycle_state",
+        "status",
+        "generated_at",
+        "graph",
+        "evidence_revision",
+        "gate_revision",
+        "action_revision"
+      ],
+      "title": "IncidentProjection",
+      "type": "object"
+    },
+    "IncidentSummary": {
+      "additionalProperties": false,
+      "definitions": {
+        "IncidentLifecycleStage": {
+          "description": "An enumeration.",
+          "enum": [
+            "INVESTIGATE",
+            "DECIDE",
+            "EXECUTE",
+            "VERIFY",
+            "CLOSED",
+            "NEEDS_HUMAN"
+          ],
+          "title": "IncidentLifecycleStage",
+          "type": "string"
+        },
+        "ProjectionState": {
+          "description": "An enumeration.",
+          "enum": [
+            "INITIALIZING",
+            "ACTIVE",
+            "DEGRADED",
+            "AWAITING_OWNER",
+            "BLOCKED",
+            "NEEDS_HUMAN",
+            "ABSTAINED"
+          ],
+          "title": "ProjectionState",
+          "type": "string"
+        }
+      },
+      "description": "Bounded, operator-facing discovery record derived from a projection.",
+      "properties": {
+        "case_id": {
+          "minLength": 1,
+          "title": "Case Id",
+          "type": "string"
+        },
+        "incident_id": {
+          "minLength": 1,
+          "title": "Incident Id",
+          "type": "string"
+        },
+        "lifecycle_stage": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/IncidentLifecycleStage"
+            }
+          ],
+          "default": "INVESTIGATE"
+        },
+        "lifecycle_state": {
+          "$ref": "#/definitions/ProjectionState"
+        },
+        "projection_revision": {
+          "minimum": 1,
+          "title": "Projection Revision",
+          "type": "integer"
+        },
+        "run_id": {
+          "minLength": 1,
+          "title": "Run Id",
+          "type": "string"
+        },
+        "sequence": {
+          "minimum": 1,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "status": {
+          "minLength": 1,
+          "title": "Status",
+          "type": "string"
+        },
+        "summary": {
+          "minLength": 1,
+          "title": "Summary",
+          "type": "string"
+        },
+        "title": {
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        },
+        "topology_revision": {
+          "minLength": 1,
+          "title": "Topology Revision",
+          "type": "string"
+        }
+      },
+      "required": [
+        "case_id",
+        "incident_id",
+        "run_id",
+        "topology_revision",
+        "projection_revision",
+        "sequence",
+        "lifecycle_state",
+        "status",
+        "title",
+        "summary"
+      ],
+      "title": "IncidentSummary",
+      "type": "object"
+    },
+    "InvestigationResult": {
+      "additionalProperties": false,
+      "definitions": {
+        "CriticOperatorStatus": {
+          "description": "An enumeration.",
+          "enum": [
+            "PASS",
+            "REVISE",
+            "ABSTAIN"
+          ],
+          "title": "CriticOperatorStatus",
+          "type": "string"
+        },
+        "EvidenceAuthority": {
+          "description": "An enumeration.",
+          "enum": [
+            "T0_AUTHORITATIVE_CURRENT",
+            "T1_DIRECT_CURRENT",
+            "T2_DERIVED",
+            "T3_HISTORICAL",
+            "T4_UNTRUSTED"
+          ],
+          "title": "EvidenceAuthority",
+          "type": "string"
+        },
+        "FreshnessStatus": {
+          "description": "An enumeration.",
+          "enum": [
+            "CURRENT",
+            "AGING",
+            "STALE",
+            "UNKNOWN"
+          ],
+          "title": "FreshnessStatus",
+          "type": "string"
+        },
+        "IncidentLifecycleStage": {
+          "description": "An enumeration.",
+          "enum": [
+            "INVESTIGATE",
+            "DECIDE",
+            "EXECUTE",
+            "VERIFY",
+            "CLOSED",
+            "NEEDS_HUMAN"
+          ],
+          "title": "IncidentLifecycleStage",
+          "type": "string"
+        },
+        "InvestigationClaim": {
+          "additionalProperties": false,
+          "properties": {
+            "claim_id": {
+              "minLength": 1,
+              "title": "Claim Id",
+              "type": "string"
+            },
+            "evidence_refs": {
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "maxItems": 32,
+              "minItems": 1,
+              "title": "Evidence Refs",
+              "type": "array"
+            },
+            "kind": {
+              "$ref": "#/definitions/InvestigationClaimKind"
+            },
+            "statement": {
+              "minLength": 1,
+              "title": "Statement",
+              "type": "string"
+            }
+          },
+          "required": [
+            "claim_id",
+            "kind",
+            "statement",
+            "evidence_refs"
+          ],
+          "title": "InvestigationClaim",
+          "type": "object"
+        },
+        "InvestigationClaimKind": {
+          "description": "An enumeration.",
+          "enum": [
+            "OBSERVATION",
+            "HYPOTHESIS"
+          ],
+          "title": "InvestigationClaimKind",
+          "type": "string"
+        },
+        "InvestigationCritic": {
+          "additionalProperties": false,
+          "properties": {
+            "critic_id": {
+              "minLength": 1,
+              "title": "Critic Id",
+              "type": "string"
+            },
+            "decision": {
+              "$ref": "#/definitions/VerificationDecision"
+            },
+            "evidence_refs": {
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "maxItems": 64,
+              "title": "Evidence Refs",
+              "type": "array"
+            },
+            "identity": {
+              "minLength": 1,
+              "title": "Identity",
+              "type": "string"
+            },
+            "operator_status": {
+              "$ref": "#/definitions/CriticOperatorStatus"
+            },
+            "reason_codes": {
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "maxItems": 16,
+              "title": "Reason Codes",
+              "type": "array"
+            },
+            "reviewed_claim_ids": {
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "maxItems": 64,
+              "title": "Reviewed Claim Ids",
+              "type": "array"
+            }
+          },
+          "required": [
+            "critic_id",
+            "identity",
+            "decision",
+            "operator_status"
+          ],
+          "title": "InvestigationCritic",
+          "type": "object"
+        },
+        "InvestigationDisposition": {
+          "description": "An enumeration.",
+          "enum": [
+            "ACCEPTED",
+            "DEGRADED",
+            "ABSTAINED",
+            "CRITIC_REJECTED"
+          ],
+          "title": "InvestigationDisposition",
+          "type": "string"
+        },
+        "InvestigationEvidenceReference": {
+          "additionalProperties": false,
+          "properties": {
+            "authority": {
+              "$ref": "#/definitions/EvidenceAuthority"
+            },
+            "evidence_id": {
+              "minLength": 1,
+              "title": "Evidence Id",
+              "type": "string"
+            },
+            "freshness": {
+              "$ref": "#/definitions/FreshnessStatus"
+            },
+            "observed_at": {
+              "format": "date-time",
+              "title": "Observed At",
+              "type": "string"
+            },
+            "parent_evidence_refs": {
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "title": "Parent Evidence Refs",
+              "type": "array"
+            },
+            "proof_scope": {
+              "$ref": "#/definitions/ProofScope"
+            },
+            "source_kind": {
+              "$ref": "#/definitions/SourceKind"
+            }
+          },
+          "required": [
+            "evidence_id",
+            "source_kind",
+            "observed_at",
+            "freshness",
+            "authority",
+            "proof_scope"
+          ],
+          "title": "InvestigationEvidenceReference",
+          "type": "object"
+        },
+        "ProofScope": {
+          "description": "An enumeration.",
+          "enum": [
+            "CURRENT_OBSERVATION",
+            "REFERENCE_ONLY"
+          ],
+          "title": "ProofScope",
+          "type": "string"
+        },
+        "ProviderTruthLabel": {
+          "description": "Truth label surfaced with every conversation result, never inferred by a client.",
+          "enum": [
+            "DEGRADED",
+            "TEST_DETERMINISTIC",
+            "DEMO",
+            "LIVE"
+          ],
+          "title": "ProviderTruthLabel",
+          "type": "string"
+        },
+        "SourceKind": {
+          "description": "An enumeration.",
+          "enum": [
+            "METRIC",
+            "LOG",
+            "TRACE",
+            "CHANGE",
+            "CONFIG",
+            "TOPOLOGY",
+            "KNOWLEDGE",
+            "SOURCE_READBACK"
+          ],
+          "title": "SourceKind",
+          "type": "string"
+        },
+        "VerificationDecision": {
+          "description": "An enumeration.",
+          "enum": [
+            "PASS",
+            "FAIL",
+            "AMBIGUOUS"
+          ],
+          "title": "VerificationDecision",
+          "type": "string"
+        },
+        "VersionBundle": {
+          "additionalProperties": false,
+          "description": "Server-owned versions pinned to every completed provider conversation.",
+          "properties": {
+            "capability_registry_version": {
+              "default": "capability-registry.v1",
+              "minLength": 1,
+              "title": "Capability Registry Version",
+              "type": "string"
+            },
+            "card_schema_version": {
+              "default": "flowpulse.next-best-action.v1",
+              "minLength": 1,
+              "title": "Card Schema Version",
+              "type": "string"
+            },
+            "context_pack_version": {
+              "default": "conversation-context-pack.v1",
+              "minLength": 1,
+              "title": "Context Pack Version",
+              "type": "string"
+            },
+            "core_policy_version": {
+              "default": "conversation-core-policy.v1",
+              "minLength": 1,
+              "title": "Core Policy Version",
+              "type": "string"
+            },
+            "evidence_schema_version": {
+              "default": "flowpulse.evidence-envelope.v1",
+              "minLength": 1,
+              "title": "Evidence Schema Version",
+              "type": "string"
+            },
+            "model_policy_version": {
+              "default": "provider-policy.v1",
+              "minLength": 1,
+              "title": "Model Policy Version",
+              "type": "string"
+            },
+            "policy_version": {
+              "default": "capability-policy.v1",
+              "minLength": 1,
+              "title": "Policy Version",
+              "type": "string"
+            },
+            "role_prompt_version": {
+              "default": "conversation-role-prompts.v1",
+              "minLength": 1,
+              "title": "Role Prompt Version",
+              "type": "string"
+            },
+            "schema_version": {
+              "default": "flowpulse.version-bundle.v1",
+              "minLength": 1,
+              "title": "Schema Version",
+              "type": "string"
+            },
+            "tool_schema_version": {
+              "default": "capability-tool-schema.v1",
+              "minLength": 1,
+              "title": "Tool Schema Version",
+              "type": "string"
+            },
+            "workflow_version": {
+              "default": "flowpulse.incident-workspace.v2",
+              "minLength": 1,
+              "title": "Workflow Version",
+              "type": "string"
+            }
+          },
+          "title": "VersionBundle",
+          "type": "object"
+        }
+      },
+      "description": "Backend-owned, evidence-backed outcome accepted or rejected by Temporal.",
+      "properties": {
+        "case_id": {
+          "minLength": 1,
+          "title": "Case Id",
+          "type": "string"
+        },
+        "case_revision": {
+          "minimum": 1,
+          "title": "Case Revision",
+          "type": "integer"
+        },
+        "claims": {
+          "items": {
+            "$ref": "#/definitions/InvestigationClaim"
+          },
+          "maxItems": 64,
+          "title": "Claims",
+          "type": "array"
+        },
+        "component_id": {
+          "minLength": 1,
+          "title": "Component Id",
+          "type": "string"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "critic": {
+          "$ref": "#/definitions/InvestigationCritic"
+        },
+        "degraded_code": {
+          "title": "Degraded Code",
+          "type": "string"
+        },
+        "disposition": {
+          "$ref": "#/definitions/InvestigationDisposition"
+        },
+        "evidence": {
+          "items": {
+            "$ref": "#/definitions/InvestigationEvidenceReference"
+          },
+          "maxItems": 64,
+          "title": "Evidence",
+          "type": "array"
+        },
+        "evidence_revision": {
+          "minimum": 1,
+          "title": "Evidence Revision",
+          "type": "integer"
+        },
+        "incident_id": {
+          "minLength": 1,
+          "title": "Incident Id",
+          "type": "string"
+        },
+        "lifecycle_stage": {
+          "$ref": "#/definitions/IncidentLifecycleStage"
+        },
+        "projection_revision": {
+          "minimum": 1,
+          "title": "Projection Revision",
+          "type": "integer"
+        },
+        "recorded_at": {
+          "format": "date-time",
+          "title": "Recorded At",
+          "type": "string"
+        },
+        "result_id": {
+          "minLength": 1,
+          "title": "Result Id",
+          "type": "string"
+        },
+        "run_id": {
+          "minLength": 1,
+          "title": "Run Id",
+          "type": "string"
+        },
+        "schema_version": {
+          "default": "flowpulse.investigation-result.v1",
+          "minLength": 1,
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "source_action_id": {
+          "minLength": 1,
+          "title": "Source Action Id",
+          "type": "string"
+        },
+        "source_activity_identity": {
+          "minLength": 1,
+          "title": "Source Activity Identity",
+          "type": "string"
+        },
+        "source_idempotency_key": {
+          "minLength": 1,
+          "title": "Source Idempotency Key",
+          "type": "string"
+        },
+        "summary": {
+          "minLength": 1,
+          "title": "Summary",
+          "type": "string"
+        },
+        "synthesis_activity_id": {
+          "minLength": 1,
+          "title": "Synthesis Activity Id",
+          "type": "string"
+        },
+        "synthesis_id": {
+          "minLength": 1,
+          "title": "Synthesis Id",
+          "type": "string"
+        },
+        "synthesis_model_id": {
+          "minLength": 1,
+          "title": "Synthesis Model Id",
+          "type": "string"
+        },
+        "synthesis_provider_id": {
+          "minLength": 1,
+          "title": "Synthesis Provider Id",
+          "type": "string"
+        },
+        "tenant_id": {
+          "minLength": 1,
+          "title": "Tenant Id",
+          "type": "string"
+        },
+        "topology_revision": {
+          "minLength": 1,
+          "title": "Topology Revision",
+          "type": "string"
+        },
+        "truth_label": {
+          "$ref": "#/definitions/ProviderTruthLabel"
+        },
+        "version_bundle": {
+          "$ref": "#/definitions/VersionBundle"
+        },
+        "workflow_id": {
+          "minLength": 1,
+          "title": "Workflow Id",
+          "type": "string"
+        },
+        "workflow_run_id": {
+          "minLength": 1,
+          "title": "Workflow Run Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tenant_id",
+        "incident_id",
+        "run_id",
+        "topology_revision",
+        "case_id",
+        "case_revision",
+        "workflow_id",
+        "workflow_run_id",
+        "created_at",
+        "result_id",
+        "component_id",
+        "source_action_id",
+        "source_idempotency_key",
+        "source_activity_identity",
+        "synthesis_id",
+        "synthesis_activity_id",
+        "synthesis_provider_id",
+        "projection_revision",
+        "evidence_revision",
+        "lifecycle_stage",
+        "disposition",
+        "summary",
+        "truth_label",
+        "version_bundle",
+        "recorded_at"
+      ],
+      "title": "InvestigationResult",
+      "type": "object"
+    },
+    "NextBestAction": {
+      "additionalProperties": false,
+      "definitions": {
+        "IncidentLifecycleStage": {
+          "description": "An enumeration.",
+          "enum": [
+            "INVESTIGATE",
+            "DECIDE",
+            "EXECUTE",
+            "VERIFY",
+            "CLOSED",
+            "NEEDS_HUMAN"
+          ],
+          "title": "IncidentLifecycleStage",
+          "type": "string"
+        },
+        "NextBestActionCta": {
+          "description": "An enumeration.",
+          "enum": [
+            "request_gate_1",
+            "run_read_capability",
+            "review_evidence",
+            "request_gate_2",
+            "submit_approved_dry_run"
+          ],
+          "title": "NextBestActionCta",
+          "type": "string"
+        },
+        "NextBestActionTaxonomy": {
+          "description": "An enumeration.",
+          "enum": [
+            "FIND_CAUSE",
+            "MAP_IMPACT",
+            "REVIEW_EVIDENCE",
+            "APPROVE_PLAN",
+            "APPLY_FIX"
+          ],
+          "title": "NextBestActionTaxonomy",
+          "type": "string"
+        }
+      },
+      "description": "A fixed, server-generated recommendation\u2014not an executable command.",
+      "properties": {
+        "action_id": {
+          "minLength": 1,
+          "title": "Action Id",
+          "type": "string"
+        },
+        "action_revision": {
+          "minimum": 1,
+          "title": "Action Revision",
+          "type": "integer"
+        },
+        "capability": {
+          "minLength": 1,
+          "title": "Capability",
+          "type": "string"
+        },
+        "capability_registry_revision": {
+          "minLength": 1,
+          "title": "Capability Registry Revision",
+          "type": "string"
+        },
+        "capability_version": {
+          "minLength": 1,
+          "title": "Capability Version",
+          "type": "string"
+        },
+        "card_version": {
+          "minimum": 1,
+          "title": "Card Version",
+          "type": "integer"
+        },
+        "case_id": {
+          "minLength": 1,
+          "title": "Case Id",
+          "type": "string"
+        },
+        "case_revision": {
+          "minimum": 1,
+          "title": "Case Revision",
+          "type": "integer"
+        },
+        "component_id": {
+          "minLength": 1,
+          "title": "Component Id",
+          "type": "string"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "cta": {
+          "$ref": "#/definitions/NextBestActionCta"
+        },
+        "data_class": {
+          "minLength": 1,
+          "title": "Data Class",
+          "type": "string"
+        },
+        "display_order": {
+          "minimum": 1,
+          "title": "Display Order",
+          "type": "integer"
+        },
+        "evidence_refs": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "evidence_revision": {
+          "minimum": 1,
+          "title": "Evidence Revision",
+          "type": "integer"
+        },
+        "expires_at": {
+          "format": "date-time",
+          "title": "Expires At",
+          "type": "string"
+        },
+        "gate1_lease_id": {
+          "minLength": 1,
+          "title": "Gate1 Lease Id",
+          "type": "string"
+        },
+        "gate_revision": {
+          "minimum": 1,
+          "title": "Gate Revision",
+          "type": "integer"
+        },
+        "incident_id": {
+          "minLength": 1,
+          "title": "Incident Id",
+          "type": "string"
+        },
+        "lifecycle_stage": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/IncidentLifecycleStage"
+            }
+          ],
+          "default": "INVESTIGATE"
+        },
+        "precondition_hash": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Precondition Hash",
+          "type": "string"
+        },
+        "precondition_version": {
+          "minLength": 1,
+          "title": "Precondition Version",
+          "type": "string"
+        },
+        "projection_revision": {
+          "minimum": 1,
+          "title": "Projection Revision",
+          "type": "integer"
+        },
+        "recommended": {
+          "title": "Recommended",
+          "type": "boolean"
+        },
+        "required_gate": {
+          "minLength": 1,
+          "title": "Required Gate",
+          "type": "string"
+        },
+        "required_permission": {
+          "minLength": 1,
+          "title": "Required Permission",
+          "type": "string"
+        },
+        "run_id": {
+          "minLength": 1,
+          "title": "Run Id",
+          "type": "string"
+        },
+        "schema_version": {
+          "default": "flowpulse.next-best-action.v1",
+          "minLength": 1,
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "summary": {
+          "minLength": 1,
+          "title": "Summary",
+          "type": "string"
+        },
+        "taxonomy": {
+          "$ref": "#/definitions/NextBestActionTaxonomy"
+        },
+        "tenant_id": {
+          "minLength": 1,
+          "title": "Tenant Id",
+          "type": "string"
+        },
+        "title": {
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        },
+        "tool_schema_version": {
+          "minLength": 1,
+          "title": "Tool Schema Version",
+          "type": "string"
+        },
+        "topology_revision": {
+          "minLength": 1,
+          "title": "Topology Revision",
+          "type": "string"
+        },
+        "workflow_id": {
+          "minLength": 1,
+          "title": "Workflow Id",
+          "type": "string"
+        },
+        "workflow_run_id": {
+          "minLength": 1,
+          "title": "Workflow Run Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tenant_id",
+        "incident_id",
+        "run_id",
+        "topology_revision",
+        "case_id",
+        "case_revision",
+        "workflow_id",
+        "workflow_run_id",
+        "created_at",
+        "action_id",
+        "card_version",
+        "taxonomy",
+        "title",
+        "cta",
+        "summary",
+        "display_order",
+        "recommended",
+        "projection_revision",
+        "evidence_revision",
+        "gate_revision",
+        "action_revision",
+        "component_id",
+        "capability",
+        "data_class",
+        "required_permission",
+        "required_gate",
+        "tool_schema_version",
+        "capability_registry_revision",
+        "precondition_version",
+        "precondition_hash",
+        "expires_at"
+      ],
+      "title": "NextBestAction",
+      "type": "object"
+    },
+    "NodeExplanationReceipt": {
+      "additionalProperties": false,
+      "definitions": {
+        "ConversationItem": {
+          "additionalProperties": false,
+          "properties": {
+            "case_id": {
+              "minLength": 1,
+              "title": "Case Id",
+              "type": "string"
+            },
+            "case_revision": {
+              "minimum": 1,
+              "title": "Case Revision",
+              "type": "integer"
+            },
+            "component_id": {
+              "minLength": 1,
+              "title": "Component Id",
+              "type": "string"
+            },
+            "created_at": {
+              "format": "date-time",
+              "title": "Created At",
+              "type": "string"
+            },
+            "evidence_refs": {
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "maxItems": 64,
+              "title": "Evidence Refs",
+              "type": "array"
+            },
+            "explanation_id": {
+              "minLength": 1,
+              "title": "Explanation Id",
+              "type": "string"
+            },
+            "incident_id": {
+              "minLength": 1,
+              "title": "Incident Id",
+              "type": "string"
+            },
+            "item_id": {
+              "minLength": 1,
+              "title": "Item Id",
+              "type": "string"
+            },
+            "knowledge_state": {
+              "$ref": "#/definitions/ConversationKnowledgeState"
+            },
+            "projection_revision": {
+              "minimum": 1,
+              "title": "Projection Revision",
+              "type": "integer"
+            },
+            "role": {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/ConversationRole"
+                }
+              ],
+              "default": "CONVERSATION_MANAGER"
+            },
+            "run_id": {
+              "minLength": 1,
+              "title": "Run Id",
+              "type": "string"
+            },
+            "schema_version": {
+              "default": "flowpulse.conversation-item.v1",
+              "minLength": 1,
+              "title": "Schema Version",
+              "type": "string"
+            },
+            "sequence": {
+              "minimum": 1,
+              "title": "Sequence",
+              "type": "integer"
+            },
+            "summary": {
+              "minLength": 1,
+              "title": "Summary",
+              "type": "string"
+            },
+            "tenant_id": {
+              "minLength": 1,
+              "title": "Tenant Id",
+              "type": "string"
+            },
+            "topology_revision": {
+              "minLength": 1,
+              "title": "Topology Revision",
+              "type": "string"
+            },
+            "workflow_id": {
+              "minLength": 1,
+              "title": "Workflow Id",
+              "type": "string"
+            },
+            "workflow_run_id": {
+              "minLength": 1,
+              "title": "Workflow Run Id",
+              "type": "string"
+            }
+          },
+          "required": [
+            "item_id",
+            "sequence",
+            "tenant_id",
+            "incident_id",
+            "run_id",
+            "topology_revision",
+            "case_id",
+            "case_revision",
+            "workflow_id",
+            "workflow_run_id",
+            "projection_revision",
+            "component_id",
+            "explanation_id",
+            "knowledge_state",
+            "summary",
+            "created_at"
+          ],
+          "title": "ConversationItem",
+          "type": "object"
+        },
+        "ConversationKnowledgeState": {
+          "description": "An enumeration.",
+          "enum": [
+            "KNOWN",
+            "UNKNOWN"
+          ],
+          "title": "ConversationKnowledgeState",
+          "type": "string"
+        },
+        "ConversationRole": {
+          "description": "Server-selected roles; provider output never carries one of these values.",
+          "enum": [
+            "CONVERSATION_MANAGER",
+            "EVIDENCE_SPECIALIST",
+            "TOPOLOGY_SPECIALIST"
+          ],
+          "title": "ConversationRole",
+          "type": "string"
+        },
+        "ConversationTrace": {
+          "additionalProperties": false,
+          "description": "Safe durable metadata; raw prompts, credentials, and model payloads stay out.",
+          "properties": {
+            "available_capabilities": {
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "title": "Available Capabilities",
+              "type": "array"
+            },
+            "context_hash": {
+              "pattern": "^[a-f0-9]{64}$",
+              "title": "Context Hash",
+              "type": "string"
+            },
+            "input_tokens": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Input Tokens",
+              "type": "integer"
+            },
+            "model_id": {
+              "title": "Model Id",
+              "type": "string"
+            },
+            "output_tokens": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Output Tokens",
+              "type": "integer"
+            },
+            "prompt_bundles": {
+              "items": {
+                "$ref": "#/definitions/PromptBundle"
+              },
+              "maxItems": 3,
+              "minItems": 1,
+              "title": "Prompt Bundles",
+              "type": "array"
+            },
+            "provider_call_count": {
+              "minimum": 0,
+              "title": "Provider Call Count",
+              "type": "integer"
+            },
+            "provider_id": {
+              "minLength": 1,
+              "title": "Provider Id",
+              "type": "string"
+            },
+            "recorded_context_accesses": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Recorded Context Accesses",
+              "type": "integer"
+            },
+            "schema_version": {
+              "default": "flowpulse.conversation-trace.v1",
+              "minLength": 1,
+              "title": "Schema Version",
+              "type": "string"
+            },
+            "specialist_roles": {
+              "items": {
+                "$ref": "#/definitions/ConversationRole"
+              },
+              "maxItems": 2,
+              "type": "array"
+            },
+            "tool_calls": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Tool Calls",
+              "type": "integer"
+            },
+            "truth_label": {
+              "$ref": "#/definitions/ProviderTruthLabel"
+            },
+            "version_bundle": {
+              "$ref": "#/definitions/VersionBundle"
+            }
+          },
+          "required": [
+            "truth_label",
+            "provider_id",
+            "version_bundle",
+            "prompt_bundles",
+            "context_hash",
+            "provider_call_count"
+          ],
+          "title": "ConversationTrace",
+          "type": "object"
+        },
+        "NodeExplanation": {
+          "additionalProperties": false,
+          "description": "Public run identity and its immutable internal Temporal correlation.",
+          "properties": {
+            "case_id": {
+              "minLength": 1,
+              "title": "Case Id",
+              "type": "string"
+            },
+            "case_revision": {
+              "minimum": 1,
+              "title": "Case Revision",
+              "type": "integer"
+            },
+            "component_id": {
+              "minLength": 1,
+              "title": "Component Id",
+              "type": "string"
+            },
+            "conversation_items": {
+              "items": {
+                "$ref": "#/definitions/ConversationItem"
+              },
+              "maxItems": 16,
+              "title": "Conversation Items",
+              "type": "array"
+            },
+            "conversation_schema_version": {
+              "minLength": 1,
+              "title": "Conversation Schema Version",
+              "type": "string"
+            },
+            "conversation_trace": {
+              "$ref": "#/definitions/ConversationTrace"
+            },
+            "created_at": {
+              "format": "date-time",
+              "title": "Created At",
+              "type": "string"
+            },
+            "degraded_code": {
+              "title": "Degraded Code",
+              "type": "string"
+            },
+            "evidence_refs": {
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "title": "Evidence Refs",
+              "type": "array"
+            },
+            "explanation_id": {
+              "minLength": 1,
+              "title": "Explanation Id",
+              "type": "string"
+            },
+            "fresh_diagnosis_claimed": {
+              "default": false,
+              "title": "Fresh Diagnosis Claimed",
+              "type": "boolean"
+            },
+            "fresh_read_performed": {
+              "default": false,
+              "title": "Fresh Read Performed",
+              "type": "boolean"
+            },
+            "incident_id": {
+              "minLength": 1,
+              "title": "Incident Id",
+              "type": "string"
+            },
+            "projection_revision": {
+              "minimum": 1,
+              "title": "Projection Revision",
+              "type": "integer"
+            },
+            "run_id": {
+              "minLength": 1,
+              "title": "Run Id",
+              "type": "string"
+            },
+            "selection_key": {
+              "minLength": 1,
+              "title": "Selection Key",
+              "type": "string"
+            },
+            "state": {
+              "$ref": "#/definitions/NodeExplanationState"
+            },
+            "summary": {
+              "minLength": 1,
+              "title": "Summary",
+              "type": "string"
+            },
+            "tenant_id": {
+              "minLength": 1,
+              "title": "Tenant Id",
+              "type": "string"
+            },
+            "topology_revision": {
+              "minLength": 1,
+              "title": "Topology Revision",
+              "type": "string"
+            },
+            "truth_label": {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/ProviderTruthLabel"
+                }
+              ],
+              "default": "DEGRADED"
+            },
+            "workflow_id": {
+              "minLength": 1,
+              "title": "Workflow Id",
+              "type": "string"
+            },
+            "workflow_run_id": {
+              "minLength": 1,
+              "title": "Workflow Run Id",
+              "type": "string"
+            }
+          },
+          "required": [
+            "tenant_id",
+            "incident_id",
+            "run_id",
+            "topology_revision",
+            "case_id",
+            "case_revision",
+            "workflow_id",
+            "workflow_run_id",
+            "created_at",
+            "explanation_id",
+            "selection_key",
+            "projection_revision",
+            "component_id",
+            "conversation_schema_version",
+            "state",
+            "summary"
+          ],
+          "title": "NodeExplanation",
+          "type": "object"
+        },
+        "NodeExplanationState": {
+          "description": "An enumeration.",
+          "enum": [
+            "DEGRADED",
+            "COMPLETED",
+            "BLOCKED"
+          ],
+          "title": "NodeExplanationState",
+          "type": "string"
+        },
+        "PromptBundle": {
+          "additionalProperties": false,
+          "properties": {
+            "layers": {
+              "items": {
+                "$ref": "#/definitions/PromptLayer"
+              },
+              "maxItems": 3,
+              "minItems": 2,
+              "title": "Layers",
+              "type": "array"
+            },
+            "prompt_hash": {
+              "pattern": "^[a-f0-9]{64}$",
+              "title": "Prompt Hash",
+              "type": "string"
+            },
+            "role": {
+              "$ref": "#/definitions/ConversationRole"
+            },
+            "schema_version": {
+              "default": "flowpulse.prompt-bundle.v1",
+              "minLength": 1,
+              "title": "Schema Version",
+              "type": "string"
+            }
+          },
+          "required": [
+            "role",
+            "layers",
+            "prompt_hash"
+          ],
+          "title": "PromptBundle",
+          "type": "object"
+        },
+        "PromptLayer": {
+          "additionalProperties": false,
+          "properties": {
+            "content_hash": {
+              "pattern": "^[a-f0-9]{64}$",
+              "title": "Content Hash",
+              "type": "string"
+            },
+            "layer": {
+              "minLength": 1,
+              "title": "Layer",
+              "type": "string"
+            },
+            "version": {
+              "minLength": 1,
+              "title": "Version",
+              "type": "string"
+            }
+          },
+          "required": [
+            "layer",
+            "version",
+            "content_hash"
+          ],
+          "title": "PromptLayer",
+          "type": "object"
+        },
+        "ProviderTruthLabel": {
+          "description": "Truth label surfaced with every conversation result, never inferred by a client.",
+          "enum": [
+            "DEGRADED",
+            "TEST_DETERMINISTIC",
+            "DEMO",
+            "LIVE"
+          ],
+          "title": "ProviderTruthLabel",
+          "type": "string"
+        },
+        "VersionBundle": {
+          "additionalProperties": false,
+          "description": "Server-owned versions pinned to every completed provider conversation.",
+          "properties": {
+            "capability_registry_version": {
+              "default": "capability-registry.v1",
+              "minLength": 1,
+              "title": "Capability Registry Version",
+              "type": "string"
+            },
+            "card_schema_version": {
+              "default": "flowpulse.next-best-action.v1",
+              "minLength": 1,
+              "title": "Card Schema Version",
+              "type": "string"
+            },
+            "context_pack_version": {
+              "default": "conversation-context-pack.v1",
+              "minLength": 1,
+              "title": "Context Pack Version",
+              "type": "string"
+            },
+            "core_policy_version": {
+              "default": "conversation-core-policy.v1",
+              "minLength": 1,
+              "title": "Core Policy Version",
+              "type": "string"
+            },
+            "evidence_schema_version": {
+              "default": "flowpulse.evidence-envelope.v1",
+              "minLength": 1,
+              "title": "Evidence Schema Version",
+              "type": "string"
+            },
+            "model_policy_version": {
+              "default": "provider-policy.v1",
+              "minLength": 1,
+              "title": "Model Policy Version",
+              "type": "string"
+            },
+            "policy_version": {
+              "default": "capability-policy.v1",
+              "minLength": 1,
+              "title": "Policy Version",
+              "type": "string"
+            },
+            "role_prompt_version": {
+              "default": "conversation-role-prompts.v1",
+              "minLength": 1,
+              "title": "Role Prompt Version",
+              "type": "string"
+            },
+            "schema_version": {
+              "default": "flowpulse.version-bundle.v1",
+              "minLength": 1,
+              "title": "Schema Version",
+              "type": "string"
+            },
+            "tool_schema_version": {
+              "default": "capability-tool-schema.v1",
+              "minLength": 1,
+              "title": "Tool Schema Version",
+              "type": "string"
+            },
+            "workflow_version": {
+              "default": "flowpulse.incident-workspace.v2",
+              "minLength": 1,
+              "title": "Workflow Version",
+              "type": "string"
+            }
+          },
+          "title": "VersionBundle",
+          "type": "object"
+        }
+      },
+      "properties": {
+        "explanation": {
+          "$ref": "#/definitions/NodeExplanation"
+        },
+        "reused": {
+          "title": "Reused",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "explanation",
+        "reused"
+      ],
+      "title": "NodeExplanationReceipt",
+      "type": "object"
+    },
+    "NodeExplanationStart": {
+      "additionalProperties": false,
+      "properties": {
+        "component_id": {
+          "minLength": 1,
+          "title": "Component Id",
+          "type": "string"
+        },
+        "conversation_schema_version": {
+          "default": "flowpulse.node-explanation.v1",
+          "minLength": 1,
+          "title": "Conversation Schema Version",
+          "type": "string"
+        },
+        "idempotency_key": {
+          "minLength": 1,
+          "title": "Idempotency Key",
+          "type": "string"
+        },
+        "incident_id": {
+          "minLength": 1,
+          "title": "Incident Id",
+          "type": "string"
+        },
+        "projection_revision": {
+          "minimum": 1,
+          "title": "Projection Revision",
+          "type": "integer"
+        },
+        "run_id": {
+          "minLength": 1,
+          "title": "Run Id",
+          "type": "string"
+        },
+        "topology_revision": {
+          "minLength": 1,
+          "title": "Topology Revision",
+          "type": "string"
+        }
+      },
+      "required": [
+        "incident_id",
+        "run_id",
+        "topology_revision",
+        "projection_revision",
+        "component_id",
+        "idempotency_key"
+      ],
+      "title": "NodeExplanationStart",
+      "type": "object"
+    },
+    "WorkspaceActionReceipt": {
+      "additionalProperties": false,
+      "description": "Public run identity and its immutable internal Temporal correlation.",
+      "properties": {
+        "action_id": {
+          "minLength": 1,
+          "title": "Action Id",
+          "type": "string"
+        },
+        "case_id": {
+          "minLength": 1,
+          "title": "Case Id",
+          "type": "string"
+        },
+        "case_revision": {
+          "minimum": 1,
+          "title": "Case Revision",
+          "type": "integer"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "external_write_performed": {
+          "default": false,
+          "title": "External Write Performed",
+          "type": "boolean"
+        },
+        "gate1_lease_id": {
+          "minLength": 1,
+          "title": "Gate1 Lease Id",
+          "type": "string"
+        },
+        "idempotency_key": {
+          "minLength": 1,
+          "title": "Idempotency Key",
+          "type": "string"
+        },
+        "incident_id": {
+          "minLength": 1,
+          "title": "Incident Id",
+          "type": "string"
+        },
+        "reason": {
+          "minLength": 1,
+          "title": "Reason",
+          "type": "string"
+        },
+        "run_id": {
+          "minLength": 1,
+          "title": "Run Id",
+          "type": "string"
+        },
+        "status": {
+          "minLength": 1,
+          "title": "Status",
+          "type": "string"
+        },
+        "tenant_id": {
+          "minLength": 1,
+          "title": "Tenant Id",
+          "type": "string"
+        },
+        "topology_revision": {
+          "minLength": 1,
+          "title": "Topology Revision",
+          "type": "string"
+        },
+        "workflow_id": {
+          "minLength": 1,
+          "title": "Workflow Id",
+          "type": "string"
+        },
+        "workflow_run_id": {
+          "minLength": 1,
+          "title": "Workflow Run Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tenant_id",
+        "incident_id",
+        "run_id",
+        "topology_revision",
+        "case_id",
+        "case_revision",
+        "workflow_id",
+        "workflow_run_id",
+        "created_at",
+        "action_id",
+        "idempotency_key",
+        "status",
+        "reason"
+      ],
+      "title": "WorkspaceActionReceipt",
+      "type": "object"
+    },
+    "WorkspaceIntake": {
+      "additionalProperties": false,
+      "description": "Browser-safe intake: tenant and actor come only from trusted auth.",
+      "properties": {
+        "affected_entities": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Affected Entities",
+          "type": "array"
+        },
+        "environment": {
+          "minLength": 1,
+          "title": "Environment",
+          "type": "string"
+        },
+        "incident_id": {
+          "minLength": 1,
+          "title": "Incident Id",
+          "type": "string"
+        },
+        "observed_at": {
+          "format": "date-time",
+          "title": "Observed At",
+          "type": "string"
+        },
+        "severity": {
+          "minLength": 1,
+          "title": "Severity",
+          "type": "string"
+        },
+        "summary": {
+          "minLength": 1,
+          "title": "Summary",
+          "type": "string"
+        },
+        "title": {
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "incident_id",
+        "title",
+        "severity",
+        "environment",
+        "affected_entities",
+        "observed_at",
+        "summary"
+      ],
+      "title": "WorkspaceIntake",
+      "type": "object"
+    }
+  },
+  "provider_note": "Standard and demo provider modes return typed degraded state when no provider is configured. Deterministic output is test-only dependency injection and is labeled TEST_DETERMINISTIC; explicit configured providers are labeled LIVE.",
+  "request_examples": {
+    "ActionInvocationCommand": {
+      "action_id": "action-example-gate1",
+      "idempotency_key": "example-action-01",
+      "incident_id": "incident-example",
+      "projection_revision": 1,
+      "run_id": "run-example-01",
+      "topology_revision": "topology-v1-example"
+    },
+    "NodeExplanationStart": {
+      "component_id": "checkout",
+      "conversation_schema_version": "flowpulse.node-explanation.v1",
+      "idempotency_key": "example-click-01",
+      "incident_id": "incident-example",
+      "projection_revision": 1,
+      "run_id": "run-example-01",
+      "topology_revision": "topology-v1-example"
+    },
+    "WorkspaceIntake": {
+      "affected_entities": [
+        "checkout"
+      ],
+      "environment": "local",
+      "incident_id": "incident-example",
+      "observed_at": "2026-07-26 00:00:00+00:00",
+      "severity": "SEV2",
+      "summary": "Safe schema example.",
+      "title": "Checkout latency"
+    }
+  },
+  "response_examples": {
+    "ComponentContext": {
+      "case_id": "workspace-case-example",
+      "case_revision": 1,
+      "component": {
+        "canonical_identity": "service:frontend",
+        "classification_reason": null,
+        "component_id": "frontend",
+        "display_name": "Frontend",
+        "impact_status": "impacted",
+        "membership": "CONNECTED",
+        "runtime_status": "degraded"
+      },
+      "created_at": "2026-07-26 00:00:00+00:00",
+      "evidence_refs": [],
+      "fresh_read_performed": false,
+      "incident_id": "incident-example",
+      "projection_revision": 1,
+      "run_id": "run-example-01",
+      "schema_version": "flowpulse.component-context.v1",
+      "tenant_id": "tenant-example",
+      "topology_revision": "topology-v1-example",
+      "workflow_id": "flowpulse.incident-workspace:tenant-example:run-example-01",
+      "workflow_run_id": "temporal-run-example"
+    },
+    "IncidentEvent": {
+      "case_id": "workspace-case-example",
+      "case_revision": 1,
+      "created_at": "2026-07-26 00:00:00+00:00",
+      "event_type": "workspace.initialized",
+      "evidence_refs": [],
+      "explanation_status": null,
+      "incident_id": "incident-example",
+      "occurred_at": "2026-07-26 00:00:00+00:00",
+      "payload": {
+        "state": "provider_unavailable"
+      },
+      "projection_revision": 1,
+      "run_id": "run-example-01",
+      "schema_version": "flowpulse.incident-event.v1",
+      "sequence": 1,
+      "tenant_id": "tenant-example",
+      "topology_revision": "topology-v1-example",
+      "workflow_id": "flowpulse.incident-workspace:tenant-example:run-example-01",
+      "workflow_run_id": "temporal-run-example"
+    },
+    "IncidentNotification": {
+      "event_type": "incident.accepted",
+      "incident": {
+        "case_id": "workspace-case-example",
+        "incident_id": "incident-example",
+        "lifecycle_stage": "INVESTIGATE",
+        "lifecycle_state": "DEGRADED",
+        "projection_revision": 1,
+        "run_id": "run-example-01",
+        "sequence": 1,
+        "status": "provider_unavailable",
+        "summary": "Checkout requests are degraded.",
+        "title": "Checkout latency",
+        "topology_revision": "topology-v1-example"
+      },
+      "notification_id": "2026-07-26T00:00:00+00:00|run-example-01|0000000001",
+      "occurred_at": "2026-07-26 00:00:00+00:00"
+    },
+    "IncidentProjection": {
+      "action_revision": 1,
+      "case_id": "workspace-case-example",
+      "case_revision": 1,
+      "conversation_items": [],
+      "created_at": "2026-07-26 00:00:00+00:00",
+      "degraded_code": "provider_unavailable",
+      "evidence_refs": [],
+      "evidence_revision": 1,
+      "gate1_state": "NONE",
+      "gate_revision": 1,
+      "generated_at": "2026-07-26 00:00:00+00:00",
+      "graph": {
+        "edges": [
+          {
+            "edge_id": "frontend->checkout",
+            "source_component_id": "frontend",
+            "status": "impacted",
+            "target_component_id": "checkout"
+          }
+        ],
+        "nodes": [
+          {
+            "canonical_identity": "service:frontend",
+            "classification_reason": null,
+            "component_id": "frontend",
+            "display_name": "Frontend",
+            "impact_status": "impacted",
+            "membership": "CONNECTED",
+            "runtime_status": "degraded"
+          },
+          {
+            "canonical_identity": "service:checkout",
+            "classification_reason": null,
+            "component_id": "checkout",
+            "display_name": "Checkout",
+            "impact_status": "impacted",
+            "membership": "CONNECTED",
+            "runtime_status": "degraded"
+          }
+        ]
+      },
+      "impacted_path": [
+        "frontend",
+        "checkout"
+      ],
+      "incident_focus": {
+        "affected_user_path_status": "KNOWN",
+        "affected_user_path_summary": "Checkout requests on the affected user path are degraded.",
+        "canonical_identity": "service:checkout",
+        "component_id": "checkout",
+        "incident_relation_edge_ids": [
+          "frontend->checkout"
+        ],
+        "incident_relation_provenance_refs": [
+          "topology-fixture:example#relation/frontend->checkout"
+        ],
+        "rationale": "Checkout is the first shared service on the audited affected user path."
+      },
+      "incident_id": "incident-example",
+      "investigation_result": null,
+      "lifecycle_stage": "INVESTIGATE",
+      "lifecycle_state": "DEGRADED",
+      "operator_summary": "Checkout requests are degraded.",
+      "operator_title": "Checkout latency",
+      "projection_revision": 1,
+      "run_id": "run-example-01",
+      "schema_version": "flowpulse.incident-projection.v1",
+      "sequence": 1,
+      "status": "provider_unavailable",
+      "tenant_id": "tenant-example",
+      "topology_revision": "topology-v1-example",
+      "workflow_id": "flowpulse.incident-workspace:tenant-example:run-example-01",
+      "workflow_run_id": "temporal-run-example"
+    },
+    "IncidentProjectionDecide": {
+      "action_revision": 4,
+      "case_id": "workspace-case-example",
+      "case_revision": 1,
+      "conversation_items": [
+        {
+          "case_id": "workspace-case-example",
+          "case_revision": 1,
+          "component_id": "checkout",
+          "created_at": "2026-07-26 00:00:00+00:00",
+          "evidence_refs": [],
+          "explanation_id": "node-explanation-example",
+          "incident_id": "incident-example",
+          "item_id": "conversation-item-example",
+          "knowledge_state": "UNKNOWN",
+          "projection_revision": 1,
+          "role": "CONVERSATION_MANAGER",
+          "run_id": "run-example-01",
+          "schema_version": "flowpulse.conversation-item.v1",
+          "sequence": 2,
+          "summary": "No provider or read capability is configured; no fresh read or diagnosis was performed.",
+          "tenant_id": "tenant-example",
+          "topology_revision": "topology-v1-example",
+          "workflow_id": "flowpulse.incident-workspace:tenant-example:run-example-01",
+          "workflow_run_id": "temporal-run-example"
+        }
+      ],
+      "created_at": "2026-07-26 00:00:00+00:00",
+      "degraded_code": null,
+      "evidence_refs": [
+        "evidence-checkout-latency"
+      ],
+      "evidence_revision": 2,
+      "gate1_state": "CONSUMED",
+      "gate_revision": 1,
+      "generated_at": "2026-07-26 00:00:00+00:00",
+      "graph": {
+        "edges": [
+          {
+            "edge_id": "frontend->checkout",
+            "source_component_id": "frontend",
+            "status": "impacted",
+            "target_component_id": "checkout"
+          }
+        ],
+        "nodes": [
+          {
+            "canonical_identity": "service:frontend",
+            "classification_reason": null,
+            "component_id": "frontend",
+            "display_name": "Frontend",
+            "impact_status": "impacted",
+            "membership": "CONNECTED",
+            "runtime_status": "degraded"
+          },
+          {
+            "canonical_identity": "service:checkout",
+            "classification_reason": null,
+            "component_id": "checkout",
+            "display_name": "Checkout",
+            "impact_status": "impacted",
+            "membership": "CONNECTED",
+            "runtime_status": "degraded"
+          }
+        ]
+      },
+      "impacted_path": [
+        "frontend",
+        "checkout"
+      ],
+      "incident_focus": {
+        "affected_user_path_status": "KNOWN",
+        "affected_user_path_summary": "Checkout requests on the affected user path are degraded.",
+        "canonical_identity": "service:checkout",
+        "component_id": "checkout",
+        "incident_relation_edge_ids": [
+          "frontend->checkout"
+        ],
+        "incident_relation_provenance_refs": [
+          "topology-fixture:example#relation/frontend->checkout"
+        ],
+        "rationale": "Checkout is the first shared service on the audited affected user path."
+      },
+      "incident_id": "incident-example",
+      "investigation_result": {
+        "case_id": "workspace-case-example",
+        "case_revision": 1,
+        "claims": [
+          {
+            "claim_id": "claim-checkout-latency",
+            "evidence_refs": [
+              "evidence-checkout-latency"
+            ],
+            "kind": "OBSERVATION",
+            "statement": "Current checkout latency is elevated."
+          },
+          {
+            "claim_id": "investigation-claim-example",
+            "evidence_refs": [
+              "evidence-checkout-latency"
+            ],
+            "kind": "HYPOTHESIS",
+            "statement": "The checkout service is constrained by the observed current signal."
+          }
+        ],
+        "component_id": "checkout",
+        "created_at": "2026-07-26 00:00:00+00:00",
+        "critic": {
+          "critic_id": "investigation-critic-example",
+          "decision": "PASS",
+          "evidence_refs": [
+            "evidence-checkout-latency"
+          ],
+          "identity": "independent-example-critic",
+          "operator_status": "PASS",
+          "reason_codes": [
+            "current_evidence_supports_candidate"
+          ],
+          "reviewed_claim_ids": [
+            "claim-checkout-latency",
+            "investigation-claim-example"
+          ]
+        },
+        "degraded_code": null,
+        "disposition": "ACCEPTED",
+        "evidence": [
+          {
+            "authority": "T1_DIRECT_CURRENT",
+            "evidence_id": "evidence-checkout-latency",
+            "freshness": "CURRENT",
+            "observed_at": "2026-07-26 00:00:00+00:00",
+            "parent_evidence_refs": [],
+            "proof_scope": "CURRENT_OBSERVATION",
+            "source_kind": "METRIC"
+          }
+        ],
+        "evidence_revision": 2,
+        "incident_id": "incident-example",
+        "lifecycle_stage": "DECIDE",
+        "projection_revision": 4,
+        "recorded_at": "2026-07-26 00:00:00+00:00",
+        "result_id": "investigation-result-example",
+        "run_id": "run-example-01",
+        "schema_version": "flowpulse.investigation-result.v1",
+        "source_action_id": "action-example-read",
+        "source_activity_identity": "workspace-action:temporal-run-example:command-hash-example",
+        "source_idempotency_key": "example-read-01",
+        "summary": "Current evidence supports a bounded checkout degradation hypothesis.",
+        "synthesis_activity_id": "investigation-synthesis:activity-example",
+        "synthesis_id": "investigation-synthesis-example",
+        "synthesis_model_id": "example-model",
+        "synthesis_provider_id": "configured-example-provider",
+        "tenant_id": "tenant-example",
+        "topology_revision": "topology-v1-example",
+        "truth_label": "LIVE",
+        "version_bundle": {
+          "capability_registry_version": "capability-registry.v1",
+          "card_schema_version": "flowpulse.next-best-action.v1",
+          "context_pack_version": "conversation-context-pack.v1",
+          "core_policy_version": "conversation-core-policy.v1",
+          "evidence_schema_version": "flowpulse.evidence-envelope.v1",
+          "model_policy_version": "provider-policy.v1",
+          "policy_version": "capability-policy.v1",
+          "role_prompt_version": "conversation-role-prompts.v1",
+          "schema_version": "flowpulse.version-bundle.v1",
+          "tool_schema_version": "capability-tool-schema.v1",
+          "workflow_version": "flowpulse.incident-workspace.v2"
+        },
+        "workflow_id": "flowpulse.incident-workspace:tenant-example:run-example-01",
+        "workflow_run_id": "temporal-run-example"
+      },
+      "lifecycle_stage": "DECIDE",
+      "lifecycle_state": "ACTIVE",
+      "operator_summary": "Checkout requests are degraded.",
+      "operator_title": "Checkout latency",
+      "projection_revision": 4,
+      "run_id": "run-example-01",
+      "schema_version": "flowpulse.incident-projection.v1",
+      "sequence": 4,
+      "status": "investigation_accepted",
+      "tenant_id": "tenant-example",
+      "topology_revision": "topology-v1-example",
+      "workflow_id": "flowpulse.incident-workspace:tenant-example:run-example-01",
+      "workflow_run_id": "temporal-run-example"
+    },
+    "IncidentSummary": {
+      "case_id": "workspace-case-example",
+      "incident_id": "incident-example",
+      "lifecycle_stage": "INVESTIGATE",
+      "lifecycle_state": "DEGRADED",
+      "projection_revision": 1,
+      "run_id": "run-example-01",
+      "sequence": 1,
+      "status": "provider_unavailable",
+      "summary": "Checkout requests are degraded.",
+      "title": "Checkout latency",
+      "topology_revision": "topology-v1-example"
+    },
+    "InvestigationResult": {
+      "case_id": "workspace-case-example",
+      "case_revision": 1,
+      "claims": [
+        {
+          "claim_id": "claim-checkout-latency",
+          "evidence_refs": [
+            "evidence-checkout-latency"
+          ],
+          "kind": "OBSERVATION",
+          "statement": "Current checkout latency is elevated."
+        },
+        {
+          "claim_id": "investigation-claim-example",
+          "evidence_refs": [
+            "evidence-checkout-latency"
+          ],
+          "kind": "HYPOTHESIS",
+          "statement": "The checkout service is constrained by the observed current signal."
+        }
+      ],
+      "component_id": "checkout",
+      "created_at": "2026-07-26 00:00:00+00:00",
+      "critic": {
+        "critic_id": "investigation-critic-example",
+        "decision": "PASS",
+        "evidence_refs": [
+          "evidence-checkout-latency"
+        ],
+        "identity": "independent-example-critic",
+        "operator_status": "PASS",
+        "reason_codes": [
+          "current_evidence_supports_candidate"
+        ],
+        "reviewed_claim_ids": [
+          "claim-checkout-latency",
+          "investigation-claim-example"
+        ]
+      },
+      "degraded_code": null,
+      "disposition": "ACCEPTED",
+      "evidence": [
+        {
+          "authority": "T1_DIRECT_CURRENT",
+          "evidence_id": "evidence-checkout-latency",
+          "freshness": "CURRENT",
+          "observed_at": "2026-07-26 00:00:00+00:00",
+          "parent_evidence_refs": [],
+          "proof_scope": "CURRENT_OBSERVATION",
+          "source_kind": "METRIC"
+        }
+      ],
+      "evidence_revision": 2,
+      "incident_id": "incident-example",
+      "lifecycle_stage": "DECIDE",
+      "projection_revision": 4,
+      "recorded_at": "2026-07-26 00:00:00+00:00",
+      "result_id": "investigation-result-example",
+      "run_id": "run-example-01",
+      "schema_version": "flowpulse.investigation-result.v1",
+      "source_action_id": "action-example-read",
+      "source_activity_identity": "workspace-action:temporal-run-example:command-hash-example",
+      "source_idempotency_key": "example-read-01",
+      "summary": "Current evidence supports a bounded checkout degradation hypothesis.",
+      "synthesis_activity_id": "investigation-synthesis:activity-example",
+      "synthesis_id": "investigation-synthesis-example",
+      "synthesis_model_id": "example-model",
+      "synthesis_provider_id": "configured-example-provider",
+      "tenant_id": "tenant-example",
+      "topology_revision": "topology-v1-example",
+      "truth_label": "LIVE",
+      "version_bundle": {
+        "capability_registry_version": "capability-registry.v1",
+        "card_schema_version": "flowpulse.next-best-action.v1",
+        "context_pack_version": "conversation-context-pack.v1",
+        "core_policy_version": "conversation-core-policy.v1",
+        "evidence_schema_version": "flowpulse.evidence-envelope.v1",
+        "model_policy_version": "provider-policy.v1",
+        "policy_version": "capability-policy.v1",
+        "role_prompt_version": "conversation-role-prompts.v1",
+        "schema_version": "flowpulse.version-bundle.v1",
+        "tool_schema_version": "capability-tool-schema.v1",
+        "workflow_version": "flowpulse.incident-workspace.v2"
+      },
+      "workflow_id": "flowpulse.incident-workspace:tenant-example:run-example-01",
+      "workflow_run_id": "temporal-run-example"
+    },
+    "NextBestAction": {
+      "action_id": "action-example-gate1",
+      "action_revision": 1,
+      "capability": "METRICS",
+      "capability_registry_revision": "capability-policy.v2",
+      "capability_version": null,
+      "card_version": 1,
+      "case_id": "workspace-case-example",
+      "case_revision": 1,
+      "component_id": "checkout",
+      "created_at": "2026-07-26 00:00:00+00:00",
+      "cta": "request_gate_1",
+      "data_class": "CURRENT_INCIDENT",
+      "display_order": 1,
+      "evidence_refs": [],
+      "evidence_revision": 1,
+      "expires_at": "2026-07-26 00:00:00+00:00",
+      "gate1_lease_id": null,
+      "gate_revision": 1,
+      "incident_id": "incident-example",
+      "lifecycle_stage": "INVESTIGATE",
+      "precondition_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "precondition_version": "workspace-precondition.v1",
+      "projection_revision": 1,
+      "recommended": true,
+      "required_gate": "GATE1",
+      "required_permission": "incident:read",
+      "run_id": "run-example-01",
+      "schema_version": "flowpulse.next-best-action.v1",
+      "summary": "Request a bounded fresh read for the current incident.",
+      "taxonomy": "FIND_CAUSE",
+      "tenant_id": "tenant-example",
+      "title": "Find Cause",
+      "tool_schema_version": "metrics-input.v1",
+      "topology_revision": "topology-v1-example",
+      "workflow_id": "flowpulse.incident-workspace:tenant-example:run-example-01",
+      "workflow_run_id": "temporal-run-example"
+    },
+    "NodeExplanationReceipt": {
+      "explanation": {
+        "case_id": "workspace-case-example",
+        "case_revision": 1,
+        "component_id": "checkout",
+        "conversation_items": [
+          {
+            "case_id": "workspace-case-example",
+            "case_revision": 1,
+            "component_id": "checkout",
+            "created_at": "2026-07-26 00:00:00+00:00",
+            "evidence_refs": [],
+            "explanation_id": "node-explanation-example",
+            "incident_id": "incident-example",
+            "item_id": "conversation-item-example",
+            "knowledge_state": "UNKNOWN",
+            "projection_revision": 1,
+            "role": "CONVERSATION_MANAGER",
+            "run_id": "run-example-01",
+            "schema_version": "flowpulse.conversation-item.v1",
+            "sequence": 2,
+            "summary": "No provider or read capability is configured; no fresh read or diagnosis was performed.",
+            "tenant_id": "tenant-example",
+            "topology_revision": "topology-v1-example",
+            "workflow_id": "flowpulse.incident-workspace:tenant-example:run-example-01",
+            "workflow_run_id": "temporal-run-example"
+          }
+        ],
+        "conversation_schema_version": "flowpulse.node-explanation.v1",
+        "conversation_trace": null,
+        "created_at": "2026-07-26 00:00:00+00:00",
+        "degraded_code": "provider_unavailable",
+        "evidence_refs": [],
+        "explanation_id": "node-explanation-example",
+        "fresh_diagnosis_claimed": false,
+        "fresh_read_performed": false,
+        "incident_id": "incident-example",
+        "projection_revision": 1,
+        "run_id": "run-example-01",
+        "selection_key": "node_explanation:tenant-example:run-example-01:1:checkout:flowpulse.node-explanation.v1",
+        "state": "DEGRADED",
+        "summary": "No provider or read capability is configured; no fresh read or diagnosis was performed.",
+        "tenant_id": "tenant-example",
+        "topology_revision": "topology-v1-example",
+        "truth_label": "DEGRADED",
+        "workflow_id": "flowpulse.incident-workspace:tenant-example:run-example-01",
+        "workflow_run_id": "temporal-run-example"
+      },
+      "reused": false
+    },
+    "WorkspaceActionReceipt": {
+      "action_id": "action-example-gate1",
+      "case_id": "workspace-case-example",
+      "case_revision": 1,
+      "created_at": "2026-07-26 00:00:00+00:00",
+      "external_write_performed": false,
+      "gate1_lease_id": "gate1-example",
+      "idempotency_key": "example-action-01",
+      "incident_id": "incident-example",
+      "reason": "temporal_gate1_lease_accepted",
+      "run_id": "run-example-01",
+      "status": "GATE1_GRANTED",
+      "tenant_id": "tenant-example",
+      "topology_revision": "topology-v1-example",
+      "workflow_id": "flowpulse.incident-workspace:tenant-example:run-example-01",
+      "workflow_run_id": "temporal-run-example"
+    }
+  },
+  "schema_version": "flowpulse.incident-workspace.examples.v1"
+}

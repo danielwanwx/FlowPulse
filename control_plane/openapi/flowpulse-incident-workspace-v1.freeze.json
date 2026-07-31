@@ -1,0 +1,10 @@
+{
+  "artifacts": {
+    "flowpulse-incident-workspace-v1.examples.json": "2ffbc5e19ba54f07219f0b9ca164b4a7c7f7c5e587b248cf27a35f09327e5003",
+    "flowpulse-incident-workspace-v1.openapi.json": "be260bc4da0ce19f115acd18a3b2e6cac4fef5317ca657da79812af86e4b6573"
+  },
+  "generated_at": "deterministic-from-source",
+  "hash_algorithm": "sha256",
+  "producer_implementation_git_sha": "a1ccd415fe8f3e263ae03391f5e6f51fbfb26cd0",
+  "schema_version": "flowpulse.incident-workspace.freeze.v1"
+}

@@ -1,0 +1,27 @@
+{
+  "histories": [
+    {
+      "event_count": 28,
+      "expected_outcome": "degraded_node_explanation_without_fresh_read_or_diagnosis",
+      "filename": "workspace_node_explanation_degraded.json",
+      "name": "workspace_node_explanation_degraded",
+      "sha256": "245d4ade370927aee35df2d490c600d47457bdcd5157e025cdb47ac19b5e2a48"
+    }
+  ],
+  "producer": {
+    "git_sha": "94338be76b0cb652d59415066f2c2ca22a0ad7b1",
+    "image_id": "sha256:b21281b29fca5003d0f277eb6edf93fce32bf3251c491443bba17ce4100dd222",
+    "image_revision_label": "94338be76b0cb652d59415066f2c2ca22a0ad7b1",
+    "incident_id": "workspace-http-711780bffaf44e82bcc5d8cfa142fa99",
+    "run_id": "run-60d5dabaa92b4500a34f6847dddb00be",
+    "tenant_id": "tenant-http",
+    "topology_revision": "topology-v1-c4f47470f46e84fb5568",
+    "workflow_id": "flowpulse.incident-workspace:tenant-http:run-60d5dabaa92b4500a34f6847dddb00be",
+    "workflow_module_git_blob_oid": "4374ba749f7e43e8b02c33067b22a89fae14ace5",
+    "workflow_module_repo_path": "control_plane/flowpulse_cp/workspace_workflow.py",
+    "workflow_module_sha256": "0c8670401019de2f799bf085362786f00aee0c4a7e84a94007f18ba4383c92fb",
+    "workflow_run_id": "16f68417-a45c-485b-8f02-3a6adb391755",
+    "workflow_type": "flowpulse.incident-workspace.v1"
+  },
+  "schema_version": 2
+}

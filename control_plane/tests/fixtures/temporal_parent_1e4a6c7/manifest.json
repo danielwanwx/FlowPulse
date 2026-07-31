@@ -1,0 +1,41 @@
+{
+  "histories": [
+    {
+      "event_count": 14,
+      "expected_outcome": "rejected:owner_gate_not_ready_then_terminated",
+      "filename": "pre_ready_rejected.json",
+      "name": "pre_ready_rejected",
+      "run_id": "52b02941-da22-4c6c-9846-bf46dc1be56a",
+      "sha256": "85553b7ddd8a9650589a250a86c77f9f291537ef8c70da9809dc44c64669e48e",
+      "workflow_id": "flowpulse.parent-1e4a6c7.pre-ready"
+    },
+    {
+      "event_count": 66,
+      "expected_outcome": "owner_wait_update_validation_terminal_approved",
+      "filename": "owner_wait_approved.json",
+      "name": "owner_wait_approved",
+      "run_id": "d6434abf-b13c-4e9d-bd45-58600ce653ef",
+      "sha256": "ba9594369be1434be32420132befad280147e5233e0c2dea708f6d45cdebb284",
+      "workflow_id": "flowpulse.parent-1e4a6c7.owner-wait"
+    },
+    {
+      "event_count": 29,
+      "expected_outcome": "critic_terminal_needs_human_no_owner_command",
+      "filename": "critic_terminal.json",
+      "name": "critic_terminal",
+      "run_id": "45f167ca-2a9b-4149-be8b-805b69ccba76",
+      "sha256": "4421f38e7d78419748cb691e55a5a02ecfb8683b608be1c80eea56e7c3e0cf76",
+      "workflow_id": "flowpulse.parent-1e4a6c7.critic-terminal"
+    }
+  ],
+  "producer": {
+    "generator": "flowpulse-parent-history-generator.py",
+    "git_sha": "1e4a6c7dec90198dc472c270edf108c112ef3bdf",
+    "image_id": "sha256:6a8109fee0fd6480fc092e47b4998b34aa99b37f0832b87e53d4366cf2164ef8",
+    "worker_task_queue": "flowpulse-parent-1e4a6c7-history",
+    "workflow_module": "/usr/local/lib/python3.11/site-packages/flowpulse_cp/temporal_workflow.py",
+    "workflow_module_sha256": "76a4cc08f0475e70f041cbfa8907533f1436bb2be2526d6fcd2d75b19346c3bb",
+    "workflow_type": "flowpulse.diagnosis.v1"
+  },
+  "schema_version": 1
+}

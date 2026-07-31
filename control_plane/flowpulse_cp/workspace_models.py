@@ -1,0 +1,898 @@
+"""Strict public contracts for the Temporal-owned Incident Workspace."""
+
+from datetime import datetime
+from enum import Enum
+from hashlib import sha256
+import json
+from typing import Dict, List, Optional
+
+from pydantic import Field, StrictBool, StrictStr, root_validator, validator
+
+from .models import (
+    AuthAssertion,
+    AuthContext,
+    EvidenceAuthority,
+    FreshnessStatus,
+    Hash,
+    NonEmpty,
+    NonNegativeInt,
+    PositiveInt,
+    ProofScope,
+    SourceKind,
+    StrictModel,
+    VerificationDecision,
+)
+
+
+class GraphMembership(str, Enum):
+    CONNECTED = "CONNECTED"
+    CLASSIFIED = "CLASSIFIED"
+
+
+class ClassifiedNodeReason(str, Enum):
+    EXTERNAL_DEPENDENCY = "External dependency"
+    DATA_STORE = "Data store"
+    CONTROL_PLANE = "Control plane"
+    OBSERVED_BOUNDARY = "Observed boundary"
+    RELATIONSHIP_UNAVAILABLE = "Relationship unavailable"
+
+
+class ProjectionState(str, Enum):
+    INITIALIZING = "INITIALIZING"
+    ACTIVE = "ACTIVE"
+    DEGRADED = "DEGRADED"
+    AWAITING_OWNER = "AWAITING_OWNER"
+    BLOCKED = "BLOCKED"
+    NEEDS_HUMAN = "NEEDS_HUMAN"
+    ABSTAINED = "ABSTAINED"
+
+
+class NodeExplanationState(str, Enum):
+    DEGRADED = "DEGRADED"
+    COMPLETED = "COMPLETED"
+    BLOCKED = "BLOCKED"
+
+
+class ProviderTruthLabel(str, Enum):
+    """Truth label surfaced with every conversation result, never inferred by a client."""
+
+    DEGRADED = "DEGRADED"
+    TEST_DETERMINISTIC = "TEST_DETERMINISTIC"
+    DEMO = "DEMO"
+    LIVE = "LIVE"
+
+
+class IncidentLifecycleStage(str, Enum):
+    INVESTIGATE = "INVESTIGATE"
+    DECIDE = "DECIDE"
+    EXECUTE = "EXECUTE"
+    VERIFY = "VERIFY"
+    CLOSED = "CLOSED"
+    NEEDS_HUMAN = "NEEDS_HUMAN"
+
+
+class Gate1ProjectionState(str, Enum):
+    NONE = "NONE"
+    ACTIVE = "ACTIVE"
+    CONSUMED = "CONSUMED"
+    INVALIDATED = "INVALIDATED"
+
+
+class InvestigationDisposition(str, Enum):
+    ACCEPTED = "ACCEPTED"
+    DEGRADED = "DEGRADED"
+    ABSTAINED = "ABSTAINED"
+    CRITIC_REJECTED = "CRITIC_REJECTED"
+
+
+class InvestigationClaimKind(str, Enum):
+    OBSERVATION = "OBSERVATION"
+    HYPOTHESIS = "HYPOTHESIS"
+
+
+class AffectedUserPathStatus(str, Enum):
+    KNOWN = "KNOWN"
+    UNKNOWN = "UNKNOWN"
+
+
+class ConversationKnowledgeState(str, Enum):
+    KNOWN = "KNOWN"
+    UNKNOWN = "UNKNOWN"
+
+
+class CriticOperatorStatus(str, Enum):
+    PASS = "PASS"
+    REVISE = "REVISE"
+    ABSTAIN = "ABSTAIN"
+
+
+class ConversationRole(str, Enum):
+    """Server-selected roles; provider output never carries one of these values."""
+
+    CONVERSATION_MANAGER = "CONVERSATION_MANAGER"
+    EVIDENCE_SPECIALIST = "EVIDENCE_SPECIALIST"
+    TOPOLOGY_SPECIALIST = "TOPOLOGY_SPECIALIST"
+
+
+class IncidentGraphNode(StrictModel):
+    component_id: NonEmpty
+    canonical_identity: NonEmpty
+    # This is a server projection, not a frontend prettification rule.  The
+    # fallback keeps older stored projections readable while the response
+    # schema remains strict and requires every emitted node to carry a name.
+    display_name: NonEmpty
+    membership: GraphMembership
+    classification_reason: Optional[ClassifiedNodeReason] = None
+    runtime_status: NonEmpty
+    impact_status: NonEmpty
+
+    @root_validator(pre=True, allow_reuse=True)
+    def server_projects_display_name(cls, values):
+        if "display_name" not in values and values.get("component_id"):
+            values["display_name"] = " ".join(
+                part.capitalize() for part in str(values["component_id"]).replace("-", "_").split("_") if part
+            )
+        return values
+
+    @root_validator(allow_reuse=True)
+    def classified_nodes_have_exact_reason(cls, values):
+        membership = values.get("membership")
+        reason = values.get("classification_reason")
+        if membership == GraphMembership.CLASSIFIED and reason is None:
+            raise ValueError("classified_node_requires_reason")
+        if membership == GraphMembership.CONNECTED and reason is not None:
+            raise ValueError("connected_node_must_not_have_classification_reason")
+        return values
+
+
+class IncidentGraphEdge(StrictModel):
+    edge_id: NonEmpty
+    source_component_id: NonEmpty
+    target_component_id: NonEmpty
+    status: NonEmpty
+
+
+class IncidentGraph(StrictModel):
+    nodes: List[IncidentGraphNode]
+    edges: List[IncidentGraphEdge]
+
+    @validator("nodes", allow_reuse=True)
+    def component_ids_are_unique(cls, value):
+        ids = [item.component_id for item in value]
+        if len(ids) != len(set(ids)):
+            raise ValueError("graph_component_ids_must_be_unique")
+        return value
+
+    @root_validator(allow_reuse=True)
+    def edges_reference_known_nodes(cls, values):
+        graph_nodes = values.get("nodes", [])
+        nodes = {item.component_id for item in graph_nodes}
+        connected = set()
+        for edge in values.get("edges", []):
+            if edge.source_component_id not in nodes or edge.target_component_id not in nodes:
+                raise ValueError("graph_edge_references_unknown_component")
+            connected.update({edge.source_component_id, edge.target_component_id})
+        for node in graph_nodes:
+            if node.membership == GraphMembership.CONNECTED and node.component_id not in connected:
+                raise ValueError("connected_node_requires_edge")
+        return values
+
+
+class IncidentRunBinding(StrictModel):
+    """Public run identity and its immutable internal Temporal correlation."""
+
+    tenant_id: NonEmpty
+    incident_id: NonEmpty
+    run_id: NonEmpty
+    topology_revision: NonEmpty
+    case_id: NonEmpty
+    case_revision: PositiveInt
+    workflow_id: NonEmpty
+    workflow_run_id: NonEmpty
+    created_at: datetime
+
+    @root_validator(allow_reuse=True)
+    def public_run_is_not_a_temporal_identifier(cls, values):
+        run_id = values.get("run_id")
+        if run_id and run_id in {values.get("workflow_id"), values.get("workflow_run_id")}:
+            raise ValueError("run_id_must_not_equal_temporal_identity")
+        return values
+
+
+class IncidentFocus(StrictModel):
+    component_id: NonEmpty
+    canonical_identity: NonEmpty
+    rationale: NonEmpty
+    affected_user_path_status: AffectedUserPathStatus
+    affected_user_path_summary: Optional[NonEmpty] = None
+    incident_relation_edge_ids: List[NonEmpty] = Field(min_items=1, max_items=32)
+    incident_relation_provenance_refs: List[NonEmpty] = Field(min_items=1, max_items=32)
+
+    @validator(
+        "incident_relation_edge_ids", "incident_relation_provenance_refs",
+        allow_reuse=True,
+    )
+    def incident_relation_edge_ids_are_unique(cls, value):
+        if len(value) != len(set(value)):
+            raise ValueError("incident_focus_edge_ids_must_be_unique")
+        return value
+
+    @root_validator(allow_reuse=True)
+    def known_path_has_summary(cls, values):
+        status = values.get("affected_user_path_status")
+        summary = values.get("affected_user_path_summary")
+        if status == AffectedUserPathStatus.KNOWN and summary is None:
+            raise ValueError("known_affected_user_path_requires_summary")
+        if status == AffectedUserPathStatus.UNKNOWN and summary is not None:
+            raise ValueError("unknown_affected_user_path_forbids_summary")
+        if len(values.get("incident_relation_edge_ids", [])) != len(
+            values.get("incident_relation_provenance_refs", [])
+        ):
+            raise ValueError("incident_focus_edge_provenance_count_mismatch")
+        return values
+
+
+class ConversationItem(StrictModel):
+    schema_version: NonEmpty = "flowpulse.conversation-item.v1"
+    item_id: NonEmpty
+    sequence: PositiveInt
+    tenant_id: NonEmpty
+    incident_id: NonEmpty
+    run_id: NonEmpty
+    topology_revision: NonEmpty
+    case_id: NonEmpty
+    case_revision: PositiveInt
+    workflow_id: NonEmpty
+    workflow_run_id: NonEmpty
+    projection_revision: PositiveInt
+    component_id: NonEmpty
+    explanation_id: NonEmpty
+    role: ConversationRole = ConversationRole.CONVERSATION_MANAGER
+    knowledge_state: ConversationKnowledgeState
+    summary: NonEmpty
+    evidence_refs: List[NonEmpty] = Field(default_factory=list, max_items=64)
+    created_at: datetime
+
+    @validator("evidence_refs", allow_reuse=True)
+    def conversation_evidence_refs_are_unique(cls, value):
+        if len(value) != len(set(value)):
+            raise ValueError("conversation_item_evidence_refs_must_be_unique")
+        return value
+
+
+class InvestigationEvidenceReference(StrictModel):
+    evidence_id: NonEmpty
+    source_kind: SourceKind
+    observed_at: datetime
+    freshness: FreshnessStatus
+    authority: EvidenceAuthority
+    proof_scope: ProofScope
+    parent_evidence_refs: List[NonEmpty] = Field(default_factory=list)
+
+    @validator("parent_evidence_refs", allow_reuse=True)
+    def parents_are_unique_and_not_self(cls, value, values):
+        if len(value) != len(set(value)):
+            raise ValueError("investigation_evidence_parents_must_be_unique")
+        if values.get("evidence_id") in value:
+            raise ValueError("investigation_evidence_self_parent_forbidden")
+        return value
+
+
+class InvestigationClaim(StrictModel):
+    claim_id: NonEmpty
+    kind: InvestigationClaimKind
+    statement: NonEmpty
+    evidence_refs: List[NonEmpty] = Field(min_items=1, max_items=32)
+
+    @validator("evidence_refs", allow_reuse=True)
+    def evidence_refs_are_unique(cls, value):
+        if len(value) != len(set(value)):
+            raise ValueError("investigation_claim_evidence_refs_must_be_unique")
+        return value
+
+
+class InvestigationCritic(StrictModel):
+    critic_id: NonEmpty
+    identity: NonEmpty
+    decision: VerificationDecision
+    operator_status: CriticOperatorStatus
+    reason_codes: List[NonEmpty] = Field(default_factory=list, max_items=16)
+    reviewed_claim_ids: List[NonEmpty] = Field(default_factory=list, max_items=64)
+    evidence_refs: List[NonEmpty] = Field(default_factory=list, max_items=64)
+
+    @validator("reason_codes", "reviewed_claim_ids", "evidence_refs", allow_reuse=True)
+    def critic_values_are_unique(cls, value):
+        if len(value) != len(set(value)):
+            raise ValueError("investigation_critic_values_must_be_unique")
+        return value
+
+    @root_validator(pre=True, allow_reuse=True)
+    def derive_operator_status_for_compatible_records(cls, values):
+        values = dict(values)
+        decision = values.get("decision")
+        decision_value = decision.value if isinstance(decision, VerificationDecision) else decision
+        expected = {
+            VerificationDecision.PASS.value: CriticOperatorStatus.PASS.value,
+            VerificationDecision.FAIL.value: CriticOperatorStatus.REVISE.value,
+            VerificationDecision.AMBIGUOUS.value: CriticOperatorStatus.ABSTAIN.value,
+        }.get(decision_value)
+        if expected is not None and "operator_status" not in values:
+            values["operator_status"] = expected
+        return values
+
+    @root_validator(allow_reuse=True)
+    def operator_status_matches_verdict(cls, values):
+        expected = {
+            VerificationDecision.PASS: CriticOperatorStatus.PASS,
+            VerificationDecision.FAIL: CriticOperatorStatus.REVISE,
+            VerificationDecision.AMBIGUOUS: CriticOperatorStatus.ABSTAIN,
+        }.get(values.get("decision"))
+        if expected is None or values.get("operator_status") != expected:
+            raise ValueError("investigation_critic_operator_status_mismatch")
+        return values
+
+
+class InvestigationResult(IncidentRunBinding):
+    """Backend-owned, evidence-backed outcome accepted or rejected by Temporal."""
+
+    schema_version: NonEmpty = "flowpulse.investigation-result.v1"
+    result_id: NonEmpty
+    component_id: NonEmpty
+    source_action_id: NonEmpty
+    source_idempotency_key: NonEmpty
+    source_activity_identity: NonEmpty
+    synthesis_id: NonEmpty
+    synthesis_activity_id: NonEmpty
+    synthesis_provider_id: NonEmpty
+    synthesis_model_id: Optional[NonEmpty] = None
+    projection_revision: PositiveInt
+    evidence_revision: PositiveInt
+    lifecycle_stage: IncidentLifecycleStage
+    disposition: InvestigationDisposition
+    summary: NonEmpty
+    claims: List[InvestigationClaim] = Field(default_factory=list, max_items=64)
+    evidence: List[InvestigationEvidenceReference] = Field(default_factory=list, max_items=64)
+    critic: Optional[InvestigationCritic] = None
+    truth_label: ProviderTruthLabel
+    version_bundle: "VersionBundle"
+    degraded_code: Optional[StrictStr] = None
+    recorded_at: datetime
+
+    @root_validator(allow_reuse=True)
+    def accepted_result_requires_current_evidence_and_independent_critic(cls, values):
+        evidence = values.get("evidence", [])
+        claims = values.get("claims", [])
+        evidence_ids = [item.evidence_id for item in evidence]
+        claim_ids = [item.claim_id for item in claims]
+        if len(evidence_ids) != len(set(evidence_ids)) or len(claim_ids) != len(set(claim_ids)):
+            raise ValueError("investigation_result_ids_must_be_unique")
+        known_evidence = set(evidence_ids)
+        for item in evidence:
+            if not set(item.parent_evidence_refs).issubset(known_evidence):
+                raise ValueError("investigation_evidence_parent_unknown")
+        for claim in claims:
+            if not set(claim.evidence_refs).issubset(known_evidence):
+                raise ValueError("investigation_claim_evidence_unknown")
+        disposition = values.get("disposition")
+        if disposition == InvestigationDisposition.ACCEPTED:
+            if values.get("lifecycle_stage") != IncidentLifecycleStage.DECIDE:
+                raise ValueError("accepted_investigation_requires_decide_stage")
+            if values.get("truth_label") == ProviderTruthLabel.DEGRADED or values.get("degraded_code") is not None:
+                raise ValueError("accepted_investigation_truth_label_invalid")
+            critic = values.get("critic")
+            if critic is None or critic.decision != VerificationDecision.PASS:
+                raise ValueError("accepted_investigation_requires_critic_pass")
+            kinds = {claim.kind for claim in claims}
+            if not {
+                InvestigationClaimKind.OBSERVATION,
+                InvestigationClaimKind.HYPOTHESIS,
+            }.issubset(kinds):
+                raise ValueError("accepted_investigation_requires_observation_and_hypothesis")
+            for item in evidence:
+                if (
+                    item.proof_scope != ProofScope.CURRENT_OBSERVATION
+                    or item.freshness != FreshnessStatus.CURRENT
+                    or item.authority not in {EvidenceAuthority.T0, EvidenceAuthority.T1}
+                    or item.source_kind == SourceKind.KNOWLEDGE
+                ):
+                    raise ValueError("accepted_investigation_requires_current_trusted_evidence")
+            if not set(critic.reviewed_claim_ids).issuperset(claim_ids):
+                raise ValueError("accepted_investigation_critic_claim_coverage_incomplete")
+            if not set(critic.evidence_refs).issuperset(evidence_ids):
+                raise ValueError("accepted_investigation_critic_evidence_coverage_incomplete")
+        elif values.get("lifecycle_stage") != IncidentLifecycleStage.INVESTIGATE:
+            raise ValueError("nonaccepted_investigation_must_remain_investigate")
+        return values
+
+
+class IncidentProjection(IncidentRunBinding):
+    schema_version: NonEmpty = "flowpulse.incident-projection.v1"
+    projection_revision: PositiveInt
+    sequence: PositiveInt
+    lifecycle_state: ProjectionState
+    lifecycle_stage: IncidentLifecycleStage = IncidentLifecycleStage.INVESTIGATE
+    gate1_state: Gate1ProjectionState = Gate1ProjectionState.NONE
+    status: NonEmpty
+    operator_title: NonEmpty = "Incident active"
+    operator_summary: NonEmpty = "An active incident requires attention."
+    generated_at: datetime
+    graph: IncidentGraph
+    impacted_path: List[NonEmpty] = Field(default_factory=list)
+    incident_focus: Optional[IncidentFocus] = None
+    conversation_items: List[ConversationItem] = Field(default_factory=list, max_items=128)
+    evidence_revision: PositiveInt
+    gate_revision: PositiveInt
+    action_revision: PositiveInt
+    evidence_refs: List[NonEmpty] = Field(default_factory=list)
+    investigation_result: Optional[InvestigationResult] = None
+    degraded_code: Optional[StrictStr] = None
+
+    @validator("impacted_path", allow_reuse=True)
+    def impacted_path_is_canonical(cls, value, values):
+        graph = values.get("graph")
+        if graph is not None:
+            known = {node.component_id for node in graph.nodes}
+            if any(component_id not in known for component_id in value):
+                raise ValueError("impacted_path_references_unknown_component")
+        return value
+
+    @root_validator(allow_reuse=True)
+    def focus_and_conversation_are_canonical(cls, values):
+        graph = values.get("graph")
+        if graph is None:
+            return values
+        nodes = {node.component_id: node for node in graph.nodes}
+        edges = {edge.edge_id: edge for edge in graph.edges}
+        focus = values.get("incident_focus")
+        if focus is not None:
+            node = nodes.get(focus.component_id)
+            if (
+                node is None
+                or node.canonical_identity != focus.canonical_identity
+                or node.impact_status != "impacted"
+                or focus.component_id not in values.get("impacted_path", [])
+            ):
+                raise ValueError("incident_focus_component_not_impacted_or_canonical")
+            for edge_id in focus.incident_relation_edge_ids:
+                edge = edges.get(edge_id)
+                if (
+                    edge is None
+                    or nodes[edge.source_component_id].impact_status != "impacted"
+                    or nodes[edge.target_component_id].impact_status != "impacted"
+                ):
+                    raise ValueError("incident_focus_edge_not_impacted")
+        items = values.get("conversation_items", [])
+        sequences = [item.sequence for item in items]
+        item_ids = [item.item_id for item in items]
+        if sequences != sorted(sequences) or len(sequences) != len(set(sequences)):
+            raise ValueError("conversation_items_must_be_strictly_ordered")
+        if len(item_ids) != len(set(item_ids)):
+            raise ValueError("conversation_item_ids_must_be_unique")
+        for item in items:
+            if (
+                item.tenant_id != values.get("tenant_id")
+                or item.incident_id != values.get("incident_id")
+                or item.run_id != values.get("run_id")
+                or item.topology_revision != values.get("topology_revision")
+                or item.case_id != values.get("case_id")
+                or item.case_revision != values.get("case_revision")
+                or item.workflow_id != values.get("workflow_id")
+                or item.workflow_run_id != values.get("workflow_run_id")
+                or item.projection_revision > values.get("projection_revision")
+                or item.component_id not in nodes
+            ):
+                raise ValueError("conversation_item_projection_binding_mismatch")
+        return values
+
+    @root_validator(allow_reuse=True)
+    def investigation_result_is_bound_to_projection(cls, values):
+        result = values.get("investigation_result")
+        stage = values.get("lifecycle_stage")
+        if stage == IncidentLifecycleStage.DECIDE and (
+            result is None or result.disposition != InvestigationDisposition.ACCEPTED
+        ):
+            raise ValueError("decide_projection_requires_accepted_investigation")
+        if result is None:
+            return values
+        for field in (
+            "tenant_id", "incident_id", "run_id", "topology_revision", "case_id",
+            "case_revision", "workflow_id", "workflow_run_id",
+        ):
+            if getattr(result, field) != values.get(field):
+                raise ValueError("investigation_result_binding_mismatch")
+        if (
+            result.projection_revision != values.get("projection_revision")
+            or result.evidence_revision != values.get("evidence_revision")
+            or result.lifecycle_stage != stage
+        ):
+            raise ValueError("investigation_result_revision_or_stage_mismatch")
+        graph = values.get("graph")
+        if graph is not None and result.component_id not in {node.component_id for node in graph.nodes}:
+            raise ValueError("investigation_result_component_not_canonical")
+        if not {item.evidence_id for item in result.evidence}.issubset(set(values.get("evidence_refs", []))):
+            raise ValueError("investigation_result_evidence_not_projected")
+        return values
+
+
+class ComponentContext(IncidentRunBinding):
+    """Strict, read-only context for one canonical component in a projection."""
+
+    schema_version: NonEmpty = "flowpulse.component-context.v1"
+    projection_revision: PositiveInt
+    component: IncidentGraphNode
+    evidence_refs: List[NonEmpty] = Field(default_factory=list)
+    fresh_read_performed: StrictBool = False
+
+
+class ConversationContext(IncidentRunBinding):
+    """Pinned, read-only provider context assembled by the Temporal activity."""
+
+    schema_version: NonEmpty = "flowpulse.conversation-context.v1"
+    projection_revision: PositiveInt
+    component: IncidentGraphNode
+    graph: IncidentGraph
+    recorded_evidence_refs: List[NonEmpty] = Field(default_factory=list)
+    knowledge_prior_refs: List[NonEmpty] = Field(default_factory=list)
+    available_capabilities: List[NonEmpty] = Field(default_factory=list)
+    max_tool_calls: NonNegativeInt = 0
+
+    @root_validator(allow_reuse=True)
+    def conversation_component_is_canonical_and_priors_are_labeled(cls, values):
+        graph = values.get("graph")
+        component = values.get("component")
+        if graph is not None and component is not None:
+            known = {node.component_id: node for node in graph.nodes}
+            if known.get(component.component_id) != component:
+                raise ValueError("conversation_component_not_canonical")
+        if set(values.get("recorded_evidence_refs", [])).intersection(values.get("knowledge_prior_refs", [])):
+            raise ValueError("conversation_reference_evidence_must_be_labeled_once")
+        return values
+
+    def canonical_hash(self) -> str:
+        encoded = self.json(sort_keys=True, exclude_none=True, separators=(",", ":")).encode("utf-8")
+        return sha256(encoded).hexdigest()
+
+
+class ConversationProviderOutput(StrictModel):
+    """The only model-controlled data accepted before a projection is written."""
+
+    schema_version: NonEmpty = "flowpulse.conversation-provider-output.v1"
+    summary: NonEmpty
+    evidence_refs: List[NonEmpty] = Field(default_factory=list)
+    abstained: StrictBool = False
+
+
+class ConversationProviderRequest(StrictModel):
+    """Temporal activity packet for one provider role; identity remains server-owned."""
+
+    role: ConversationRole
+    context: ConversationContext
+    prompt_bundle_version: NonEmpty
+    prompt_hash: Hash
+    context_hash: Hash
+    max_output_tokens: PositiveInt
+
+    @root_validator(allow_reuse=True)
+    def context_hash_is_bound_to_server_context(cls, values):
+        context = values.get("context")
+        if context is not None and values.get("context_hash") != context.canonical_hash():
+            raise ValueError("conversation_context_hash_mismatch")
+        return values
+
+
+class VersionBundle(StrictModel):
+    """Server-owned versions pinned to every completed provider conversation."""
+
+    schema_version: NonEmpty = "flowpulse.version-bundle.v1"
+    workflow_version: NonEmpty = "flowpulse.incident-workspace.v2"
+    policy_version: NonEmpty = "capability-policy.v1"
+    core_policy_version: NonEmpty = "conversation-core-policy.v1"
+    role_prompt_version: NonEmpty = "conversation-role-prompts.v1"
+    context_pack_version: NonEmpty = "conversation-context-pack.v1"
+    capability_registry_version: NonEmpty = "capability-registry.v1"
+    tool_schema_version: NonEmpty = "capability-tool-schema.v1"
+    evidence_schema_version: NonEmpty = "flowpulse.evidence-envelope.v1"
+    card_schema_version: NonEmpty = "flowpulse.next-best-action.v1"
+    model_policy_version: NonEmpty = "provider-policy.v1"
+
+
+InvestigationResult.update_forward_refs(VersionBundle=VersionBundle)
+
+
+class PromptLayer(StrictModel):
+    layer: NonEmpty
+    version: NonEmpty
+    content_hash: Hash
+
+
+class PromptBundle(StrictModel):
+    schema_version: NonEmpty = "flowpulse.prompt-bundle.v1"
+    role: ConversationRole
+    layers: List[PromptLayer] = Field(min_items=2, max_items=3)
+    prompt_hash: Hash
+
+    @validator("layers", allow_reuse=True)
+    def prompt_layers_are_unique(cls, value):
+        names = [item.layer for item in value]
+        if len(names) != len(set(names)):
+            raise ValueError("prompt_layers_must_be_unique")
+        return value
+
+
+class ConversationTrace(StrictModel):
+    """Safe durable metadata; raw prompts, credentials, and model payloads stay out."""
+
+    schema_version: NonEmpty = "flowpulse.conversation-trace.v1"
+    truth_label: ProviderTruthLabel
+    provider_id: NonEmpty
+    model_id: Optional[StrictStr] = None
+    version_bundle: VersionBundle
+    prompt_bundles: List[PromptBundle] = Field(min_items=1, max_items=3)
+    context_hash: Hash
+    provider_call_count: NonNegativeInt
+    specialist_roles: List[ConversationRole] = Field(default_factory=list, max_items=2)
+    available_capabilities: List[NonEmpty] = Field(default_factory=list)
+    tool_calls: NonNegativeInt = 0
+    recorded_context_accesses: NonNegativeInt = 0
+    input_tokens: NonNegativeInt = 0
+    output_tokens: NonNegativeInt = 0
+
+    @root_validator(allow_reuse=True)
+    def trace_truth_and_budget_are_consistent(cls, values):
+        truth = values.get("truth_label")
+        calls = values.get("provider_call_count")
+        prompts = values.get("prompt_bundles", [])
+        roles = values.get("specialist_roles", [])
+        if calls > len(prompts):
+            raise ValueError("conversation_provider_call_count_exceeds_prompt_bundles")
+        if truth != ProviderTruthLabel.DEGRADED and calls != len(prompts):
+            raise ValueError("conversation_provider_call_count_mismatch")
+        if len(roles) != len(set(roles)):
+            raise ValueError("conversation_specialist_roles_must_be_unique")
+        return values
+
+
+class WorkspaceIntake(StrictModel):
+    """Browser-safe intake: tenant and actor come only from trusted auth."""
+
+    incident_id: NonEmpty
+    title: NonEmpty
+    severity: NonEmpty
+    environment: NonEmpty
+    affected_entities: List[NonEmpty] = Field(min_items=1)
+    observed_at: datetime
+    summary: NonEmpty
+
+    @validator("affected_entities", allow_reuse=True)
+    def affected_entities_are_unique(cls, value):
+        if len(value) != len(set(value)):
+            raise ValueError("affected_entities_must_be_unique")
+        return value
+
+
+class WorkspaceWorkflowRequest(IncidentRunBinding):
+    actor: AuthContext
+    title: NonEmpty
+    severity: NonEmpty
+    environment: NonEmpty
+    affected_entities: List[NonEmpty] = Field(min_items=1)
+    summary: NonEmpty
+
+
+class NodeExplanationStart(StrictModel):
+    incident_id: NonEmpty
+    run_id: NonEmpty
+    topology_revision: NonEmpty
+    projection_revision: PositiveInt
+    component_id: NonEmpty
+    idempotency_key: NonEmpty
+    conversation_schema_version: NonEmpty = "flowpulse.node-explanation.v1"
+
+    def selection_key(self, tenant_id: str) -> str:
+        return "node_explanation:{}:{}:{}:{}:{}".format(
+            tenant_id, self.run_id, self.projection_revision, self.component_id,
+            self.conversation_schema_version,
+        )
+
+    def canonical_hash(self) -> str:
+        """Exact browser command binding for a one-time server assertion."""
+        encoded = self.json(sort_keys=True, separators=(",", ":")).encode("utf-8")
+        return sha256(encoded).hexdigest()
+
+
+class WorkspaceNodeExplanationInvocation(StrictModel):
+    """Authenticated Temporal update packet; the browser never supplies an actor."""
+
+    command: NodeExplanationStart
+    authorization: AuthAssertion
+
+
+class WorkspaceNodeExplanationAuthorizationPacket(IncidentRunBinding):
+    """Typed worker-only validation packet before any provider activity may run."""
+
+    command: NodeExplanationStart
+    authorization: AuthAssertion
+    projection_revision: PositiveInt
+
+
+class WorkspaceNodeExplanationAuthorizationOutcome(StrictModel):
+    """Identity resolved by the trusted authorization service, never by the update payload."""
+
+    actor: AuthContext
+
+
+class NodeExplanation(IncidentRunBinding):
+    explanation_id: NonEmpty
+    selection_key: NonEmpty
+    projection_revision: PositiveInt
+    component_id: NonEmpty
+    conversation_schema_version: NonEmpty
+    state: NodeExplanationState
+    summary: NonEmpty
+    evidence_refs: List[NonEmpty] = Field(default_factory=list)
+    conversation_items: List[ConversationItem] = Field(default_factory=list, max_items=16)
+    fresh_read_performed: StrictBool = False
+    fresh_diagnosis_claimed: StrictBool = False
+    truth_label: ProviderTruthLabel = ProviderTruthLabel.DEGRADED
+    conversation_trace: Optional[ConversationTrace] = None
+    degraded_code: Optional[StrictStr] = None
+    created_at: datetime
+
+    @root_validator(allow_reuse=True)
+    def pre_gate_explanation_is_read_only(cls, values):
+        if values.get("fresh_read_performed"):
+            raise ValueError("node_explanation_fresh_read_forbidden_before_gate1")
+        if values.get("fresh_diagnosis_claimed"):
+            raise ValueError("node_explanation_fresh_diagnosis_forbidden_before_gate1")
+        trace = values.get("conversation_trace")
+        if trace is not None and trace.truth_label != values.get("truth_label"):
+            raise ValueError("node_explanation_truth_label_trace_mismatch")
+        if values.get("truth_label") != ProviderTruthLabel.DEGRADED and trace is None:
+            raise ValueError("node_explanation_non_degraded_requires_conversation_trace")
+        items = values.get("conversation_items", [])
+        sequences = [item.sequence for item in items]
+        if sequences != sorted(sequences) or len(sequences) != len(set(sequences)):
+            raise ValueError("node_explanation_conversation_items_not_ordered")
+        for item in items:
+            if (
+                item.tenant_id != values.get("tenant_id")
+                or item.incident_id != values.get("incident_id")
+                or item.run_id != values.get("run_id")
+                or item.topology_revision != values.get("topology_revision")
+                or item.case_id != values.get("case_id")
+                or item.case_revision != values.get("case_revision")
+                or item.workflow_id != values.get("workflow_id")
+                or item.workflow_run_id != values.get("workflow_run_id")
+                or item.projection_revision != values.get("projection_revision")
+                or item.component_id != values.get("component_id")
+                or item.explanation_id != values.get("explanation_id")
+                or item.summary != values.get("summary")
+                or item.evidence_refs != values.get("evidence_refs")
+            ):
+                raise ValueError("node_explanation_conversation_item_binding_mismatch")
+        return values
+
+
+class NodeExplanationReceipt(StrictModel):
+    explanation: NodeExplanation
+    reused: StrictBool
+
+
+class IncidentDiscoveryState(str, Enum):
+    ACTIVE = "active"
+
+
+class IncidentNotificationType(str, Enum):
+    ACCEPTED = "incident.accepted"
+    UPDATED = "incident.updated"
+
+
+class ExplanationEventStatus(str, Enum):
+    STARTED = "STARTED"
+    COMPLETED = "COMPLETED"
+    DEGRADED = "DEGRADED"
+
+
+class IncidentSummary(StrictModel):
+    """Bounded, operator-facing discovery record derived from a projection."""
+
+    case_id: NonEmpty
+    incident_id: NonEmpty
+    run_id: NonEmpty
+    topology_revision: NonEmpty
+    projection_revision: PositiveInt
+    sequence: PositiveInt
+    lifecycle_state: ProjectionState
+    lifecycle_stage: IncidentLifecycleStage = IncidentLifecycleStage.INVESTIGATE
+    status: NonEmpty
+    title: NonEmpty
+    summary: NonEmpty
+
+    @classmethod
+    def from_projection(cls, projection: IncidentProjection) -> "IncidentSummary":
+        return cls(
+            case_id=projection.case_id, incident_id=projection.incident_id, run_id=projection.run_id,
+            topology_revision=projection.topology_revision, projection_revision=projection.projection_revision,
+            sequence=projection.sequence, lifecycle_state=projection.lifecycle_state,
+            lifecycle_stage=projection.lifecycle_stage, status=projection.status,
+            title=projection.operator_title, summary=projection.operator_summary,
+        )
+
+
+class IncidentNotification(StrictModel):
+    """One durable, tenant-scoped browser notification cursor and hydration summary."""
+
+    notification_id: NonEmpty
+    event_type: IncidentNotificationType
+    occurred_at: datetime
+    incident: IncidentSummary
+
+
+class IncidentEvent(IncidentRunBinding):
+    schema_version: NonEmpty = "flowpulse.incident-event.v1"
+    projection_revision: PositiveInt
+    sequence: PositiveInt
+    event_type: NonEmpty
+    occurred_at: datetime
+    payload: Dict[NonEmpty, StrictStr] = Field(default_factory=dict)
+    evidence_refs: List[NonEmpty] = Field(default_factory=list)
+    explanation_status: Optional[ExplanationEventStatus] = None
+
+    @root_validator(allow_reuse=True)
+    def explanation_status_matches_bounded_event_type(cls, values):
+        status = values.get("explanation_status")
+        event_type = values.get("event_type")
+        expected = {
+            ExplanationEventStatus.STARTED: "node_explanation.started",
+            ExplanationEventStatus.COMPLETED: "node_explanation.completed",
+            ExplanationEventStatus.DEGRADED: "node_explanation.degraded",
+        }
+        if status is not None and event_type != expected[status]:
+            raise ValueError("node_explanation_event_status_mismatch")
+        if event_type in expected.values() and status is None:
+            raise ValueError("node_explanation_event_status_required")
+        return values
+
+
+class WorkspaceActivityPacket(IncidentRunBinding):
+    stage: NonEmpty
+    projection: IncidentProjection
+    event_sequence: PositiveInt
+    node_explanation: Optional[NodeExplanationStart] = None
+    actor: Optional[AuthContext] = None
+
+
+class WorkspaceActivityOutcome(StrictModel):
+    projection: Optional[IncidentProjection] = None
+    explanation: Optional[NodeExplanation] = None
+
+
+def initial_topology_revision(tenant_id: str, incident_id: str, run_id: str, entities: List[str]) -> str:
+    """Public graph revision is independently derived, never a Temporal identifier."""
+    canonical = json.dumps(
+        {"tenant_id": tenant_id, "incident_id": incident_id, "run_id": run_id, "entities": sorted(entities)},
+        separators=(",", ":"), sort_keys=True,
+    )
+    return "topology-v1-{}".format(sha256(canonical.encode("utf-8")).hexdigest()[:20])
+
+
+def initial_projection(
+    binding: IncidentRunBinding, entities: List[str], generated_at: datetime,
+    operator_title: str = "Incident active", operator_summary: str = "An active incident requires attention.",
+) -> IncidentProjection:
+    return IncidentProjection(
+        schema_version="flowpulse.incident-projection.v1", **binding.dict(),
+        projection_revision=1, sequence=1, lifecycle_state=ProjectionState.DEGRADED,
+        status="provider_unavailable", operator_title=operator_title, operator_summary=operator_summary,
+        generated_at=generated_at,
+        graph=IncidentGraph(nodes=[
+            IncidentGraphNode(
+                component_id=entity, canonical_identity="service:{}".format(entity),
+                membership=GraphMembership.CLASSIFIED,
+                classification_reason=ClassifiedNodeReason.RELATIONSHIP_UNAVAILABLE,
+                runtime_status="unknown", impact_status="unknown",
+            ) for entity in entities
+        ], edges=[]),
+        impacted_path=[], evidence_revision=1, gate_revision=1, action_revision=1,
+        evidence_refs=[], degraded_code="provider_unavailable",
+    )

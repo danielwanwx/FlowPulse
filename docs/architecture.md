@@ -1,5 +1,26 @@
 # Runtime architecture
 
+## Control-plane North Star
+
+FlowPulse is a model-agnostic, company-multiplayer agent operating system;
+incident response is its first vertical. The Node application in this
+repository remains a presentation/demo consumer. It must not become a second
+workflow or evidence authority as the FastAPI + Temporal control plane is
+integrated.
+
+Temporal is the sole durable workflow/state-transition authority. Postgres
+stores append-only domain records and tenant-scoped projections; versioned
+object storage owns raw artifacts; evidence and policy determine what agents
+may claim or propose. A model/provider integration is only a typed Temporal
+activity behind a port. No browser, provider, tool output, or knowledge prior
+can bypass evidence, critic/verifier, Gate 1, or the Owner Gate.
+
+The Incident Workspace public identity is
+`(tenant_id, incident_id, run_id, topology_revision)`. It is product-owned and
+persistently mapped to internal `case_id`, `workflow_id`, and real Temporal
+`workflow_run_id`; public `run_id` is never derived from a Temporal ID. See
+[the versioned workspace contract](architecture/incident-workspace-control-plane-contract.md).
+
 ## Authority boundaries
 
 FlowPulse deliberately separates four responsibilities:

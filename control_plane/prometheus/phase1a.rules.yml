@@ -1,0 +1,12 @@
+groups:
+  - name: flowpulse-phase1a-test-deterministic
+    interval: 5s
+    rules:
+      - record: flowpulse_checkout_error_rate
+        # A bounded server-evaluated waveform makes the test connector behave
+        # like a changing observation without a browser-side clock or fixture
+        # mutation. The connector still reads Prometheus on every dispatch.
+        expr: vector(0.078) + vector(0.012) * sin(vector(time() / 6))
+        labels:
+          service: checkout
+          truth_label: TEST_DETERMINISTIC

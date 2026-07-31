@@ -1,6 +1,21 @@
 # FlowPulse
 
-**FlowPulse is a model-agnostic, company-multiplayer agent operating system—easy enough for anyone to use, governed enough to act on real systems.**
+**FlowPulse is a model-agnostic, company-multiplayer agent operating system: easy enough for anyone to use, governed enough to act on real systems, and grounded in incident evidence.**
+
+Incident response is FlowPulse's first vertical, not a second authority beside
+the control plane. The browser and this repository's legacy Node demo consume
+safe projections; the backend control plane owns the durable workflow and
+evidence boundary. Temporal is the only workflow/state-transition authority,
+Postgres holds append-only records and tenant-scoped read projections, and
+object storage holds versioned raw artifacts. Models and agents can propose or
+explain within typed activity boundaries, but they never become authority.
+
+The additive Incident Workspace contract uses public
+`(tenant_id, incident_id, run_id, topology_revision)` identities. Those are
+backend-issued product identities, distinct from internal `case_id`, Temporal
+`workflow_id`, and real `workflow_run_id`; a frontend must not derive a public
+`run_id` from a Temporal string. See
+[the control-plane workspace contract](docs/architecture/incident-workspace-control-plane-contract.md).
 
 It is evidence-grounded by design: models and agents can explain, investigate, and propose, but current proof, human approval, and consequential state remain outside browser and model control. **Incident is the first vertical.** Architecture, Live, and Incident are the three product views; Incident keeps the operator in one staged workspace from Investigate through Decide, Execute, and Verify.
 
