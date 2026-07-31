@@ -1041,6 +1041,41 @@ class GuidedStageRuntimeTests(unittest.IsolatedAsyncioTestCase):
             for item in outcome.projection.current_attempt.stage_runs
         ))
 
+    async def test_investigate_accepts_newer_current_samples_after_agent_review(self):
+        repository = self.repository
+
+        class ChurningBridge(RuntimeBridge):
+            async def run_agent(inner, request):
+                response = await super().run_agent(request)
+                if request.role == "critic":
+                    observed_at = datetime.now(timezone.utc)
+                    signals = [signal.copy(update={
+                        "signal_id": "new-{}".format(signal.signal_id),
+                        "source_event_id": "new-{}".format(signal.source_event_id),
+                        "observed_at": observed_at,
+                        "fresh_until": observed_at + timedelta(minutes=5),
+                        "evidence_refs": ["new-{}".format(signal.evidence_refs[0])],
+                    }) for signal in repository.source.realtime_signals]
+                    repository.source = IncidentProjectionV2.parse_obj({
+                        **repository.source.dict(),
+                        "evidence_refs": [
+                            ref for signal in signals for ref in signal.evidence_refs
+                        ],
+                        "realtime_signals": signals,
+                    })
+                return response
+
+        dispatcher = GuidedWorkflowActivityDispatcherV3(
+            repository, ChurningBridge(self.now),
+        )
+        triage = await self.advance(self.detect, "next-triage-live-churn")
+        triage = (await self.run_current(dispatcher, triage)).projection
+        investigate = await self.advance(triage, "next-investigate-live-churn")
+
+        outcome = await self.run_current(dispatcher, investigate)
+
+        self.assertEqual(GuidedStageActivityStatusV3.SUCCEEDED, outcome.status)
+
     async def test_respond_execution_failure_rerun_creates_fresh_action_and_approval(self):
         bridge = RuntimeBridge(self.now, execution_failures=1)
         dispatcher = GuidedWorkflowActivityDispatcherV3(self.repository, bridge)

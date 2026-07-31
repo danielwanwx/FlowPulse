@@ -911,18 +911,6 @@ class GuidedWorkflowActivityDispatcherV3:
             ]
             if not query_results:
                 return [], [], "investigation_evidence_query_missing", {}
-            admitted_refs = {
-                ref for result in query_results for ref in result.evidence_refs
-            }
-            admitted_timestamps = {
-                observed_at for result in query_results
-                for observed_at in result.observation_timestamps
-            }
-            signals = [
-                item for item in signals
-                if set(item.evidence_refs).issubset(admitted_refs)
-                and item.observed_at in admitted_timestamps
-            ]
         if not signals:
             return [], [], "canonical_current_evidence_missing", {}
         evidence_refs = list(dict.fromkeys(
@@ -939,7 +927,7 @@ class GuidedWorkflowActivityDispatcherV3:
                 observed_at for result in query_results
                 for observed_at in result.observation_timestamps
             }
-            evidence_refs = list(dict.fromkeys([*evidence_refs, *query_refs]))
+            evidence_refs = query_refs
             edge_signals = [item for item in signals if item.edge_ids]
             if (
                 not edge_signals
@@ -1007,40 +995,32 @@ class GuidedWorkflowActivityDispatcherV3:
                 "Can the missing component or change evidence be collected before diagnosis?"
             ])
         if stage == WorkflowStageV3.INVESTIGATE:
-            facts.append(StageFactV3(
+            facts = [StageFactV3(
                 fact_id="canonical-investigation-coverage",
                 label="Independent evidence coverage",
                 value="{} evidence records across {} dependency signals".format(
                     len(evidence_refs), len(query_times),
                 ),
                 evidence_refs=evidence_refs,
-            ))
+            )]
             edge_by_id = {item.edge_id: item for item in projection.graph.edges}
             hypotheses = []
             for edge_id in sorted(query_edge_ids):
                 edge = edge_by_id.get(edge_id)
                 if edge is None:
                     continue
-                supporting = list(dict.fromkeys(
-                    ref for item in signals
-                    if edge_id in item.edge_ids
+                if not any(
+                    edge_id in item.edge_ids
                     and item.status == RealtimeSignalStatus.CRITICAL
-                    for ref in item.evidence_refs
+                    for item in signals
+                ):
+                    continue
+                supporting = list(dict.fromkeys(
+                    ref for result in query_results
+                    if edge_id in result.edge_ids
+                    for ref in result.evidence_refs
                 ))
-                supporting = list(dict.fromkeys([
-                    *supporting,
-                    *[
-                        ref for result in query_results
-                        if edge_id in result.edge_ids
-                        for ref in result.evidence_refs
-                    ],
-                ]))
-                contradicting = list(dict.fromkeys(
-                    ref for item in signals
-                    if edge_id in item.edge_ids
-                    and item.status != RealtimeSignalStatus.CRITICAL
-                    for ref in item.evidence_refs
-                ))
+                contradicting = []
                 if not supporting:
                     continue
                 confidence = min(0.95, 0.55 + 0.05 * len(supporting))
