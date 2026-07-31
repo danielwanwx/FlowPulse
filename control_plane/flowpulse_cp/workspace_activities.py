@@ -91,10 +91,15 @@ from .workspace_investigation import (
     temporal_investigation_finalize_activity,
     validate_investigation_source_transition,
 )
+from .workspace_v3_models import (
+    TemporalExecutionRolloverV3,
+    WorkspaceExecutionRegistrationV3,
+)
 
 
 def workspace_activity_surface() -> List[str]:
     return [
+        "workspace_register_execution_v3_activity",
         "workspace_initialize_activity",
         "workspace_authorize_node_explanation_activity",
         "workspace_node_explanation_activity",
@@ -642,6 +647,21 @@ class WorkspaceActivityDispatcher:
         await self.repository.append_workspace_event(event)
 
     async def dispatch(self, activity_name: str, packet_data: Dict[str, Any]) -> Dict[str, Any]:
+        if activity_name == "workspace_register_execution_v3_activity":
+            packet = WorkspaceExecutionRegistrationV3.parse_obj(packet_data)
+            if packet.prior is None:
+                pointer = await self.repository.put_incident_execution_v3(
+                    packet.identity, packet.current,
+                )
+            else:
+                pointer = await self.repository.rollover_temporal_execution_v3(
+                    TemporalExecutionRolloverV3(
+                        identity=packet.identity,
+                        expected=packet.prior,
+                        replacement=packet.current,
+                    ),
+                )
+            return pointer.dict()
         if activity_name == "workspace_authorize_node_explanation_activity":
             packet = WorkspaceNodeExplanationAuthorizationPacket.parse_obj(packet_data)
             if self.authorization is None:

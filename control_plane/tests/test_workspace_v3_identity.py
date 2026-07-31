@@ -8,7 +8,13 @@ from flowpulse_cp.workspace_v3_models import (
     IncidentExecutionIdentityV3,
     TemporalExecutionPointerV3,
     TemporalExecutionRolloverV3,
+    WorkspaceExecutionRegistrationV3,
+    WorkspaceRolloverStateV3,
     resolve_temporal_execution_target_v3,
+)
+from flowpulse_cp.workspace_activities import (
+    WorkspaceActivityDispatcher,
+    workspace_activity_surface,
 )
 
 
@@ -131,6 +137,77 @@ class WorkspaceV3IdentityTests(unittest.TestCase):
 
         import asyncio
         asyncio.run(scenario())
+
+    def test_rollover_state_rejects_unbounded_fingerprints(self):
+        with self.assertRaises(ValidationError):
+            WorkspaceRolloverStateV3(
+                identity=identity(),
+                current_execution=pointer("temporal-run-1", 1),
+                projection_ref="projection:case-a:8",
+                projection_revision=8,
+                signal_revision=20,
+                decision_revision=3,
+                workspace_revision=5,
+                case_event_sequence=42,
+                recent_idempotency_fingerprints=[
+                    "fingerprint-{}".format(index) for index in range(129)
+                ],
+            )
+
+    def test_execution_registration_requires_exact_next_generation(self):
+        with self.assertRaisesRegex(
+            ValidationError,
+            "temporal_rollover_generation_must_increment_once",
+        ):
+            WorkspaceExecutionRegistrationV3(
+                identity=identity(),
+                prior=pointer("temporal-run-1", 1),
+                current=pointer("temporal-run-3", 3),
+            )
+
+    def test_registration_activity_persists_first_and_rollover_generations(self):
+        class Repository:
+            async def put_incident_execution_v3(self, supplied_identity, current):
+                self.initial = (supplied_identity, current)
+                return current
+
+            async def rollover_temporal_execution_v3(self, rollover):
+                self.rollover = rollover
+                return rollover.replacement
+
+        async def scenario():
+            repository = Repository()
+            dispatcher = WorkspaceActivityDispatcher(repository)
+            first = WorkspaceExecutionRegistrationV3(
+                identity=identity(),
+                current=pointer("temporal-run-1", 1),
+            )
+            result = await dispatcher.dispatch(
+                "workspace_register_execution_v3_activity",
+                first.dict(),
+            )
+            self.assertEqual(1, result["temporal_generation"])
+            second = WorkspaceExecutionRegistrationV3(
+                identity=identity(),
+                prior=pointer("temporal-run-1", 1),
+                current=pointer("temporal-run-2", 2),
+            )
+            result = await dispatcher.dispatch(
+                "workspace_register_execution_v3_activity",
+                second.dict(),
+            )
+            self.assertEqual(2, result["temporal_generation"])
+            self.assertEqual(
+                "temporal-run-2",
+                repository.rollover.replacement.temporal_run_id,
+            )
+
+        import asyncio
+        asyncio.run(scenario())
+        self.assertIn(
+            "workspace_register_execution_v3_activity",
+            workspace_activity_surface(),
+        )
 
 
 if __name__ == "__main__":

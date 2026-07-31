@@ -6,9 +6,9 @@ remain unchanged while the persistence and Temporal migration is implemented.
 
 from datetime import datetime
 from hashlib import sha256
-from typing import Any
+from typing import Any, Dict, List
 
-from pydantic import root_validator
+from pydantic import Field, root_validator
 
 from .models import NonEmpty, PositiveInt, StrictModel
 
@@ -98,6 +98,83 @@ class TemporalExecutionTargetV3(StrictModel):
     temporal_run_id: NonEmpty
     temporal_generation: PositiveInt
     source: NonEmpty
+
+
+class WorkspaceExecutionRegistrationV3(StrictModel):
+    """Activity input used by every V3 workflow execution generation."""
+
+    identity: IncidentExecutionIdentityV3
+    current: TemporalExecutionPointerV3
+    prior: TemporalExecutionPointerV3 = None
+
+    @root_validator(allow_reuse=True)
+    def registration_generation_matches_prior(cls, values):
+        identity = values.get("identity")
+        current = values.get("current")
+        prior = values.get("prior")
+        if identity is None or current is None:
+            return values
+        stable = (
+            identity.tenant_id,
+            identity.incident_run_id,
+            identity.temporal_workflow_id,
+        )
+        if stable != (
+            current.tenant_id,
+            current.incident_run_id,
+            current.temporal_workflow_id,
+        ):
+            raise ValueError("workspace_v3_execution_registration_identity_mismatch")
+        if prior is None:
+            if current.temporal_generation != 1:
+                raise ValueError("workspace_v3_first_execution_must_be_generation_one")
+            return values
+        TemporalExecutionRolloverV3(
+            identity=identity,
+            expected=prior,
+            replacement=current,
+        )
+        return values
+
+
+class WorkspaceRolloverStateV3(StrictModel):
+    """Bounded durable state carried into the next physical execution."""
+
+    schema_version: NonEmpty = "flowpulse.workspace-rollover-state.v3"
+    identity: IncidentExecutionIdentityV3
+    current_execution: TemporalExecutionPointerV3
+    projection_ref: NonEmpty
+    projection_revision: PositiveInt
+    signal_revision: PositiveInt
+    decision_revision: PositiveInt
+    workspace_revision: PositiveInt
+    case_event_sequence: PositiveInt
+    recent_idempotency_fingerprints: List[NonEmpty] = Field(
+        default_factory=list, max_items=128,
+    )
+    connector_cursor_watermarks: Dict[NonEmpty, NonEmpty] = Field(
+        default_factory=dict,
+    )
+    active_timer_descriptors: List[Dict[NonEmpty, NonEmpty]] = Field(
+        default_factory=list, max_items=32,
+    )
+
+    @root_validator(allow_reuse=True)
+    def carry_state_is_bound_and_bounded(cls, values):
+        identity = values.get("identity")
+        execution = values.get("current_execution")
+        if identity is not None and execution is not None and (
+            identity.tenant_id != execution.tenant_id
+            or identity.incident_run_id != execution.incident_run_id
+            or identity.temporal_workflow_id != execution.temporal_workflow_id
+        ):
+            raise ValueError("workspace_v3_rollover_state_identity_mismatch")
+        fingerprints = values.get("recent_idempotency_fingerprints", [])
+        if len(fingerprints) != len(set(fingerprints)):
+            raise ValueError("workspace_v3_rollover_fingerprints_must_be_unique")
+        if len(values.get("connector_cursor_watermarks", {})) > 32:
+            raise ValueError("workspace_v3_rollover_cursor_watermarks_exceed_limit")
+        return values
 
 
 async def resolve_temporal_execution_target_v3(
