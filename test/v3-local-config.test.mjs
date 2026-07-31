@@ -42,6 +42,7 @@ test("V3 local config binds API, worker, Node, OTel, and independent secrets", (
   });
   assert.equal("tenant-v3-aaaaaaaaaaaa", env.FLOWPULSE_REALTIME_TENANT_ID);
   assert.equal("owner-v3-local", env.FLOWPULSE_REALTIME_ACTOR_SUBJECT_ID);
+  assert.equal("0.5", env.FLOWPULSE_REALTIME_SCHEDULER_INTERVAL_SECONDS);
   assert.equal(true, publicV3LocalConfig(config).preserves_postgres_and_minio_volumes);
   assert.equal(true, publicV3LocalConfig(config).startable);
 });

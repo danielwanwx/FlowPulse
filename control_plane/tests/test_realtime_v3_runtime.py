@@ -39,7 +39,10 @@ from flowpulse_cp.realtime_models import (
     RealtimeTrend,
     RealtimeUpdateCommand,
 )
-from flowpulse_cp.realtime_repository import InMemoryRealtimeRepository
+from flowpulse_cp.realtime_repository import (
+    InMemoryRealtimeRepository,
+    _validate_realtime_commit_artifacts,
+)
 from flowpulse_cp.realtime_scheduler import RealtimeIngestScheduler
 from flowpulse_cp.realtime_series import build_metric_series_collection
 from flowpulse_cp.workspace_models import IncidentRunBinding, initial_projection
@@ -457,6 +460,105 @@ class OtelSpoolConnectorTests(unittest.IsolatedAsyncioTestCase):
         path = self.root / "traces.jsonl"
         path.write_text("".join(json.dumps(item) + "\n" for item in records))
         return path
+
+    @staticmethod
+    def trace_record(trace_id, start):
+        checkout = resource_spans("checkout", [
+            span(trace_id, "parent-" + trace_id, "", start, start + 10),
+        ])
+        payment = resource_spans("payment", [
+            span(
+                trace_id, "child-" + trace_id, "parent-" + trace_id,
+                start + 1, start + 20, error=True,
+            ),
+        ])
+        return {
+            "resourceSpans": (
+                checkout["resourceSpans"] + payment["resourceSpans"]
+            ),
+        }
+
+    def build_commit(self, result, prior, prior_realtime=None):
+        return RealtimeActivityDispatcher(self.repository, {})._build_commit(
+            RealtimeCommitActivityPacket(
+                command=RealtimeUpdateCommand(
+                    tenant_id=prior.tenant_id,
+                    actor_subject_id="owner-a",
+                    case_id=prior.case_id,
+                    incident_id=prior.incident_id,
+                    run_id=prior.run_id,
+                    topology_revision=prior.topology_revision,
+                    connector_id=result.registration.connector_id,
+                    source_event_id=result.source_event.source_event_id,
+                    dispatch_id=result.dispatch.dispatch_id,
+                    idempotency_key=result.dispatch.dispatch_id,
+                ),
+                projection=prior,
+                prior_realtime_projection=prior_realtime,
+                first_event_sequence=prior.sequence + 1,
+                poll_result=result,
+            ),
+        )
+
+    async def out_of_order_commits(self, *, saturate_citations=False):
+        newer = int((NOW + timedelta(seconds=2)).timestamp() * 1_000_000_000)
+        older = int((NOW + timedelta(seconds=1)).timestamp() * 1_000_000_000)
+        path = self.write(self.trace_record("trace-newer", newer))
+        connector = ConfiguredOtelSpoolConnector(
+            registration=self.registration,
+            spool_path=path,
+            external_resource_id="astronomy.checkout-payment",
+            artifact_store=ArtifactStore(),
+            repository=self.repository,
+            max_lines_per_poll=32,
+        )
+        first_result = await connector.poll(
+            projection(), acl_subjects=["owner-a"],
+            now=NOW + timedelta(seconds=3),
+        )
+        first = self.build_commit(first_result, projection())
+        prior_realtime = first.projection
+        if saturate_citations:
+            prior_realtime = prior_realtime.copy(update={
+                "agent_workspace": prior_realtime.agent_workspace.copy(update={
+                    "citations": [first.citation] + [
+                        first.citation.copy(update={
+                            "citation_id": "unused-citation-{}".format(index),
+                        })
+                        for index in range(63)
+                    ],
+                }),
+            })
+        with path.open("a") as stream:
+            stream.write(json.dumps(self.trace_record("trace-older", older)) + "\n")
+        second_result = await connector.poll(
+            first.v1_projection,
+            acl_subjects=["owner-a"],
+            now=NOW + timedelta(seconds=4),
+        )
+        return first, self.build_commit(
+            second_result, first.v1_projection, prior_realtime,
+        )
+
+    async def test_out_of_order_fact_commits_without_regressing_current_stream(self):
+        first, second = await self.out_of_order_commits()
+
+        _validate_realtime_commit_artifacts(second)
+        self.assertEqual(
+            [first.source_event.source_event_id],
+            [item.source_event_id for item in second.projection.realtime_signals],
+        )
+
+    async def test_bounded_citations_keep_references_used_by_retained_signals(self):
+        first, second = await self.out_of_order_commits(
+            saturate_citations=True,
+        )
+
+        _validate_realtime_commit_artifacts(second)
+        self.assertIn(
+            first.citation,
+            second.projection.agent_workspace.citations,
+        )
 
     async def test_parent_child_trace_is_the_only_source_of_edge_and_pulse(self):
         start = int(NOW.timestamp() * 1_000_000_000)

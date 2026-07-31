@@ -546,9 +546,14 @@ class EventAndPaginationTests(unittest.IsolatedAsyncioTestCase):
 
 
 class OutboxDispatchTests(unittest.IsolatedAsyncioTestCase):
-    async def admit_pending(self, repository, *, suffix, run_id, case_id, created_at):
+    async def admit_pending(
+        self, repository, *, suffix, run_id, case_id, created_at,
+        connector=None,
+    ):
+        connector = connector or registration()
         binding = external_binding(suffix=suffix).copy(update={
             "binding_id": "binding-" + suffix,
+            "connector_id": connector.connector_id,
             "case_id": case_id,
             "incident_id": "incident-" + suffix,
             "run_id": run_id,
@@ -557,7 +562,7 @@ class OutboxDispatchTests(unittest.IsolatedAsyncioTestCase):
         await repository.append_binding(binding)
         source = PrometheusNormalizer().normalize(
             payload=payload(observed_at=created_at, value="0.0" + str(len(suffix))),
-            registration=registration(),
+            registration=connector,
             binding=binding,
             provider_event_id="poll:" + suffix,
             received_at=created_at,
@@ -704,7 +709,7 @@ class OutboxDispatchTests(unittest.IsolatedAsyncioTestCase):
             )).state,
         )
 
-    async def test_backlogged_run_dispatches_newest_eligible_source_first(self):
+    async def test_backlogged_run_dispatches_newest_source_from_each_connector(self):
         repository = InMemoryRealtimeRepository()
         await repository.register_connector(registration())
         older = await self.admit_pending(
@@ -720,6 +725,18 @@ class OutboxDispatchTests(unittest.IsolatedAsyncioTestCase):
             run_id="run-f",
             case_id="case-f",
             created_at=NOW + timedelta(minutes=5),
+        )
+        second_connector = registration().copy(update={
+            "connector_id": "connector-prometheus-secondary",
+        })
+        await repository.register_connector(second_connector)
+        secondary = await self.admit_pending(
+            repository,
+            suffix="8",
+            run_id="run-f",
+            case_id="case-f",
+            created_at=NOW + timedelta(minutes=6),
+            connector=second_connector,
         )
         dispatched = []
 
@@ -740,7 +757,10 @@ class OutboxDispatchTests(unittest.IsolatedAsyncioTestCase):
             binding_templates=[],
         ).dispatch_pending_once()
 
-        self.assertEqual([newest.dispatch.dispatch_id], dispatched)
+        self.assertEqual(
+            {newest.dispatch.dispatch_id, secondary.dispatch.dispatch_id},
+            set(dispatched),
+        )
         self.assertEqual(
             ConnectorDispatchState.PENDING,
             (await repository.authoritative_dispatch(

@@ -149,7 +149,7 @@ export function parseMetricSeriesCollectionV3(value, expectedCaseId = null) {
     if (typeof series.thresholds.warning === "number" && typeof series.thresholds.critical === "number"
       && series.thresholds.warning > series.thresholds.critical) fail("v3_metric_thresholds_invalid");
     array(series.points, 1, 360, "v3_metric_points_invalid");
-    let previous = -Infinity;
+    let previous = null;
     for (const [index, point] of series.points.entries()) {
       object(point, "v3_metric_point_invalid");
       requiredKeys(point, ["sequence", "timestamp", "evidence_refs", "freshness"], "v3_metric_point_missing_field");
@@ -158,13 +158,19 @@ export function parseMetricSeriesCollectionV3(value, expectedCaseId = null) {
       if (point.sequence !== index + 1) fail("v3_metric_point_sequence_invalid");
       timestamp(point.timestamp, "v3_metric_point_timestamp_invalid");
       const milliseconds = Date.parse(point.timestamp);
+      const fraction = (point.timestamp.match(/\.(\d+)/)?.[1] || "")
+        .padEnd(9, "0").slice(3, 9);
+      const order = [milliseconds, Number(fraction || 0)];
       if (point.interval_start_at !== undefined && point.interval_start_at !== null) {
         timestamp(point.interval_start_at, "v3_metric_point_interval_invalid");
         if (Date.parse(point.interval_start_at) > milliseconds) fail("v3_metric_point_interval_invalid");
       }
-      if (milliseconds <= previous) fail("v3_metric_point_order_invalid");
+      if (previous && (
+        order[0] < previous[0]
+        || (order[0] === previous[0] && order[1] <= previous[1])
+      )) fail("v3_metric_point_order_invalid");
       if (milliseconds < windowStart || milliseconds > windowEnd) fail("v3_metric_point_outside_window");
-      previous = milliseconds;
+      previous = order;
       enumValue(point.freshness, FRESHNESS, "v3_metric_point_freshness_invalid");
       const hasValue = typeof point.value === "number" && Number.isFinite(point.value);
       const hasMissing = typeof point.missing_reason === "string" && Boolean(point.missing_reason.trim());

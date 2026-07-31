@@ -581,6 +581,15 @@ class RealtimeActivityDispatcher:
         activities.extend([started_activity, completed_activity])
         if not any(item.citation_id == citation.citation_id for item in citations):
             citations.append(citation)
+        retained_citation_ids = {
+            citation_id
+            for item in signals
+            for citation_id in item.citation_refs
+        }
+        citations = [
+            item for item in citations
+            if item.citation_id in retained_citation_ids
+        ]
         evidence_refs = list(dict.fromkeys(prior.evidence_refs + [evidence_id]))
         clock_sequence = final_sequence + 1
         runtime_by_status = {
@@ -719,7 +728,7 @@ class RealtimeActivityDispatcher:
             "agent_workspace": AgentWorkspace(
                 workspace_revision=source_revision,
                 activities=activities[-64:],
-                citations=citations[-64:],
+                citations=citations,
             ).dict(),
         })
         event_binding = {

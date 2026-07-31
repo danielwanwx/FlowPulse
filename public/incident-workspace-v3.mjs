@@ -398,13 +398,13 @@ function panelMarkup(view, projection, ui) {
 
 function graphModalMarkup(view, projection, selectedComponent, now) {
   const impacted = new Set(projection.impacted_path || []);
-  const relationIds = (projection.graph?.edges || [])
-    .filter((edge) => impacted.has(edge.source_component_id) && impacted.has(edge.target_component_id))
-    .map((edge) => edge.edge_id);
+  const relations = (projection.graph?.edges || [])
+    .filter((edge) => impacted.has(edge.source_component_id) || impacted.has(edge.target_component_id));
+  const componentIds = new Set([...impacted, ...relations.flatMap((edge) => [edge.source_component_id, edge.target_component_id])]);
   const topology = incidentTopologyView({
     graph: projection.graph,
-    impacted_path: projection.impacted_path,
-    incident_focus: { incident_relation_edge_ids: relationIds }
+    impacted_path: [...componentIds],
+    incident_focus: { incident_relation_edge_ids: relations.map((edge) => edge.edge_id) }
   });
   const activeEdges = new Set((projection.graph?.active_pulses || []).filter((pulse) => Date.parse(pulse.expires_at) > (now ?? Date.now())).flatMap((pulse) => pulse.edge_ids));
   const nodeById = new Map(topology.nodes.map((node) => [node.component_id, node]));

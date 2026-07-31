@@ -416,37 +416,38 @@ class IncidentWorkspaceTemporalWorkflow:
                 continue
             except asyncio.TimeoutError:
                 pass
-            current = self._freshness_timers.get(connector_id)
-            if current != timer or workflow.now() < timer.deadline.deadline:
-                continue
-            self._freshness_expiration_active = True
-            try:
-                raw = await workflow.execute_activity(
-                    "workspace_expire_realtime_freshness_activity",
-                    RealtimeFreshnessExpiryActivityPacket(
-                        deadline=timer.deadline,
-                        actor_subject_id=timer.actor_subject_id,
-                        fired_at=workflow.now(),
-                    ).dict(),
-                    start_to_close_timeout=timedelta(minutes=1),
-                )
-                expired = RealtimeFreshnessExpiryActivityOutcome.parse_obj(raw)
-                if expired.expired:
-                    if (
-                        expired.projection is None
-                        or expired.workspace_projection is None
-                    ):
-                        raise ValueError(
-                            "realtime_freshness_expiry_projection_missing",
-                        )
-                    self._realtime_projection = expired.projection
-                    self._projection = expired.workspace_projection
-                    self._event_sequence = expired.projection.sequence
-            finally:
-                self._freshness_expiration_active = False
-            if self._freshness_timers.get(connector_id) == timer:
-                self._freshness_timers.pop(connector_id, None)
-                self._freshness_timer_epoch += 1
+            async with self._lock:
+                current = self._freshness_timers.get(connector_id)
+                if current != timer or workflow.now() < timer.deadline.deadline:
+                    continue
+                self._freshness_expiration_active = True
+                try:
+                    raw = await workflow.execute_activity(
+                        "workspace_expire_realtime_freshness_activity",
+                        RealtimeFreshnessExpiryActivityPacket(
+                            deadline=timer.deadline,
+                            actor_subject_id=timer.actor_subject_id,
+                            fired_at=workflow.now(),
+                        ).dict(),
+                        start_to_close_timeout=timedelta(minutes=1),
+                    )
+                    expired = RealtimeFreshnessExpiryActivityOutcome.parse_obj(raw)
+                    if expired.expired:
+                        if (
+                            expired.projection is None
+                            or expired.workspace_projection is None
+                        ):
+                            raise ValueError(
+                                "realtime_freshness_expiry_projection_missing",
+                            )
+                        self._realtime_projection = expired.projection
+                        self._projection = expired.workspace_projection
+                        self._event_sequence = expired.projection.sequence
+                finally:
+                    self._freshness_expiration_active = False
+                if self._freshness_timers.get(connector_id) == timer:
+                    self._freshness_timers.pop(connector_id, None)
+                    self._freshness_timer_epoch += 1
         next_request = request.dict()
         next_request["rollover_carry"] = self._rollover_carry().dict()
         workflow.continue_as_new(next_request)

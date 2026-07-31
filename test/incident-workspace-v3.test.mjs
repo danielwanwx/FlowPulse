@@ -430,12 +430,15 @@ test("typed metric paths preserve gaps and never connect points across series", 
 });
 
 test("Investigate graph is an accessible modal without turning node review into an agent command", () => {
-  const value = projection({ current_stage: "INVESTIGATE" });
+  const value = projection({ current_stage: "INVESTIGATE", impacted_path: ["checkout"] });
   const html = renderIncidentWorkbenchV3(value, { connection: "connected", panel: "graph", componentId: "checkout" });
   assert.match(html, /role="dialog"/);
   assert.match(html, /aria-modal="true"/);
   assert.match(html, /data-graph-close/);
   assert.match(html, /data-graph-node="checkout"/);
+  assert.match(html, /data-graph-node="payment"/);
+  assert.match(html, /class="iw3-graph-edge/);
+  assert.doesNotMatch(html, /No evidence-backed impact graph is available/);
   assert.match(html, /data-agent-investigate="checkout"/);
   assert.doesNotMatch(html.match(/data-graph-node="checkout"[^>]*>/)?.[0] || "", /data-agent-investigate/);
 });

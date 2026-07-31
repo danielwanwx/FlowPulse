@@ -179,6 +179,18 @@ test("typed series require ordered numeric or explicit missing points and isolat
   delete missingSource.series[0].source_connector_id;
   assert.throws(() => parseMetricSeriesCollectionV3(missingSource, value.case_id), /v3_metric_series_missing_field/);
   assert.throws(() => parseMetricSeriesCollectionV3(value, "case-other"), /v3_metric_case_mismatch/);
+
+  const microseconds = structuredClone(value);
+  microseconds.series = [microseconds.series[0]];
+  microseconds.series[0].points = microseconds.series[0].points.slice(0, 2);
+  microseconds.series[0].points[0].timestamp = "2026-07-31T12:00:00.593161Z";
+  microseconds.series[0].points[1].timestamp = "2026-07-31T12:00:00.593174Z";
+  microseconds.series[0].observed_window_start = microseconds.series[0].points[0].timestamp;
+  microseconds.series[0].observed_window_end = microseconds.series[0].points[1].timestamp;
+  assert.deepEqual(parseMetricSeriesCollectionV3(microseconds), microseconds);
+  [microseconds.series[0].points[0].timestamp, microseconds.series[0].points[1].timestamp]
+    = [microseconds.series[0].points[1].timestamp, microseconds.series[0].points[0].timestamp];
+  assert.throws(() => parseMetricSeriesCollectionV3(microseconds), /v3_metric_point_order_invalid/);
 });
 
 test("typed series accept Pydantic-style nullable value and missing_reason keys", () => {

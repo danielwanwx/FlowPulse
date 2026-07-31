@@ -246,8 +246,6 @@ def _validate_realtime_commit_artifacts(commit: RealtimeCommit) -> None:
         or commit.signal.trend != source.trend
         or commit.signal.component_ids != source.component_ids
         or commit.signal.edge_ids != source.edge_ids
-        or commit.signal not in commit.projection.realtime_signals
-        or commit.citation not in commit.projection.agent_workspace.citations
         or any(
             item not in commit.projection.agent_workspace.activities
             for item in commit.activities
@@ -760,17 +758,19 @@ class InMemoryRealtimeRepository(RealtimeV3InMemoryMixin):
             ):
                 values.append(current)
         selected = []
-        runs = set()
+        streams = set()
         for current in sorted(
             values,
             key=lambda item: (item.created_at, item.dispatch_id),
             reverse=True,
         ):
-            run_key = (current.case_id, current.run_id)
-            if run_key in runs:
+            stream_key = (
+                current.case_id, current.run_id, current.connector_id,
+            )
+            if stream_key in streams:
                 continue
             selected.append(current)
-            runs.add(run_key)
+            streams.add(stream_key)
             if len(selected) >= limit:
                 break
         return selected
@@ -1644,7 +1644,7 @@ class RealtimePostgresMixin(RealtimeV3PostgresMixin):
                 """SELECT base, revision FROM (
                      SELECT o.payload AS base, r.payload AS revision,
                             row_number() OVER (
-                              PARTITION BY o.case_id, o.run_id
+                              PARTITION BY o.case_id, o.run_id, o.connector_id
                               ORDER BY o.created_at DESC, o.dispatch_id DESC
                             ) AS run_position
                      FROM connector_dispatch_outbox o
