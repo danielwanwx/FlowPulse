@@ -32,6 +32,11 @@ from .workspace_investigation import (
     WorkspaceInvestigationStageRecord,
     validate_workspace_investigation_commit,
 )
+from .workspace_v3_models import (
+    IncidentExecutionIdentityV3,
+    TemporalExecutionPointerV3,
+    TemporalExecutionRolloverV3,
+)
 
 
 BindingKey = Tuple[str, str, str]
@@ -84,6 +89,12 @@ class InMemoryWorkspaceRepository:
         self.workspace_investigation_commits: Dict[
             Tuple[str, str, str], WorkspaceInvestigationCommit
         ] = {}
+        self.incident_execution_identities_v3: Dict[
+            Tuple[str, str], IncidentExecutionIdentityV3
+        ] = {}
+        self.temporal_execution_pointers_v3: Dict[
+            Tuple[str, str], TemporalExecutionPointerV3
+        ] = {}
         # Test-only seam: a checkpoint raises inside the same in-memory
         # transaction simulation and restores every append-only collection.
         self.failure_injector = failure_injector
@@ -116,6 +127,53 @@ class InMemoryWorkspaceRepository:
         return binding
 
     put_workspace_binding = put_binding
+
+    async def put_incident_execution_v3(
+        self,
+        identity: IncidentExecutionIdentityV3,
+        pointer: TemporalExecutionPointerV3,
+    ) -> TemporalExecutionPointerV3:
+        key = (identity.tenant_id, identity.incident_run_id)
+        if (
+            identity.tenant_id != pointer.tenant_id
+            or identity.incident_run_id != pointer.incident_run_id
+            or identity.temporal_workflow_id != pointer.temporal_workflow_id
+            or pointer.temporal_generation != 1
+        ):
+            raise PolicyViolation("workspace_v3_initial_execution_identity_mismatch")
+        existing_identity = self.incident_execution_identities_v3.get(key)
+        existing_pointer = self.temporal_execution_pointers_v3.get(key)
+        if existing_identity is not None:
+            if existing_identity != identity or existing_pointer is None:
+                raise PolicyViolation("workspace_v3_execution_identity_rebound")
+            if existing_pointer != pointer:
+                raise PolicyViolation("workspace_v3_initial_execution_pointer_mismatch")
+            return existing_pointer
+        self.incident_execution_identities_v3[key] = identity
+        self.temporal_execution_pointers_v3[key] = pointer
+        return pointer
+
+    async def current_temporal_execution_v3(
+        self, tenant_id: str, incident_run_id: str,
+    ) -> Optional[TemporalExecutionPointerV3]:
+        return self.temporal_execution_pointers_v3.get((tenant_id, incident_run_id))
+
+    async def rollover_temporal_execution_v3(
+        self, rollover: TemporalExecutionRolloverV3,
+    ) -> TemporalExecutionPointerV3:
+        key = (
+            rollover.identity.tenant_id,
+            rollover.identity.incident_run_id,
+        )
+        current = self.temporal_execution_pointers_v3.get(key)
+        if current is None:
+            raise PolicyViolation("workspace_v3_execution_pointer_missing")
+        if current != rollover.expected:
+            if current == rollover.replacement:
+                return current
+            raise PolicyViolation("workspace_v3_execution_pointer_cas_conflict")
+        self.temporal_execution_pointers_v3[key] = rollover.replacement
+        return rollover.replacement
 
     async def grant_workspace_subject(
         self, binding: IncidentRunBinding, subject_id: str, roles=None, permissions=None,

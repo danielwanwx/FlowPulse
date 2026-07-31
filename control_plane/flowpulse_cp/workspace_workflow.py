@@ -2,7 +2,7 @@
 
 import asyncio
 from datetime import timedelta
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from temporalio import workflow
 from temporalio.common import RetryPolicy
@@ -11,7 +11,8 @@ from temporalio.common import RetryPolicy
 # Temporal's sandbox import. The contracts are immutable parsing utilities, so
 # pass this dependency through exactly as the worker/importer loaded it.
 with workflow.unsafe.imports_passed_through():
-    from pydantic import ValidationError
+    from pydantic import Field, ValidationError, root_validator
+    from .models import NonEmpty, PositiveInt, StrictModel
     from .workspace_models import (
         IncidentRunBinding,
         IncidentProjection,
@@ -49,10 +50,16 @@ with workflow.unsafe.imports_passed_through():
     from .workspace_versions import WORKSPACE_V2_WORKFLOW_TYPE
     from .realtime_models import (
         ConnectorPollResult,
+        IncidentProjectionV2,
         RealtimeCommitActivityPacket,
         RealtimePollActivityPacket,
         RealtimeUpdateCommand,
         RealtimeUpdateOutcome,
+    )
+    from .workspace_v3_models import (
+        IncidentExecutionIdentityV3,
+        TemporalExecutionPointerV3,
+        WorkspaceExecutionRegistrationV3,
     )
 
 
@@ -60,6 +67,37 @@ WORKSPACE_V2_ACTIONS_PATCH = "workspace-v2-gate1-next-best-actions"
 WORKSPACE_V2_ACTION_COMMIT_PATCH = "workspace-v2-gate1-atomic-action-commit"
 WORKSPACE_V2_INVESTIGATION_PATCH = "workspace-v2-investigation-decide-handoff"
 WORKSPACE_V2_STAFF_INCIDENT_CONTRACT_PATCH = "workspace-v2-staff-incident-contract-v1"
+WORKSPACE_V2_REALTIME_ROLLOVER_PATCH = "workspace-v2-realtime-continue-as-new-v1"
+
+ROLLOVER_HISTORY_LENGTH_LIMIT = 1_500
+ROLLOVER_HISTORY_SIZE_LIMIT = 24 * 1024 * 1024
+ROLLOVER_TRANSITION_LIMIT = 500
+
+
+class WorkspaceV2RolloverCarry(StrictModel):
+    """Bounded V2 state carried into the next physical Temporal execution."""
+
+    schema_version: NonEmpty = "flowpulse.workspace-v2-rollover.v1"
+    execution: TemporalExecutionPointerV3
+    projection: IncidentProjection
+    realtime_projection: Optional[IncidentProjectionV2] = None
+    event_sequence: PositiveInt
+    explanations: Dict[NonEmpty, Dict[str, Any]] = Field(default_factory=dict)
+    actions: Dict[NonEmpty, Dict[str, Any]] = Field(default_factory=dict)
+    action_receipts: Dict[NonEmpty, Dict[str, Any]] = Field(default_factory=dict)
+    realtime_receipts: Dict[NonEmpty, Dict[str, Any]] = Field(default_factory=dict)
+
+    @root_validator(allow_reuse=True)
+    def carry_maps_are_bounded(cls, values):
+        for field, limit in {
+            "explanations": 64,
+            "actions": 64,
+            "action_receipts": 64,
+            "realtime_receipts": 128,
+        }.items():
+            if len(values.get(field, {})) > limit:
+                raise ValueError("workspace_v2_rollover_{}_exceeds_limit".format(field))
+        return values
 
 
 @workflow.defn(name=WORKSPACE_V2_WORKFLOW_TYPE)
@@ -68,7 +106,12 @@ class IncidentWorkspaceTemporalWorkflow:
 
     def __init__(self) -> None:
         self._initialized = False
+        self._rollover_enabled = False
+        self._rollover_requested = False
+        self._active_updates = 0
+        self._accepted_realtime_transitions = 0
         self._binding = None
+        self._execution_pointer = None
         self._projection = None
         self._event_sequence = 0
         self._explanations: Dict[str, Dict[str, Any]] = {}
@@ -77,6 +120,32 @@ class IncidentWorkspaceTemporalWorkflow:
         self._realtime_projection = None
         self._realtime_receipts: Dict[str, Dict[str, Any]] = {}
         self._lock = asyncio.Lock()
+
+    @staticmethod
+    def _bounded_map(values: Dict[str, Dict[str, Any]], limit: int) -> Dict[str, Dict[str, Any]]:
+        """Preserve the newest idempotency receipts without unbounded carry state."""
+        return dict(list(values.items())[-limit:])
+
+    def _rollover_due(self) -> bool:
+        info = workflow.info()
+        return (
+            self._accepted_realtime_transitions >= ROLLOVER_TRANSITION_LIMIT
+            or info.get_current_history_length() >= ROLLOVER_HISTORY_LENGTH_LIMIT
+            or info.get_current_history_size() >= ROLLOVER_HISTORY_SIZE_LIMIT
+            or info.is_continue_as_new_suggested()
+        )
+
+    def _rollover_carry(self) -> WorkspaceV2RolloverCarry:
+        return WorkspaceV2RolloverCarry(
+            execution=self._execution_pointer,
+            projection=self._projection,
+            realtime_projection=self._realtime_projection,
+            event_sequence=self._event_sequence,
+            explanations=self._bounded_map(self._explanations, 64),
+            actions=self._bounded_map(self._actions, 64),
+            action_receipts=self._bounded_map(self._action_receipts, 64),
+            realtime_receipts=self._bounded_map(self._realtime_receipts, 128),
+        )
 
     def _packet(self, stage: str, *, command: NodeExplanationStart = None, actor=None) -> WorkspaceActivityPacket:
         return WorkspaceActivityPacket(
@@ -121,31 +190,88 @@ class IncidentWorkspaceTemporalWorkflow:
 
     @workflow.run
     async def run(self, request_data: Dict[str, Any]) -> Dict[str, Any]:
-        request = WorkspaceWorkflowRequest.parse_obj(request_data)
+        request_payload = dict(request_data)
+        carry_payload = request_payload.pop("rollover_carry", None)
+        request = WorkspaceWorkflowRequest.parse_obj(request_payload)
         request_values = request.copy(update={"workflow_run_id": workflow.info().run_id}).dict()
         self._binding = IncidentRunBinding.parse_obj({
             field: request_values[field] for field in IncidentRunBinding.__fields__
         })
-        self._event_sequence = 1
-        self._projection = initial_projection(
-            self._binding, request.affected_entities, request.created_at, request.title, request.summary,
+        self._rollover_enabled = workflow.patched(WORKSPACE_V2_REALTIME_ROLLOVER_PATCH)
+        carry = (
+            WorkspaceV2RolloverCarry.parse_obj(carry_payload)
+            if carry_payload is not None else None
         )
-        # The initializer receives only the trusted intake identity and appends
-        # its durable workspace-subject grant before the projection is readable.
-        initialized = await self._activity("workspace_initialize", actor=request.actor)
-        self._projection = initialized.projection or self._projection
-        # Existing v2 histories have no marker and replay their frozen
-        # initializer exactly. New starts record the marker before Gate 1/card
-        # activities become part of their command history.
-        if workflow.patched(WORKSPACE_V2_ACTIONS_PATCH):
-            generated = await self._action_activity(
-                "workspace_generate_actions_activity",
-                WorkspaceActionGenerationPacket(**self._binding.dict(), projection=self._projection).dict(),
+        if carry is not None and not self._rollover_enabled:
+            raise ValueError("workspace_v2_rollover_carry_requires_patch")
+        if self._rollover_enabled:
+            prior = carry.execution if carry is not None else None
+            current = TemporalExecutionPointerV3(
+                tenant_id=self._binding.tenant_id,
+                incident_run_id=self._binding.run_id,
+                temporal_workflow_id=self._binding.workflow_id,
+                temporal_run_id=workflow.info().run_id,
+                temporal_generation=(
+                    1 if prior is None else prior.temporal_generation + 1
+                ),
+                updated_at=workflow.now(),
             )
-            actions = WorkspaceActionGenerationOutcome.parse_obj(generated).actions
-            self._actions = {action.action_id: action.dict() for action in actions}
+            registered = await workflow.execute_activity(
+                "workspace_register_execution_v3_activity",
+                WorkspaceExecutionRegistrationV3(
+                    identity=IncidentExecutionIdentityV3(
+                        tenant_id=self._binding.tenant_id,
+                        incident_id=self._binding.incident_id,
+                        incident_run_id=self._binding.run_id,
+                        topology_revision=self._binding.topology_revision,
+                        case_id=self._binding.case_id,
+                        case_revision=self._binding.case_revision,
+                        temporal_workflow_id=self._binding.workflow_id,
+                        created_at=self._binding.created_at,
+                    ),
+                    prior=prior,
+                    current=current,
+                ).dict(),
+                start_to_close_timeout=timedelta(minutes=1),
+            )
+            self._execution_pointer = TemporalExecutionPointerV3.parse_obj(registered)
+        if carry is not None:
+            self._projection = carry.projection
+            self._realtime_projection = carry.realtime_projection
+            self._event_sequence = carry.event_sequence
+            self._explanations = dict(carry.explanations)
+            self._actions = dict(carry.actions)
+            self._action_receipts = dict(carry.action_receipts)
+            self._realtime_receipts = dict(carry.realtime_receipts)
+        else:
+            self._event_sequence = 1
+            self._projection = initial_projection(
+                self._binding, request.affected_entities, request.created_at, request.title, request.summary,
+            )
+            # The initializer receives only the trusted intake identity and appends
+            # its durable workspace-subject grant before the projection is readable.
+            initialized = await self._activity("workspace_initialize", actor=request.actor)
+            self._projection = initialized.projection or self._projection
+            # Existing v2 histories have no marker and replay their frozen
+            # initializer exactly. New starts record the marker before Gate 1/card
+            # activities become part of their command history.
+            if workflow.patched(WORKSPACE_V2_ACTIONS_PATCH):
+                generated = await self._action_activity(
+                    "workspace_generate_actions_activity",
+                    WorkspaceActionGenerationPacket(**self._binding.dict(), projection=self._projection).dict(),
+                )
+                actions = WorkspaceActionGenerationOutcome.parse_obj(generated).actions
+                self._actions = {action.action_id: action.dict() for action in actions}
         self._initialized = True
-        await workflow.wait_condition(lambda: False)
+        if not self._rollover_enabled:
+            await workflow.wait_condition(lambda: False)
+            return {"state": "unreachable"}
+        await workflow.wait_condition(
+            lambda: self._rollover_requested and self._active_updates == 0,
+        )
+        next_request = request.dict()
+        next_request["rollover_carry"] = self._rollover_carry().dict()
+        workflow.continue_as_new(next_request)
         return {"state": "unreachable"}
 
     @workflow.update(name="await_workspace_projection")
@@ -156,6 +282,7 @@ class IncidentWorkspaceTemporalWorkflow:
 
     @workflow.update(name="start_or_reuse_node_explanation")
     async def start_or_reuse_node_explanation(self, command_data: Dict[str, Any]) -> Dict[str, Any]:
+        self._active_updates += 1
         try:
             # v1's unauthenticated bare command decoder lives exclusively in
             # ``legacy_workspace_workflow`` for archived-history replay. A
@@ -199,6 +326,8 @@ class IncidentWorkspaceTemporalWorkflow:
                 return NodeExplanationReceipt(explanation=outcome.explanation, reused=False).dict()
         except (ValidationError, ValueError) as error:
             return {"accepted": False, "reason": str(error)}
+        finally:
+            self._active_updates -= 1
 
     def _validate_node_command(self, command: NodeExplanationStart) -> None:
         if (
@@ -213,6 +342,7 @@ class IncidentWorkspaceTemporalWorkflow:
     @workflow.update(name="invoke_next_best_action")
     async def invoke_next_best_action(self, command_data: Dict[str, Any]) -> Dict[str, Any]:
         """The sole live CTA update: asserted, revalidated, and Temporal-owned."""
+        self._active_updates += 1
         try:
             invocation = WorkspaceActionInvocation.parse_obj(command_data)
             command = invocation.command
@@ -336,6 +466,8 @@ class IncidentWorkspaceTemporalWorkflow:
                 return outcome.receipt.dict()
         except (ValidationError, ValueError) as error:
             return {"accepted": False, "reason": str(error)}
+        finally:
+            self._active_updates -= 1
 
     def _validate_action_command(self, command: ActionInvocationCommand) -> None:
         if (
@@ -348,6 +480,7 @@ class IncidentWorkspaceTemporalWorkflow:
     @workflow.update(name="reconcile_realtime_connector")
     async def reconcile_realtime_connector(self, command_data: Dict[str, Any]) -> Dict[str, Any]:
         """Read one server-registered connector and accept one typed fact transition."""
+        self._active_updates += 1
         try:
             command = RealtimeUpdateCommand.parse_obj(command_data)
             await workflow.wait_condition(lambda: self._initialized)
@@ -399,9 +532,40 @@ class IncidentWorkspaceTemporalWorkflow:
                 self._event_sequence = outcome.projection.sequence
                 payload = outcome.dict()
                 self._realtime_receipts[command.idempotency_key] = payload
+                self._accepted_realtime_transitions += 1
+                if self._rollover_enabled and self._rollover_due():
+                    self._rollover_requested = True
                 return payload
         except (ValidationError, ValueError) as error:
             return {"accepted": False, "reason": str(error)}
+        finally:
+            self._active_updates -= 1
+
+    @workflow.signal(name="request_workspace_rollover")
+    def request_workspace_rollover(self) -> None:
+        """Operator/test escape hatch; normal rollovers are history-budget driven."""
+        if self._rollover_enabled:
+            self._rollover_requested = True
+
+    @workflow.query(name="workspace_runtime_state")
+    def workspace_runtime_state(self) -> Dict[str, Any]:
+        if not self._initialized:
+            return {"initialized": False}
+        return {
+            "initialized": True,
+            "rollover_enabled": self._rollover_enabled,
+            "rollover_requested": self._rollover_requested,
+            "active_updates": self._active_updates,
+            "accepted_realtime_transitions": self._accepted_realtime_transitions,
+            "temporal_generation": (
+                self._execution_pointer.temporal_generation
+                if self._execution_pointer is not None else 1
+            ),
+            "temporal_run_id": (
+                self._execution_pointer.temporal_run_id
+                if self._execution_pointer is not None else self._binding.workflow_run_id
+            ),
+        }
 
     def _validate_realtime_command(self, command: RealtimeUpdateCommand) -> None:
         if (
