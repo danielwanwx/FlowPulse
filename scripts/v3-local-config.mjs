@@ -81,14 +81,16 @@ export function buildV3LocalConfig({
   const nodeBaseUrl = `http://host.docker.internal:${uiPort}`;
   const browserBaseUrl = `http://127.0.0.1:${uiPort}`;
   const controlPlaneUrl = "http://127.0.0.1:8090";
+  const tenantId = environment.FLOWPULSE_V3_TENANT_ID || "tenant-v3-local";
+  const ownerSubjectId = environment.FLOWPULSE_V3_OWNER_SUBJECT_ID || "owner-v3-local";
   const runtimeEnvironment = {
     ...environment,
     FLOWPULSE_PRODUCER_GIT_SHA: producerGitSha,
     FLOWPULSE_WORKSPACE_WORKFLOW_BLOB_OID: workflowOid,
     FLOWPULSE_TEST_OWNER_TOKEN: ownerToken,
     FLOWPULSE_TEST_FIXTURE_CONTEXT_JSON: JSON.stringify({
-      tenant_id: "tenant-http",
-      subject_id: "owner-http",
+      tenant_id: tenantId,
+      subject_id: ownerSubjectId,
       roles: ["owner"],
     }),
     FLOWPULSE_PROVIDER_MODE: "standard",
@@ -100,8 +102,8 @@ export function buildV3LocalConfig({
     FLOWPULSE_OTEL_HOST_DIR: otelHostDir,
     FLOWPULSE_OTEL_SPOOL_ROOT: "/flowpulse-otel",
     FLOWPULSE_REALTIME_SCHEDULER_INTERVAL_SECONDS: "2",
-    FLOWPULSE_REALTIME_TENANT_ID: "tenant-http",
-    FLOWPULSE_REALTIME_ACTOR_SUBJECT_ID: "owner-http",
+    FLOWPULSE_REALTIME_TENANT_ID: tenantId,
+    FLOWPULSE_REALTIME_ACTOR_SUBJECT_ID: ownerSubjectId,
     FLOWPULSE_V3_INTERNAL_BRIDGE_URL: nodeBaseUrl,
     FLOWPULSE_V3_INTERNAL_BRIDGE_HMAC_SECRET: bridgeSecret,
     FLOWPULSE_V3_SAFE_ROLLBACK_URL: nodeBaseUrl,

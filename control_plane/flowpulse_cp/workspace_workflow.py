@@ -220,11 +220,6 @@ class IncidentWorkspaceTemporalWorkflow:
         self._freshness_expiration_active = False
         self._lock = asyncio.Lock()
 
-    @staticmethod
-    def _bounded_map(values: Dict[str, Dict[str, Any]], limit: int) -> Dict[str, Dict[str, Any]]:
-        """Preserve the newest idempotency receipts without unbounded carry state."""
-        return dict(list(values.items())[-limit:])
-
     def _rollover_due(self) -> bool:
         info = workflow.info()
         return (
@@ -240,10 +235,12 @@ class IncidentWorkspaceTemporalWorkflow:
             projection=self._projection,
             realtime_projection=self._realtime_projection,
             event_sequence=self._event_sequence,
-            explanations=self._bounded_map(self._explanations, 64),
-            actions=self._bounded_map(self._actions, 64),
-            action_receipts=self._bounded_map(self._action_receipts, 64),
-            realtime_receipts=self._bounded_map(self._realtime_receipts, 128),
+            # These are disposable workflow caches; their durable source is Postgres.
+            # Carrying full projection receipts can exceed Temporal's 2 MB input limit.
+            explanations={},
+            actions={},
+            action_receipts={},
+            realtime_receipts={},
             freshness_timers=dict(self._freshness_timers),
         )
 

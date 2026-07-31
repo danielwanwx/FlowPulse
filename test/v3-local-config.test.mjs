@@ -35,6 +35,13 @@ test("V3 local config binds API, worker, Node, OTel, and independent secrets", (
   assert.equal("0", env.FLOWPULSE_ENABLE_DETERMINISTIC_TEST_PROVIDERS);
   assert.equal("", env.FLOWPULSE_PROMETHEUS_URL);
   assert.equal("/flowpulse-otel", env.FLOWPULSE_OTEL_SPOOL_ROOT);
+  assert.deepEqual(JSON.parse(env.FLOWPULSE_TEST_FIXTURE_CONTEXT_JSON), {
+    tenant_id: "tenant-v3-local",
+    subject_id: "owner-v3-local",
+    roles: ["owner"],
+  });
+  assert.equal("tenant-v3-local", env.FLOWPULSE_REALTIME_TENANT_ID);
+  assert.equal("owner-v3-local", env.FLOWPULSE_REALTIME_ACTOR_SUBJECT_ID);
   assert.equal(true, publicV3LocalConfig(config).preserves_postgres_and_minio_volumes);
   assert.equal(true, publicV3LocalConfig(config).startable);
 });

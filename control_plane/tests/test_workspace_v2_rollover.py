@@ -18,9 +18,10 @@ from flowpulse_cp.workspace_activities import (
     WorkspaceActivityDispatcher,
     build_workspace_activities,
 )
-from flowpulse_cp.workspace_models import WorkspaceWorkflowRequest
+from flowpulse_cp.workspace_models import IncidentRunBinding, WorkspaceWorkflowRequest, initial_projection
 from flowpulse_cp.workspace_repository import InMemoryWorkspaceRepository
 from flowpulse_cp.workspace_topology import CapturedAstronomyTopologyProvider
+from flowpulse_cp.workspace_v3_models import TemporalExecutionPointerV3
 from flowpulse_cp.workspace_workflow import IncidentWorkspaceTemporalWorkflow
 
 
@@ -45,6 +46,45 @@ def request():
         affected_entities=["checkout"],
         summary="Continue-as-new must preserve this public incident.",
     )
+
+
+class WorkspaceV2RolloverCarryTests(unittest.TestCase):
+    def test_rollover_drops_disposable_receipt_caches(self):
+        workflow_instance = IncidentWorkspaceTemporalWorkflow()
+        workflow_request = request()
+        binding = IncidentRunBinding.parse_obj({
+            field: getattr(workflow_request, field)
+            for field in IncidentRunBinding.__fields__
+        })
+        workflow_instance._execution_pointer = TemporalExecutionPointerV3(
+            tenant_id=binding.tenant_id,
+            incident_run_id=binding.run_id,
+            temporal_workflow_id=binding.workflow_id,
+            temporal_run_id="temporal-run-a",
+            temporal_generation=1,
+            updated_at=NOW,
+        )
+        workflow_instance._projection = initial_projection(
+            binding,
+            workflow_request.affected_entities,
+            workflow_request.created_at,
+            workflow_request.title,
+            workflow_request.summary,
+        )
+        workflow_instance._event_sequence = 1
+        large_receipt = {"payload": "x" * 3_000_000}
+        workflow_instance._explanations = {"explanation": large_receipt}
+        workflow_instance._actions = {"action": large_receipt}
+        workflow_instance._action_receipts = {"action-receipt": large_receipt}
+        workflow_instance._realtime_receipts = {"realtime-receipt": large_receipt}
+
+        carry = workflow_instance._rollover_carry()
+
+        self.assertEqual({}, carry.explanations)
+        self.assertEqual({}, carry.actions)
+        self.assertEqual({}, carry.action_receipts)
+        self.assertEqual({}, carry.realtime_receipts)
+        self.assertLess(len(carry.json().encode("utf-8")), 2_000_000)
 
 
 @unittest.skipUnless(
