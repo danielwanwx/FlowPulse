@@ -26,10 +26,12 @@ from flowpulse_cp.workspace_models import (
 from flowpulse_cp.workspace_registration import (
     WORKSPACE_V1_WORKFLOW_TYPE,
     WORKSPACE_V2_WORKFLOW_TYPE,
+    WORKSPACE_V3_WORKFLOW_TYPE,
     workspace_workflow_definitions,
 )
 from flowpulse_cp.legacy_workspace_workflow import LegacyIncidentWorkspaceTemporalWorkflow
 from flowpulse_cp.workspace_workflow import IncidentWorkspaceTemporalWorkflow
+from flowpulse_cp.workspace_v3_workflow import IncidentWorkspaceTemporalWorkflowV3
 
 
 NOW = datetime(2026, 7, 26, tzinfo=timezone.utc)
@@ -159,7 +161,7 @@ class IncidentWorkspaceContractTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             NodeExplanationStart.parse_obj(raw)
 
-    def test_new_workspaces_use_v2_and_worker_registers_only_v1_drain_plus_v2(self):
+    def test_v2_remains_default_while_worker_registers_additive_v3(self):
         self.assertEqual(WORKSPACE_V2_WORKFLOW_TYPE, VersionBundle().workflow_version)
         self.assertEqual(
             WORKSPACE_V2_WORKFLOW_TYPE,
@@ -170,7 +172,15 @@ class IncidentWorkspaceContractTests(unittest.TestCase):
             getattr(LegacyIncidentWorkspaceTemporalWorkflow, "__temporal_workflow_definition").name,
         )
         self.assertEqual(
-            [LegacyIncidentWorkspaceTemporalWorkflow, IncidentWorkspaceTemporalWorkflow],
+            WORKSPACE_V3_WORKFLOW_TYPE,
+            getattr(IncidentWorkspaceTemporalWorkflowV3, "__temporal_workflow_definition").name,
+        )
+        self.assertEqual(
+            [
+                LegacyIncidentWorkspaceTemporalWorkflow,
+                IncidentWorkspaceTemporalWorkflow,
+                IncidentWorkspaceTemporalWorkflowV3,
+            ],
             workspace_workflow_definitions(),
         )
 

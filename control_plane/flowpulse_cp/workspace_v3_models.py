@@ -6,7 +6,7 @@ remain unchanged while the persistence and Temporal migration is implemented.
 
 from datetime import datetime
 from hashlib import sha256
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from pydantic import Field, root_validator
 
@@ -174,6 +174,47 @@ class WorkspaceRolloverStateV3(StrictModel):
             raise ValueError("workspace_v3_rollover_fingerprints_must_be_unique")
         if len(values.get("connector_cursor_watermarks", {})) > 32:
             raise ValueError("workspace_v3_rollover_cursor_watermarks_exceed_limit")
+        return values
+
+
+class WorkspaceWorkflowRequestV3(StrictModel):
+    """First-start or continue-as-new input for the V3 runtime owner."""
+
+    identity: IncidentExecutionIdentityV3
+    carry: Optional[WorkspaceRolloverStateV3] = None
+    projection_ref: NonEmpty
+    projection_revision: PositiveInt
+    signal_revision: PositiveInt
+    decision_revision: PositiveInt
+    workspace_revision: PositiveInt
+    case_event_sequence: PositiveInt
+
+    @root_validator(allow_reuse=True)
+    def carry_matches_request_identity(cls, values):
+        carry = values.get("carry")
+        identity = values.get("identity")
+        if carry is not None and identity is not None and carry.identity != identity:
+            raise ValueError("workspace_v3_request_carry_identity_mismatch")
+        return values
+
+
+class WorkspaceRevisionAdvanceV3(StrictModel):
+    """One accepted durable transition reflected in the V3 workflow state."""
+
+    expected_case_event_sequence: PositiveInt
+    case_event_sequence: PositiveInt
+    projection_ref: NonEmpty
+    projection_revision: PositiveInt
+    signal_revision: PositiveInt
+    decision_revision: PositiveInt
+    workspace_revision: PositiveInt
+
+    @root_validator(allow_reuse=True)
+    def transition_is_exact_successor(cls, values):
+        expected = values.get("expected_case_event_sequence")
+        current = values.get("case_event_sequence")
+        if expected is not None and current != expected + 1:
+            raise ValueError("workspace_v3_event_sequence_must_increment_once")
         return values
 
 
