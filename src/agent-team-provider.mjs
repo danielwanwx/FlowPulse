@@ -242,11 +242,14 @@ function codexArgs({ workingDirectory, schemaPath, outputPath, role, context }) 
 }
 
 function codexPrompt(role, context) {
+  const evidenceInstruction = context?.role_context?.model_tool_execution === "disabled"
+    ? "The server-owned Evidence Worker already supplied every available typed result in tool_results. Return tool_requests: []; do not request model tools."
+    : "If bounded evidence is needed, request only allowlisted tools with null for unused cursor, limit, and signal fields. Do not invent tool names or arguments.";
   return [
     `You are the FlowPulse ${role} response generator.`,
     "Return only JSON that satisfies the provided output schema.",
     `Keep answer to at most ${MAX_ANSWER_CODEPOINTS} Unicode characters; cite only provided evidence IDs in that concise answer.`,
-    "If bounded evidence is needed, request only allowlisted tools with null for unused cursor, limit, and signal fields. Do not invent tool names or arguments.",
+    evidenceInstruction,
     "In the final answer use concise labeled clauses: Observed facts; Inference; Missing evidence; Next action; Citations.",
     "When workflow records are present, report their exact authorization outcome and scope, actor/sequence separation, verification checks, and stated verification boundary. A recorded pre-authorization is not missing merely because you cannot grant new approval.",
     "Do not use shell commands, tools, web search, files, subagents, approval, repair, verification, or truth mutation.",

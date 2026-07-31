@@ -60,6 +60,27 @@ test("Codex local preflight and invocation use an ephemeral read-only temp works
   assert.equal(invocation.args.some((item) => item.includes("flowpulse-agent-backend")), false);
 });
 
+test("guided Codex receives server-owned typed results and is explicitly forbidden from requesting model tools", async () => {
+  const fixture = scriptedSpawn({ output: JSON.stringify({ answer: "Typed evidence reviewed.", recommended_handoff: null, tool_requests: [] }) });
+  const provider = createCodexLocalAdapter({ spawnImpl: fixture.spawn, timeoutMs: 100 });
+  await provider.preflight();
+  await provider.respond({
+    role: "investigator",
+    context: {
+      ...CONTEXT,
+      role_context: { model_tool_execution: "disabled", hypotheses: [{ hypothesis_id: "hypothesis-1" }] },
+      tool_allowlist: [],
+      tool_results: [{ tool: "incident.current-signals.v1", state: "SUCCEEDED", summary: "Current trace admitted." }]
+    }
+  });
+  const invocation = fixture.calls.find((call) => call.args[0] === "exec");
+  const prompt = invocation.args.at(-1);
+  assert.match(prompt, /server-owned Evidence Worker already supplied every available typed result/);
+  assert.match(prompt, /Return tool_requests: \[\]/);
+  assert.match(prompt, /incident\.current-signals\.v1/);
+  assert.doesNotMatch(prompt, /If bounded evidence is needed, request only allowlisted tools/);
+});
+
 test("Codex local reports unavailable, timeout, nonzero, invalid, and oversized output safely", async () => {
   const unavailable = createCodexLocalAdapter({ spawnImpl: scriptedSpawn({ versionCode: 1 }).spawn, timeoutMs: 20 });
   assert.equal((await unavailable.preflight()).failure_reason, "codex_cli_unavailable");

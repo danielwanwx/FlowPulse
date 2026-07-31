@@ -152,13 +152,13 @@ class RealtimeIngestScheduler:
         )))
 
     async def run_once(self) -> Dict[str, int]:
+        now = self.clock()
         summaries = await self.repository.workspace_active_incidents(
             self.tenant_id, 50,
         )
         polled = 0
         unavailable = 0
         ineligible = 0
-        now = datetime.now(timezone.utc)
         for summary in summaries:
             projection = await self.repository.workspace_projection(
                 self.tenant_id, summary.case_id,
@@ -201,7 +201,18 @@ class RealtimeIngestScheduler:
                     await self.repository.materialize_realtime_baseline(
                         projection, now=now,
                     )
-                    for template in self.binding_templates:
+                    external_resource_id = getattr(
+                        connector, "external_resource_id", None,
+                    )
+                    templates = [
+                        template for template in self.binding_templates
+                        if (
+                            external_resource_id is None
+                            or template.external_resource_id
+                            == external_resource_id
+                        )
+                    ]
+                    for template in templates:
                         binding = template.materialize(
                             connector.registration,
                             projection,

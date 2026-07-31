@@ -8,8 +8,13 @@ from hashlib import sha256
 from typing import Dict, List, Optional, Tuple
 from uuid import NAMESPACE_URL, uuid5
 
-from .models import EvidenceEnvelope
+from .models import EvidenceEnvelope, FreshnessStatus
 from .policy import validate_evidence_admission
+from .realtime_v3_persistence import (
+    RealtimeV3InMemoryMixin,
+    RealtimeV3PostgresMixin,
+    persist_realtime_v3_commit_artifacts,
+)
 from .realtime_models import (
     AgentActivityState,
     AgentWorkspace,
@@ -21,8 +26,11 @@ from .realtime_models import (
     ConnectorDispatchState,
     ConnectorHealth,
     ConnectorHealthState,
+    ConnectorProvider,
     ConnectorRegistration,
+    ConnectorTruthLabel,
     ExternalIdentityBinding,
+    FreshnessDeadline,
     IncidentClock,
     IncidentClockState,
     IncidentProjectionV2,
@@ -33,8 +41,10 @@ from .realtime_models import (
     RealtimeSummary,
     RealtimeDeliveryMode,
     RealtimeEventType,
+    RealtimeSignalStatus,
+    SpoolCursor,
 )
-from .workspace_models import IncidentProjection
+from .workspace_models import IncidentProjection, ProjectionState
 
 
 def _payload(value) -> str:
@@ -246,6 +256,16 @@ def _validate_realtime_commit_artifacts(commit: RealtimeCommit) -> None:
         raise ValueError("realtime_transition_typed_event_family_mismatch")
     pulse_allowed = bool(
         source.edge_ids
+        and (
+            (
+                source.provider == ConnectorProvider.OTEL
+                and source.event_kind in {
+                    "TRACE_PARENT_CHILD_OBSERVED",
+                    "TRACE_COMPONENT_ERROR_OBSERVED",
+                }
+            )
+            or source.truth_label == ConnectorTruthLabel.TEST_DETERMINISTIC
+        )
         and source.freshness.value == "CURRENT"
         and source.delivery_mode == RealtimeDeliveryMode.LIVE
     )
@@ -267,6 +287,109 @@ def _validate_realtime_commit_artifacts(commit: RealtimeCommit) -> None:
         )
     ):
         raise ValueError("realtime_transition_path_pulse_not_evidence_bound")
+    current_signals = [
+        item for item in commit.projection.realtime_signals
+        if item.freshness == FreshnessStatus.CURRENT
+        and item.fresh_until > commit.health.checked_at
+        and item.connector_state == ConnectorHealthState.CONNECTED
+    ]
+    dominant = (
+        sorted(
+            current_signals,
+            key=lambda item: (
+                item.status.priority, item.observed_at, item.signal_id,
+            ),
+            reverse=True,
+        )[0]
+        if current_signals else None
+    )
+    runtime_by_status = {
+        RealtimeSignalStatus.CRITICAL: "critical",
+        RealtimeSignalStatus.WARNING: "warning",
+        RealtimeSignalStatus.INFO: "healthy",
+    }
+
+    def projected_node(node):
+        matches = [
+            item for item in current_signals
+            if node.component_id in item.component_ids
+        ]
+        if not matches:
+            return node
+        status = max(matches, key=lambda item: item.status.priority).status
+        return node.copy(update={
+            "runtime_status": runtime_by_status[status],
+            "impact_status": (
+                "not_impacted"
+                if status == RealtimeSignalStatus.INFO else "impacted"
+            ),
+        })
+
+    def projected_edge(edge):
+        matches = [
+            item for item in current_signals if edge.edge_id in item.edge_ids
+        ]
+        if not matches:
+            return edge
+        status = max(matches, key=lambda item: item.status.priority).status
+        return edge.copy(update={
+            "status": (
+                "observed"
+                if status == RealtimeSignalStatus.INFO else "impacted"
+            ),
+        })
+
+    expected_graph = commit.prior_projection.graph.copy(update={
+        "nodes": [
+            projected_node(node) for node in commit.prior_projection.graph.nodes
+        ],
+        "edges": [
+            projected_edge(edge) for edge in commit.prior_projection.graph.edges
+        ],
+    })
+    component_label = next(
+        item.display_name
+        for item in commit.prior_projection.graph.nodes
+        if item.component_id == source.component_ids[0]
+    )
+    from .realtime_activities import realtime_signal_presentation
+    expected_title, expected_kind = realtime_signal_presentation(
+        source, component_label,
+    )
+    if (
+        commit.signal.title != expected_title
+        or commit.signal.signal_kind != expected_kind
+        or commit.signal.display_value != source.display_value
+    ):
+        raise ValueError("realtime_transition_signal_presentation_invalid")
+    incident_status = (
+        {
+            RealtimeSignalStatus.CRITICAL: "SEV-1",
+            RealtimeSignalStatus.WARNING: "SEV-2",
+            RealtimeSignalStatus.INFO: "RECOVERING",
+        }[dominant.status]
+        if dominant is not None else commit.prior_projection.status
+    )
+    operator_title = (
+        (
+            "{} detected".format(dominant.title)
+            if dominant.status != RealtimeSignalStatus.INFO
+            else "{} under observation".format(next(
+                item.display_name
+                for item in commit.prior_projection.graph.nodes
+                if item.component_id == dominant.component_ids[0]
+            ))
+        )
+        if dominant is not None else commit.prior_projection.operator_title
+    )
+    operator_summary = (
+        "{} accepted {} at {} from a current admitted {} sample.".format(
+            dominant.title, dominant.display_value,
+            dominant.observed_at.isoformat(), dominant.source_label,
+        )
+        if dominant is not None
+        else "No current admitted telemetry sample is available."
+    )
     expected = commit.prior_projection.copy(update={
         "projection_revision": commit.prior_projection.projection_revision + 1,
         "sequence": event.sequence,
@@ -275,6 +398,23 @@ def _validate_realtime_commit_artifacts(commit: RealtimeCommit) -> None:
         "evidence_refs": list(dict.fromkeys(
             commit.prior_projection.evidence_refs + [evidence.evidence_id],
         )),
+        "graph": expected_graph,
+        "lifecycle_state": (
+            ProjectionState.ACTIVE
+            if current_signals else ProjectionState.DEGRADED
+        ),
+        "status": incident_status,
+        "operator_title": operator_title,
+        "operator_summary": operator_summary,
+        "degraded_code": (
+            None if current_signals else "freshness_sla_exceeded"
+        ),
+        "impacted_path": (
+            commit.prior_projection.impacted_path or list(dominant.component_ids)
+            if dominant is not None
+            and dominant.status != RealtimeSignalStatus.INFO
+            else commit.prior_projection.impacted_path
+        ),
     })
     if commit.v1_projection != expected:
         raise ValueError("realtime_transition_lifecycle_successor_invalid")
@@ -333,7 +473,7 @@ def _projection_freshness_at(
     })
 
 
-class InMemoryRealtimeRepository:
+class InMemoryRealtimeRepository(RealtimeV3InMemoryMixin):
     """Deterministic fact-plane seam with the same immutable transition rules."""
 
     def __init__(self) -> None:
@@ -348,6 +488,12 @@ class InMemoryRealtimeRepository:
             defaultdict(list)
         )
         self.cursor_records: Dict[Tuple[str, str], List[dict]] = defaultdict(list)
+        self.spool_cursor_records: Dict[
+            Tuple[str, str, str], List[SpoolCursor]
+        ] = defaultdict(list)
+        self.freshness_deadline_records: Dict[
+            Tuple[str, str, str], List[FreshnessDeadline]
+        ] = defaultdict(list)
         self.reconciliation_records: Dict[Tuple[str, str], dict] = {}
         self.commits: Dict[Tuple[str, str], RealtimeCommit] = {}
         self.projections: Dict[Tuple[str, str], List[IncidentProjectionV2]] = defaultdict(list)
@@ -889,6 +1035,13 @@ class InMemoryRealtimeRepository:
             receipt_id=receipt.receipt_id,
             created_at=commit.events[-1].occurred_at,
         )
+        await self.arm_freshness_deadline(
+            tenant_id=source.tenant_id,
+            case_id=source.case_id,
+            connector_id=source.connector_id,
+            deadline=commit.signal.fresh_until,
+            source_event_id=source.source_event_id,
+        )
         return commit
 
     async def realtime_projection(
@@ -960,8 +1113,7 @@ class InMemoryRealtimeRepository:
             return None
         return evidence
 
-
-class RealtimePostgresMixin:
+class RealtimePostgresMixin(RealtimeV3PostgresMixin):
     """Postgres methods mixed into ``PostgresCaseRepository``."""
 
     async def register_realtime_connector(
@@ -1969,6 +2121,7 @@ class RealtimePostgresMixin:
                 _payload(accepted_revision),
                 accepted_revision.created_at,
             )
+            await persist_realtime_v3_commit_artifacts(connection, commit)
             return commit
         return await self._tenant(source.tenant_id, operation)
 

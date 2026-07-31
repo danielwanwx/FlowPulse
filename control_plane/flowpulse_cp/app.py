@@ -56,6 +56,23 @@ from .realtime_models import (
     RealtimeNotification,
     RealtimeSummary,
     RealtimeUpdateOutcome,
+    MetricSeriesCollectionV3,
+)
+from .workspace_v3_models import (
+    ActionApprovalCommandV3,
+    AgentRunCommandV3,
+    IncidentEventV3,
+    IncidentProjectionV3,
+    LiveEventV3,
+    LiveIncidentSummaryV3,
+    LiveSnapshotV3,
+    WorkflowCommandReceiptV3,
+    WorkflowCommandV3,
+    WorkflowEscalationCommandV3,
+    WorkflowRerunCommandV3,
+    WorkflowStageV3,
+    WorkflowTemporalCommandV3,
+    WorkflowTemporalOperationV3,
 )
 
 
@@ -115,6 +132,11 @@ class WorkspaceUnavailableStarter:
         actor_subject_id: str, source_event_id: str, dispatch_id: str,
     ) -> RealtimeUpdateOutcome:
         raise RuntimeError("workspace_temporal_update_unavailable")
+
+    async def submit_workflow_command_v3(
+        self, projection: IncidentProjection, invocation: WorkflowTemporalCommandV3,
+    ) -> WorkflowCommandReceiptV3:
+        raise RuntimeError("workspace_temporal_v3_update_unavailable")
 
 
 class FixtureTokenAuthMiddleware(BaseHTTPMiddleware):
@@ -203,6 +225,27 @@ async def _workspace_call(repository: Any, names, *args, **kwargs):
     raise HTTPException(status_code=503, detail="workspace_projection_repository_method_unavailable")
 
 
+def _v3_stream_reset_reason(checkpoint: int, bounds) -> Optional[str]:
+    """Return a reset reason when a resume cursor cannot be replayed exactly."""
+
+    minimum, maximum = bounds
+    if maximum is None:
+        return "cursor_ahead" if checkpoint else None
+    if checkpoint > maximum:
+        return "cursor_ahead"
+    if minimum is not None and checkpoint < minimum - 1:
+        return "cursor_expired"
+    return None
+
+
+def _v3_stream_reset_frame(reason: str) -> str:
+    payload = json.dumps({
+        "schema_version": "flowpulse.stream-reset.v3",
+        "reason": reason,
+    }, sort_keys=True, separators=(",", ":"))
+    return "event: stream-reset-v3\ndata: {}\n\n".format(payload)
+
+
 def create_app(
     repository: Optional[Any] = None,
     temporal_starter: Optional[TemporalStartPort] = None,
@@ -252,6 +295,341 @@ def create_app(
             "status": "ok" if getattr(request.app.state, "repository", None) is not None else "degraded",
             "workflow_authority": "temporal",
         }
+
+    async def _required_v3_projection(
+        request: Request, actor: AuthContext, case_id: str,
+    ) -> IncidentProjectionV3:
+        projection = await _workspace_call(
+            _workspace_repository(request), ("workspace_projection_v3",),
+            actor.tenant_id, case_id,
+        )
+        if projection is None:
+            raise HTTPException(status_code=404, detail="workflow_v3_projection_not_found")
+        return projection
+
+    async def _submit_v3_command(
+        request: Request,
+        actor: AuthContext,
+        case_id: str,
+        invocation: WorkflowTemporalCommandV3,
+    ) -> WorkflowCommandReceiptV3:
+        projection = await _required_v3_projection(request, actor, case_id)
+        if (
+            invocation.tenant_id != actor.tenant_id
+            or invocation.case_id != case_id
+            or invocation.actor_subject_id != actor.subject_id
+            or invocation.actor_roles != actor.roles
+        ):
+            raise HTTPException(status_code=403, detail="workflow_v3_trusted_actor_scope_mismatch")
+        try:
+            require_authenticated_owner(actor.subject_id, actor.roles)
+        except PolicyViolation as error:
+            raise HTTPException(status_code=403, detail=str(error))
+        temporal_submit = getattr(workspace_starter, "submit_workflow_command_v3", None)
+        try:
+            if not callable(temporal_submit):
+                raise RuntimeError("workspace_temporal_v3_update_unavailable")
+            legacy_projection = await _workspace_call(
+                _workspace_repository(request),
+                ("workspace_projection", "get_projection"),
+                actor.tenant_id, case_id,
+            )
+            if legacy_projection is None:
+                raise HTTPException(status_code=409, detail="workflow_v3_temporal_binding_not_found")
+            result = await _resolve(temporal_submit(legacy_projection, invocation))
+            return WorkflowCommandReceiptV3.parse_obj(result)
+        except PolicyViolation as error:
+            reason = str(error)
+            status = 403 if reason in {
+                "owner_role_required", "workflow_v3_trusted_actor_scope_mismatch",
+            } else 404 if reason in {
+                "workflow_v3_projection_not_found", "workflow_v3_action_not_found",
+            } else 409
+            raise HTTPException(status_code=status, detail=reason)
+        except RuntimeError as error:
+            raise HTTPException(status_code=503, detail=str(error))
+
+    @app.get("/v3/live/snapshot", response_model=LiveSnapshotV3)
+    async def live_snapshot_v3(
+        request: Request,
+        actor: AuthContext = Depends(trusted_auth_context),
+    ) -> LiveSnapshotV3:
+        return await _workspace_call(
+            _workspace_repository(request), ("workspace_live_snapshot_v3",),
+            actor.tenant_id, 100,
+        )
+
+    @app.get(
+        "/v3/live/events",
+        response_class=StreamingResponse,
+        responses={200: {"content": {"text/event-stream": {
+            "schema": {"$ref": "#/components/schemas/LiveEventV3"},
+        }}}},
+    )
+    async def live_events_v3(
+        request: Request,
+        after: int = Query(0, ge=0),
+        last_event_id: Optional[str] = Header(None, alias="Last-Event-ID"),
+        actor: AuthContext = Depends(trusted_auth_context),
+    ) -> StreamingResponse:
+        checkpoint = after
+        if last_event_id is not None:
+            try:
+                header_checkpoint = int(last_event_id)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="workflow_v3_live_checkpoint_invalid")
+            # EventSource reconnects the original URL and advances the cursor
+            # through Last-Event-ID.  The header is therefore authoritative
+            # even when the URL still contains the initial ``after`` value.
+            if header_checkpoint < 0:
+                raise HTTPException(status_code=400, detail="workflow_v3_live_checkpoint_invalid")
+            checkpoint = header_checkpoint
+        repository = _workspace_repository(request)
+        bounds = await _workspace_call(
+            repository, ("workspace_live_event_bounds_v3",), actor.tenant_id,
+        )
+        initial_reset = _v3_stream_reset_reason(checkpoint, bounds)
+        pending = [] if initial_reset else await _workspace_call(
+            repository, ("workspace_live_events_v3_after",), actor.tenant_id,
+            checkpoint,
+        )
+
+        async def stream() -> AsyncIterator[str]:
+            cursor = checkpoint
+            records = pending
+            loop = asyncio.get_running_loop()
+            last_emit = loop.time()
+            if initial_reset:
+                yield _v3_stream_reset_frame(initial_reset)
+                return
+            while True:
+                if await request.is_disconnected():
+                    return
+                if records:
+                    for item in records:
+                        cursor = item.sequence
+                        yield "id: {}\nevent: live-event-v3\ndata: {}\n\n".format(
+                            item.sequence, item.json(),
+                        )
+                        last_emit = loop.time()
+                    records = []
+                    continue
+                await asyncio.sleep(request.app.state.workspace_sse_poll_seconds)
+                if await request.is_disconnected():
+                    return
+                records = await _workspace_call(
+                    repository, ("workspace_live_events_v3_after",),
+                    actor.tenant_id, cursor,
+                )
+                if not records:
+                    bounds = await _workspace_call(
+                        repository, ("workspace_live_event_bounds_v3",),
+                        actor.tenant_id,
+                    )
+                    reset = _v3_stream_reset_reason(cursor, bounds)
+                    if reset:
+                        yield _v3_stream_reset_frame(reset)
+                        return
+                if not records and loop.time() - last_emit >= request.app.state.workspace_sse_heartbeat_seconds:
+                    yield ": heartbeat\n\n"
+                    last_emit = loop.time()
+
+        return StreamingResponse(stream(), media_type="text/event-stream")
+
+    @app.get(
+        "/v3/incidents/{case_id}/projection",
+        response_model=IncidentProjectionV3,
+    )
+    async def get_incident_projection_v3(
+        case_id: str,
+        request: Request,
+        actor: AuthContext = Depends(trusted_auth_context),
+    ) -> IncidentProjectionV3:
+        return await _required_v3_projection(request, actor, case_id)
+
+    @app.get(
+        "/v3/incidents/{case_id}/series",
+        response_model=MetricSeriesCollectionV3,
+    )
+    async def get_incident_series_v3(
+        case_id: str,
+        request: Request,
+        actor: AuthContext = Depends(trusted_auth_context),
+    ) -> MetricSeriesCollectionV3:
+        await _required_v3_projection(request, actor, case_id)
+        repository = getattr(request.app.state, "realtime_repository", None) or _workspace_repository(request)
+        return await _workspace_call(
+            repository, ("realtime_series",), actor.tenant_id, case_id,
+        )
+
+    @app.get(
+        "/v3/incidents/{case_id}/events",
+        response_class=StreamingResponse,
+        responses={200: {"content": {"text/event-stream": {
+            "schema": {"$ref": "#/components/schemas/IncidentEventV3"},
+        }}}},
+    )
+    async def incident_events_v3(
+        case_id: str,
+        request: Request,
+        after: int = Query(0, ge=0),
+        last_event_id: Optional[str] = Header(None, alias="Last-Event-ID"),
+        actor: AuthContext = Depends(trusted_auth_context),
+    ) -> StreamingResponse:
+        await _required_v3_projection(request, actor, case_id)
+        checkpoint = after
+        if last_event_id is not None:
+            try:
+                header_checkpoint = int(last_event_id)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="workflow_v3_event_checkpoint_invalid")
+            if header_checkpoint < 0:
+                raise HTTPException(status_code=400, detail="workflow_v3_event_checkpoint_invalid")
+            checkpoint = header_checkpoint
+        repository = _workspace_repository(request)
+        bounds = await _workspace_call(
+            repository, ("workspace_event_bounds_v3",),
+            actor.tenant_id, case_id,
+        )
+        initial_reset = _v3_stream_reset_reason(checkpoint, bounds)
+        pending = [] if initial_reset else await _workspace_call(
+            repository, ("workspace_events_v3_after",),
+            actor.tenant_id, case_id, checkpoint,
+        )
+
+        async def stream() -> AsyncIterator[str]:
+            cursor = checkpoint
+            records = pending
+            loop = asyncio.get_running_loop()
+            last_emit = loop.time()
+            if initial_reset:
+                yield _v3_stream_reset_frame(initial_reset)
+                return
+            while True:
+                if await request.is_disconnected():
+                    return
+                if records:
+                    for item in records:
+                        cursor = item.sequence
+                        yield "id: {}\nevent: incident-event-v3\ndata: {}\n\n".format(
+                            item.sequence, item.json(),
+                        )
+                        last_emit = loop.time()
+                    records = []
+                    continue
+                await asyncio.sleep(request.app.state.workspace_sse_poll_seconds)
+                if await request.is_disconnected():
+                    return
+                records = await _workspace_call(
+                    repository, ("workspace_events_v3_after",),
+                    actor.tenant_id, case_id, cursor,
+                )
+                if not records:
+                    bounds = await _workspace_call(
+                        repository, ("workspace_event_bounds_v3",),
+                        actor.tenant_id, case_id,
+                    )
+                    reset = _v3_stream_reset_reason(cursor, bounds)
+                    if reset:
+                        yield _v3_stream_reset_frame(reset)
+                        return
+                if not records and loop.time() - last_emit >= request.app.state.workspace_sse_heartbeat_seconds:
+                    yield ": heartbeat\n\n"
+                    last_emit = loop.time()
+
+        return StreamingResponse(stream(), media_type="text/event-stream")
+
+    @app.post(
+        "/v3/incidents/{case_id}/workflow/advance",
+        response_model=WorkflowCommandReceiptV3,
+        status_code=202,
+    )
+    async def advance_workflow_v3(
+        case_id: str,
+        command: WorkflowCommandV3,
+        request: Request,
+        actor: AuthContext = Depends(trusted_auth_context),
+    ) -> WorkflowCommandReceiptV3:
+        return await _submit_v3_command(request, actor, case_id, WorkflowTemporalCommandV3(
+            operation=WorkflowTemporalOperationV3.ADVANCE,
+            tenant_id=actor.tenant_id, case_id=case_id,
+            actor_subject_id=actor.subject_id, actor_roles=actor.roles,
+            command=command.dict(),
+        ))
+
+    @app.post(
+        "/v3/incidents/{case_id}/workflow/stages/{stage}/rerun",
+        response_model=WorkflowCommandReceiptV3,
+        status_code=202,
+    )
+    async def rerun_workflow_stage_v3(
+        case_id: str,
+        stage: WorkflowStageV3,
+        command: WorkflowRerunCommandV3,
+        request: Request,
+        actor: AuthContext = Depends(trusted_auth_context),
+    ) -> WorkflowCommandReceiptV3:
+        return await _submit_v3_command(request, actor, case_id, WorkflowTemporalCommandV3(
+            operation=WorkflowTemporalOperationV3.RERUN,
+            tenant_id=actor.tenant_id, case_id=case_id,
+            actor_subject_id=actor.subject_id, actor_roles=actor.roles,
+            command=command.dict(), target_stage=stage,
+        ))
+
+    @app.post(
+        "/v3/incidents/{case_id}/workflow/escalations",
+        response_model=WorkflowCommandReceiptV3,
+        status_code=202,
+    )
+    async def escalate_workflow_v3(
+        case_id: str,
+        command: WorkflowEscalationCommandV3,
+        request: Request,
+        actor: AuthContext = Depends(trusted_auth_context),
+    ) -> WorkflowCommandReceiptV3:
+        return await _submit_v3_command(request, actor, case_id, WorkflowTemporalCommandV3(
+            operation=WorkflowTemporalOperationV3.ESCALATE,
+            tenant_id=actor.tenant_id, case_id=case_id,
+            actor_subject_id=actor.subject_id, actor_roles=actor.roles,
+            command=command.dict(),
+        ))
+
+    @app.post(
+        "/v3/incidents/{case_id}/agent-runs",
+        response_model=WorkflowCommandReceiptV3,
+        status_code=202,
+    )
+    async def start_agent_run_v3(
+        case_id: str,
+        command: AgentRunCommandV3,
+        request: Request,
+        actor: AuthContext = Depends(trusted_auth_context),
+    ) -> WorkflowCommandReceiptV3:
+        return await _submit_v3_command(request, actor, case_id, WorkflowTemporalCommandV3(
+            operation=WorkflowTemporalOperationV3.AGENT_RUN,
+            tenant_id=actor.tenant_id, case_id=case_id,
+            actor_subject_id=actor.subject_id, actor_roles=actor.roles,
+            command=command.dict(),
+        ))
+
+    @app.post(
+        "/v3/incidents/{case_id}/actions/{action_id}/approval",
+        response_model=WorkflowCommandReceiptV3,
+        status_code=202,
+    )
+    async def approve_action_v3(
+        case_id: str,
+        action_id: str,
+        command: ActionApprovalCommandV3,
+        request: Request,
+        actor: AuthContext = Depends(trusted_auth_context),
+    ) -> WorkflowCommandReceiptV3:
+        return await _submit_v3_command(request, actor, case_id, WorkflowTemporalCommandV3(
+            operation=WorkflowTemporalOperationV3.ACTION_APPROVAL,
+            tenant_id=actor.tenant_id, case_id=case_id,
+            actor_subject_id=actor.subject_id, actor_roles=actor.roles,
+            command=command.dict(), action_id=action_id,
+        ))
 
     @app.get("/v2/incidents", response_model=list[RealtimeSummary])
     async def list_realtime_incidents(
@@ -460,7 +838,7 @@ def create_app(
                 header_checkpoint = int(last_event_id)
             except ValueError:
                 raise HTTPException(status_code=400, detail="realtime_event_checkpoint_invalid")
-            if header_checkpoint < 0 or (after and after != header_checkpoint):
+            if header_checkpoint < 0:
                 raise HTTPException(status_code=400, detail="realtime_event_checkpoint_invalid")
             checkpoint = header_checkpoint
         events = await _workspace_call(
@@ -766,7 +1144,7 @@ def create_app(
                 header_checkpoint = int(last_event_id)
             except ValueError:
                 raise HTTPException(status_code=400, detail="workspace_event_checkpoint_invalid")
-            if header_checkpoint < 0 or (after and after != header_checkpoint):
+            if header_checkpoint < 0:
                 raise HTTPException(status_code=400, detail="workspace_event_checkpoint_invalid")
             checkpoint = header_checkpoint
         events = await _workspace_call(
@@ -883,7 +1261,14 @@ def create_app(
         document = original_openapi()
         schemas = document.setdefault("components", {}).setdefault("schemas", {})
         stream_schemas = pydantic_schema(
-            [IncidentEvent, IncidentNotification, RealtimeIncidentEvent, RealtimeNotification],
+            [
+                IncidentEvent,
+                IncidentNotification,
+                RealtimeIncidentEvent,
+                RealtimeNotification,
+                IncidentEventV3,
+                LiveEventV3,
+            ],
             ref_prefix="#/components/schemas/",
         )["definitions"]
         schemas.update(stream_schemas)

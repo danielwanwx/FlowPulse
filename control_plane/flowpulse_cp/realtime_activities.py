@@ -1,4 +1,4 @@
-"""Temporal activities that turn immutable connector facts into one V2 transition."""
+"""Temporal activities that turn immutable connector facts into V2 transitions."""
 
 from datetime import timedelta
 from typing import Any, Dict, List
@@ -20,6 +20,7 @@ from .realtime_models import (
     ConnectorHealthState,
     ConnectorPollResult,
     ConnectorProvider,
+    ConnectorTruthLabel,
     RealtimeDeliveryMode,
     RealtimeEventType,
     GraphPulse,
@@ -29,13 +30,46 @@ from .realtime_models import (
     RealtimeCitation,
     RealtimeCommit,
     RealtimeCommitActivityPacket,
+    RealtimeFreshnessExpiryActivityOutcome,
+    RealtimeFreshnessExpiryActivityPacket,
+    RealtimeFreshnessTimerLoadPacket,
     RealtimeIncidentEvent,
     RealtimePollActivityPacket,
     RealtimeSignal,
+    RealtimeSignalStatus,
     RealtimeUpdateOutcome,
+    TemporalFreshnessTimer,
 )
-from .workspace_models import IncidentEvent, IncidentProjection
+from .workspace_models import IncidentEvent, IncidentProjection, ProjectionState
 from .realtime_observability import realtime_telemetry
+
+
+def realtime_signal_presentation(source, component_label: str):
+    """Return a truthful title/kind for the admitted telemetry class."""
+    if source.provider != ConnectorProvider.OTEL:
+        return (
+            "{} error rate".format(component_label),
+            source.metric_key.upper().replace(".", "_"),
+        )
+    metric_titles = {
+        "checkout.payment.error_rate": "Checkout to Payment error rate",
+        "checkout.payment.mean_latency": "Checkout to Payment mean latency",
+        "checkout.payment.request_count": "Checkout to Payment request count",
+        "log.severity_number": "{} log severity".format(component_label),
+    }
+    if source.event_kind == "TRACE_PARENT_CHILD_OBSERVED":
+        return "{} dependency trace".format(component_label), "TRACE_STATUS"
+    if source.event_kind == "TRACE_COMPONENT_ERROR_OBSERVED":
+        return "{} client error".format(component_label), "TRACE_STATUS"
+    if source.event_kind == "LOG_RECORD_OBSERVED":
+        return metric_titles["log.severity_number"], "LOG_RECORD"
+    return (
+        metric_titles.get(
+            source.metric_key,
+            "{} metric".format(component_label),
+        ),
+        source.metric_key.upper().replace(".", "_"),
+    )
 
 
 def realtime_activity_surface() -> List[str]:
@@ -43,6 +77,8 @@ def realtime_activity_surface() -> List[str]:
         "workspace_poll_realtime_connector_activity",
         "workspace_load_realtime_dispatch_activity",
         "workspace_commit_realtime_source_event_activity",
+        "workspace_load_realtime_freshness_timer_activity",
+        "workspace_expire_realtime_freshness_activity",
     ]
 
 
@@ -134,12 +170,126 @@ class RealtimeActivityDispatcher:
                 },
             ):
                 stored = await self.repository.commit_realtime_transition(commit)
+            if hasattr(self.repository, "workspace_projection_v3"):
+                from .workspace_v3_guided import GuidedWorkflowCoordinatorV3
+                coordinator = GuidedWorkflowCoordinatorV3(self.repository)
+                existing = await self.repository.workspace_projection_v3(
+                    stored.projection.tenant_id, stored.projection.case_id,
+                )
+                if existing is None:
+                    # The first accepted fact creates Detect. Later facts must
+                    # refresh the canonical V3 telemetry domain without ever
+                    # behaving like a user workflow command.
+                    await coordinator.bootstrap(
+                        stored.projection,
+                        actor_subject_id=stored.source_event.acl_subjects[0],
+                        now=stored.events[-1].occurred_at,
+                    )
+                else:
+                    await coordinator.sync_realtime(
+                        stored.projection,
+                        actor_subject_id=stored.source_event.acl_subjects[0],
+                        now=stored.events[-1].occurred_at,
+                    )
             return RealtimeUpdateOutcome(
                 accepted=True,
                 projection=stored.projection,
                 workspace_projection=stored.v1_projection,
                 source_event_id=stored.source_event.source_event_id,
                 transition_key=stored.transition_key,
+            ).dict()
+
+        if name == "workspace_load_realtime_freshness_timer_activity":
+            packet = RealtimeFreshnessTimerLoadPacket.parse_obj(packet_data)
+            command = packet.command
+            if (
+                command.source_event_id != packet.committed_source_event_id
+                or not command.source_event_id
+            ):
+                raise PolicyViolation(
+                    "realtime_freshness_timer_source_identity_mismatch",
+                )
+            deadline = await self.repository.latest_freshness_deadline(
+                command.tenant_id, command.case_id, command.connector_id,
+            )
+            if (
+                deadline is None
+                or deadline.source_event_id != packet.committed_source_event_id
+            ):
+                raise RuntimeError("realtime_freshness_deadline_not_durable")
+            return TemporalFreshnessTimer(
+                deadline=deadline,
+                actor_subject_id=command.actor_subject_id,
+            ).dict()
+
+        if name == "workspace_expire_realtime_freshness_activity":
+            packet = RealtimeFreshnessExpiryActivityPacket.parse_obj(packet_data)
+            expected = packet.deadline
+            current = await self.repository.latest_freshness_deadline(
+                expected.tenant_id, expected.case_id, expected.connector_id,
+            )
+            if current is None:
+                return RealtimeFreshnessExpiryActivityOutcome(
+                    expired=False,
+                    reason="realtime_freshness_deadline_missing",
+                ).dict()
+            exact_armed = current == expected
+            exact_expired = (
+                current.source_event_id == expected.source_event_id
+                and current.deadline == expected.deadline
+                and current.deadline_revision == expected.deadline_revision + 1
+                and current.state.value == "EXPIRED"
+            )
+            if exact_armed:
+                await self.repository.expire_freshness_deadlines(
+                    packet.fired_at,
+                    tenant_id=expected.tenant_id,
+                    case_id=expected.case_id,
+                    connector_id=expected.connector_id,
+                    expected_deadline_revision=expected.deadline_revision,
+                    expected_source_event_id=expected.source_event_id,
+                )
+                current = await self.repository.latest_freshness_deadline(
+                    expected.tenant_id, expected.case_id, expected.connector_id,
+                )
+                exact_expired = bool(
+                    current is not None
+                    and current.source_event_id == expected.source_event_id
+                    and current.deadline == expected.deadline
+                    and current.deadline_revision == expected.deadline_revision + 1
+                    and current.state.value == "EXPIRED"
+                )
+            if not exact_expired:
+                return RealtimeFreshnessExpiryActivityOutcome(
+                    expired=False,
+                    reason="realtime_freshness_deadline_superseded",
+                    deadline=current,
+                ).dict()
+            projection = await self.repository.realtime_projection(
+                expected.tenant_id, expected.case_id,
+            )
+            workspace_projection = await self.repository.workspace_projection(
+                expected.tenant_id, expected.case_id,
+            )
+            if projection is None or workspace_projection is None:
+                raise RuntimeError("realtime_freshness_expiry_projection_missing")
+            if hasattr(self.repository, "workspace_projection_v3"):
+                from .workspace_v3_guided import GuidedWorkflowCoordinatorV3
+                coordinator = GuidedWorkflowCoordinatorV3(self.repository)
+                existing = await self.repository.workspace_projection_v3(
+                    expected.tenant_id, expected.case_id,
+                )
+                if existing is not None:
+                    await coordinator.sync_realtime(
+                        projection,
+                        actor_subject_id=packet.actor_subject_id,
+                        now=packet.fired_at,
+                    )
+            return RealtimeFreshnessExpiryActivityOutcome(
+                expired=True,
+                deadline=current,
+                projection=projection,
+                workspace_projection=workspace_projection,
             ).dict()
         raise RuntimeError("realtime_activity_unknown")
 
@@ -188,8 +338,13 @@ class RealtimeActivityDispatcher:
             tenant_id=source.tenant_id,
             acl_subjects=source.acl_subjects,
             source_kind=(
-                SourceKind.METRIC
-                if source.provider == ConnectorProvider.PROMETHEUS
+                SourceKind.LOG
+                if source.event_kind == "LOG_RECORD_OBSERVED"
+                else SourceKind.METRIC
+                if (
+                    source.provider == ConnectorProvider.PROMETHEUS
+                    or source.event_kind == "METRIC_OBSERVED"
+                )
                 else SourceKind.TRACE
             ),
             source_uri="connector://{}/{}".format(
@@ -232,6 +387,9 @@ class RealtimeActivityDispatcher:
         activity_id = "agent-activity-" + source.normalization_hash[:24]
         source_label = "Prometheus" if source.provider == ConnectorProvider.PROMETHEUS else "OpenTelemetry"
         component_label = known_nodes[source.component_ids[0]].display_name
+        signal_title, signal_kind = realtime_signal_presentation(
+            source, component_label,
+        )
         fresh_until = source.observed_at + timedelta(
             seconds=packet.poll_result.registration.freshness_sla_seconds,
         )
@@ -240,8 +398,8 @@ class RealtimeActivityDispatcher:
             source_event_id=source.source_event_id,
             provider=source.provider,
             source_label=source_label,
-            signal_kind="ERROR_RATE" if source.provider == ConnectorProvider.PROMETHEUS else "TRACE_STATUS",
-            title="{} error rate".format(component_label),
+            signal_kind=signal_kind,
+            title=signal_title,
             display_value=source.display_value,
             status=source.signal_status,
             trend=source.trend,
@@ -273,6 +431,18 @@ class RealtimeActivityDispatcher:
         pulse = None
         if (
             source.edge_ids
+            and (
+                (
+                    source.provider == ConnectorProvider.OTEL
+                    and source.event_kind in {
+                        "TRACE_PARENT_CHILD_OBSERVED",
+                        "TRACE_COMPONENT_ERROR_OBSERVED",
+                    }
+                )
+                # Preserve the frozen V2 deterministic contract only. LIVE
+                # metrics never create path activity in V3.
+                or source.truth_label == ConnectorTruthLabel.TEST_DETERMINISTIC
+            )
             and source.freshness == FreshnessStatus.CURRENT
             and source.delivery_mode == RealtimeDeliveryMode.LIVE
         ):
@@ -337,13 +507,70 @@ class RealtimeActivityDispatcher:
             started_activity.state, completed_activity.state,
         ])
         signals = list(prior_realtime.realtime_signals) if prior_realtime else []
+        signals = [
+            item for item in signals
+            if (
+                item.freshness != FreshnessStatus.CURRENT
+                or item.fresh_until > health.checked_at
+            )
+        ]
         signals = [item for item in signals if item.signal_id != signal.signal_id]
         signals.append(signal)
+        # A realtime projection is a current-state view, not a severity-sorted
+        # sample log. Collapse every logical telemetry stream to its newest
+        # admitted observation before prioritizing the bounded UI surface.
+        # Otherwise an older critical sample can mask a newer healthy sample
+        # for the entire freshness window and repeated trace samples can evict
+        # the independent metric streams required by Detect and Verify.
+        latest_by_stream = {}
+        for item in signals:
+            stream_key = (
+                item.provider.value,
+                item.signal_kind,
+                tuple(sorted(item.component_ids)),
+                tuple(sorted(item.edge_ids)),
+            )
+            prior_item = latest_by_stream.get(stream_key)
+            if prior_item is None or (
+                item.observed_at, item.sequence, item.signal_id
+            ) > (
+                prior_item.observed_at, prior_item.sequence, prior_item.signal_id
+            ):
+                latest_by_stream[stream_key] = item
+        signals = list(latest_by_stream.values())
         signals = sorted(
             signals,
-            key=lambda item: (item.status.value, item.observed_at, item.signal_id),
+            key=lambda item: (
+                item.freshness == FreshnessStatus.CURRENT
+                and item.fresh_until > health.checked_at
+                and item.connector_state == ConnectorHealthState.CONNECTED,
+                item.status.priority, item.observed_at, item.signal_id,
+            ),
             reverse=True,
         )[:12]
+        current_signals = [
+            item for item in signals
+            if item.freshness == FreshnessStatus.CURRENT
+            and item.fresh_until > health.checked_at
+            and item.connector_state == ConnectorHealthState.CONNECTED
+        ]
+        dominant = (
+            sorted(
+                current_signals,
+                key=lambda item: (
+                    item.status.priority, item.observed_at, item.signal_id,
+                ),
+                reverse=True,
+            )[0]
+            if current_signals else None
+        )
+        health_items = (
+            list(prior_realtime.connector_health) if prior_realtime else []
+        )
+        health_items = [
+            item for item in health_items
+            if item.connector_id != health.connector_id
+        ] + [health]
         activities = (
             list(prior_realtime.agent_workspace.activities)
             if prior_realtime else []
@@ -357,23 +584,118 @@ class RealtimeActivityDispatcher:
             citations.append(citation)
         evidence_refs = list(dict.fromkeys(prior.evidence_refs + [evidence_id]))
         clock_sequence = final_sequence + 1
+        runtime_by_status = {
+            RealtimeSignalStatus.CRITICAL: "critical",
+            RealtimeSignalStatus.WARNING: "warning",
+            RealtimeSignalStatus.INFO: "healthy",
+        }
+
+        def projected_node(node):
+            matches = [
+                item for item in current_signals
+                if node.component_id in item.component_ids
+            ]
+            if not matches:
+                return node
+            status = max(matches, key=lambda item: item.status.priority).status
+            return node.copy(update={
+                "runtime_status": runtime_by_status[status],
+                "impact_status": (
+                    "not_impacted"
+                    if status == RealtimeSignalStatus.INFO else "impacted"
+                ),
+            })
+
+        def projected_edge(edge):
+            matches = [
+                item for item in current_signals if edge.edge_id in item.edge_ids
+            ]
+            if not matches:
+                return edge
+            status = max(matches, key=lambda item: item.status.priority).status
+            return edge.copy(update={
+                "status": (
+                    "observed"
+                    if status == RealtimeSignalStatus.INFO else "impacted"
+                ),
+            })
+
+        updated_graph = prior.graph.copy(update={
+            "nodes": [projected_node(node) for node in prior.graph.nodes],
+            "edges": [projected_edge(edge) for edge in prior.graph.edges],
+        })
+        incident_status = (
+            {
+                RealtimeSignalStatus.CRITICAL: "SEV-1",
+                RealtimeSignalStatus.WARNING: "SEV-2",
+                RealtimeSignalStatus.INFO: "RECOVERING",
+            }[dominant.status]
+            if dominant is not None else prior.status
+        )
+        operator_title = (
+            (
+                "{} detected".format(dominant.title)
+                if dominant.status != RealtimeSignalStatus.INFO
+                else "{} under observation".format(
+                    known_nodes[dominant.component_ids[0]].display_name,
+                )
+            )
+            if dominant is not None else prior.operator_title
+        )
+        operator_summary = (
+            "{} accepted {} at {} from a current admitted {} sample.".format(
+                dominant.title, dominant.display_value,
+                dominant.observed_at.isoformat(), dominant.source_label,
+            )
+            if dominant is not None
+            else "No current admitted telemetry sample is available."
+        )
         updated_v1 = prior.copy(update={
             "projection_revision": projection_revision,
             "sequence": clock_sequence,
             "generated_at": health.checked_at,
             "evidence_revision": evidence_revision,
             "evidence_refs": evidence_refs,
+            "graph": updated_graph,
+            "lifecycle_state": (
+                ProjectionState.ACTIVE
+                if current_signals else ProjectionState.DEGRADED
+            ),
+            "status": incident_status,
+            "operator_title": operator_title,
+            "operator_summary": operator_summary,
+            "degraded_code": (
+                None if current_signals else "freshness_sla_exceeded"
+            ),
+            "impacted_path": (
+                prior.impacted_path or list(dominant.component_ids)
+                if dominant is not None
+                and dominant.status != RealtimeSignalStatus.INFO
+                else prior.impacted_path
+            ),
         })
+        clock_signal = max(
+            current_signals,
+            key=lambda item: (item.observed_at, item.signal_id),
+        ) if current_signals else None
         clock = IncidentClock(
             state=IncidentClockState.RUNNING,
             started_at=prior.created_at,
-            last_signal_at=source.observed_at,
+            last_signal_at=(
+                clock_signal.observed_at if clock_signal is not None else None
+            ),
             as_of=health.checked_at,
             elapsed_seconds=max(
                 0, int((health.checked_at - prior.created_at).total_seconds()),
             ),
-            freshness=source.freshness,
-            fresh_until=health.checked_at + timedelta(seconds=30),
+            freshness=(
+                FreshnessStatus.CURRENT
+                if clock_signal is not None else FreshnessStatus.STALE
+            ),
+            fresh_until=(
+                max(item.fresh_until for item in current_signals)
+                if current_signals else health.checked_at
+            ),
             max_interpolation_seconds=30,
         )
         projection = IncidentProjectionV2.parse_obj({
@@ -382,7 +704,7 @@ class RealtimeActivityDispatcher:
             "source_revision": source_revision,
             "connector_revision": connector_revision,
             "incident_clock": clock.dict(),
-            "connector_health": [health.dict()],
+            "connector_health": [item.dict() for item in health_items],
             "realtime_signals": [item.dict() for item in signals],
             "active_graph_pulses": (
                 [

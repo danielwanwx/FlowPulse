@@ -27,7 +27,7 @@ const expectedNorthStarGuardrails = {
   product_company_multiplayer: true,
   incident_response_first_vertical: true,
   top_level_navigation: ["Architecture", "Live", "Incident"],
-  stage_order: ["Investigate", "Decide", "Execute", "Verify"],
+  stage_order: ["Detect", "Triage", "Investigate", "Decide", "Respond", "Verify"],
   lifecycle_authority: "Temporal",
   current_proof_authority: "Evidence Ledger",
   knowledge_plane_role: "bounded_prior",
@@ -36,7 +36,7 @@ const expectedNorthStarGuardrails = {
   provider_truth_labels: ["LOCAL CODEX", "OPENAI API", "RECORDED/DEMO"],
   frontend_generated_prohibited: ["incidents", "agent_messages", "recommendations", "gates", "evidence", "actions", "verification", "success"],
   dry_run_before_writes: true,
-  fastapi_temporal_control_plane: "not_integrated",
+  fastapi_temporal_control_plane: "v3_local_integrated",
   node_compatibility_path: "compatibility_demo"
 };
 
@@ -684,7 +684,7 @@ test("North Star metadata is complete, unique, duplicate-safe, and exact", () =>
     ["company-multiplayer positioning", "product_company_multiplayer", false],
     ["Incident as the first vertical", "incident_response_first_vertical", false],
     ["top-level views", "top_level_navigation", ["Architecture", "Live", "Compare"]],
-    ["incident stage order", "stage_order", ["Investigate", "Execute", "Decide", "Verify"]],
+    ["incident stage order", "stage_order", ["Detect", "Investigate", "Triage", "Decide", "Respond", "Verify"]],
     ["Temporal lifecycle authority", "lifecycle_authority", "Node"],
     ["Evidence Ledger current-proof authority", "current_proof_authority", "browser"],
     ["Knowledge as a bounded prior", "knowledge_plane_role", "current_proof"],
@@ -693,7 +693,7 @@ test("North Star metadata is complete, unique, duplicate-safe, and exact", () =>
     ["provider truth labels", "provider_truth_labels", ["LOCAL CODEX"]],
     ["frontend-generated success prohibition", "frontend_generated_prohibited", ["incidents", "agent_messages"]],
     ["dry run before writes", "dry_run_before_writes", false],
-    ["unintegrated control-plane status", "fastapi_temporal_control_plane", "integrated"],
+    ["V3 local control-plane integration status", "fastapi_temporal_control_plane", "production_integrated"],
     ["Node compatibility/demo status", "node_compatibility_path", "production_authority"]
   ];
 

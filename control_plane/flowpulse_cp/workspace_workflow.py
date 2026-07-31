@@ -52,13 +52,31 @@ with workflow.unsafe.imports_passed_through():
         ConnectorPollResult,
         IncidentProjectionV2,
         RealtimeCommitActivityPacket,
+        RealtimeFreshnessExpiryActivityOutcome,
+        RealtimeFreshnessExpiryActivityPacket,
+        RealtimeFreshnessTimerLoadPacket,
         RealtimePollActivityPacket,
         RealtimeUpdateCommand,
         RealtimeUpdateOutcome,
+        TemporalFreshnessTimer,
     )
     from .workspace_v3_models import (
+        ActionApprovalCommandV3,
+        ActionApprovalDecisionV3,
+        ActionExecutionStateV3,
+        AgentRunStateV3,
+        GuidedActionActivityPacketV3,
+        GuidedAgentActivityPacketV3,
+        GuidedStageActivityOutcomeV3,
+        GuidedStageActivityPacketV3,
+        GuidedStageActivityStatusV3,
         IncidentExecutionIdentityV3,
         TemporalExecutionPointerV3,
+        WorkflowCommandReceiptV3,
+        WorkflowStageStateV3,
+        WorkflowStageV3,
+        WorkflowTemporalCommandV3,
+        WorkflowTemporalOperationV3,
         WorkspaceExecutionRegistrationV3,
     )
 
@@ -68,10 +86,83 @@ WORKSPACE_V2_ACTION_COMMIT_PATCH = "workspace-v2-gate1-atomic-action-commit"
 WORKSPACE_V2_INVESTIGATION_PATCH = "workspace-v2-investigation-decide-handoff"
 WORKSPACE_V2_STAFF_INCIDENT_CONTRACT_PATCH = "workspace-v2-staff-incident-contract-v1"
 WORKSPACE_V2_REALTIME_ROLLOVER_PATCH = "workspace-v2-realtime-continue-as-new-v1"
+WORKSPACE_V3_TEMPORAL_FRESHNESS_PATCH = "workspace-v3-temporal-freshness-authority-v1"
 
 ROLLOVER_HISTORY_LENGTH_LIMIT = 1_500
 ROLLOVER_HISTORY_SIZE_LIMIT = 24 * 1024 * 1024
 ROLLOVER_TRANSITION_LIMIT = 500
+GUIDED_ACTIVITY_MAX_ATTEMPTS = 3
+_LEGACY_PROJECTION_ABSENT_FIELDS = {
+    "operator_title", "operator_summary", "lifecycle_stage", "gate1_state",
+    "investigation_result",
+}
+
+
+def _parse_workspace_activity_outcome(result: Dict[str, Any]) -> WorkspaceActivityOutcome:
+    """Keep the one malformed initializer shape already stored in Temporal readable."""
+    try:
+        return WorkspaceActivityOutcome.parse_obj(result)
+    except ValidationError:
+        projection = result.get("projection") if isinstance(result, dict) else None
+        graph = projection.get("graph") if isinstance(projection, dict) else None
+        nodes = graph.get("nodes") if isinstance(graph, dict) else None
+        legacy = (
+            projection is not None
+            and projection.get("schema_version") == "flowpulse.incident-projection.v1"
+            and not any(field in projection for field in _LEGACY_PROJECTION_ABSENT_FIELDS)
+            and projection.get("lifecycle_state") == "DEGRADED"
+            and projection.get("status") == "provider_unavailable"
+            and projection.get("degraded_code") == "provider_unavailable"
+            and projection.get("impacted_path") == []
+            and isinstance(graph, dict)
+            and graph.get("edges") == []
+            and isinstance(nodes, list)
+            and bool(nodes)
+            and all(
+                isinstance(node, dict)
+                and "display_name" not in node
+                and node.get("membership") == "CONNECTED"
+                and node.get("classification_reason") is None
+                and node.get("runtime_status") == "unknown"
+                and node.get("impact_status") == "unknown"
+                for node in nodes
+            )
+        )
+        if not legacy:
+            raise
+        compatible = dict(result)
+        compatible["projection"] = dict(projection)
+        compatible["projection"]["graph"] = dict(graph)
+        compatible["projection"]["graph"]["nodes"] = [
+            {**node, "membership": "CLASSIFIED", "classification_reason": "Relationship unavailable"}
+            for node in nodes
+        ]
+        return WorkspaceActivityOutcome.parse_obj(compatible)
+
+
+def _guided_activity_retry_policy() -> RetryPolicy:
+    """Bound transient/lost-response retries around durable V3 activity keys."""
+
+    return RetryPolicy(
+        initial_interval=timedelta(seconds=1),
+        maximum_interval=timedelta(seconds=5),
+        backoff_coefficient=2.0,
+        maximum_attempts=GUIDED_ACTIVITY_MAX_ATTEMPTS,
+    )
+
+
+class _InterleavableGuidedScope:
+    """No-op scope: durable repository CAS serializes guided commands.
+
+    Verify intentionally stays interleavable so realtime connector updates can
+    commit the post-repair samples its Temporal timer is observing.
+    """
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        return False
 
 
 class WorkspaceV2RolloverCarry(StrictModel):
@@ -86,6 +177,9 @@ class WorkspaceV2RolloverCarry(StrictModel):
     actions: Dict[NonEmpty, Dict[str, Any]] = Field(default_factory=dict)
     action_receipts: Dict[NonEmpty, Dict[str, Any]] = Field(default_factory=dict)
     realtime_receipts: Dict[NonEmpty, Dict[str, Any]] = Field(default_factory=dict)
+    freshness_timers: Dict[NonEmpty, TemporalFreshnessTimer] = Field(
+        default_factory=dict,
+    )
 
     @root_validator(allow_reuse=True)
     def carry_maps_are_bounded(cls, values):
@@ -94,6 +188,7 @@ class WorkspaceV2RolloverCarry(StrictModel):
             "actions": 64,
             "action_receipts": 64,
             "realtime_receipts": 128,
+            "freshness_timers": 16,
         }.items():
             if len(values.get(field, {})) > limit:
                 raise ValueError("workspace_v2_rollover_{}_exceeds_limit".format(field))
@@ -119,6 +214,10 @@ class IncidentWorkspaceTemporalWorkflow:
         self._action_receipts: Dict[str, Dict[str, Any]] = {}
         self._realtime_projection = None
         self._realtime_receipts: Dict[str, Dict[str, Any]] = {}
+        self._temporal_freshness_enabled = False
+        self._freshness_timers: Dict[str, TemporalFreshnessTimer] = {}
+        self._freshness_timer_epoch = 0
+        self._freshness_expiration_active = False
         self._lock = asyncio.Lock()
 
     @staticmethod
@@ -145,6 +244,7 @@ class IncidentWorkspaceTemporalWorkflow:
             actions=self._bounded_map(self._actions, 64),
             action_receipts=self._bounded_map(self._action_receipts, 64),
             realtime_receipts=self._bounded_map(self._realtime_receipts, 128),
+            freshness_timers=dict(self._freshness_timers),
         )
 
     def _packet(self, stage: str, *, command: NodeExplanationStart = None, actor=None) -> WorkspaceActivityPacket:
@@ -180,7 +280,7 @@ class IncidentWorkspaceTemporalWorkflow:
             stage + "_activity", packet,
             start_to_close_timeout=timedelta(minutes=2),
         )
-        return WorkspaceActivityOutcome.parse_obj(result)
+        return _parse_workspace_activity_outcome(result)
 
     async def _action_activity(self, name: str, packet: Dict[str, Any]) -> Dict[str, Any]:
         return await workflow.execute_activity(
@@ -198,6 +298,9 @@ class IncidentWorkspaceTemporalWorkflow:
             field: request_values[field] for field in IncidentRunBinding.__fields__
         })
         self._rollover_enabled = workflow.patched(WORKSPACE_V2_REALTIME_ROLLOVER_PATCH)
+        self._temporal_freshness_enabled = workflow.patched(
+            WORKSPACE_V3_TEMPORAL_FRESHNESS_PATCH,
+        )
         carry = (
             WorkspaceV2RolloverCarry.parse_obj(carry_payload)
             if carry_payload is not None else None
@@ -243,6 +346,7 @@ class IncidentWorkspaceTemporalWorkflow:
             self._actions = dict(carry.actions)
             self._action_receipts = dict(carry.action_receipts)
             self._realtime_receipts = dict(carry.realtime_receipts)
+            self._freshness_timers = dict(carry.freshness_timers)
         else:
             self._event_sequence = 1
             self._projection = initial_projection(
@@ -266,9 +370,86 @@ class IncidentWorkspaceTemporalWorkflow:
         if not self._rollover_enabled:
             await workflow.wait_condition(lambda: False)
             return {"state": "unreachable"}
-        await workflow.wait_condition(
-            lambda: self._rollover_requested and self._active_updates == 0,
-        )
+        while not (
+            self._rollover_requested
+            and self._active_updates == 0
+            and not self._freshness_expiration_active
+        ):
+            observed_epoch = self._freshness_timer_epoch
+            timer_item = (
+                min(
+                    self._freshness_timers.items(),
+                    key=lambda item: (
+                        item[1].deadline.deadline,
+                        item[0],
+                    ),
+                )
+                if self._temporal_freshness_enabled
+                and self._freshness_timers
+                else None
+            )
+            if timer_item is None:
+                await workflow.wait_condition(lambda: (
+                    (
+                        self._rollover_requested
+                        and self._active_updates == 0
+                        and not self._freshness_expiration_active
+                    )
+                    or self._freshness_timer_epoch != observed_epoch
+                ))
+                continue
+            connector_id, timer = timer_item
+            delay = max(
+                0.0,
+                (timer.deadline.deadline - workflow.now()).total_seconds(),
+            )
+            try:
+                await workflow.wait_condition(
+                    lambda: (
+                        (
+                            self._rollover_requested
+                            and self._active_updates == 0
+                            and not self._freshness_expiration_active
+                        )
+                        or self._freshness_timer_epoch != observed_epoch
+                    ),
+                    timeout=delay,
+                    timeout_summary="incident connector freshness deadline",
+                )
+                continue
+            except asyncio.TimeoutError:
+                pass
+            current = self._freshness_timers.get(connector_id)
+            if current != timer or workflow.now() < timer.deadline.deadline:
+                continue
+            self._freshness_expiration_active = True
+            try:
+                raw = await workflow.execute_activity(
+                    "workspace_expire_realtime_freshness_activity",
+                    RealtimeFreshnessExpiryActivityPacket(
+                        deadline=timer.deadline,
+                        actor_subject_id=timer.actor_subject_id,
+                        fired_at=workflow.now(),
+                    ).dict(),
+                    start_to_close_timeout=timedelta(minutes=1),
+                )
+                expired = RealtimeFreshnessExpiryActivityOutcome.parse_obj(raw)
+                if expired.expired:
+                    if (
+                        expired.projection is None
+                        or expired.workspace_projection is None
+                    ):
+                        raise ValueError(
+                            "realtime_freshness_expiry_projection_missing",
+                        )
+                    self._realtime_projection = expired.projection
+                    self._projection = expired.workspace_projection
+                    self._event_sequence = expired.projection.sequence
+            finally:
+                self._freshness_expiration_active = False
+            if self._freshness_timers.get(connector_id) == timer:
+                self._freshness_timers.pop(connector_id, None)
+                self._freshness_timer_epoch += 1
         next_request = request.dict()
         next_request["rollover_carry"] = self._rollover_carry().dict()
         workflow.continue_as_new(next_request)
@@ -527,6 +708,28 @@ class IncidentWorkspaceTemporalWorkflow:
                 )
                 if not outcome.accepted or outcome.projection is None or outcome.workspace_projection is None:
                     raise ValueError(outcome.reason or "realtime_connector_event_not_accepted")
+                if self._temporal_freshness_enabled:
+                    timer = TemporalFreshnessTimer.parse_obj(
+                        await self._action_activity(
+                            "workspace_load_realtime_freshness_timer_activity",
+                            RealtimeFreshnessTimerLoadPacket(
+                                command=command,
+                                committed_source_event_id=outcome.source_event_id,
+                            ).dict(),
+                        ),
+                    )
+                    if (
+                        timer.deadline.tenant_id != command.tenant_id
+                        or timer.deadline.case_id != command.case_id
+                        or timer.deadline.connector_id != command.connector_id
+                        or timer.deadline.source_event_id
+                        != outcome.source_event_id
+                    ):
+                        raise ValueError(
+                            "realtime_freshness_timer_binding_mismatch",
+                        )
+                    self._freshness_timers[command.connector_id] = timer
+                    self._freshness_timer_epoch += 1
                 self._projection = outcome.workspace_projection
                 self._realtime_projection = outcome.projection
                 self._event_sequence = outcome.projection.sequence
@@ -557,6 +760,11 @@ class IncidentWorkspaceTemporalWorkflow:
             "rollover_requested": self._rollover_requested,
             "active_updates": self._active_updates,
             "accepted_realtime_transitions": self._accepted_realtime_transitions,
+            "temporal_freshness_enabled": self._temporal_freshness_enabled,
+            "freshness_timers": {
+                connector_id: timer.dict()
+                for connector_id, timer in self._freshness_timers.items()
+            },
             "temporal_generation": (
                 self._execution_pointer.temporal_generation
                 if self._execution_pointer is not None else 1
@@ -576,3 +784,175 @@ class IncidentWorkspaceTemporalWorkflow:
             or command.topology_revision != self._binding.topology_revision
         ):
             raise ValueError("realtime_connector_command_binding_mismatch")
+
+    @workflow.update(name="workflow_command_v3")
+    async def workflow_command_v3(
+        self, invocation_data: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Own one authenticated guided command and its bounded stage work.
+
+        No stage activity is scheduled until ``dispatch_command`` has durably
+        accepted an explicit advance/rerun/approval command. Repository CAS
+        and activity idempotency make duplicate Temporal updates safe.
+        """
+        self._active_updates += 1
+        try:
+            invocation = WorkflowTemporalCommandV3.parse_obj(invocation_data)
+            await workflow.wait_condition(lambda: self._initialized)
+            if (
+                invocation.tenant_id != self._binding.tenant_id
+                or invocation.case_id != self._binding.case_id
+            ):
+                raise ValueError("workflow_v3_temporal_binding_mismatch")
+            async with _InterleavableGuidedScope():
+                receipt = WorkflowCommandReceiptV3.parse_obj(
+                    await workflow.execute_activity(
+                        "workspace_workflow_command_v3_activity",
+                        invocation.dict(),
+                        start_to_close_timeout=timedelta(minutes=2),
+                        retry_policy=_guided_activity_retry_policy(),
+                    ),
+                )
+                # The first accepted command owns all downstream work. A
+                # duplicate receipt is an acknowledgement only; re-running a
+                # provider or action from its historical projection would
+                # violate exactly-once user intent.
+                if receipt.reused:
+                    return receipt.dict()
+                projection = receipt.projection
+                current = next(
+                    item for item in reversed(projection.current_attempt.stage_runs)
+                    if item.stage == projection.current_attempt.current_stage
+                    and item.status != WorkflowStageStateV3.SUPERSEDED
+                )
+
+                if invocation.operation in {
+                    WorkflowTemporalOperationV3.ADVANCE,
+                    WorkflowTemporalOperationV3.RERUN,
+                } and (
+                    current.status == WorkflowStageStateV3.RUNNING
+                    and current.stage != WorkflowStageV3.DETECT
+                ):
+                    packet = GuidedStageActivityPacketV3(
+                        tenant_id=projection.tenant_id,
+                        case_id=projection.case_id,
+                        attempt_id=projection.current_attempt.attempt_id,
+                        stage_run_id=current.stage_run_id,
+                        stage=current.stage,
+                        expected_workflow_revision=projection.workflow_revision,
+                        actor_subject_id=invocation.actor_subject_id,
+                    )
+                    outcome = GuidedStageActivityOutcomeV3.parse_obj(
+                        await workflow.execute_activity(
+                            "workspace_run_guided_stage_v3_activity",
+                            packet.dict(),
+                            start_to_close_timeout=timedelta(minutes=6),
+                            retry_policy=_guided_activity_retry_policy(),
+                        ),
+                    )
+                    # Verify is a bounded Temporal observation window. It only
+                    # accepts post-action samples and never busy-waits inside an
+                    # activity, so restart/replay preserves the timer history.
+                    if current.stage == WorkflowStageV3.VERIFY:
+                        # The deadline is part of the canonical stage run so the
+                        # UI and Temporal use the same durable observation window.
+                        deadline = current.verification_deadline_at
+                        while (
+                            outcome.status == GuidedStageActivityStatusV3.WAITING
+                            and workflow.now() < deadline
+                        ):
+                            await workflow.sleep(timedelta(seconds=2))
+                            outcome = GuidedStageActivityOutcomeV3.parse_obj(
+                                await workflow.execute_activity(
+                                    "workspace_run_guided_stage_v3_activity",
+                                    packet.dict(),
+                                    start_to_close_timeout=timedelta(minutes=6),
+                                    retry_policy=_guided_activity_retry_policy(),
+                                ),
+                            )
+                        if outcome.status == GuidedStageActivityStatusV3.WAITING:
+                            outcome = GuidedStageActivityOutcomeV3.parse_obj(
+                                await workflow.execute_activity(
+                                    "workspace_run_guided_stage_v3_activity",
+                                    packet.copy(update={
+                                        "verification_deadline_reached": True,
+                                    }).dict(),
+                                    start_to_close_timeout=timedelta(minutes=6),
+                                    retry_policy=_guided_activity_retry_policy(),
+                                ),
+                            )
+                    receipt = receipt.copy(update={
+                        "projection": outcome.projection,
+                        "workflow_revision": outcome.projection.workflow_revision,
+                    })
+
+                elif invocation.operation == WorkflowTemporalOperationV3.AGENT_RUN:
+                    agent = next((
+                        item for item in reversed(projection.agent_activity)
+                        if item.stage_run_id == current.stage_run_id
+                        and item.state == AgentRunStateV3.RUNNING
+                    ), None)
+                    if agent is None:
+                        raise ValueError("workflow_v3_agent_run_not_active")
+                    outcome = GuidedStageActivityOutcomeV3.parse_obj(
+                        await workflow.execute_activity(
+                            "workspace_run_guided_agent_v3_activity",
+                            GuidedAgentActivityPacketV3(
+                                tenant_id=projection.tenant_id,
+                                case_id=projection.case_id,
+                                attempt_id=projection.current_attempt.attempt_id,
+                                stage_run_id=current.stage_run_id,
+                                agent_run_id=agent.agent_run_id,
+                                expected_workflow_revision=projection.workflow_revision,
+                                actor_subject_id=invocation.actor_subject_id,
+                            ).dict(),
+                            start_to_close_timeout=timedelta(minutes=3),
+                            retry_policy=_guided_activity_retry_policy(),
+                        ),
+                    )
+                    receipt = receipt.copy(update={
+                        "projection": outcome.projection,
+                        "workflow_revision": outcome.projection.workflow_revision,
+                    })
+
+                elif invocation.operation == WorkflowTemporalOperationV3.ACTION_APPROVAL:
+                    approval = ActionApprovalCommandV3.parse_obj(invocation.command)
+                    action = next((
+                        item for item in projection.actions
+                        if item.action_id == invocation.action_id
+                    ), None)
+                    if (
+                        approval.decision == ActionApprovalDecisionV3.APPROVE
+                        and action is not None
+                        and action.execution_state
+                        in {ActionExecutionStateV3.NOT_STARTED, ActionExecutionStateV3.RUNNING}
+                    ):
+                        outcome = GuidedStageActivityOutcomeV3.parse_obj(
+                            await workflow.execute_activity(
+                                "workspace_execute_guided_action_v3_activity",
+                                GuidedActionActivityPacketV3(
+                                    tenant_id=projection.tenant_id,
+                                    case_id=projection.case_id,
+                                    attempt_id=projection.current_attempt.attempt_id,
+                                    stage_run_id=current.stage_run_id,
+                                    action_id=action.action_id,
+                                    expected_workflow_revision=projection.workflow_revision,
+                                    actor_subject_id=invocation.actor_subject_id,
+                                ).dict(),
+                                start_to_close_timeout=timedelta(minutes=3),
+                                retry_policy=_guided_activity_retry_policy(),
+                            ),
+                        )
+                        receipt = receipt.copy(update={
+                            "projection": outcome.projection,
+                            "workflow_revision": outcome.projection.workflow_revision,
+                        })
+
+                self._accepted_realtime_transitions += 1
+                if self._rollover_enabled and self._rollover_due():
+                    self._rollover_requested = True
+                return receipt.dict()
+        except (ValidationError, ValueError) as error:
+            return {"accepted": False, "reason": str(error)}
+        finally:
+            self._active_updates -= 1

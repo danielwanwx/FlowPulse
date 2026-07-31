@@ -3,6 +3,7 @@
 import asyncio
 import ipaddress
 import json
+import math
 import socket
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
@@ -25,13 +26,11 @@ from .realtime_models import (
     RealtimeSourceEvent,
     RealtimeTrend,
 )
+from .realtime_connector_errors import ConnectorReadError
+from .otel_spool import ConfiguredOtelSpoolConnector, OtelSpoolNormalizer
 from .models import EvidenceAuthority, FreshnessStatus, ProofScope
 from .workspace_models import IncidentProjection
 from .realtime_observability import realtime_telemetry
-
-
-class ConnectorReadError(RuntimeError):
-    pass
 
 
 class _RejectRedirects(HTTPRedirectHandler):
@@ -186,6 +185,8 @@ class PrometheusNormalizer:
             numeric = float(latest[1])
         except (TypeError, ValueError) as error:
             raise ValueError("prometheus_sample_value_invalid") from error
+        if not math.isfinite(numeric):
+            raise ValueError("prometheus_sample_value_nonfinite")
         if numeric < 0 or numeric > 1:
             raise ValueError("prometheus_ratio_sample_out_of_bounds")
         fresh_until = observed_at + timedelta(
@@ -216,6 +217,10 @@ class PrometheusNormalizer:
             "received_at": received_at,
             "display_value": "{:.1f}%".format(numeric * 100),
             "numeric_value": float(numeric),
+            "metric_key": "checkout.error_rate",
+            "unit": "ratio",
+            "warning_threshold": 0.02,
+            "critical_threshold": 0.05,
             "signal_status": "CRITICAL" if numeric >= 0.05 else "WARNING",
             "trend": trend,
             "delivery_mode": delivery_mode,
@@ -325,7 +330,12 @@ class PrometheusReadAdapter:
                 latest_value = float(max(
                     candidate_samples, key=lambda item: float(item[0]),
                 )[1])
-                if latest_value > latest_prior.numeric_value:
+                if not math.isfinite(latest_value):
+                    # The strict normalizer below will reject the sample and
+                    # persist degraded connector health. Do not derive a trend
+                    # from a non-finite value first.
+                    trend = RealtimeTrend.UNKNOWN
+                elif latest_value > latest_prior.numeric_value:
                     trend = RealtimeTrend.RISING
                 elif latest_value < latest_prior.numeric_value:
                     trend = RealtimeTrend.FALLING
@@ -463,6 +473,7 @@ class ConfiguredPrometheusConnector:
         self.registration = registration
         self.base_url = base_url
         self.expression = expression
+        self.external_resource_id = expression
         self.reader = reader
         self.artifact_store = artifact_store
         self.repository = repository

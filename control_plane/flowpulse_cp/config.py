@@ -93,8 +93,16 @@ class WorkerSettings:
     connector_allowed_origins: List[str]
     connector_allow_private_origins: bool
     prometheus_binding_templates: List[ConfiguredBindingTemplate]
+    otel_spool_root: Optional[str]
+    otel_binding_templates: List[ConfiguredBindingTemplate]
     realtime_scheduler_interval_seconds: float
+    realtime_tenant_id: str
     realtime_actor_subject_id: Optional[str]
+    worker_heartbeat_path: Optional[str]
+    guided_runtime_base_url: Optional[str]
+    guided_runtime_hmac_secret: Optional[str]
+    guided_rollback_base_url: Optional[str]
+    guided_rollback_hmac_secret: Optional[str]
 
     @classmethod
     def from_environment(cls) -> "WorkerSettings":
@@ -138,6 +146,18 @@ class WorkerSettings:
         except (json.JSONDecodeError, TypeError, ValidationError) as error:
             raise RuntimeError("prometheus_binding_templates_invalid") from error
         try:
+            otel_templates = [
+                ConfiguredBindingTemplate.parse_obj(item)
+                for item in json.loads(
+                    os.environ.get("FLOWPULSE_OTEL_BINDINGS_JSON", "[]"),
+                )
+            ]
+        except (json.JSONDecodeError, TypeError, ValidationError) as error:
+            raise RuntimeError("otel_binding_templates_invalid") from error
+        otel_spool_root = os.environ.get("FLOWPULSE_OTEL_SPOOL_ROOT") or None
+        if bool(otel_spool_root) != bool(otel_templates):
+            raise RuntimeError("otel_spool_and_bindings_must_be_configured_together")
+        try:
             scheduler_interval = float(
                 os.environ.get(
                     "FLOWPULSE_REALTIME_SCHEDULER_INTERVAL_SECONDS", "0",
@@ -148,12 +168,31 @@ class WorkerSettings:
         if scheduler_interval < 0 or scheduler_interval > 300:
             raise RuntimeError("realtime_scheduler_interval_invalid")
         if scheduler_interval and (
-            not prometheus_url
-            or not templates
-            or not os.environ.get("FLOWPULSE_REALTIME_ACTOR_SUBJECT_ID")
+            not os.environ.get("FLOWPULSE_REALTIME_ACTOR_SUBJECT_ID")
+            or not ((prometheus_url and templates) or (otel_spool_root and otel_templates))
         ):
             raise RuntimeError(
                 "realtime_scheduler_requires_connector_and_binding",
+            )
+        guided_runtime_base_url = (
+            os.environ.get("FLOWPULSE_V3_INTERNAL_BRIDGE_URL") or None
+        )
+        guided_runtime_hmac_secret = (
+            os.environ.get("FLOWPULSE_V3_INTERNAL_BRIDGE_HMAC_SECRET") or None
+        )
+        if bool(guided_runtime_base_url) != bool(guided_runtime_hmac_secret):
+            raise RuntimeError(
+                "workflow_v3_internal_bridge_configuration_incomplete",
+            )
+        guided_rollback_base_url = (
+            os.environ.get("FLOWPULSE_V3_SAFE_ROLLBACK_URL") or None
+        )
+        guided_rollback_hmac_secret = (
+            os.environ.get("FLOWPULSE_V3_SAFE_ROLLBACK_HMAC_SECRET") or None
+        )
+        if bool(guided_rollback_base_url) != bool(guided_rollback_hmac_secret):
+            raise RuntimeError(
+                "workflow_v3_safe_rollback_configuration_incomplete",
             )
         return cls(
             temporal_address=required("FLOWPULSE_TEMPORAL_ADDRESS"),
@@ -181,10 +220,23 @@ class WorkerSettings:
             connector_allowed_origins=allowed_origins,
             connector_allow_private_origins=allow_private,
             prometheus_binding_templates=templates,
+            otel_spool_root=otel_spool_root,
+            otel_binding_templates=otel_templates,
             realtime_scheduler_interval_seconds=scheduler_interval,
+            realtime_tenant_id=os.environ.get(
+                "FLOWPULSE_REALTIME_TENANT_ID",
+                required("FLOWPULSE_SOURCE_READ_TENANT_ID"),
+            ),
             realtime_actor_subject_id=(
                 os.environ.get("FLOWPULSE_REALTIME_ACTOR_SUBJECT_ID") or None
             ),
+            worker_heartbeat_path=(
+                os.environ.get("FLOWPULSE_WORKER_HEARTBEAT_PATH") or None
+            ),
+            guided_runtime_base_url=guided_runtime_base_url,
+            guided_runtime_hmac_secret=guided_runtime_hmac_secret,
+            guided_rollback_base_url=guided_rollback_base_url,
+            guided_rollback_hmac_secret=guided_rollback_hmac_secret,
         )
 
 

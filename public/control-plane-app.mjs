@@ -13,6 +13,9 @@ import {
   formatIncidentDuration,
   incidentWorkspaceSnapshot
 } from "./incident-workspace.mjs";
+import { ControlPlaneV3Client } from "./control-plane-v3-client.mjs";
+import { IncidentWorkbenchControllerV3 } from "./incident-workbench-controller-v3.mjs";
+import { LiveIncidentAdapterV3 } from "./live-v3.mjs";
 
 // This module intentionally mounts only into the mature app-shell. It owns
 // presentation state, while all incident, gate, card, receipt, and evidence
@@ -33,13 +36,57 @@ const v2LegacyVisibility = new Map();
 const pendingProjections = new Set();
 const pendingActions = new Set();
 const pendingReceipts = new Set();
+const v3Client = new ControlPlaneV3Client();
+const v3Workbench = new IncidentWorkbenchControllerV3({
+  element: els["incident-workspace"],
+  appShell: root,
+  client: v3Client,
+  onProjection: syncV3ProjectionChrome
+});
+const v3Live = new LiveIncidentAdapterV3({
+  element: els["v3-live-incidents"],
+  client: v3Client,
+  topologyElement: els["v3-live-topology"],
+  legacyTopology: els["canvas-layers"],
+  legacyRoot: root,
+  legacySurfaces: [
+    document.querySelector(".canvas-toolbar"),
+    document.querySelector(".metric-cluster"),
+    els["incident-stage-rail"],
+    els["canvas-loading"],
+    els["incident-stage-panel"],
+    els["annotation-layer"],
+    els["compare-handle"],
+    els["compare-canvas-range"],
+    els["approval-banner"],
+    els["incident-strip"]
+  ],
+  onOpen: openV3Incident
+});
 
 root.dataset.controlPlaneAdapter = "true";
 for (const button of document.querySelectorAll("button.mode-button[data-mode]")) {
   button.addEventListener("click", () => {
-    state = { ...state, mode: button.dataset.mode };
+    const nextMode = button.dataset.mode;
+    if (nextMode === "incident") {
+      closeSubscriptions();
+      v3Live.deactivate();
+      state = { ...state, mode: nextMode };
+      render();
+      void v3Workbench.activate(requestedCaseId() || state.pinned_case_id);
+      return;
+    }
+    v3Workbench.deactivate();
+    if (nextMode !== "live") v3Live.deactivate();
+    state = { ...state, mode: nextMode };
     render();
-  }, true);
+    if (nextMode === "live") {
+      closeSubscriptions();
+      void v3Live.activate();
+      return;
+    }
+    void bootstrap();
+  });
 }
 els["open-incident-button"].addEventListener("click", () => dispatch({ type: "toast.focus" }));
 els["retry-button"].addEventListener("click", bootstrap);
@@ -101,7 +148,14 @@ els["timeline-current"].addEventListener("click", () => {
 });
 
 render();
-void bootstrap();
+if (state.mode === "incident") void v3Workbench.activate(initialCaseId);
+else if (state.mode === "live") {
+  closeSubscriptions();
+  void v3Live.activate();
+}
+else {
+  void bootstrap();
+}
 
 async function bootstrap() {
   closeSubscriptions();
@@ -243,6 +297,38 @@ function reportError(error) {
 }
 
 function render() {
+  if (state.mode === "incident") {
+    root.dataset.controlPlaneMode = "incident";
+    root.dataset.mode = "incident";
+    root.dataset.incidentWorkspace = "v3";
+    hideLegacyV2IncidentChrome();
+    els["incident-workspace"].hidden = false;
+    els["v3-live-incidents"].hidden = true;
+    els["error-banner"].hidden = true;
+    root.classList.remove("is-loading");
+    els.environment.textContent = "Incident workflow";
+    els["workspace-title"].textContent = v3Workbench.projection?.title || "Incident";
+    els.stage.textContent = v3Workbench.projection?.current_attempt?.current_stage ? titleCase(v3Workbench.projection.current_attempt.current_stage) : "Opening";
+    els["status-text"].textContent = "V3 workflow";
+    renderModeButtons();
+    renderToast();
+    return;
+  }
+  if (state.mode === "live") {
+    root.dataset.controlPlaneMode = "live";
+    root.dataset.mode = "live";
+    delete root.dataset.incidentWorkspace;
+    els["incident-workspace"].hidden = true;
+    els["v3-live-incidents"].hidden = false;
+    root.classList.remove("is-loading");
+    els.environment.textContent = "Live incidents";
+    els["workspace-title"].textContent = "Runtime activity";
+    els.stage.textContent = "V3 live overview";
+    els["status-text"].textContent = "Live telemetry";
+    renderModeButtons();
+    renderToast();
+    return;
+  }
   if (state.mode !== "incident") {
     restoreLegacyV2Chrome();
     delete root.dataset.controlPlaneMode;
@@ -293,6 +379,23 @@ function render() {
   renderIncidentChrome();
   renderDrawer();
   if (projection) persistCaseId(projection.case_id);
+}
+
+function openV3Incident(caseId) {
+  closeSubscriptions();
+  v3Live.deactivate();
+  state = { ...state, mode: "incident", pinned_case_id: caseId };
+  render();
+  void v3Workbench.activate(caseId);
+}
+
+function syncV3ProjectionChrome(projection) {
+  if (state.mode !== "incident") return;
+  root.dataset.projectionRevision = String(projection.projection_revision);
+  root.dataset.projectionSequence = String(projection.sequence);
+  els["workspace-title"].textContent = projection.title;
+  els.stage.textContent = titleCase(projection.current_attempt.current_stage);
+  els["status-text"].textContent = `${titleCase(projection.freshness.state)} · attempt ${projection.current_attempt.attempt_id}`;
 }
 
 function hideLegacyV2IncidentChrome() {

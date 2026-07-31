@@ -2,7 +2,7 @@
 
 from hashlib import sha256
 import json
-from typing import Dict, Tuple
+from typing import Dict, Iterable, Tuple
 
 from .provider_gateway import ProviderConfigurationError, ProviderMode
 from .workspace_models import (
@@ -15,6 +15,7 @@ from .workspace_models import (
     IncidentGraphNode,
     IncidentProjection,
 )
+from .realtime_models import ConfiguredBindingTemplate
 
 
 FIXTURE_ID = "otel-demo-system-v1"
@@ -116,6 +117,94 @@ def _asset_sha256() -> str:
 
 
 ASSET_SHA256 = _asset_sha256()
+
+
+class ConfiguredTopologyManifestProvider:
+    """Production topology seed built only from deployment-owned bindings.
+
+    This is not the captured demo graph.  It adds exactly the components and
+    dependency edges named by the worker's configured connector bindings, with
+    neutral status.  Incident impact and runtime status are applied later only
+    when a bound OTel/metric fact is committed.
+    """
+
+    def __init__(self, bindings: Iterable[ConfiguredBindingTemplate]) -> None:
+        self.bindings = tuple(bindings)
+        if not self.bindings:
+            raise ProviderConfigurationError("configured_topology_manifest_empty")
+        edge_sources = {}
+        for binding in self.bindings:
+            if binding.edge_ids and len(binding.component_ids) < 2:
+                raise ProviderConfigurationError(
+                    "configured_topology_edge_requires_components",
+                )
+            for edge_id in binding.edge_ids:
+                expected = "{}->{}".format(
+                    binding.component_ids[0], binding.component_ids[-1],
+                )
+                if edge_id != expected:
+                    raise ProviderConfigurationError(
+                        "configured_topology_edge_identity_mismatch",
+                    )
+                prior = edge_sources.setdefault(edge_id, expected)
+                if prior != expected:
+                    raise ProviderConfigurationError(
+                        "configured_topology_edge_conflict",
+                    )
+
+    @property
+    def manifest_sha256(self) -> str:
+        payload = [item.dict() for item in self.bindings]
+        return sha256(json.dumps(
+            payload, sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")).hexdigest()
+
+    def snapshot(self, projection: IncidentProjection) -> IncidentProjection:
+        nodes = {item.component_id: item for item in projection.graph.nodes}
+        edges = {item.edge_id: item for item in projection.graph.edges}
+        for binding in self.bindings:
+            for component_id in binding.component_ids:
+                prior = nodes.get(component_id)
+                if prior is None:
+                    prior = IncidentGraphNode(
+                        component_id=component_id,
+                        canonical_identity="service:{}".format(component_id),
+                        display_name=component_id.replace("-", " ").title(),
+                        membership=GraphMembership.CONNECTED,
+                        runtime_status="unknown",
+                        impact_status="unknown",
+                    )
+                else:
+                    prior = prior.copy(update={
+                        "membership": GraphMembership.CONNECTED,
+                        "classification_reason": None,
+                    })
+                nodes[component_id] = prior
+            for edge_id in binding.edge_ids:
+                edges[edge_id] = IncidentGraphEdge(
+                    edge_id=edge_id,
+                    source_component_id=binding.component_ids[0],
+                    target_component_id=binding.component_ids[-1],
+                    status="observed",
+                )
+        return projection.copy(update={
+            "graph": IncidentGraph(
+                nodes=list(nodes.values()), edges=list(edges.values()),
+            ),
+        })
+
+    def initialized_event_payload(self, projection: IncidentProjection) -> Dict[str, str]:
+        return {
+            "state": projection.status,
+            "topology_truth_label": "LIVE_CONFIGURED_MANIFEST",
+            "topology_manifest_sha256": self.manifest_sha256,
+            "topology_overlay_node_ids": ",".join(
+                item.component_id for item in projection.graph.nodes
+            ),
+            "topology_overlay_relation_ids": ",".join(
+                item.edge_id for item in projection.graph.edges
+            ),
+        }
 
 
 class CapturedAstronomyTopologyProvider:

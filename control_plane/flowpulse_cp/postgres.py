@@ -63,9 +63,17 @@ from .workspace_investigation import (
     validate_workspace_investigation_commit,
 )
 from .workspace_v3_models import (
+    IncidentEventV3,
     IncidentExecutionIdentityV3,
+    IncidentLifecycleStateV3,
+    IncidentProjectionV3,
+    LiveEventV3,
+    LiveIncidentSummaryV3,
+    LiveSnapshotV3,
     TemporalExecutionPointerV3,
     TemporalExecutionRolloverV3,
+    WorkflowTransitionCommitV3,
+    WorkflowRealtimeSyncCommitV3,
 )
 from .realtime_repository import RealtimePostgresMixin
 
@@ -420,6 +428,460 @@ class PostgresCaseRepository(RealtimePostgresMixin):
             return replacement
 
         return await self._tenant(tenant_id, operation)
+
+    @staticmethod
+    async def _insert_workspace_v3_snapshot(
+        connection: asyncpg.Connection,
+        projection: IncidentProjectionV3,
+    ) -> None:
+        await connection.execute(
+            """INSERT INTO incident_workflow_projections_v3
+               (tenant_id, case_id, workflow_revision, projection_revision,
+                sequence, payload, created_at)
+               VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7)""",
+            projection.tenant_id, projection.case_id,
+            projection.workflow_revision, projection.projection_revision,
+            projection.sequence, _payload(projection), projection.generated_at,
+        )
+        # A post-action rerun moves the completed parent attempt into
+        # ``attempt_history`` and publishes a child as ``current_attempt`` in
+        # the same projection revision.  Persist every attempt represented by
+        # that immutable snapshot, with parents first, so the normalized audit
+        # tables retain the exact parent revision instead of only embedding it
+        # inside the projection JSON.
+        attempts = [*projection.attempt_history, projection.current_attempt]
+        for attempt in attempts:
+            await connection.execute(
+                """INSERT INTO incident_workflow_attempt_revisions_v3
+                   (tenant_id, case_id, attempt_id, workflow_revision, projection_revision,
+                    attempt_number, parent_attempt_id, payload, recorded_at)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9)""",
+                projection.tenant_id, projection.case_id, attempt.attempt_id,
+                projection.workflow_revision, projection.projection_revision,
+                attempt.attempt_number, attempt.parent_attempt_id,
+                _payload(attempt), projection.generated_at,
+            )
+            for stage_run in attempt.stage_runs:
+                await connection.execute(
+                    """INSERT INTO incident_workflow_stage_run_revisions_v3
+                       (tenant_id, case_id, stage_run_id, attempt_id, stage,
+                        run_number, workflow_revision, projection_revision, payload, recorded_at)
+                       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10)""",
+                    projection.tenant_id, projection.case_id,
+                    stage_run.stage_run_id, attempt.attempt_id,
+                    stage_run.stage.value, stage_run.run_number,
+                    projection.workflow_revision, projection.projection_revision,
+                    _payload(stage_run), projection.generated_at,
+                )
+
+    @staticmethod
+    async def _insert_workspace_v3_events(
+        connection: asyncpg.Connection,
+        events: List[IncidentEventV3],
+        projection: IncidentProjectionV3,
+    ) -> None:
+        # Incident commits are serialized per case; Live cursors must also be
+        # serialized across all cases in one tenant so the filtered stream is
+        # contiguous and EventSource can resume with ``last + 1`` semantics.
+        await connection.execute(
+            "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+            "workflow-v3-live:{}".format(projection.tenant_id),
+        )
+        for event in events:
+            await connection.execute(
+                """INSERT INTO incident_workflow_events_v3
+                   (tenant_id, case_id, sequence, event_id, workflow_revision,
+                    projection_revision, event_type, payload, occurred_at)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9)""",
+                event.tenant_id, event.case_id, event.sequence, event.event_id,
+                event.workflow_revision, event.projection_revision, event.event_type.value,
+                _payload(event), event.occurred_at,
+            )
+            live_sequence = await connection.fetchval(
+                """SELECT COALESCE(MAX(live_sequence), 0) + 1
+                   FROM incident_workflow_live_outbox_v3
+                   WHERE tenant_id=$1""",
+                projection.tenant_id,
+            )
+            live_event = LiveEventV3(
+                event_id=event.event_id,
+                sequence=live_sequence,
+                event_type=event.event_type.value,
+                occurred_at=event.occurred_at,
+                incident=LiveIncidentSummaryV3.from_projection(projection),
+            )
+            await connection.execute(
+                """INSERT INTO incident_workflow_live_outbox_v3
+                   (live_sequence, tenant_id, case_id, event_id,
+                    projection_revision, payload, recorded_at)
+                   VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7)""",
+                live_sequence, projection.tenant_id, projection.case_id,
+                event.event_id, projection.projection_revision,
+                _payload(live_event), event.occurred_at,
+            )
+
+    async def initialize_workspace_v3(
+        self, projection: IncidentProjectionV3, event: IncidentEventV3,
+    ) -> IncidentProjectionV3:
+        """Persist the first Detect checkpoint exactly once."""
+        if (
+            projection.workflow_revision != 1
+            or projection.projection_revision != 1
+            or projection.sequence != 1
+            or event.sequence != 1
+            or event.tenant_id != projection.tenant_id
+            or event.case_id != projection.case_id
+        ):
+            raise PolicyViolation("workflow_v3_initial_projection_invalid")
+
+        async def operation(connection: asyncpg.Connection) -> IncidentProjectionV3:
+            await connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+                "workflow-v3:{}:{}".format(projection.tenant_id, projection.case_id),
+            )
+            row = await connection.fetchrow(
+                """SELECT payload FROM incident_workflow_projections_v3
+                   WHERE tenant_id=$1 AND case_id=$2
+                   ORDER BY projection_revision DESC LIMIT 1""",
+                projection.tenant_id, projection.case_id,
+            )
+            if row is not None:
+                existing = IncidentProjectionV3.parse_obj(_decode(row["payload"]))
+                if existing.workflow_revision == 1 and existing == projection:
+                    return existing
+                return existing
+            await self._insert_workspace_v3_snapshot(connection, projection)
+            await self._insert_workspace_v3_events(connection, [event], projection)
+            return projection
+
+        return await self._tenant(projection.tenant_id, operation)
+
+    async def workspace_projection_v3(
+        self, tenant_id: str, case_id: str,
+    ) -> Optional[IncidentProjectionV3]:
+        async def operation(connection: asyncpg.Connection) -> Optional[IncidentProjectionV3]:
+            row = await connection.fetchrow(
+                """SELECT payload FROM incident_workflow_projections_v3
+                   WHERE tenant_id=$1 AND case_id=$2
+                   ORDER BY projection_revision DESC LIMIT 1""",
+                tenant_id, case_id,
+            )
+            return IncidentProjectionV3.parse_obj(_decode(row["payload"])) if row else None
+
+        return await self._tenant(tenant_id, operation)
+
+    async def workspace_projection_v3_at_revision(
+        self, tenant_id: str, case_id: str, workflow_revision: int,
+    ) -> Optional[IncidentProjectionV3]:
+        async def operation(connection: asyncpg.Connection) -> Optional[IncidentProjectionV3]:
+            row = await connection.fetchrow(
+                """SELECT payload FROM incident_workflow_projections_v3
+                   WHERE tenant_id=$1 AND case_id=$2 AND workflow_revision=$3
+                   ORDER BY projection_revision DESC LIMIT 1""",
+                tenant_id, case_id, workflow_revision,
+            )
+            return IncidentProjectionV3.parse_obj(_decode(row["payload"])) if row else None
+
+        return await self._tenant(tenant_id, operation)
+
+    async def workspace_events_v3_after(
+        self, tenant_id: str, case_id: str, after: int,
+    ) -> List[IncidentEventV3]:
+        async def operation(connection: asyncpg.Connection) -> List[IncidentEventV3]:
+            rows = await connection.fetch(
+                """SELECT payload FROM incident_workflow_events_v3
+                   WHERE tenant_id=$1 AND case_id=$2 AND sequence>$3
+                   ORDER BY sequence""",
+                tenant_id, case_id, after,
+            )
+            return [IncidentEventV3.parse_obj(_decode(row["payload"])) for row in rows]
+
+        return await self._tenant(tenant_id, operation)
+
+    async def workspace_event_bounds_v3(
+        self, tenant_id: str, case_id: str,
+    ) -> Tuple[Optional[int], Optional[int]]:
+        async def operation(connection: asyncpg.Connection):
+            row = await connection.fetchrow(
+                """SELECT MIN(sequence) AS minimum, MAX(sequence) AS maximum
+                   FROM incident_workflow_events_v3
+                   WHERE tenant_id=$1 AND case_id=$2""",
+                tenant_id, case_id,
+            )
+            return (
+                int(row["minimum"]) if row["minimum"] is not None else None,
+                int(row["maximum"]) if row["maximum"] is not None else None,
+            )
+
+        return await self._tenant(tenant_id, operation)
+
+    async def workspace_active_projections_v3(
+        self, tenant_id: str, limit: int = 100,
+    ) -> List[IncidentProjectionV3]:
+        async def operation(connection: asyncpg.Connection) -> List[IncidentProjectionV3]:
+            rows = await connection.fetch(
+                """SELECT DISTINCT ON (case_id) payload
+                   FROM incident_workflow_projections_v3
+                   WHERE tenant_id=$1
+                   ORDER BY case_id, projection_revision DESC""",
+                tenant_id,
+            )
+            projections = [
+                IncidentProjectionV3.parse_obj(_decode(row["payload"]))
+                for row in rows
+            ]
+            return sorted(
+                (
+                    item for item in projections
+                    if item.lifecycle_state != IncidentLifecycleStateV3.RESOLVED
+                ),
+                key=lambda item: (item.generated_at, item.case_id),
+                reverse=True,
+            )[:limit]
+
+        return await self._tenant(tenant_id, operation)
+
+    async def workspace_live_snapshot_v3(
+        self, tenant_id: str, limit: int = 100,
+    ) -> LiveSnapshotV3:
+        """Read active projections and live cursor from one MVCC statement.
+
+        Two READ COMMITTED SELECTs can observe an outbox commit between them,
+        returning old incident cards with a newer resume cursor and thereby
+        skipping that event forever. This single statement has one snapshot.
+        """
+
+        async def operation(connection: asyncpg.Connection) -> LiveSnapshotV3:
+            row = await connection.fetchrow(
+                """WITH latest AS (
+                       SELECT DISTINCT ON (case_id) payload
+                       FROM incident_workflow_projections_v3
+                       WHERE tenant_id=$1
+                       ORDER BY case_id, projection_revision DESC
+                   ), active AS (
+                       SELECT payload,
+                              (payload->>'generated_at')::timestamptz AS generated_at,
+                              payload->>'case_id' AS case_id
+                       FROM latest
+                       WHERE payload->>'lifecycle_state' <> 'RESOLVED'
+                       ORDER BY generated_at DESC, case_id DESC
+                       LIMIT $2
+                   )
+                   SELECT
+                     (SELECT COALESCE(MAX(live_sequence), 0)
+                        FROM incident_workflow_live_outbox_v3
+                       WHERE tenant_id=$1) AS live_sequence,
+                     COALESCE(
+                       (SELECT jsonb_agg(payload ORDER BY generated_at DESC, case_id DESC)
+                          FROM active),
+                       '[]'::jsonb
+                     ) AS projection_payloads""",
+                tenant_id, limit,
+            )
+            payloads = _decode(row["projection_payloads"])
+            projections = [
+                IncidentProjectionV3.parse_obj(item) for item in payloads
+            ]
+            return LiveSnapshotV3(
+                generated_at=datetime.now(timezone.utc),
+                sequence=int(row["live_sequence"] or 0),
+                incidents=[
+                    LiveIncidentSummaryV3.from_projection(item)
+                    for item in projections
+                ],
+            )
+
+        return await self._tenant(tenant_id, operation)
+
+    async def workspace_live_events_v3_after(
+        self, tenant_id: str, after: int,
+    ) -> List[LiveEventV3]:
+        async def operation(connection: asyncpg.Connection) -> List[LiveEventV3]:
+            rows = await connection.fetch(
+                """SELECT payload
+                   FROM incident_workflow_live_outbox_v3
+                   WHERE tenant_id=$1 AND live_sequence>$2
+                   ORDER BY live_sequence
+                   LIMIT 100""",
+                tenant_id, after,
+            )
+            return [LiveEventV3.parse_obj(_decode(row["payload"])) for row in rows]
+
+        return await self._tenant(tenant_id, operation)
+
+    async def workspace_live_event_bounds_v3(
+        self, tenant_id: str,
+    ) -> Tuple[Optional[int], Optional[int]]:
+        async def operation(connection: asyncpg.Connection):
+            row = await connection.fetchrow(
+                """SELECT MIN(live_sequence) AS minimum,
+                          MAX(live_sequence) AS maximum
+                   FROM incident_workflow_live_outbox_v3
+                   WHERE tenant_id=$1""",
+                tenant_id,
+            )
+            return (
+                int(row["minimum"]) if row["minimum"] is not None else None,
+                int(row["maximum"]) if row["maximum"] is not None else None,
+            )
+
+        return await self._tenant(tenant_id, operation)
+
+    async def workspace_live_cursor_v3(self, tenant_id: str) -> int:
+        async def operation(connection: asyncpg.Connection) -> int:
+            value = await connection.fetchval(
+                """SELECT COALESCE(MAX(live_sequence), 0)
+                   FROM incident_workflow_live_outbox_v3
+                   WHERE tenant_id=$1""",
+                tenant_id,
+            )
+            return int(value or 0)
+
+        return await self._tenant(tenant_id, operation)
+
+    async def workspace_command_v3(
+        self, tenant_id: str, case_id: str, idempotency_key: str,
+    ) -> Optional[WorkflowTransitionCommitV3]:
+        async def operation(connection: asyncpg.Connection) -> Optional[WorkflowTransitionCommitV3]:
+            row = await connection.fetchrow(
+                """SELECT payload FROM incident_workflow_commands_v3
+                   WHERE tenant_id=$1 AND case_id=$2 AND idempotency_key=$3""",
+                tenant_id, case_id, idempotency_key,
+            )
+            return WorkflowTransitionCommitV3.parse_obj(_decode(row["payload"])) if row else None
+
+        return await self._tenant(tenant_id, operation)
+
+    async def workspace_realtime_sync_v3(
+        self, tenant_id: str, case_id: str, sync_key: str,
+    ) -> Optional[WorkflowRealtimeSyncCommitV3]:
+        async def operation(connection: asyncpg.Connection) -> Optional[WorkflowRealtimeSyncCommitV3]:
+            row = await connection.fetchrow(
+                """SELECT payload FROM incident_workflow_realtime_syncs_v3
+                   WHERE tenant_id=$1 AND case_id=$2 AND sync_key=$3""",
+                tenant_id, case_id, sync_key,
+            )
+            return WorkflowRealtimeSyncCommitV3.parse_obj(
+                _decode(row["payload"]),
+            ) if row else None
+
+        return await self._tenant(tenant_id, operation)
+
+    async def commit_workspace_realtime_sync_v3(
+        self, commit: WorkflowRealtimeSyncCommitV3,
+    ) -> WorkflowRealtimeSyncCommitV3:
+        """CAS telemetry facts while preserving workflow/decision revisions."""
+        async def operation(connection: asyncpg.Connection) -> WorkflowRealtimeSyncCommitV3:
+            await connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+                "workflow-v3:{}:{}".format(commit.tenant_id, commit.case_id),
+            )
+            sync_row = await connection.fetchrow(
+                """SELECT sync_hash, payload
+                   FROM incident_workflow_realtime_syncs_v3
+                   WHERE tenant_id=$1 AND case_id=$2 AND sync_key=$3""",
+                commit.tenant_id, commit.case_id, commit.sync_key,
+            )
+            if sync_row is not None:
+                if sync_row["sync_hash"] != commit.sync_hash:
+                    raise PolicyViolation("workflow_v3_realtime_sync_conflict")
+                return WorkflowRealtimeSyncCommitV3.parse_obj(
+                    _decode(sync_row["payload"]),
+                )
+            row = await connection.fetchrow(
+                """SELECT payload FROM incident_workflow_projections_v3
+                   WHERE tenant_id=$1 AND case_id=$2
+                   ORDER BY projection_revision DESC LIMIT 1""",
+                commit.tenant_id, commit.case_id,
+            )
+            if row is None:
+                raise PolicyViolation("workflow_v3_projection_not_found")
+            current = IncidentProjectionV3.parse_obj(_decode(row["payload"]))
+            if commit.expected_projection_revision != current.projection_revision:
+                raise PolicyViolation("workflow_v3_realtime_projection_conflict")
+            if (
+                commit.projection.projection_revision != current.projection_revision + 1
+                or commit.projection.workflow_revision != current.workflow_revision
+                or commit.projection.decision_revision != current.decision_revision
+                or commit.events[0].sequence != current.sequence + 1
+                or commit.events[-1].sequence != commit.projection.sequence
+                or any(
+                    event.projection_revision != commit.projection.projection_revision
+                    or event.workflow_revision != current.workflow_revision
+                    for event in commit.events
+                )
+            ):
+                raise PolicyViolation("workflow_v3_realtime_sync_not_monotonic")
+            await self._insert_workspace_v3_snapshot(connection, commit.projection)
+            await self._insert_workspace_v3_events(
+                connection, commit.events, commit.projection,
+            )
+            await connection.execute(
+                """INSERT INTO incident_workflow_realtime_syncs_v3
+                   (tenant_id, case_id, sync_key, sync_hash,
+                    projection_revision, payload, recorded_at)
+                   VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7)""",
+                commit.tenant_id, commit.case_id, commit.sync_key,
+                commit.sync_hash, commit.projection.projection_revision,
+                _payload(commit), commit.projection.generated_at,
+            )
+            return commit
+
+        return await self._tenant(commit.tenant_id, operation)
+
+    async def commit_workspace_transition_v3(
+        self, commit: WorkflowTransitionCommitV3,
+    ) -> WorkflowTransitionCommitV3:
+        """CAS one guided command with projection, events, and idempotency receipt."""
+        async def operation(connection: asyncpg.Connection) -> WorkflowTransitionCommitV3:
+            await connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+                "workflow-v3:{}:{}".format(commit.tenant_id, commit.case_id),
+            )
+            command_row = await connection.fetchrow(
+                """SELECT command_hash, payload FROM incident_workflow_commands_v3
+                   WHERE tenant_id=$1 AND case_id=$2 AND idempotency_key=$3""",
+                commit.tenant_id, commit.case_id, commit.idempotency_key,
+            )
+            if command_row is not None:
+                if command_row["command_hash"] != commit.command_hash:
+                    raise PolicyViolation("workflow_v3_idempotency_conflict")
+                return WorkflowTransitionCommitV3.parse_obj(_decode(command_row["payload"]))
+            row = await connection.fetchrow(
+                """SELECT payload FROM incident_workflow_projections_v3
+                   WHERE tenant_id=$1 AND case_id=$2
+                   ORDER BY projection_revision DESC LIMIT 1""",
+                commit.tenant_id, commit.case_id,
+            )
+            if row is None:
+                raise PolicyViolation("workflow_v3_projection_not_found")
+            current = IncidentProjectionV3.parse_obj(_decode(row["payload"]))
+            if commit.expected_workflow_revision != current.workflow_revision:
+                raise PolicyViolation("workflow_v3_revision_conflict")
+            if (
+                commit.projection.workflow_revision != current.workflow_revision + 1
+                or commit.projection.projection_revision != current.projection_revision + 1
+                or commit.events[0].sequence != current.sequence + 1
+                or commit.events[-1].sequence != commit.projection.sequence
+            ):
+                raise PolicyViolation("workflow_v3_transition_not_monotonic")
+            await self._insert_workspace_v3_snapshot(connection, commit.projection)
+            await self._insert_workspace_v3_events(
+                connection, commit.events, commit.projection,
+            )
+            await connection.execute(
+                """INSERT INTO incident_workflow_commands_v3
+                   (tenant_id, case_id, idempotency_key, command_hash,
+                    workflow_revision, projection_revision, command_id, payload, recorded_at)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9)""",
+                commit.tenant_id, commit.case_id, commit.idempotency_key,
+                commit.command_hash, commit.projection.workflow_revision,
+                commit.projection.projection_revision, commit.receipt.command_id, _payload(commit),
+                commit.receipt.recorded_at,
+            )
+            return commit
+
+        return await self._tenant(commit.tenant_id, operation)
 
     async def workspace_binding_by_public_identity(
         self, tenant_id: str, incident_id: str, run_id: str, topology_revision: str,

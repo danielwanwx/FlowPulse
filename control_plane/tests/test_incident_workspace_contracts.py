@@ -30,7 +30,10 @@ from flowpulse_cp.workspace_registration import (
     workspace_workflow_definitions,
 )
 from flowpulse_cp.legacy_workspace_workflow import LegacyIncidentWorkspaceTemporalWorkflow
-from flowpulse_cp.workspace_workflow import IncidentWorkspaceTemporalWorkflow
+from flowpulse_cp.workspace_workflow import (
+    IncidentWorkspaceTemporalWorkflow,
+    _parse_workspace_activity_outcome,
+)
 from flowpulse_cp.workspace_v3_workflow import IncidentWorkspaceTemporalWorkflowV3
 
 
@@ -64,6 +67,25 @@ def projection():
 
 
 class IncidentWorkspaceContractTests(unittest.TestCase):
+    def test_temporal_replay_reads_only_the_frozen_legacy_initializer_shape(self):
+        raw = projection().dict()
+        for field in (
+            "operator_title", "operator_summary", "lifecycle_stage", "gate1_state",
+            "investigation_result",
+        ):
+            raw.pop(field, None)
+        raw["graph"]["nodes"][0].pop("display_name", None)
+        raw["graph"]["nodes"][0].update({
+            "membership": "CONNECTED",
+            "classification_reason": None,
+        })
+        parsed = _parse_workspace_activity_outcome({"projection": raw})
+        self.assertEqual(GraphMembership.CLASSIFIED, parsed.projection.graph.nodes[0].membership)
+
+        current = raw | {"operator_title": "Current projection"}
+        with self.assertRaisesRegex(ValidationError, "connected_node_requires_edge"):
+            _parse_workspace_activity_outcome({"projection": current})
+
     def test_public_run_and_topology_identity_never_derive_from_temporal_ids(self):
         item = binding()
         self.assertEqual("run-public-a", item.run_id)

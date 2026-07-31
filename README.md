@@ -10,6 +10,8 @@ Postgres holds append-only records and tenant-scoped read projections, and
 object storage holds versioned raw artifacts. Models and agents can propose or
 explain within typed activity boundaries, but they never become authority.
 
+The V3 guided workspace keeps incident response interactive and stage-gated.
+
 The additive Incident Workspace contract uses public
 `(tenant_id, incident_id, run_id, topology_revision)` identities. Those are
 backend-issued product identities, distinct from internal `case_id`, Temporal
@@ -17,7 +19,7 @@ backend-issued product identities, distinct from internal `case_id`, Temporal
 `run_id` from a Temporal string. See
 [the control-plane workspace contract](docs/architecture/incident-workspace-control-plane-contract.md).
 
-It is evidence-grounded by design: models and agents can explain, investigate, and propose, but current proof, human approval, and consequential state remain outside browser and model control. **Incident is the first vertical.** Architecture, Live, and Incident are the three product views; Incident keeps the operator in one staged workspace from Investigate through Decide, Execute, and Verify.
+It is evidence-grounded by design: models and agents can explain, investigate, and propose, but current proof, human approval, and consequential state remain outside browser and model control. **Incident is the first vertical.** Architecture, Live, and Incident are the three product views; the V3 Incident workspace keeps the operator in one backend-gated flow through Detect, Triage, Investigate, Decide, Respond, and Verify.
 
 <!-- north-star-guardrails-v2
 {
@@ -26,7 +28,7 @@ It is evidence-grounded by design: models and agents can explain, investigate, a
   "product_company_multiplayer": true,
   "incident_response_first_vertical": true,
   "top_level_navigation": ["Architecture", "Live", "Incident"],
-  "stage_order": ["Investigate", "Decide", "Execute", "Verify"],
+  "stage_order": ["Detect", "Triage", "Investigate", "Decide", "Respond", "Verify"],
   "lifecycle_authority": "Temporal",
   "current_proof_authority": "Evidence Ledger",
   "knowledge_plane_role": "bounded_prior",
@@ -35,12 +37,12 @@ It is evidence-grounded by design: models and agents can explain, investigate, a
   "provider_truth_labels": ["LOCAL CODEX", "OPENAI API", "RECORDED/DEMO"],
   "frontend_generated_prohibited": ["incidents", "agent_messages", "recommendations", "gates", "evidence", "actions", "verification", "success"],
   "dry_run_before_writes": true,
-  "fastapi_temporal_control_plane": "not_integrated",
+  "fastapi_temporal_control_plane": "v3_local_integrated",
   "node_compatibility_path": "compatibility_demo"
 }
 -->
 
-FlowPulse turns bounded telemetry and change evidence into one inspectable operator workflow: observe the system, investigate a causal claim, challenge it, enforce the owner gate, execute only an allowlisted recovery, then verify the result. The browser is a read-only projection. In the checked-in compatibility/demo path, the append-only ledger and server-side policy record bounded local replay state and enforce local guardrails; they do not own incident lifecycle transitions. Temporal alone owns lifecycle transitions in the real control plane.
+FlowPulse turns bounded telemetry and change evidence into one inspectable operator workflow: detect the live fault, triage impact, investigate a causal claim, challenge it, decide on a bounded response, enforce owner approval, and verify fresh post-action data. The browser is a projection client. In the checked-in legacy compatibility/demo path, the append-only ledger and server-side policy record bounded local replay state and enforce local guardrails; they do not own incident lifecycle transitions. On the V3 local path, Temporal alone owns lifecycle transitions and pauses at every operator advance boundary.
 
 ![FlowPulse Live incident investigation](docs/assets/flowpulse-cover.png)
 
@@ -57,7 +59,9 @@ Most incident tools show signals. FlowPulse keeps the decision trail that connec
 
 FlowPulse is designed for multiple teams, tenants, models, and registered tools without making any one provider or client the source of truth. The target control plane keeps **Temporal as the sole incident lifecycle authority**: agents propose, backend validators and registered tool adapters act, the Evidence Ledger records, and Temporal accepts lifecycle transitions. The browser is a strict projection client. Current incident proof must come from a canonical projection and recorded evidence lineage; Knowledge Plane material, runbooks, and historical examples are useful bounded priors, never proof for an action, gate, or verification.
 
-The checked-in Node server, deterministic replay, and Agent Team endpoints are **compatibility/demo** surfaces while the real FastAPI/Temporal control-plane equivalents are not yet integrated. They remain explicitly labeled and are not a substitute for production authority, tenant authorization, a real human gate, or a control-plane-backed success state. Provider truth labels remain independent of authority: `LOCAL CODEX`, `OPENAI API`, and `RECORDED/DEMO` identify the provider path rather than a lifecycle decision.
+The checked-in V3 local path now composes FastAPI, a Temporal workflow and worker, Postgres, MinIO, real Astronomy Shop OTLP input, and the Node process as a same-SHA BFF/internal bridge. FastAPI exposes the V3 projection and command contracts; Temporal remains the workflow authority; Postgres and MinIO keep durable state and evidence. This is a local, allowlisted integration—not a production rollout or production credential boundary.
+
+The Node-owned deterministic replay, legacy Incident endpoints, and legacy Agent Team endpoints remain explicit **compatibility/demo** surfaces. They do not become lifecycle authority merely because the same Node process also proxies `/api/control-plane/v3/**` and hosts the V3 internal agent/action bridge. Provider truth labels remain independent of authority: `LOCAL CODEX`, `OPENAI API`, and `RECORDED/DEMO` identify the provider path rather than a lifecycle decision.
 
 ## Product tour
 
@@ -66,7 +70,7 @@ The checked-in Node server, deterministic replay, and Agent Team endpoints are *
 | ![Layered system architecture](docs/assets/architecture-overview.png) | ![Captured incident in the Live topology](docs/assets/live-incident.png) |
 | A stable, line-free view of the observed system and the separate FlowPulse control system. | The canonical topology renders component status, safe details, and captured incident impact. |
 
-From the same canonical run, the persistent **Incident** workspace carries the operator through **Investigate → Decide → Execute → Verify**. It narrows the affected path, keeps owner approval and bounded execution in place, and exposes the verified comparison only after the backend records passed verification. The competition video demonstrates this complete transition rather than presenting unrelated static states.
+From the same canonical run, the V3 **Incident** workspace carries the operator through **Detect → Triage → Investigate → Decide → Respond → Verify**. Only the current stage runs. The next stage remains locked until its predecessor succeeds and the operator sends an idempotent Next command; Respond also requires a separate receipt-bound approval. Completed stages remain available as immutable history.
 
 ## System architecture
 
@@ -83,8 +87,42 @@ advisory Agent Team ──→ evaluator ──→ owner gate
         ↓                                  ↓
 append-only ledger ← verification ← allowlisted recovery
         ↓
-Architecture · Live · Incident (Investigate → Decide → Execute → Verify)
+Architecture · Live · Incident (Detect → Triage → Investigate → Decide → Respond → Verify)
 ```
+
+## Run the V3 real-time guided workspace
+
+The V3 local launcher starts the pinned Astronomy Shop, brings up the Node/BFF
+internal bridge before the replacement Temporal worker, and builds FastAPI and
+the worker from the same clean Git SHA. That order lets a persisted running
+activity reconnect without exhausting its bounded retry.
+
+Once the backend is readable, the launcher inspects the active V3 projection
+and reads the real allowlisted `paymentUnreachable` flag before it creates or
+resumes a case. With no active Astronomy incident it applies the fault only when
+the flag is off, records a byte-and-time watermark, and requires a newer real
+Checkout → Payment failure trace before incident intake. A pre-execution resume
+requires the flag to remain on. A post-execution Verify resume requires the flag
+to remain off and the Checkout runtime to match the immutable execution receipt;
+drift fails closed and is never "fixed" by silently toggling the flag.
+
+The launcher generates independent owner, execution-HMAC, and
+safe-rollback-HMAC secrets in memory, reuses the existing Postgres/MinIO
+volumes, and prints the case-bound `127.0.0.1:4173` URL only after the V3
+projection contains the post-launch Checkout → Payment trace evidence, both
+the trace and metrics connectors are current, and real error-rate, latency,
+and request-count samples have arrived.
+
+```bash
+npm run v3:local:dry-run
+npm run v3:local
+```
+
+The real start deliberately refuses a dirty worktree: otherwise the image
+labels and Node source could claim a Git SHA they do not actually share. Stop
+the foreground Node process with `Ctrl-C`; the Compose data volumes remain in
+place. Pass `--new-case` to `node scripts/start-v3-local.mjs` when a fresh local
+incident is desired.
 
 ## Run the compatibility/demo judge path
 
@@ -101,7 +139,7 @@ npm ci
 npm run judge
 ```
 
-`npm run judge` runs the automated suite and starts the local compatibility/demo server. On a fresh database, open [http://127.0.0.1:4310](http://127.0.0.1:4310), select **Incident**, then choose **Run guided replay**. That creates and pins one Node-owned replay run before the persistent workspace follows it through **Investigate → Decide → Execute → Verify**. The credential-free replay is recorded on the append-only ledger and uses bounded fixture, authority, repair, and independent verification contracts; it is not a browser-side success mock. It is also not the real FastAPI/Temporal control-plane integration or proof of production authority. The captured Astronomy Shop case shows a checkout change making payment unreachable, an evaluator rejecting an unsupported Kafka-root-cause claim, and a bounded checkout recovery evaluated through the owner-gate and verification projections.
+`npm run judge` runs the automated suite and starts the local compatibility/demo server. On a fresh database, open [http://127.0.0.1:4310](http://127.0.0.1:4310), select **Incident**, then choose **Run guided replay**. That legacy Node-owned replay intentionally retains its four-step **Investigate → Decide → Execute → Verify** contract. The credential-free replay is recorded on the append-only ledger and uses bounded fixture, authority, repair, and independent verification contracts; it is not a browser-side success mock. It is separate from the V3 FastAPI/Temporal path and is not proof of production authority. The captured Astronomy Shop case shows a checkout change making payment unreachable, an evaluator rejecting an unsupported Kafka-root-cause claim, and a bounded checkout recovery evaluated through the owner-gate and verification projections.
 
 For development, use separate commands:
 
@@ -147,7 +185,7 @@ Codex was the primary engineering environment for FlowPulse: it helped design an
 
 GPT-5.6 is an optional product integration, not runtime authority. In credentialed mode it may query strictly allowlisted tools over a frozen OTLP snapshot, return a structured diagnosis and bounded repair proposal, and have that proposal challenged by an evaluator. The latest paid GPT-5.6 attempt failed closed before evaluator acceptance; it produced no accepted diagnosis, approval, repair, verification, or recovery. The deterministic replay is the reliable judge path.
 
-The default recorded provider needs no credentials. `codex-local` requires an already authenticated local Codex CLI and is always surfaced as local advisory work rather than authority. The safe provider capability is available at `/api/agent-control/provider`. This legacy Node Agent Team remains a compatibility/demo surface until its real FastAPI/Temporal control-plane equivalent exists; it does not grant incident lifecycle authority.
+The default recorded provider needs no credentials. `codex-local` requires an already authenticated local Codex CLI and is always surfaced as local advisory work rather than authority. The safe provider capability is available at `/api/agent-control/provider`. This legacy Node Agent Team remains a compatibility/demo surface alongside the narrower V3 internal agent bridge; it does not grant incident lifecycle authority.
 
 ## Safety model
 
@@ -161,6 +199,7 @@ The default recorded provider needs no credentials. `codex-local` requires an al
 
 ```text
 public/                         Incident Digital Twin frontend
+public/incident-workspace-v3.mjs  six-stage V3 operator workspace
 src/server.mjs                  API and local static server
 src/ledger.mjs                  append-only SQLite authority
 src/runtime.mjs                 deterministic replay state machine
@@ -172,6 +211,7 @@ src/openai.mjs                  optional GPT-5.6 tools and evaluator loop
 data/incidents/                 captured incident and regression evidence
 test/                           contract, determinism, and API coverage
 docs/submission/                owner-facing submission materials
+control_plane/                  FastAPI, Temporal, Postgres, MinIO V3 control plane
 ```
 
 ## Competition materials

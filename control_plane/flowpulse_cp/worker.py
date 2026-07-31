@@ -24,8 +24,16 @@ if __name__ == "__main__":
         connector_allowed_origins=settings.connector_allowed_origins,
         connector_allow_private_origins=settings.connector_allow_private_origins,
         prometheus_binding_templates=settings.prometheus_binding_templates,
+        otel_spool_root=settings.otel_spool_root,
+        otel_binding_templates=settings.otel_binding_templates,
         realtime_scheduler_interval_seconds=(
             settings.realtime_scheduler_interval_seconds
         ),
+        realtime_tenant_id=settings.realtime_tenant_id,
         realtime_actor_subject_id=settings.realtime_actor_subject_id,
+        worker_heartbeat_path=settings.worker_heartbeat_path,
+        guided_runtime_base_url=settings.guided_runtime_base_url,
+        guided_runtime_hmac_secret=settings.guided_runtime_hmac_secret,
+        guided_rollback_base_url=settings.guided_rollback_base_url,
+        guided_rollback_hmac_secret=settings.guided_rollback_hmac_secret,
     ))

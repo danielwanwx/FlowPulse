@@ -1,5 +1,6 @@
 """Strict additive contracts for the Phase 1 read-only connector fact plane."""
 
+import math
 from datetime import datetime
 from enum import Enum
 from hashlib import sha256
@@ -101,6 +102,15 @@ class RealtimeSignalStatus(str, Enum):
     INFO = "INFO"
     WARNING = "WARNING"
     CRITICAL = "CRITICAL"
+
+    @property
+    def priority(self) -> int:
+        """Stable semantic ordering; enum strings must never drive severity."""
+        return {
+            RealtimeSignalStatus.INFO: 1,
+            RealtimeSignalStatus.WARNING: 2,
+            RealtimeSignalStatus.CRITICAL: 3,
+        }[self]
 
 
 class AgentRole(str, Enum):
@@ -270,6 +280,14 @@ class RealtimeSourceEvent(StrictModel):
     received_at: datetime
     display_value: NonEmpty
     numeric_value: StrictFloat
+    metric_key: NonEmpty = "checkout.error_rate"
+    unit: NonEmpty = "ratio"
+    warning_threshold: Optional[StrictFloat] = None
+    critical_threshold: Optional[StrictFloat] = None
+    sample_interval_start_at: Optional[datetime] = None
+    cumulative_request_count: Optional[StrictFloat] = None
+    cumulative_failed_count: Optional[StrictFloat] = None
+    cumulative_duration_seconds: Optional[StrictFloat] = None
     signal_status: RealtimeSignalStatus
     trend: RealtimeTrend = RealtimeTrend.UNKNOWN
     delivery_mode: RealtimeDeliveryMode = RealtimeDeliveryMode.LIVE
@@ -280,6 +298,17 @@ class RealtimeSourceEvent(StrictModel):
     normalizer_version: NonEmpty
     normalization_hash: Hash
     truth_label: ConnectorTruthLabel
+
+    @validator(
+        "numeric_value",
+        "warning_threshold",
+        "critical_threshold",
+        allow_reuse=True,
+    )
+    def realtime_numeric_values_are_finite(cls, value):
+        if value is not None and not math.isfinite(value):
+            raise ValueError("realtime_numeric_value_must_be_finite")
+        return value
 
     @root_validator(allow_reuse=True)
     def fact_is_bounded_and_truthful(cls, values):
@@ -305,6 +334,32 @@ class RealtimeSourceEvent(StrictModel):
             items = values.get(field, [])
             if len(items) != len(set(items)):
                 raise ValueError("realtime_source_event_values_must_be_unique")
+        cumulative_fields = (
+            values.get("cumulative_request_count"),
+            values.get("cumulative_failed_count"),
+            values.get("cumulative_duration_seconds"),
+        )
+        has_cumulative = [item is not None for item in cumulative_fields]
+        if any(has_cumulative) != all(has_cumulative):
+            raise ValueError("realtime_cumulative_metric_snapshot_incomplete")
+        if all(has_cumulative):
+            request_count, failed_count, duration_seconds = cumulative_fields
+            if (
+                not all(math.isfinite(item) for item in cumulative_fields)
+                or request_count < 0
+                or failed_count < 0
+                or duration_seconds < 0
+                or failed_count > request_count
+                or values.get("event_kind") != "METRIC_OBSERVED"
+                or values.get("sample_interval_start_at") is None
+            ):
+                raise ValueError("realtime_cumulative_metric_snapshot_invalid")
+        interval_start = values.get("sample_interval_start_at")
+        if interval_start is not None and (
+            values.get("observed_at") is None
+            or interval_start > values.get("observed_at")
+        ):
+            raise ValueError("realtime_sample_interval_invalid")
         return values
 
     def canonical_hash(self) -> str:
@@ -321,6 +376,191 @@ class RealtimeSourceEvent(StrictModel):
             separators=(",", ":"),
         ).encode("utf-8")
         return sha256(encoded).hexdigest()
+
+
+class MetricPointV3(StrictModel):
+    """One ordered numeric observation or an explicit telemetry gap."""
+
+    sequence: PositiveInt
+    timestamp: datetime
+    interval_start_at: Optional[datetime] = None
+    value: Optional[StrictFloat] = None
+    missing_reason: Optional[StrictStr] = None
+    evidence_refs: List[NonEmpty] = Field(default_factory=list, max_items=32)
+    freshness: FreshnessStatus
+
+    @validator("value", allow_reuse=True)
+    def numeric_value_is_finite(cls, value):
+        if value is not None and not math.isfinite(value):
+            raise ValueError("metric_point_value_must_be_finite")
+        return value
+
+    @validator("missing_reason", allow_reuse=True)
+    def missing_reason_is_bounded(cls, value):
+        if value is not None and len(value) > 300:
+            raise ValueError("metric_point_missing_reason_too_long")
+        return value
+
+    @validator("evidence_refs", allow_reuse=True)
+    def point_evidence_is_unique(cls, value):
+        if len(value) != len(set(value)):
+            raise ValueError("metric_point_evidence_must_be_unique")
+        return value
+
+    @root_validator(allow_reuse=True)
+    def value_xor_gap(cls, values):
+        has_value = values.get("value") is not None
+        has_gap = bool(values.get("missing_reason"))
+        if has_value == has_gap:
+            raise ValueError("metric_point_requires_value_xor_missing_reason")
+        if has_value and not values.get("evidence_refs"):
+            raise ValueError("metric_numeric_point_requires_evidence")
+        if has_gap and values.get("freshness") == FreshnessStatus.CURRENT:
+            raise ValueError("metric_gap_cannot_be_current")
+        if (
+            values.get("interval_start_at") is not None
+            and values.get("timestamp") is not None
+            and values["interval_start_at"] > values["timestamp"]
+        ):
+            raise ValueError("metric_point_interval_invalid")
+        return values
+
+
+class MetricThresholdV3(StrictModel):
+    warning: Optional[StrictFloat] = None
+    critical: Optional[StrictFloat] = None
+
+    @validator("warning", "critical", allow_reuse=True)
+    def threshold_is_finite(cls, value):
+        if value is not None and not math.isfinite(value):
+            raise ValueError("metric_threshold_must_be_finite")
+        return value
+
+    @root_validator(allow_reuse=True)
+    def thresholds_are_ordered(cls, values):
+        warning = values.get("warning")
+        critical = values.get("critical")
+        if warning is not None and critical is not None and warning > critical:
+            raise ValueError("metric_thresholds_not_ordered")
+        return values
+
+
+class MetricSeriesV3(StrictModel):
+    schema_version: NonEmpty = "flowpulse.metric-series.v3"
+    series_id: NonEmpty
+    metric_key: NonEmpty
+    component_id: NonEmpty
+    label: NonEmpty
+    unit: NonEmpty
+    thresholds: MetricThresholdV3 = Field(default_factory=MetricThresholdV3)
+    points: List[MetricPointV3] = Field(min_items=1, max_items=360)
+    observed_window_start: datetime
+    observed_window_end: datetime
+    freshness: FreshnessStatus
+    source_connector_id: NonEmpty
+
+    @validator(
+        "series_id", "metric_key", "component_id", "source_connector_id",
+        allow_reuse=True,
+    )
+    def metric_identity_is_bounded(cls, value):
+        if len(value) > 160:
+            raise ValueError("metric_series_identity_too_long")
+        return value
+
+    @validator("label", allow_reuse=True)
+    def metric_label_is_bounded(cls, value):
+        if len(value) > 300:
+            raise ValueError("metric_series_label_too_long")
+        return value
+
+    @validator("unit", allow_reuse=True)
+    def metric_unit_is_bounded(cls, value):
+        if len(value) > 80:
+            raise ValueError("metric_series_unit_too_long")
+        return value
+
+    @property
+    def display_name(self) -> str:
+        """Compatibility name for internal consumers; the wire key is label."""
+        return self.label
+
+    @root_validator(allow_reuse=True)
+    def ordered_bounded_window(cls, values):
+        points = values.get("points", [])
+        sequences = [item.sequence for item in points]
+        timestamps = [item.timestamp for item in points]
+        if sequences != list(range(1, len(points) + 1)):
+            raise ValueError("metric_series_sequences_must_be_contiguous")
+        if timestamps != sorted(timestamps) or len(timestamps) != len(set(timestamps)):
+            raise ValueError("metric_series_timestamps_not_strictly_ordered")
+        start = values.get("observed_window_start")
+        end = values.get("observed_window_end")
+        if start is not None and end is not None and start > end:
+            raise ValueError("metric_series_window_invalid")
+        if points and (start != timestamps[0] or end != timestamps[-1]):
+            raise ValueError("metric_series_window_must_match_points")
+        if points and values.get("freshness") != points[-1].freshness:
+            raise ValueError("metric_series_freshness_must_match_latest_point")
+        return values
+
+
+class MetricSeriesCollectionV3(StrictModel):
+    schema_version: NonEmpty = "flowpulse.metric-series-collection.v3"
+    case_id: NonEmpty
+    signal_revision: PositiveInt
+    generated_at: datetime
+    series: List[MetricSeriesV3] = Field(default_factory=list, max_items=16)
+
+    @root_validator(allow_reuse=True)
+    def series_identities_are_unique(cls, values):
+        series = values.get("series", [])
+        ids = [item.series_id for item in series]
+        semantic = [
+            (item.metric_key, item.component_id, item.source_connector_id)
+            for item in series
+        ]
+        if len(ids) != len(set(ids)):
+            raise ValueError("metric_series_ids_must_be_unique")
+        if len(semantic) != len(set(semantic)):
+            raise ValueError("metric_series_semantic_identity_must_be_unique")
+        return values
+
+
+class SpoolCursor(StrictModel):
+    schema_version: NonEmpty = "flowpulse.otel-spool-cursor.v1"
+    tenant_id: NonEmpty
+    connector_id: NonEmpty
+    stream_id: NonEmpty
+    cursor_revision: PositiveInt
+    byte_offset: NonNegativeInt
+    # A Collector JSONL record may contain many independently admissible
+    # traces.  When non-zero, byte_offset points at the start of that record
+    # and this many deterministically ordered observations have already been
+    # made durable.  Keeping the sub-record position in the append-only cursor
+    # prevents checkpointing the unread traces away.
+    record_item_index: NonNegativeInt = 0
+    line_number: NonNegativeInt
+    file_identity: NonEmpty
+    updated_at: datetime
+
+
+class FreshnessDeadlineState(str, Enum):
+    ARMED = "ARMED"
+    EXPIRED = "EXPIRED"
+    RECOVERED = "RECOVERED"
+
+
+class FreshnessDeadline(StrictModel):
+    schema_version: NonEmpty = "flowpulse.freshness-deadline.v1"
+    tenant_id: NonEmpty
+    case_id: NonEmpty
+    connector_id: NonEmpty
+    deadline_revision: PositiveInt
+    state: FreshnessDeadlineState
+    deadline: datetime
+    source_event_id: NonEmpty
+    recorded_at: datetime
 
 
 class ConnectorDeliveryReceipt(StrictModel):
@@ -668,6 +908,44 @@ class RealtimeUpdateOutcome(StrictModel):
     projection: Optional[IncidentProjectionV2] = None
     source_event_id: Optional[StrictStr] = None
     transition_key: Optional[StrictStr] = None
+    workspace_projection: Optional[IncidentProjection] = None
+
+
+class TemporalFreshnessTimer(StrictModel):
+    """The exact durable deadline armed by one accepted connector fact."""
+
+    deadline: FreshnessDeadline
+    actor_subject_id: NonEmpty
+
+
+class RealtimeFreshnessTimerLoadPacket(StrictModel):
+    """Internal post-commit lookup; the public frozen V2 outcome stays unchanged."""
+
+    command: RealtimeUpdateCommand
+    committed_source_event_id: NonEmpty
+
+
+class RealtimeFreshnessExpiryActivityPacket(StrictModel):
+    """Scoped timer fire; a newer deadline makes this packet a no-op."""
+
+    deadline: FreshnessDeadline
+    actor_subject_id: NonEmpty
+    fired_at: datetime
+
+    @root_validator(allow_reuse=True)
+    def timer_cannot_fire_before_deadline(cls, values):
+        deadline = values.get("deadline")
+        fired_at = values.get("fired_at")
+        if deadline is not None and fired_at is not None and fired_at < deadline.deadline:
+            raise ValueError("realtime_freshness_timer_fired_early")
+        return values
+
+
+class RealtimeFreshnessExpiryActivityOutcome(StrictModel):
+    expired: StrictBool
+    reason: Optional[StrictStr] = None
+    deadline: Optional[FreshnessDeadline] = None
+    projection: Optional[IncidentProjectionV2] = None
     workspace_projection: Optional[IncidentProjection] = None
 
 

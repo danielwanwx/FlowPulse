@@ -84,6 +84,32 @@ export async function executeApprovedRollback({ commandId }) {
   return { change, completed_at: new Date().toISOString(), command_id: commandId, stdout: summarize(result.stdout), stderr: summarize(result.stderr) };
 }
 
+/**
+ * Safe compensation after verification failure.
+ *
+ * The known-bad flag must already be off and is never written here. The only
+ * effect is recreating Checkout from the pinned, allowlisted compose manifest.
+ */
+export async function executeSafeCheckoutRecreate({ commandId }) {
+  assertEnabled();
+  const change = await developmentChangeManifest();
+  if (commandId !== change.repair_command_id) throw new Error("Repair command is outside the allowlist");
+  const flag = await readAllowlistedFlagVariant();
+  if (flag.flag !== change.flag || flag.variant !== change.known_good) {
+    throw new Error("Safe Checkout compensation requires paymentUnreachable to remain off");
+  }
+  const result = await execute("docker", composeArgs("up", "-d", "--no-deps", "--force-recreate", "checkout"), {
+    cwd: checkout, env: composeEnv(), timeout: change.timeout_seconds * 1_000, maxBuffer: 1_000_000
+  });
+  return {
+    change,
+    completed_at: new Date().toISOString(),
+    command_id: commandId,
+    stdout: summarize(result.stdout),
+    stderr: summarize(result.stderr)
+  };
+}
+
 export async function readAllowlistedFlagVariant() {
   const change = await developmentChangeManifest();
   const flag = (await readFlags()).flags?.[change.flag];
@@ -101,6 +127,39 @@ export async function readAllowlistedFlagVariant() {
     observed_at: new Date().toISOString(),
     source: "official flagd-ui API"
   };
+}
+
+/**
+ * Return the immutable identity and start time of the real Checkout runtime.
+ *
+ * This is intentionally read-only.  The guided action ledger records the
+ * value before mutation so a process restart can distinguish "the flag write
+ * happened" from "the entire flag + Checkout recreation action happened".
+ */
+export async function readCheckoutRuntimeIdentity() {
+  const fixture = testCheckoutRuntimeIdentity();
+  if (fixture) return fixture;
+
+  const listed = await execute("docker", composeArgs("ps", "-q", "checkout"), {
+    cwd: checkout, env: composeEnv(), timeout: 8_000, maxBuffer: 100_000
+  });
+  const containerId = listed.stdout.trim().split(/\r?\n/).filter(Boolean)[0];
+  if (!containerId) throw new Error("Checkout container is unavailable");
+  const inspected = await execute("docker", ["inspect", containerId], {
+    timeout: 8_000, maxBuffer: 500_000
+  });
+  let container;
+  try {
+    const values = JSON.parse(inspected.stdout);
+    container = Array.isArray(values) ? values[0] : null;
+  } catch {
+    throw new Error("Checkout container identity is unreadable");
+  }
+  return normalizeCheckoutRuntimeIdentity({
+    container_id: container?.Id,
+    started_at: container?.State?.StartedAt,
+    running: container?.State?.Running
+  });
 }
 
 export async function developmentChangeManifest() {
@@ -180,6 +239,29 @@ async function resolveFlagUrl() {
 }
 function assertEnabled() { if (process.env.FLOWPULSE_DEVELOPMENT_ENABLED !== "1") throw new Error("Local development mutation is disabled"); }
 function summarize(value = "") { return value.trim().slice(-4_000); }
+
+function normalizeCheckoutRuntimeIdentity(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)
+    || typeof value.container_id !== "string" || !/^[a-f0-9]{12,128}$/i.test(value.container_id)
+    || typeof value.started_at !== "string" || !Number.isFinite(Date.parse(value.started_at))
+    || typeof value.running !== "boolean") {
+    throw new Error("Checkout container identity is invalid");
+  }
+  return {
+    container_id: value.container_id,
+    started_at: new Date(value.started_at).toISOString(),
+    running: value.running
+  };
+}
+
+function testCheckoutRuntimeIdentity() {
+  if (process.env.NODE_ENV !== "test" || typeof process.env.FLOWPULSE_TEST_CHECKOUT_RUNTIME_IDENTITY !== "string") return null;
+  try {
+    return normalizeCheckoutRuntimeIdentity(JSON.parse(process.env.FLOWPULSE_TEST_CHECKOUT_RUNTIME_IDENTITY));
+  } catch {
+    throw new Error("FLOWPULSE_TEST_CHECKOUT_RUNTIME_IDENTITY is invalid");
+  }
+}
 
 function hashPrefix(path, bytes) {
   return new Promise((resolve, reject) => {

@@ -1,8 +1,10 @@
 """Temporal starter, real domain activities, and production worker wiring."""
 
 import asyncio
+import re
 from datetime import datetime, timezone
 from hashlib import sha256
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
@@ -53,6 +55,10 @@ from .repository import InMemoryCaseRepository
 from .source_readback import LocalDeterministicSourceReadback, S3SourceReadback
 from .temporal_workflow import DiagnosisTemporalWorkflow
 from .workspace_activities import WorkspaceActivityDispatcher, build_workspace_activities
+from .workspace_v3_runtime import (
+    GuidedWorkflowActivityDispatcherV3,
+    HttpGuidedRuntimeBridgeV3,
+)
 from .capabilities import (
     CapabilityAudience,
     CapabilityDataClass,
@@ -99,12 +105,17 @@ from .workspace_actions import (
     WorkspaceActionReceipt,
 )
 from .workspace_workflow import IncidentWorkspaceTemporalWorkflow
-from .workspace_v3_models import resolve_temporal_execution_target_v3
+from .workspace_v3_models import (
+    WorkflowCommandReceiptV3,
+    WorkflowTemporalCommandV3,
+    resolve_temporal_execution_target_v3,
+)
 from .workspace_registration import workspace_workflow_definitions
 from .realtime_models import RealtimeUpdateCommand, RealtimeUpdateOutcome
 from .realtime_activities import RealtimeActivityDispatcher, build_realtime_activities
 from .realtime_adapters import (
     BoundedJsonReader,
+    ConfiguredOtelSpoolConnector,
     ConfiguredPrometheusConnector,
     ConnectorEndpointPolicy,
     UnavailableOtelAdapter,
@@ -229,6 +240,63 @@ class WorkspaceTemporalStarter:
         return client.get_workflow_handle(
             target.temporal_workflow_id, run_id=target.temporal_run_id,
         )
+
+    async def submit_workflow_command_v3(
+        self,
+        projection: IncidentProjection,
+        invocation: WorkflowTemporalCommandV3,
+    ) -> WorkflowCommandReceiptV3:
+        """Submit one guided command to the stable Incident execution.
+
+        The HTTP process never executes the coordinator directly. If Temporal
+        or the registered update handler is unavailable, this method fails and
+        the API returns 503 without mutating workflow state.
+        """
+        if projection.workflow_run_id == "pending":
+            raise RuntimeError("temporal_workflow_run_not_started")
+        if (
+            invocation.tenant_id != projection.tenant_id
+            or invocation.case_id != projection.case_id
+        ):
+            raise PolicyViolation("workflow_v3_temporal_binding_mismatch")
+        client = await Client.connect(self.address)
+        handle = await self._workspace_handle(client, projection)
+        try:
+            response = await handle.execute_update(
+                "workflow_command_v3", invocation.dict(),
+            )
+        except Exception as error:
+            # Temporal wraps activity policy failures in update failures. Map
+            # only a bounded reason code back to the API and never leak worker
+            # payloads or turn a normal command rejection into an HTTP 500.
+            details = " ".join(
+                str(item) for item in (error, getattr(error, "__cause__", None))
+                if item is not None
+            )
+            match = re.search(r"workflow_v3_[a-z0-9_]+", details)
+            reason = match.group(0) if match else None
+            if reason and not any(token in reason for token in (
+                "unavailable", "unconfigured", "request_failed",
+            )):
+                raise PolicyViolation(reason) from error
+            raise RuntimeError(
+                reason or "workspace_temporal_v3_update_failed",
+            ) from error
+        if isinstance(response, dict) and response.get("accepted") is False:
+            raise PolicyViolation(
+                str(response.get("reason") or "workflow_v3_command_rejected"),
+            )
+        try:
+            receipt = WorkflowCommandReceiptV3.parse_obj(response)
+        except Exception as error:
+            raise RuntimeError(
+                "workspace_temporal_v3_response_invalid",
+            ) from error
+        if not receipt.accepted:
+            raise PolicyViolation(
+                receipt.reason or "workflow_v3_command_rejected",
+            )
+        return receipt
 
     async def start_workspace(self, intake: WorkspaceIntake, actor: AuthContext) -> IncidentProjection:
         now = datetime.now(timezone.utc)
@@ -656,8 +724,16 @@ async def run_worker(
     connector_allowed_origins=None,
     connector_allow_private_origins: bool = False,
     prometheus_binding_templates: Optional[List[ConfiguredBindingTemplate]] = None,
+    otel_spool_root: Optional[str] = None,
+    otel_binding_templates: Optional[List[ConfiguredBindingTemplate]] = None,
     realtime_scheduler_interval_seconds: float = 0,
+    realtime_tenant_id: Optional[str] = None,
     realtime_actor_subject_id: Optional[str] = None,
+    worker_heartbeat_path: Optional[str] = None,
+    guided_runtime_base_url: Optional[str] = None,
+    guided_runtime_hmac_secret: Optional[str] = None,
+    guided_rollback_base_url: Optional[str] = None,
+    guided_rollback_hmac_secret: Optional[str] = None,
 ) -> None:
     client = await Client.connect(address)
     repository = PostgresCaseRepository(postgres_dsn)
@@ -703,6 +779,11 @@ async def run_worker(
     if resolved_provider_settings.mode in {ProviderMode.TEST, ProviderMode.DEMO}:
         from .workspace_topology import CapturedAstronomyTopologyProvider
         topology_provider = CapturedAstronomyTopologyProvider(resolved_provider_settings.mode)
+    elif otel_binding_templates:
+        from .workspace_topology import ConfiguredTopologyManifestProvider
+        topology_provider = ConfiguredTopologyManifestProvider(
+            otel_binding_templates,
+        )
     conversation_provider, investigation_synthesizer, investigation_critic = (
         resolve_worker_provider_dependencies(
             resolved_provider_settings,
@@ -715,16 +796,26 @@ async def run_worker(
         specialist_roles=[ConversationRole.EVIDENCE_SPECIALIST, ConversationRole.TOPOLOGY_SPECIALIST],
         max_output_tokens=resolved_provider_settings.max_output_tokens,
     )
+    guided_runtime = GuidedWorkflowActivityDispatcherV3(
+        repository,
+        HttpGuidedRuntimeBridgeV3(
+            guided_runtime_base_url,
+            guided_runtime_hmac_secret,
+            rollback_url=guided_rollback_base_url,
+            rollback_secret=guided_rollback_hmac_secret,
+        ),
+    )
     connector_truth_label = (
         ConnectorTruthLabel.TEST_DETERMINISTIC
         if resolved_provider_settings.mode == ProviderMode.TEST
         else ConnectorTruthLabel.LIVE
     )
+    connector_tenant_id = realtime_tenant_id or source_tenant_id
     realtime_adapters = {}
     if prometheus_url:
         prometheus_registration = ConnectorRegistration(
             connector_id="connector-prometheus-primary",
-            tenant_id=source_tenant_id,
+            tenant_id=connector_tenant_id,
             provider=ConnectorProvider.PROMETHEUS,
             adapter_version="prometheus-read.v1",
             data_classes=["METRIC"],
@@ -746,21 +837,50 @@ async def run_worker(
             artifact_store=artifacts,
             repository=repository,
         )
-    otel_registration = ConnectorRegistration(
-        connector_id="connector-otel-primary",
-        tenant_id=source_tenant_id,
-        provider=ConnectorProvider.OTEL,
-        adapter_version="otel-read.v1",
-        data_classes=["TRACE", "LOG"],
-        capabilities=["TRACES", "LOGS"],
-        freshness_sla_seconds=60,
-        # Phase 1A has no safe OTEL query adapter. A configured URL remains
-        # truthfully unavailable until that bounded adapter is implemented.
-        enabled=False,
-        truth_label=connector_truth_label,
+    otel_streams = (
+        (
+            "connector-otel-primary", "traces.jsonl", "TRACE", "TRACES",
+            "astronomy.checkout-payment.traces", 2 * 1024 * 1024,
+        ),
+        # Astronomy metric batches can legitimately approach 7 MiB. The read
+        # remains hard-bounded at the connector's 8 MiB maximum.
+        (
+            "connector-otel-metrics", "metrics.jsonl", "METRIC", "METRICS",
+            "astronomy.checkout-payment.metrics", 8 * 1024 * 1024,
+        ),
+        (
+            "connector-otel-logs", "logs.jsonl", "LOG", "LOGS",
+            "astronomy.checkout-payment.logs", 2 * 1024 * 1024,
+        ),
     )
-    await repository.register_realtime_connector(otel_registration)
-    await UnavailableOtelAdapter(otel_registration, repository).health()
+    for (
+        connector_id, filename, data_class, capability,
+        external_resource_id, max_bytes,
+    ) in otel_streams:
+        otel_registration = ConnectorRegistration(
+            connector_id=connector_id,
+            tenant_id=connector_tenant_id,
+            provider=ConnectorProvider.OTEL,
+            adapter_version="otel-jsonl-spool.v3",
+            data_classes=[data_class],
+            capabilities=[capability],
+            freshness_sla_seconds=30,
+            enabled=bool(otel_spool_root),
+            truth_label=connector_truth_label,
+        )
+        await repository.register_realtime_connector(otel_registration)
+        if otel_spool_root:
+            realtime_adapters[otel_registration.connector_id] = ConfiguredOtelSpoolConnector(
+                registration=otel_registration,
+                spool_path=Path(otel_spool_root) / filename,
+                external_resource_id=external_resource_id,
+                artifact_store=artifacts,
+                repository=repository,
+                max_bytes_per_poll=max_bytes,
+                lookback_bytes=(512 * 1024 if data_class == "TRACE" else 0),
+            )
+        else:
+            await UnavailableOtelAdapter(otel_registration, repository).health()
 
     async def dispatch_realtime_fact(source, dispatch):
         projection = await repository.workspace_projection(
@@ -823,8 +943,11 @@ async def run_worker(
         repository=repository,
         connectors=realtime_adapters,
         temporal_dispatch=dispatch_realtime_fact,
-        tenant_id=source_tenant_id,
-        binding_templates=list(prometheus_binding_templates or []),
+        tenant_id=connector_tenant_id,
+        binding_templates=(
+            list(prometheus_binding_templates or [])
+            + list(otel_binding_templates or [])
+        ),
         actor_subject_id=realtime_actor_subject_id or "",
         workflow_eligible=workflow_eligible,
     )
@@ -840,6 +963,8 @@ async def run_worker(
                     "error",
                     reason_code=type(error).__name__,
                 )
+            if worker_heartbeat_path:
+                Path(worker_heartbeat_path).touch()
             await asyncio.sleep(realtime_scheduler_interval_seconds)
 
     async with Worker(
@@ -859,6 +984,7 @@ async def run_worker(
                 investigation_synthesizer=investigation_synthesizer,
                 investigation_critic=investigation_critic,
                 topology_provider=topology_provider,
+                guided_runtime=guided_runtime,
             ))
             + build_realtime_activities(RealtimeActivityDispatcher(
                 repository, realtime_adapters,
@@ -869,6 +995,8 @@ async def run_worker(
             asyncio.create_task(scheduler_loop())
             if realtime_scheduler_interval_seconds > 0 else None
         )
+        if worker_heartbeat_path:
+            Path(worker_heartbeat_path).touch()
         try:
             await asyncio.Future()
         finally:

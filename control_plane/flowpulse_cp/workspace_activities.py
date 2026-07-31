@@ -110,6 +110,10 @@ def workspace_activity_surface() -> List[str]:
         "workspace_critic_investigation_activity",
         "workspace_accept_investigation_activity",
         "workspace_record_investigation_degraded_activity",
+        "workspace_workflow_command_v3_activity",
+        "workspace_run_guided_stage_v3_activity",
+        "workspace_run_guided_agent_v3_activity",
+        "workspace_execute_guided_action_v3_activity",
     ]
 
 
@@ -141,6 +145,7 @@ class WorkspaceActivityDispatcher:
         self, repository: Any, conversation_manager: Any = None, authorization: Any = None,
         capability_registry: Any = None, investigation_synthesizer: Any = None,
         investigation_critic: Any = None, topology_provider: Any = None,
+        guided_runtime: Any = None,
     ) -> None:
         self.repository = repository
         self.conversation_manager = conversation_manager
@@ -151,6 +156,7 @@ class WorkspaceActivityDispatcher:
         )
         self.investigation_critic = investigation_critic or UnavailableInvestigationCritic()
         self.topology_provider = topology_provider
+        self.guided_runtime = guided_runtime
         configure = getattr(repository, "configure_workspace_capability_registry", None)
         if capability_registry is not None and configure is not None:
             configure(capability_registry)
@@ -647,6 +653,17 @@ class WorkspaceActivityDispatcher:
         await self.repository.append_workspace_event(event)
 
     async def dispatch(self, activity_name: str, packet_data: Dict[str, Any]) -> Dict[str, Any]:
+        guided_methods = {
+            "workspace_workflow_command_v3_activity": "dispatch_command",
+            "workspace_run_guided_stage_v3_activity": "run_stage",
+            "workspace_run_guided_agent_v3_activity": "run_existing_agent",
+            "workspace_execute_guided_action_v3_activity": "execute_action",
+        }
+        guided_method = guided_methods.get(activity_name)
+        if guided_method is not None:
+            if self.guided_runtime is None:
+                raise RuntimeError("workspace_v3_guided_runtime_unconfigured")
+            return await getattr(self.guided_runtime, guided_method)(packet_data)
         if activity_name == "workspace_register_execution_v3_activity":
             packet = WorkspaceExecutionRegistrationV3.parse_obj(packet_data)
             if packet.prior is None:

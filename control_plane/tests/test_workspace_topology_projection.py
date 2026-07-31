@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from flowpulse_cp.models import AuthContext
 from flowpulse_cp.provider_gateway import ProviderMode
 from flowpulse_cp.provider_gateway import ProviderConfigurationError
+from flowpulse_cp.realtime_models import ConfiguredBindingTemplate
 from flowpulse_cp.workspace_activities import WorkspaceActivityDispatcher
 from flowpulse_cp.workspace_models import (
     GraphMembership,
@@ -18,7 +19,10 @@ from flowpulse_cp.workspace_models import (
     initial_projection,
 )
 from flowpulse_cp.workspace_repository import InMemoryWorkspaceRepository
-from flowpulse_cp.workspace_topology import CapturedAstronomyTopologyProvider
+from flowpulse_cp.workspace_topology import (
+    CapturedAstronomyTopologyProvider,
+    ConfiguredTopologyManifestProvider,
+)
 
 
 NOW = datetime(2026, 7, 27, tzinfo=timezone.utc)
@@ -57,6 +61,32 @@ class WorkspaceTopologyProjectionTests(unittest.IsolatedAsyncioTestCase):
             ProviderConfigurationError, "captured_topology_requires_test_or_demo_mode",
         ):
             CapturedAstronomyTopologyProvider(ProviderMode.STANDARD)
+
+    async def test_live_manifest_seeds_only_bound_topology_without_claiming_impact(self):
+        provider = ConfiguredTopologyManifestProvider([
+            ConfiguredBindingTemplate(
+                binding_key="astronomy-checkout-payment-traces",
+                external_resource_type="otel_trace_edge",
+                external_resource_id="astronomy.checkout-payment",
+                component_ids=["checkout", "payment"],
+                edge_ids=["checkout->payment"],
+            ),
+        ])
+        _, projected = await initialize(provider)
+
+        self.assertEqual(
+            {"checkout", "payment"},
+            {node.component_id for node in projected.graph.nodes},
+        )
+        self.assertEqual(
+            {"checkout->payment"},
+            {edge.edge_id for edge in projected.graph.edges},
+        )
+        self.assertEqual([], projected.impacted_path)
+        self.assertEqual(
+            {"unknown"},
+            {node.impact_status for node in projected.graph.nodes},
+        )
 
     async def test_explicit_test_mode_persists_the_canonical_astronomy_projection(self):
         repository, projected = await initialize(

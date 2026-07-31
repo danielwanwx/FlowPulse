@@ -26,6 +26,33 @@ from flowpulse_cp.realtime_models import (
 )
 
 
+def _schema_closure(paths: dict, schemas: dict) -> set:
+    """Collect every component schema reachable from one route generation."""
+
+    references = set()
+
+    def visit(value):
+        if isinstance(value, dict):
+            reference = value.get("$ref")
+            prefix = "#/components/schemas/"
+            if isinstance(reference, str) and reference.startswith(prefix):
+                references.add(reference[len(prefix):])
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    visit(paths)
+    pending = list(references)
+    while pending:
+        name = pending.pop()
+        before = set(references)
+        visit(schemas[name])
+        pending.extend(references - before)
+    return references
+
+
 def _write(path: Path, value) -> str:
     encoded = (json.dumps(value, indent=2, sort_keys=True, default=str) + "\n").encode()
     path.write_bytes(encoded)
@@ -97,10 +124,25 @@ def generate(output: Path, producer_implementation_sha: str) -> dict:
     examples_path = output / "flowpulse-incident-realtime-v2.examples.json"
     freeze_path = output / "flowpulse-incident-realtime-v2.freeze.json"
     document = create_app().openapi()
-    document["paths"] = {
+    v2_paths = {
         path: value for path, value in document["paths"].items()
         if path.startswith("/v2/")
     }
+    v3_paths = {
+        path: value for path, value in document["paths"].items()
+        if path.startswith("/v3/")
+    }
+    schemas = document["components"]["schemas"]
+    v2_references = _schema_closure(v2_paths, schemas)
+    v3_only = _schema_closure(v3_paths, schemas) - v2_references
+    # FastAPI returns one application-wide component map.  The additive V3
+    # routes must not rewrite the already frozen V2 artifact merely because
+    # their unrelated models were registered on the same app.
+    document["components"]["schemas"] = {
+        name: value for name, value in schemas.items()
+        if name not in v3_only
+    }
+    document["paths"] = v2_paths
     document["info"] = {
         "title": "FlowPulse Realtime Incident Contract",
         "version": "v2-phase1a",

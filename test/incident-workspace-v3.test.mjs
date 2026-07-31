@@ -1,0 +1,582 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { loadCoherentIncidentV3, TrailingRefreshV3 } from "../public/incident-workbench-controller-v3.mjs";
+import {
+  applyIncidentEventV3,
+  buildWorkflowCommandV3,
+  metricSeriesPathsV3,
+  metricTrendV3,
+  parseIncidentWorkspaceUrlV3,
+  renderIncidentWorkbenchV3,
+  workbenchDurationV3,
+  workbenchViewV3
+} from "../public/incident-workspace-v3.mjs";
+
+const stages = ["DETECT", "TRIAGE", "INVESTIGATE", "DECIDE", "RESPOND", "VERIFY"];
+
+function projection(overrides = {}) {
+  const current = overrides.current_stage || "TRIAGE";
+  const stageRuns = stages.slice(0, stages.indexOf(current) + 1).map((stage, index) => ({
+    stage,
+    stage_run_id: `stage-run-${index + 1}`,
+    status: "SUCCEEDED",
+    progress_percent: 100,
+    started_at: `2026-07-31T00:00:0${index}Z`,
+    verification_deadline_at: stage === "VERIFY" ? "2026-07-31T00:01:30Z" : null,
+    completed_at: `2026-07-31T00:00:1${index}Z`,
+    summary: `${stage} visible result`,
+    evidence_refs: [`evidence-${stage.toLowerCase()}`],
+    output: { facts: [`${stage} fact`], unknowns: [], hypotheses: [], recommendations: [] }
+  }));
+  return {
+    schema_version: "flowpulse.incident-projection.v3",
+    tenant_id: "tenant-local",
+    case_id: "case-checkout",
+    incident_id: "incident-checkout",
+    run_id: "run-checkout",
+    topology_revision: "topology-v3",
+    projection_revision: 12,
+    sequence: 27,
+    signal_revision: 9,
+    decision_revision: 3,
+    workspace_revision: 8,
+    workflow_revision: 5,
+    title: "Checkout cannot reach Payment",
+    summary: "Checkout requests fail at the payment dependency.",
+    severity: "SEV-1",
+    owner_subject_id: "owner-local",
+    lifecycle_state: "ACTIVE",
+    incident_clock: {
+      state: "RUNNING",
+      started_at: "2026-07-31T00:00:00Z",
+      as_of: "2026-07-31T00:01:00Z",
+      elapsed_seconds: 60,
+      freshness: "CURRENT",
+      fresh_until: "2026-07-31T00:01:30Z",
+      max_interpolation_seconds: 30
+    },
+    freshness: {
+      state: "CURRENT",
+      observed_at: "2026-07-31T00:01:00Z",
+      fresh_until: "2026-07-31T00:01:30Z"
+    },
+    impacted_path: ["checkout", "payment"],
+    graph: {
+      nodes: [
+        { component_id: "checkout", display_name: "Checkout", runtime_status: "degraded", impact_status: "impacted" },
+        { component_id: "payment", display_name: "Payment", runtime_status: "unreachable", impact_status: "impacted" }
+      ],
+      edges: [{ edge_id: "checkout-payment", source_component_id: "checkout", target_component_id: "payment", status: "degraded" }],
+      active_pulses: [{ pulse_id: "pulse-1", edge_ids: ["checkout-payment"], expires_at: "2026-07-31T00:02:00Z" }]
+    },
+    connectors: [{ connector_id: "otel-local", provider: "OTEL", state: "CONNECTED", observed_at: "2026-07-31T00:01:00Z" }],
+    current_attempt: {
+      attempt_id: "attempt-1",
+      parent_attempt_id: null,
+      current_stage: current,
+      status: "ACTIVE",
+      workflow_revision: 5,
+      created_at: "2026-07-31T00:00:00Z",
+      stage_runs: stageRuns
+    },
+    available_commands: ["NEXT", "RERUN_FROM_STAGE", "ESCALATE"],
+    available_rerun_stages: stages.slice(0, stages.indexOf(current) + 1),
+    agent_activity: [{ activity_id: "activity-1", agent_run_id: "agent-1", stage_run_id: stageRuns.at(-1).stage_run_id, stage: current, role: "OBSERVER", state: "SUCCEEDED", label: "Evidence correlation", summary: "Current trace and metrics agree.", occurred_at: "2026-07-31T00:00:20Z", evidence_refs: ["evidence-triage"] }],
+    evidence_queries: [],
+    hypotheses: [],
+    actions: [],
+    ...overrides,
+    current_attempt: overrides.current_attempt || {
+      attempt_id: "attempt-1",
+      parent_attempt_id: null,
+      current_stage: current,
+      status: "ACTIVE",
+      workflow_revision: 5,
+      created_at: "2026-07-31T00:00:00Z",
+      stage_runs: stageRuns
+    }
+  };
+}
+
+test("workbench renders one stage, keeps future stages locked, and never leaks future output", () => {
+  const value = projection();
+  const view = workbenchViewV3(value, { reviewStage: null });
+  const html = renderIncidentWorkbenchV3(value, { connection: "connected", now: Date.parse("2026-07-31T00:01:05Z") });
+
+  assert.equal(view.visibleStage, "TRIAGE");
+  assert.equal(view.reviewingHistory, false);
+  assert.match(html, /data-active-stage="TRIAGE"/);
+  assert.match(html, /TRIAGE visible result/);
+  assert.doesNotMatch(html, /INVESTIGATE visible result|DECIDE visible result|RESPOND visible result|VERIFY visible result/);
+  assert.match(html, /data-stage="INVESTIGATE"[^>]*disabled/);
+  assert.match(html, /data-workflow-command="NEXT"/);
+  assert.match(html, /<dt>Owner<\/dt><dd>owner-local<\/dd>/);
+  assert.match(html, /aria-labelledby="iw3-stage-title"/);
+  assert.match(html, /<h3 id="iw3-stage-title">/);
+});
+
+test("current-stage Agent activity is scoped to the exact stage run", () => {
+  const value = projection();
+  const currentRun = value.current_attempt.stage_runs.at(-1);
+  value.agent_activity = [
+    { activity_id: "old", stage_run_id: "superseded-triage", stage: "TRIAGE", role: "OBSERVER", state: "SUCCEEDED", label: "Old run", summary: "OLD SUPERSEDED AGENT RESULT", occurred_at: "2026-07-31T00:00:20Z", evidence_refs: [] },
+    { activity_id: "current", stage_run_id: currentRun.stage_run_id, stage: "TRIAGE", role: "OBSERVER", state: "SUCCEEDED", label: "Current run", summary: "CURRENT AGENT RESULT", occurred_at: "2026-07-31T00:00:21Z", evidence_refs: [] }
+  ];
+
+  const html = renderIncidentWorkbenchV3(value, { connection: "connected" });
+  assert.match(html, /CURRENT AGENT RESULT/);
+  assert.doesNotMatch(html, /OLD SUPERSEDED AGENT RESULT/);
+});
+
+test("Investigate shows typed Evidence Worker query progress, real samples, and the bounded replan", () => {
+  const value = projection({ current_stage: "INVESTIGATE" });
+  const run = value.current_attempt.stage_runs.at(-1);
+  value.agent_activity = [{
+    activity_id: "evidence-worker-1", agent_run_id: "agent-investigate-1", stage_run_id: run.stage_run_id,
+    stage: "INVESTIGATE", role: "EVIDENCE_WORKER", state: "SUCCEEDED", label: "Evidence Worker",
+    summary: "Allowlisted evidence query completed.", occurred_at: "2026-07-31T00:00:30Z", evidence_refs: ["otel-trace-1"]
+  }];
+  value.evidence_queries = [{
+    schema_version: "flowpulse.evidence-query-result.v3", query_id: "query-1", attempt_id: "attempt-1",
+    stage_run_id: run.stage_run_id, stage: "INVESTIGATE", worker_activity_id: "evidence-worker-1",
+    query_name: "incident.current-signals.v1", state: "SUCCEEDED", parameters_hash: "sha256-query-1",
+    result_summary: "Checkout cannot reach Payment in three fresh traces.", component_ids: ["checkout", "payment"],
+    edge_ids: ["checkout-payment"], evidence_refs: ["otel-trace-1"],
+    observation_timestamps: ["2026-07-31T00:00:28Z", "2026-07-31T00:00:30Z"], triggered_replan: true,
+    started_at: "2026-07-31T00:00:25Z", completed_at: "2026-07-31T00:00:31Z", failure_code: null
+  }];
+
+  const html = renderIncidentWorkbenchV3(value, { connection: "connected" });
+  assert.match(html, /Evidence Worker queries/);
+  assert.match(html, /incident\.current-signals\.v1/);
+  assert.match(html, /Checkout cannot reach Payment in three fresh traces/);
+  assert.match(html, /2 samples/);
+  assert.match(html, /Replan triggered/);
+
+  const drawer = renderIncidentWorkbenchV3(value, { connection: "connected", panel: "evidence" });
+  assert.match(drawer, /Worker activity/);
+  assert.match(drawer, /otel-trace-1/);
+  assert.match(drawer, /2026-07-31T00:00:30Z/);
+});
+
+test("Decide renders its preflight-bound candidate before any Respond action exists", () => {
+  const value = projection({ current_stage: "DECIDE" });
+  const run = value.current_attempt.stage_runs.at(-1);
+  run.output = {
+    summary: "Decision completed",
+    facts: [{ label: "Flag", value: "paymentUnreachable=on" }],
+    hypothesis_ids: [],
+    action_ids: ["candidate-1"],
+    action_candidate: {
+      candidate_id: "candidate-1",
+      command_id: "astronomy.restore-payment-and-recreate-checkout",
+      component_id: "checkout",
+      title: "Restore Payment reachability",
+      summary: "Set the real local flag off and recreate Checkout.",
+      blast_radius: "Checkout only",
+      risk: "One bounded recreation",
+      rollback_plan: "Use the independent safe recovery port",
+      verification_conditions: ["Observe a fresh Checkout to Payment trace"],
+      decision_revision: value.decision_revision
+    }
+  };
+  value.actions = [];
+
+  const html = renderIncidentWorkbenchV3(value, { connection: "connected" });
+  assert.match(html, /Restore Payment reachability/);
+  assert.match(html, /astronomy\.restore-payment-and-recreate-checkout/);
+  assert.match(html, /Checkout only/);
+  assert.doesNotMatch(html, /No response candidate has been published/);
+});
+
+test("changed decision premises show an actionable rerun instead of a disabled Next loop", () => {
+  const value = projection({ current_stage: "DECIDE" });
+  const run = value.current_attempt.stage_runs.at(-1);
+  Object.assign(run, { status: "FAILED", progress_percent: 100, failure_code: "REVALIDATION_REQUIRED", completed_at: "2026-07-31T00:01:10Z" });
+  value.available_commands = ["RERUN_FROM_STAGE", "ESCALATE"];
+
+  const html = renderIncidentWorkbenchV3(value, { connection: "degraded", error: "control_plane_revalidation_required" });
+  assert.match(html, /Decision inputs changed/);
+  assert.match(html, /data-workflow-command="RERUN_FROM_STAGE"/);
+  assert.match(html, /Rerun Decide/);
+  assert.doesNotMatch(html, /data-workflow-command="NEXT"/);
+});
+
+test("failed post-action Verify offers a concrete diagnostic branch instead of a dead end", () => {
+  const value = projection({ current_stage: "VERIFY" });
+  const run = value.current_attempt.stage_runs.at(-1);
+  Object.assign(run, {
+    status: "NEEDS_HUMAN", progress_percent: 100, completed_at: "2026-07-31T00:02:00Z",
+    failure_code: "verification_failed_action_safely_rolled_back"
+  });
+  value.available_commands = ["RERUN_FROM_STAGE", "ESCALATE"];
+  value.available_rerun_stages = ["INVESTIGATE", "DECIDE"];
+
+  const html = renderIncidentWorkbenchV3(value, { connection: "connected" });
+  assert.match(html, /Branch from Decide/);
+  assert.match(html, /data-workflow-command="RERUN_FROM_STAGE" data-rerun-stage="DECIDE"/);
+  assert.doesNotMatch(html, /data-workflow-command="COMPLETE_INCIDENT"/);
+});
+
+test("Verify renders immutable execution and independent safe rollback receipts", () => {
+  const value = projection({ current_stage: "VERIFY" });
+  value.current_attempt.action_receipt_id = "receipt-1";
+  value.actions = [{
+    action_id: "action-1", attempt_id: "attempt-1", stage_run_id: "stage-run-5", status: "ROLLED_BACK",
+    title: "Restore Payment and recreate Checkout", summary: "Bounded local recovery", component_id: "checkout",
+    command_id: "astronomy.restore-payment-and-recreate-checkout", command_label: "Restore Payment and recreate Checkout",
+    decision_revision: 3, required_permission: "incident.action.execute", approval_state: "APPROVED",
+    execution_state: "ROLLED_BACK", blast_radius: "Local runtime", risk: "Checkout recreation",
+    rollback_plan: "Restore prior local state", verification_conditions: ["Fresh trace"],
+    receipt: {
+      receipt_id: "receipt-1", status: "SUCCEEDED", output_summary: "Payment restored and Checkout recreated.",
+      started_at: "2026-07-31T00:01:00Z", completed_at: "2026-07-31T00:01:05Z"
+    },
+    rollback_receipt: {
+      rollback_receipt_id: "rollback-receipt-1", status: "ROLLED_BACK",
+      output_summary: "Safe rollback restored the prior local fault state.",
+      started_at: "2026-07-31T00:02:00Z", completed_at: "2026-07-31T00:02:03Z"
+    }
+  }];
+
+  const html = renderIncidentWorkbenchV3(value, { connection: "connected" });
+  assert.match(html, /Execution receipt/);
+  assert.match(html, /receipt-1/);
+  assert.match(html, /Safe rollback receipt/);
+  assert.match(html, /rollback-receipt-1/);
+  assert.match(html, /Safe rollback restored the prior local fault state/);
+});
+
+test("Verify publishes the backend-owned deadline and real signal cards show trend and observed window", () => {
+  const value = projection({ current_stage: "VERIFY" });
+  const run = value.current_attempt.stage_runs.at(-1);
+  Object.assign(run, {
+    status: "RUNNING",
+    progress_percent: 40,
+    completed_at: null,
+    output: null,
+    verification_deadline_at: "2026-07-31T00:02:00Z"
+  });
+  const series = {
+    series: [{
+      series_id: "checkout-errors", metric_key: "checkout.error_rate", component_id: "checkout",
+      label: "Checkout error rate", unit: "percent", thresholds: { critical: 5 }, freshness: "CURRENT",
+      observed_window_start: "2026-07-31T00:01:20Z", observed_window_end: "2026-07-31T00:01:40Z",
+      points: [
+        { timestamp: "2026-07-31T00:01:20Z", value: 8, evidence_refs: ["e1"] },
+        { timestamp: "2026-07-31T00:01:40Z", value: 4, evidence_refs: ["e2"] }
+      ]
+    }]
+  };
+
+  const html = renderIncidentWorkbenchV3(value, {
+    connection: "connected", series, now: Date.parse("2026-07-31T00:01:45Z")
+  });
+  assert.match(html, /data-verification-remaining data-deadline="2026-07-31T00:02:00Z">0m 15s/);
+  assert.match(html, /data-trend="falling">Falling 50%/);
+  assert.match(html, /0m 20s window/);
+  assert.deepEqual(metricTrendV3(series.series[0]), { direction: "falling", label: "Falling 50%" });
+});
+
+test("a completed incident replaces workflow controls with the immutable final audit report", () => {
+  const value = completedAuditProjection();
+  const html = renderIncidentWorkbenchV3(value, { connection: "connected" });
+
+  assert.match(html, /data-audit-report="report-1"/);
+  assert.match(html, /Immutable incident audit/);
+  assert.match(html, /Attempt lineage/);
+  assert.match(html, /Immutable stage outputs/);
+  assert.match(html, /Fresh Checkout to Payment trace observed/);
+  assert.match(html, /operator-local/);
+  assert.match(html, /receipt-1/);
+  assert.match(html, /Payment dependency recovered/);
+  assert.match(html, /evidence-verify-fresh/);
+  assert.doesNotMatch(html, /data-workflow-command|iw3-stage-rail|Complete incident/);
+});
+
+test("active stage rendering never exposes audit material from a later stage", () => {
+  const value = projection({
+    audit_records: [{
+      audit_id: "untrusted-future-audit",
+      record_type: "STAGE_COMPLETED",
+      stage: "VERIFY",
+      stage_output: { summary: "FUTURE SECRET ROOT CAUSE" }
+    }]
+  });
+  const html = renderIncidentWorkbenchV3(value, { connection: "connected" });
+  assert.doesNotMatch(html, /FUTURE SECRET ROOT CAUSE|Immutable incident audit/);
+});
+
+test("completed stages are reviewable but locked and future stages cannot be selected", () => {
+  const value = projection();
+  assert.equal(workbenchViewV3(value, { reviewStage: "DETECT" }).visibleStage, "DETECT");
+  assert.equal(workbenchViewV3(value, { reviewStage: "DETECT" }).reviewingHistory, true);
+  assert.equal(workbenchViewV3(value, { reviewStage: "INVESTIGATE" }).visibleStage, "TRIAGE");
+
+  const history = renderIncidentWorkbenchV3(value, { reviewStage: "DETECT", connection: "connected" });
+  assert.match(history, /Reviewing completed stage/);
+  assert.match(history, /Rerun from this stage/);
+  assert.doesNotMatch(history, /data-workflow-command="NEXT"/);
+  assert.match(history, /data-stage="TRIAGE"[^>]*aria-current="step"/);
+  assert.doesNotMatch(history.match(/data-stage="TRIAGE"[^>]*>/)?.[0] || "", /disabled/);
+});
+
+test("a series sample committed during refresh triggers a bounded projection reread", async () => {
+  let projectionReads = 0;
+  const client = {
+    async projection() {
+      projectionReads += 1;
+      return projection({ signal_revision: projectionReads === 1 ? 9 : 10 });
+    },
+    async series() {
+      return { case_id: "case-checkout", signal_revision: 10, series: [] };
+    }
+  };
+  const coherent = await loadCoherentIncidentV3(client, "case-checkout");
+  assert.equal(projectionReads, 2);
+  assert.equal(coherent.projection.signal_revision, coherent.series.signal_revision);
+});
+
+test("Next, retry, rerun, and escalation commands bind canonical attempt and revision", () => {
+  const value = projection();
+  const base = {
+    attempt_id: "attempt-1",
+    expected_stage: "TRIAGE",
+    expected_workflow_revision: 5
+  };
+  assert.deepEqual(buildWorkflowCommandV3(value, "NEXT", { idempotencyKey: "advance:attempt-1:5:triage" }), {
+    ...base,
+    idempotency_key: "advance:attempt-1:5:triage"
+  });
+  assert.deepEqual(buildWorkflowCommandV3(value, "RETRY", { idempotencyKey: "retry:attempt-1:5:triage" }), {
+    ...base,
+    idempotency_key: "retry:attempt-1:5:triage"
+  });
+  assert.deepEqual(buildWorkflowCommandV3(value, "RERUN_FROM_STAGE", { stage: "DETECT", reason: "New checkout trace", idempotencyKey: "rerun:attempt-1:5:detect" }), {
+    ...base,
+    reason: "New checkout trace",
+    idempotency_key: "rerun:attempt-1:5:detect"
+  });
+  assert.deepEqual(buildWorkflowCommandV3(value, "ESCALATE", { reason: "Owner input required", idempotencyKey: "escalate:attempt-1:5:triage" }), {
+    ...base,
+    reason: "Owner input required",
+    idempotency_key: "escalate:attempt-1:5:triage"
+  });
+});
+
+test("workspace URL restores only canonical case, completed review, panel, and component state", () => {
+  assert.deepEqual(parseIncidentWorkspaceUrlV3(new URL("https://flowpulse.test/?case_id=case-checkout&stage=DETECT&panel=graph&component=checkout")), {
+    caseId: "case-checkout",
+    reviewStage: "DETECT",
+    panel: "graph",
+    componentId: "checkout"
+  });
+  assert.deepEqual(parseIncidentWorkspaceUrlV3(new URL("https://flowpulse.test/?case_id=../../bad&stage=FUTURE&panel=debug&component=%2Fetc")), {
+    caseId: null,
+    reviewStage: null,
+    panel: null,
+    componentId: null
+  });
+});
+
+test("duration advances only within the backend freshness window and freezes stale", () => {
+  const value = projection();
+  assert.deepEqual(workbenchDurationV3(value, Date.parse("2026-07-31T00:01:05Z")), { elapsed_seconds: 65, freshness: "CURRENT" });
+  assert.deepEqual(workbenchDurationV3(value, Date.parse("2026-07-31T00:02:00Z")), { elapsed_seconds: 90, freshness: "STALE" });
+  assert.deepEqual(workbenchDurationV3({ ...value, incident_clock: { ...value.incident_clock, freshness: "STALE" } }, Date.parse("2026-07-31T00:01:05Z")), { elapsed_seconds: 60, freshness: "STALE" });
+});
+
+test("ordered SSE accepts the next sequence, ignores duplicates, and rehydrates on gaps", () => {
+  const state = { lastSequence: 27, projectionRevision: 12 };
+  assert.deepEqual(applyIncidentEventV3(state, { case_id: "case-checkout", sequence: 27, projection_revision: 12 }), { state, effect: null });
+  assert.deepEqual(applyIncidentEventV3(state, { case_id: "case-checkout", sequence: 28, projection_revision: 13 }), {
+    state: { lastSequence: 28, projectionRevision: 13 }, effect: "refresh"
+  });
+  assert.deepEqual(applyIncidentEventV3(state, { case_id: "case-checkout", sequence: 30, projection_revision: 14 }), {
+    state, effect: "rehydrate"
+  });
+});
+
+test("typed metric paths preserve gaps and never connect points across series", () => {
+  const paths = metricSeriesPathsV3({
+    series: [
+      {
+        series_id: "checkout-errors",
+        unit: "percent",
+        points: [
+          { timestamp: "2026-07-31T00:00:00Z", value: 8.4, evidence_refs: ["e1"] },
+          { timestamp: "2026-07-31T00:00:02Z", missing_reason: "scrape_timeout", evidence_refs: [] },
+          { timestamp: "2026-07-31T00:00:04Z", value: 9.1, evidence_refs: ["e2"] }
+        ]
+      },
+      {
+        series_id: "payment-latency",
+        unit: "ms",
+        points: [
+          { timestamp: "2026-07-31T00:00:00Z", value: 410, evidence_refs: ["e3"] },
+          { timestamp: "2026-07-31T00:00:04Z", value: 520, evidence_refs: ["e4"] }
+        ]
+      }
+    ]
+  }, 200, 80);
+
+  assert.deepEqual(paths.map((series) => series.seriesId), ["checkout-errors", "payment-latency"]);
+  assert.equal(paths[0].segments.length, 2);
+  assert.equal(paths[0].segments[0].length, 1);
+  assert.equal(paths[0].segments[1].length, 1);
+  assert.equal(paths[1].segments.length, 1);
+  assert.equal(paths[1].segments[0].length, 2);
+});
+
+test("Investigate graph is an accessible modal without turning node review into an agent command", () => {
+  const value = projection({ current_stage: "INVESTIGATE" });
+  const html = renderIncidentWorkbenchV3(value, { connection: "connected", panel: "graph", componentId: "checkout" });
+  assert.match(html, /role="dialog"/);
+  assert.match(html, /aria-modal="true"/);
+  assert.match(html, /data-graph-close/);
+  assert.match(html, /data-graph-node="checkout"/);
+  assert.match(html, /data-agent-investigate="checkout"/);
+  assert.doesNotMatch(html.match(/data-graph-node="checkout"[^>]*>/)?.[0] || "", /data-agent-investigate/);
+});
+
+test("a historical Investigate graph remains inspectable but cannot start a current-stage Agent", () => {
+  const value = projection({ current_stage: "RESPOND" });
+  const html = renderIncidentWorkbenchV3(value, {
+    connection: "connected", reviewStage: "INVESTIGATE", panel: "graph", componentId: "checkout"
+  });
+  assert.match(html, /Diagnostic graph/);
+  assert.match(html, /Historical graph · read-only/);
+  assert.doesNotMatch(html, /data-agent-investigate=/);
+});
+
+test("projection refreshes coalesce while preserving one trailing refresh", async () => {
+  const loop = new TrailingRefreshV3();
+  let release;
+  let calls = 0;
+  const operation = async () => {
+    calls += 1;
+    if (calls === 1) await new Promise((resolve) => { release = resolve; });
+  };
+  const first = loop.request(operation);
+  await Promise.resolve();
+  const second = loop.request(operation);
+  release();
+  await Promise.all([first, second]);
+  assert.equal(calls, 2);
+});
+
+test("controller traps modal focus, closes on Escape, restores focus, and uses inert background", async () => {
+  const source = await readFile(new URL("../public/incident-workbench-controller-v3.mjs", import.meta.url), "utf8");
+  assert.match(source, /event\.key === "Escape"/);
+  assert.match(source, /event\.key !== "Tab"/);
+  assert.match(source, /setAttribute\("inert", ""\)/);
+  assert.match(source, /querySelector\(this\.previousFocus\)\?\.focus\(\)/);
+  assert.match(source, /workflow\.dataset\.rerunStage \|\| this\.ui\.reviewStage/);
+  assert.match(source, /if \(this\.ui\.reviewStage\) return;/);
+});
+
+test("V3 stage shell owns viewport overflow and collapses safely at 451 by 859", async () => {
+  const styles = await readFile(new URL("../public/styles.css", import.meta.url), "utf8");
+  assert.match(styles, /\.iw3-controller-root, \.iw3-shell \{ width: 100%; height: 100%; min-width: 0; min-height: 0; \}/);
+  assert.match(styles, /\.iw3-stage-surface \{[^}]*min-width: 0;[^}]*overflow: auto;/);
+  assert.match(styles, /@media \(max-width: 640px\)[\s\S]*\.iw3-stage-rail \{ display: flex; overflow-x: auto;/);
+  assert.match(styles, /@media \(max-width: 640px\)[\s\S]*\.iw3-stage-grid, \.iw3-detect-grid \{ grid-template-columns: minmax\(0, 1fr\); \}/);
+  assert.match(styles, /@media \(prefers-reduced-motion: reduce\)[\s\S]*\.iw3-graph-edge\.is-active[^}]*animation: none;/);
+});
+
+test("URL-pinned Incident starts V3 directly while Live keeps a separate V3 incident adapter", async () => {
+  const app = await readFile(new URL("../public/control-plane-app.mjs", import.meta.url), "utf8");
+  const html = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
+  assert.match(app, /if \(state\.mode === "incident"\) void v3Workbench\.activate\(initialCaseId\)/);
+  assert.match(app, /new LiveIncidentAdapterV3/);
+  assert.match(app, /onOpen: openV3Incident/);
+  assert.match(html, /id="v3-live-incidents"/);
+  assert.match(html, /id="incident-workspace"/);
+});
+
+function completedAuditProjection() {
+  const value = projection({ current_stage: "VERIFY" });
+  value.lifecycle_state = "RESOLVED";
+  value.incident_clock = { ...value.incident_clock, state: "RESOLVED" };
+  value.current_attempt = {
+    ...value.current_attempt,
+    attempt_number: 1,
+    status: "COMPLETED",
+    created_reason: "INITIAL_INCIDENT_DETECTION",
+    completed_at: "2026-07-31T00:10:00Z",
+    action_executed: true,
+    action_receipt_id: "receipt-1"
+  };
+  const verifyRun = value.current_attempt.stage_runs.find((run) => run.stage === "VERIFY");
+  verifyRun.summary = "VERIFY immutable output";
+  verifyRun.evidence_refs = ["evidence-verify-fresh"];
+  verifyRun.output = { summary: "Payment dependency recovered", facts: ["Fresh Checkout to Payment trace observed"], evidence_refs: ["evidence-verify-fresh"] };
+  value.available_commands = [];
+  value.attempt_history = [];
+  value.audit_records = [
+    auditRecord("audit-stage-verify", "STAGE_COMPLETED", {
+      stage: "VERIFY", stage_run_id: verifyRun.stage_run_id, summary: "VERIFY immutable output",
+      evidence_refs: ["evidence-verify-fresh"], stage_output: structuredClone(verifyRun.output)
+    }),
+    auditRecord("audit-approval", "APPROVAL_RECORDED", {
+      stage: "RESPOND", action_id: "action-1", actor_subject_id: "operator-local", approval_decision: "APPROVE",
+      summary: "Operator approved the bounded local repair."
+    }),
+    auditRecord("audit-receipt", "ACTION_RECEIPT_RECORDED", {
+      stage: "RESPOND", action_id: "action-1", summary: "Bounded local repair completed.",
+      action_receipt: {
+        schema_version: "flowpulse.action-execution-receipt.v3", receipt_id: "receipt-1", executor_id: "local-executor",
+        command_id: "astronomy.restore-payment-and-recreate-checkout", status: "SUCCEEDED",
+        started_at: "2026-07-31T00:08:00Z", completed_at: "2026-07-31T00:08:10Z",
+        output_summary: "paymentUnreachable disabled and Checkout recreated", rollback_status: null
+      }
+    }),
+    auditRecord("audit-verification", "VERIFICATION_RECORDED", {
+      stage: "VERIFY", stage_run_id: verifyRun.stage_run_id, summary: "Payment dependency recovered",
+      evidence_refs: ["evidence-verify-fresh"]
+    }),
+    auditRecord("audit-completed", "INCIDENT_COMPLETED", {
+      stage: "VERIFY", stage_run_id: verifyRun.stage_run_id, summary: "Incident verification completed.",
+      evidence_refs: ["evidence-verify-fresh"]
+    })
+  ];
+  value.final_report = {
+    schema_version: "flowpulse.incident-audit-report.v3",
+    report_id: "report-1",
+    attempt_id: value.current_attempt.attempt_id,
+    attempt_lineage: [value.current_attempt.attempt_id],
+    workflow_revision: value.workflow_revision,
+    decision_revision: value.decision_revision,
+    stage_output_audit_ids: ["audit-stage-verify"],
+    action_receipt_audit_ids: ["audit-receipt"],
+    verification_evidence_refs: ["evidence-verify-fresh"],
+    generated_at: "2026-07-31T00:10:00Z",
+    content_hash: "a".repeat(64)
+  };
+  return value;
+}
+
+function auditRecord(auditId, recordType, overrides = {}) {
+  return {
+    schema_version: "flowpulse.workflow-audit-record.v3",
+    audit_id: auditId,
+    record_type: recordType,
+    attempt_id: "attempt-1",
+    parent_attempt_id: null,
+    stage: null,
+    stage_run_id: null,
+    action_id: null,
+    actor_subject_id: null,
+    workflow_revision: 5,
+    decision_revision: 3,
+    summary: "Recorded audit event.",
+    evidence_refs: [],
+    stage_output: null,
+    approval_decision: null,
+    action_receipt: null,
+    rollback_receipt: null,
+    recorded_at: "2026-07-31T00:10:00Z",
+    ...overrides
+  };
+}

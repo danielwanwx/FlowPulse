@@ -58,14 +58,32 @@ services:
       FLOWPULSE_CONNECTOR_ALLOWED_ORIGINS: ${FLOWPULSE_CONNECTOR_ALLOWED_ORIGINS:-}
       FLOWPULSE_CONNECTOR_ALLOW_PRIVATE_ORIGINS: ${FLOWPULSE_CONNECTOR_ALLOW_PRIVATE_ORIGINS:-0}
       FLOWPULSE_PROMETHEUS_BINDINGS_JSON: '${FLOWPULSE_PROMETHEUS_BINDINGS_JSON:-[]}'
-      FLOWPULSE_REALTIME_SCHEDULER_INTERVAL_SECONDS: ${FLOWPULSE_REALTIME_SCHEDULER_INTERVAL_SECONDS:-0}
-      FLOWPULSE_REALTIME_ACTOR_SUBJECT_ID: ${FLOWPULSE_REALTIME_ACTOR_SUBJECT_ID:-owner-minio}
+      FLOWPULSE_OTEL_SPOOL_ROOT: ${FLOWPULSE_OTEL_SPOOL_ROOT:-/flowpulse-otel}
+      FLOWPULSE_OTEL_BINDINGS_JSON: '${FLOWPULSE_OTEL_BINDINGS_JSON:-[{"binding_key":"astronomy-checkout-payment-traces","external_resource_type":"otel_trace_edge","external_resource_id":"astronomy.checkout-payment.traces","component_ids":["checkout","payment"],"edge_ids":["checkout->payment"]},{"binding_key":"astronomy-checkout-payment-metrics","external_resource_type":"otel_metric_scope","external_resource_id":"astronomy.checkout-payment.metrics","component_ids":["checkout","payment"],"edge_ids":[]},{"binding_key":"astronomy-checkout-payment-logs","external_resource_type":"otel_log_scope","external_resource_id":"astronomy.checkout-payment.logs","component_ids":["checkout","payment"],"edge_ids":[]}]}'
+      FLOWPULSE_REALTIME_SCHEDULER_INTERVAL_SECONDS: ${FLOWPULSE_REALTIME_SCHEDULER_INTERVAL_SECONDS:-2}
+      FLOWPULSE_REALTIME_TENANT_ID: ${FLOWPULSE_REALTIME_TENANT_ID:-tenant-http}
+      FLOWPULSE_REALTIME_ACTOR_SUBJECT_ID: ${FLOWPULSE_REALTIME_ACTOR_SUBJECT_ID:-owner-http}
+      FLOWPULSE_WORKER_HEARTBEAT_PATH: /tmp/flowpulse-worker-heartbeat
+      FLOWPULSE_V3_INTERNAL_BRIDGE_URL: ${FLOWPULSE_V3_INTERNAL_BRIDGE_URL:-}
+      FLOWPULSE_V3_INTERNAL_BRIDGE_HMAC_SECRET: ${FLOWPULSE_V3_INTERNAL_BRIDGE_HMAC_SECRET:-}
+      FLOWPULSE_V3_SAFE_ROLLBACK_URL: ${FLOWPULSE_V3_SAFE_ROLLBACK_URL:-}
+      FLOWPULSE_V3_SAFE_ROLLBACK_HMAC_SECRET: ${FLOWPULSE_V3_SAFE_ROLLBACK_HMAC_SECRET:-}
+    volumes:
+      # npm run live:setup/live:start writes the current pinned Astronomy Shop
+      # Collector stream here. The worker is deliberately read-only.
+      - ${FLOWPULSE_OTEL_HOST_DIR:-../outputs/live/otel}:/flowpulse-otel:ro
     depends_on:
       postgres: {condition: service_healthy}
       migrate: {condition: service_completed_successfully}
       temporal: {condition: service_healthy}
       authz: {condition: service_healthy}
       minio-init: {condition: service_completed_successfully}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,time; p='/tmp/flowpulse-worker-heartbeat'; assert os.path.exists(p) and time.time()-os.path.getmtime(p)<15"]
+      interval: 5s
+      timeout: 3s
+      retries: 6
+      start_period: 15s
   prometheus:
     image: prom/prometheus:v2.54.1
     command:

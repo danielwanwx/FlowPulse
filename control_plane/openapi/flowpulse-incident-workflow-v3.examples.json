@@ -1,0 +1,458 @@
+{
+  "schema_version": "flowpulse.incident-workflow-v3.examples.v1",
+  "projection": {
+    "schema_version": "flowpulse.incident-projection.v3",
+    "tenant_id": "tenant-a",
+    "case_id": "case-a",
+    "incident_id": "incident-a",
+    "run_id": "run-a",
+    "topology_revision": "topology-a",
+    "projection_revision": 2,
+    "sequence": 3,
+    "signal_revision": 3,
+    "decision_revision": 1,
+    "workspace_revision": 1,
+    "workflow_revision": 2,
+    "title": "Checkout cannot reach Payment",
+    "summary": "Checkout requests fail at the Payment dependency.",
+    "severity": "critical",
+    "owner_subject_id": "owner-http",
+    "lifecycle_state": "ACTIVE",
+    "incident_clock": {
+      "state": "RUNNING",
+      "started_at": "2026-07-31T11:56:00+00:00",
+      "last_signal_at": "2026-07-31T12:00:00+00:00",
+      "as_of": "2026-07-31T12:00:00+00:00",
+      "elapsed_seconds": 240,
+      "freshness": "CURRENT",
+      "fresh_until": "2026-07-31T12:00:30+00:00",
+      "max_interpolation_seconds": 30,
+      "resolved_at": null
+    },
+    "freshness": {
+      "state": "CURRENT",
+      "observed_at": "2026-07-31T12:00:00+00:00",
+      "fresh_until": "2026-07-31T12:00:30+00:00"
+    },
+    "impacted_path": ["checkout", "payment"],
+    "graph": {
+      "nodes": [
+        {
+          "component_id": "checkout",
+          "canonical_identity": "service:checkout",
+          "display_name": "Checkout",
+          "membership": "CONNECTED",
+          "runtime_status": "critical",
+          "impact_status": "impacted",
+          "classification_reason": null
+        },
+        {
+          "component_id": "payment",
+          "canonical_identity": "service:payment",
+          "display_name": "Payment",
+          "membership": "CONNECTED",
+          "runtime_status": "degraded",
+          "impact_status": "impacted",
+          "classification_reason": null
+        }
+      ],
+      "edges": [
+        {
+          "edge_id": "checkout-payment",
+          "source_component_id": "checkout",
+          "target_component_id": "payment",
+          "status": "critical"
+        }
+      ],
+      "active_pulses": []
+    },
+    "connectors": [
+      {
+        "connector_id": "connector-prometheus-primary",
+        "provider": "PROMETHEUS",
+        "state": "CONNECTED",
+        "observed_at": "2026-07-31T12:00:00+00:00",
+        "fresh_until": "2026-07-31T12:00:30+00:00",
+        "lag_seconds": 0,
+        "truth_label": "LIVE"
+      }
+    ],
+    "current_attempt": {
+      "schema_version": "flowpulse.workflow-attempt.v3",
+      "attempt_id": "attempt-2b4089bdde8fa297578fa351",
+      "parent_attempt_id": null,
+      "attempt_number": 1,
+      "current_stage": "TRIAGE",
+      "status": "ACTIVE",
+      "workflow_revision": 2,
+      "created_reason": "INITIAL_INCIDENT_DETECTION",
+      "created_at": "2026-07-31T12:00:00+00:00",
+      "stage_runs": [
+        {
+          "schema_version": "flowpulse.workflow-stage-run.v3",
+          "stage_run_id": "stage-run-c48fdc1e468b7b27d910a24c",
+          "attempt_id": "attempt-2b4089bdde8fa297578fa351",
+          "stage": "DETECT",
+          "status": "SUCCEEDED",
+          "run_number": 1,
+          "input_workflow_revision": 1,
+          "input_signal_revision": 3,
+          "input_decision_revision": 1,
+          "progress_percent": 100,
+          "summary": "Checkout requests fail at the Payment dependency.",
+          "output": {
+            "summary": "Checkout requests fail at the Payment dependency.",
+            "facts": [
+              {
+                "fact_id": "signal-a",
+                "label": "Checkout latency",
+                "value": "742 ms",
+                "evidence_refs": ["evidence-a"]
+              }
+            ],
+            "unknowns": [],
+            "hypothesis_ids": [],
+            "action_ids": [],
+            "evidence_refs": ["evidence-a"]
+          },
+          "evidence_refs": ["evidence-a"],
+      "failure_code": null,
+      "started_at": "2026-07-31T11:56:00+00:00",
+      "verification_deadline_at": null,
+      "completed_at": "2026-07-31T12:00:00+00:00",
+          "created_at": "2026-07-31T12:00:00+00:00"
+        },
+        {
+          "schema_version": "flowpulse.workflow-stage-run.v3",
+          "stage_run_id": "stage-run-5f2def58466e16b1212ff7ec",
+          "attempt_id": "attempt-2b4089bdde8fa297578fa351",
+          "stage": "TRIAGE",
+          "status": "RUNNING",
+          "run_number": 1,
+          "input_workflow_revision": 2,
+          "input_signal_revision": 3,
+          "input_decision_revision": 1,
+          "progress_percent": 0,
+          "summary": null,
+          "output": null,
+          "evidence_refs": [],
+      "failure_code": null,
+      "started_at": "2026-07-31T12:00:01+00:00",
+      "verification_deadline_at": null,
+      "completed_at": null,
+          "created_at": "2026-07-31T12:00:01+00:00"
+        }
+      ],
+      "action_executed": false,
+      "action_receipt_id": null,
+      "completed_at": null
+    },
+    "attempt_history": [],
+    "available_commands": ["ESCALATE", "START_AGENT_RUN"],
+    "available_rerun_stages": [],
+    "agent_activity": [],
+    "evidence_queries": [],
+    "hypotheses": [],
+    "actions": [],
+    "audit_records": [],
+    "final_report": null,
+    "generated_at": "2026-07-31T12:00:01+00:00"
+  },
+  "live_snapshot": {
+    "schema_version": "flowpulse.live-snapshot.v3",
+    "generated_at": "2026-07-31T12:00:01+00:00",
+    "sequence": 3,
+    "incidents": [
+      {
+        "case_id": "case-a",
+        "incident_id": "incident-a",
+        "run_id": "run-a",
+        "topology_revision": "topology-a",
+        "projection_revision": 2,
+        "sequence": 3,
+        "title": "Checkout cannot reach Payment",
+        "summary": "Checkout requests fail at the Payment dependency.",
+        "severity": "critical",
+        "lifecycle_state": "ACTIVE",
+        "freshness": {
+          "state": "CURRENT",
+          "observed_at": "2026-07-31T12:00:00+00:00",
+          "fresh_until": "2026-07-31T12:00:30+00:00"
+        },
+        "impacted_components": ["checkout", "payment"],
+        "current_stage": "TRIAGE"
+      }
+    ]
+  },
+  "series": {
+    "schema_version": "flowpulse.metric-series-collection.v3",
+    "case_id": "case-a",
+    "signal_revision": 3,
+    "generated_at": "2026-07-31T12:00:04+00:00",
+    "series": [
+      {
+        "schema_version": "flowpulse.metric-series.v3",
+        "series_id": "checkout.error_rate:checkout",
+        "metric_key": "checkout.error_rate",
+        "component_id": "checkout",
+        "label": "Checkout error rate",
+        "unit": "ratio",
+        "thresholds": {"warning": 0.02, "critical": 0.05},
+        "points": [
+          {
+            "sequence": 1,
+            "timestamp": "2026-07-31T12:00:00+00:00",
+            "value": 0.084,
+            "evidence_refs": ["evidence-a"],
+            "freshness": "CURRENT"
+          },
+          {
+            "sequence": 2,
+            "timestamp": "2026-07-31T12:00:02+00:00",
+            "value": 0.091,
+            "evidence_refs": ["evidence-a"],
+            "freshness": "CURRENT"
+          },
+          {
+            "sequence": 3,
+            "timestamp": "2026-07-31T12:00:04+00:00",
+            "value": 0.087,
+            "evidence_refs": ["evidence-a"],
+            "freshness": "CURRENT"
+          }
+        ],
+        "observed_window_start": "2026-07-31T12:00:00+00:00",
+        "observed_window_end": "2026-07-31T12:00:04+00:00",
+        "freshness": "CURRENT",
+        "source_connector_id": "connector-prometheus-primary"
+      }
+    ]
+  },
+  "event": {
+    "schema_version": "flowpulse.incident-event.v3",
+    "event_id": "event-762dc7fe30b2fd23b4e2aa49",
+    "tenant_id": "tenant-a",
+    "case_id": "case-a",
+    "sequence": 3,
+    "event_type": "workflow.stage.started",
+    "occurred_at": "2026-07-31T12:00:01+00:00",
+    "projection_revision": 2,
+    "workflow_revision": 2,
+    "attempt_id": "attempt-2b4089bdde8fa297578fa351",
+    "stage": "TRIAGE",
+    "stage_run_id": "stage-run-5f2def58466e16b1212ff7ec",
+    "actor_subject_id": "subject-a",
+    "summary": "Triage stage started.",
+    "progress": 0,
+    "evidence_refs": []
+  },
+  "command_receipt": {
+    "schema_version": "flowpulse.workflow-command-receipt.v3",
+    "command_id": "workflow-command-05a4b084c5021de8bc23ffa6",
+    "command_name": "NEXT",
+    "accepted": true,
+    "reused": false,
+    "reason": null,
+    "actor_subject_id": "subject-a",
+    "attempt_id": "attempt-2b4089bdde8fa297578fa351",
+    "workflow_revision": 2,
+    "projection": {
+      "schema_version": "flowpulse.incident-projection.v3",
+      "tenant_id": "tenant-a",
+      "case_id": "case-a",
+      "incident_id": "incident-a",
+      "run_id": "run-a",
+      "topology_revision": "topology-a",
+      "projection_revision": 2,
+      "sequence": 3,
+      "signal_revision": 3,
+      "decision_revision": 1,
+      "workspace_revision": 1,
+      "workflow_revision": 2,
+      "title": "Checkout cannot reach Payment",
+      "summary": "Checkout requests fail at the Payment dependency.",
+      "severity": "critical",
+      "owner_subject_id": "owner-http",
+      "lifecycle_state": "ACTIVE",
+      "incident_clock": {
+        "state": "RUNNING",
+        "started_at": "2026-07-31T11:56:00+00:00",
+        "last_signal_at": "2026-07-31T12:00:00+00:00",
+        "as_of": "2026-07-31T12:00:00+00:00",
+        "elapsed_seconds": 240,
+        "freshness": "CURRENT",
+        "fresh_until": "2026-07-31T12:00:30+00:00",
+        "max_interpolation_seconds": 30,
+        "resolved_at": null
+      },
+      "freshness": {
+        "state": "CURRENT",
+        "observed_at": "2026-07-31T12:00:00+00:00",
+        "fresh_until": "2026-07-31T12:00:30+00:00"
+      },
+      "impacted_path": ["checkout", "payment"],
+      "graph": {
+        "nodes": [
+          {
+            "component_id": "checkout",
+            "canonical_identity": "service:checkout",
+            "display_name": "Checkout",
+            "membership": "CONNECTED",
+            "runtime_status": "critical",
+            "impact_status": "impacted",
+            "classification_reason": null
+          },
+          {
+            "component_id": "payment",
+            "canonical_identity": "service:payment",
+            "display_name": "Payment",
+            "membership": "CONNECTED",
+            "runtime_status": "degraded",
+            "impact_status": "impacted",
+            "classification_reason": null
+          }
+        ],
+        "edges": [
+          {
+            "edge_id": "checkout-payment",
+            "source_component_id": "checkout",
+            "target_component_id": "payment",
+            "status": "critical"
+          }
+        ],
+        "active_pulses": []
+      },
+      "connectors": [
+        {
+          "connector_id": "connector-prometheus-primary",
+          "provider": "PROMETHEUS",
+          "state": "CONNECTED",
+          "observed_at": "2026-07-31T12:00:00+00:00",
+          "fresh_until": "2026-07-31T12:00:30+00:00",
+          "lag_seconds": 0,
+          "truth_label": "LIVE"
+        }
+      ],
+      "current_attempt": {
+        "schema_version": "flowpulse.workflow-attempt.v3",
+        "attempt_id": "attempt-2b4089bdde8fa297578fa351",
+        "parent_attempt_id": null,
+        "attempt_number": 1,
+        "current_stage": "TRIAGE",
+        "status": "ACTIVE",
+        "workflow_revision": 2,
+        "created_reason": "INITIAL_INCIDENT_DETECTION",
+        "created_at": "2026-07-31T12:00:00+00:00",
+        "stage_runs": [
+          {
+            "schema_version": "flowpulse.workflow-stage-run.v3",
+            "stage_run_id": "stage-run-c48fdc1e468b7b27d910a24c",
+            "attempt_id": "attempt-2b4089bdde8fa297578fa351",
+            "stage": "DETECT",
+            "status": "SUCCEEDED",
+            "run_number": 1,
+            "input_workflow_revision": 1,
+            "input_signal_revision": 3,
+            "input_decision_revision": 1,
+            "progress_percent": 100,
+            "summary": "Checkout requests fail at the Payment dependency.",
+            "output": {
+              "summary": "Checkout requests fail at the Payment dependency.",
+              "facts": [
+                {
+                  "fact_id": "signal-a",
+                  "label": "Checkout latency",
+                  "value": "742 ms",
+                  "evidence_refs": ["evidence-a"]
+                }
+              ],
+              "unknowns": [],
+              "hypothesis_ids": [],
+              "action_ids": [],
+              "evidence_refs": ["evidence-a"]
+            },
+            "evidence_refs": ["evidence-a"],
+            "failure_code": null,
+            "started_at": "2026-07-31T11:56:00+00:00",
+            "verification_deadline_at": null,
+            "completed_at": "2026-07-31T12:00:00+00:00",
+            "created_at": "2026-07-31T12:00:00+00:00"
+          },
+          {
+            "schema_version": "flowpulse.workflow-stage-run.v3",
+            "stage_run_id": "stage-run-5f2def58466e16b1212ff7ec",
+            "attempt_id": "attempt-2b4089bdde8fa297578fa351",
+            "stage": "TRIAGE",
+            "status": "RUNNING",
+            "run_number": 1,
+            "input_workflow_revision": 2,
+            "input_signal_revision": 3,
+            "input_decision_revision": 1,
+            "progress_percent": 0,
+            "summary": null,
+            "output": null,
+            "evidence_refs": [],
+            "failure_code": null,
+            "started_at": "2026-07-31T12:00:01+00:00",
+            "verification_deadline_at": null,
+            "completed_at": null,
+            "created_at": "2026-07-31T12:00:01+00:00"
+          }
+        ],
+        "action_executed": false,
+        "action_receipt_id": null,
+        "completed_at": null
+      },
+      "attempt_history": [],
+      "available_commands": ["ESCALATE", "START_AGENT_RUN"],
+      "available_rerun_stages": [],
+      "agent_activity": [],
+      "evidence_queries": [],
+      "hypotheses": [],
+      "actions": [],
+      "audit_records": [],
+      "final_report": null,
+      "generated_at": "2026-07-31T12:00:01+00:00"
+    },
+    "recorded_at": "2026-07-31T12:00:01+00:00"
+  },
+  "commands": {
+    "advance": {
+      "attempt_id": "attempt-2b4089bdde8fa297578fa351",
+      "expected_stage": "TRIAGE",
+      "expected_workflow_revision": 2,
+      "idempotency_key": "advance:attempt:2:triage"
+    },
+    "rerun": {
+      "attempt_id": "attempt-2b4089bdde8fa297578fa351",
+      "expected_stage": "TRIAGE",
+      "expected_workflow_revision": 2,
+      "idempotency_key": "rerun:attempt:2:triage",
+      "reason": "New evidence requires a fresh triage run."
+    },
+    "escalation": {
+      "attempt_id": "attempt-2b4089bdde8fa297578fa351",
+      "expected_stage": "TRIAGE",
+      "expected_workflow_revision": 2,
+      "idempotency_key": "escalate:attempt:2:triage",
+      "reason": "The current evidence requires human ownership."
+    },
+    "agent_run": {
+      "attempt_id": "attempt-2b4089bdde8fa297578fa351",
+      "expected_stage": "TRIAGE",
+      "expected_workflow_revision": 2,
+      "idempotency_key": "agent:attempt:2:triage",
+      "component_id": "checkout",
+      "question": "Correlate the current checkout signals with fresh traces."
+    },
+    "approval": {
+      "attempt_id": "attempt-2b4089bdde8fa297578fa351",
+      "expected_stage": "RESPOND",
+      "expected_workflow_revision": 5,
+      "idempotency_key": "approve:attempt:5:respond",
+      "decision": "APPROVE",
+      "expected_decision_revision": 1,
+      "reason": "Approved for the bounded local repair."
+    }
+  }
+}

@@ -16,6 +16,7 @@ import { DevelopmentRuntime } from "./development-runtime.mjs";
 import * as developmentAdapter from "./development-adapter.mjs";
 import { AgentControlService } from "./agent-control-service.mjs";
 import { AgentTeamChatError, AgentTeamChatService } from "./agent-team-chat.mjs";
+import { createCodexLocalAdapter } from "./agent-team-provider.mjs";
 import { LocalFaultLoop, LocalFaultLoopError } from "./local-fault-loop.mjs";
 import { harnessBinding, loadHarnessManifest } from "./harness-manifest.mjs";
 import { AUTONOMY_POLICY_ARTIFACT, validateAutonomyPolicyArtifact } from "./autonomy-policy-artifacts.mjs";
@@ -44,6 +45,11 @@ const development = new DevelopmentRuntime({ runtime, source: liveSource, adapte
 const capturedEvidence = new CapturedBundleEvidenceSource(bundle);
 const snapshots = new Map();
 const developmentInvestigations = new Map();
+const guidedCodexAdapter = createCodexLocalAdapter();
+const guidedAgentRequests = new Map();
+const guidedActionPreflights = new Map();
+const guidedActionExecutions = new Map();
+const guidedRollbackExecutions = new Map();
 // This key and map intentionally remain module-private. They bind an issued
 // receipt to this server's capture and cannot be reconstructed by a request.
 const authorityReceiptSecret = randomBytes(32);
@@ -132,11 +138,14 @@ const server = createServer(async (request, response) => {
   if (request.method === "OPTIONS") return send(response, 204, "");
   try {
     const url = new URL(request.url, `http://${request.headers.host || "localhost"}`);
+    if (url.pathname.startsWith("/api/internal/control-plane/v3/")) {
+      return handleGuidedInternalV3(request, response, url);
+    }
     // The browser's only control-plane boundary. Keep this ahead of the
     // compatibility/demo write guard: the allowlisted node-explanation update
     // is owned and revalidated by the separate Temporal service, never by the
     // local replay runtime.
-    if (url.pathname.startsWith("/api/control-plane/v1") || url.pathname.startsWith("/api/control-plane/v2")) {
+    if (url.pathname.startsWith("/api/control-plane/v1") || url.pathname.startsWith("/api/control-plane/v2") || url.pathname.startsWith("/api/control-plane/v3")) {
       return proxyControlPlane(request, response, url);
     }
     if (activeDemoWriteBlocked(request.method, url.pathname)) {
@@ -1080,7 +1089,7 @@ async function proxyControlPlane(request, response, url) {
     return json(response, 503, { error: "control_plane_unavailable" });
   }
 
-  if (!upstream.ok) return controlPlaneUpstreamFailure(response, upstream.status);
+  if (!upstream.ok) return controlPlaneUpstreamFailure(response, upstream);
   const contentType = String(upstream.headers.get("content-type") || "").toLowerCase();
   if (route.sse) {
     if (!contentType.startsWith("text/event-stream")) return json(response, 502, { error: "control_plane_schema_invalid" });
@@ -1108,6 +1117,7 @@ async function proxyControlPlane(request, response, url) {
 }
 
 async function controlPlaneRoute(request, url) {
+  if (url.pathname.startsWith("/api/control-plane/v3")) return controlPlaneV3Route(request, url);
   if (url.pathname.startsWith("/api/control-plane/v2")) return controlPlaneV2Route(request, url);
   const prefix = "/api/control-plane/v1";
   const path = url.pathname;
@@ -1164,6 +1174,70 @@ async function controlPlaneRoute(request, url) {
   if (receipt && request.method === "GET") {
     if (url.search) return queryError();
     return { method: "GET", path: `/v1/incidents/${encodeURIComponent(receipt[0])}/node-explanations/${encodeURIComponent(receipt[1])}`, body: null, sse: false };
+  }
+  return null;
+}
+
+async function controlPlaneV3Route(request, url) {
+  const prefix = "/api/control-plane/v3";
+  const path = url.pathname;
+  if (!controlPlaneMethod(request.method)) return null;
+  const queryError = () => ({ error: true });
+  const forwardedLastEventId = controlPlaneEventCursor(request.headers["last-event-id"]);
+
+  if (path === `${prefix}/live/snapshot` && request.method === "GET") {
+    if (url.search) return queryError();
+    return { method: "GET", path: "/v3/live/snapshot", body: null, sse: false };
+  }
+  if (path === `${prefix}/live/events` && request.method === "GET") {
+    if (!onlySearchParams(url, ["after"]) || (url.searchParams.has("after") && !validControlPlaneInteger(url.searchParams.get("after"), 0, Number.MAX_SAFE_INTEGER)) || forwardedLastEventId === false) return queryError();
+    const after = url.searchParams.get("after");
+    return { method: "GET", path: `/v3/live/events${after !== null ? `?after=${after}` : ""}`, body: null, sse: true, lastEventId: forwardedLastEventId || null };
+  }
+  const projection = matchControlPlanePath(path, /^\/api\/control-plane\/v3\/incidents\/([^/]+)\/projection$/);
+  if (projection && request.method === "GET") {
+    if (url.search) return queryError();
+    return { method: "GET", path: `/v3/incidents/${encodeURIComponent(projection)}/projection`, body: null, sse: false };
+  }
+  const series = matchControlPlanePath(path, /^\/api\/control-plane\/v3\/incidents\/([^/]+)\/series$/);
+  if (series && request.method === "GET") {
+    if (url.search) return queryError();
+    return { method: "GET", path: `/v3/incidents/${encodeURIComponent(series)}/series`, body: null, sse: false };
+  }
+  const events = matchControlPlanePath(path, /^\/api\/control-plane\/v3\/incidents\/([^/]+)\/events$/);
+  if (events && request.method === "GET") {
+    if (!onlySearchParams(url, ["after"]) || (url.searchParams.has("after") && !validControlPlaneInteger(url.searchParams.get("after"), 0, Number.MAX_SAFE_INTEGER)) || forwardedLastEventId === false) return queryError();
+    const after = url.searchParams.get("after");
+    return { method: "GET", path: `/v3/incidents/${encodeURIComponent(events)}/events${after !== null ? `?after=${after}` : ""}`, body: null, sse: true, lastEventId: forwardedLastEventId || null };
+  }
+  if (request.method !== "POST" || url.search || !isJsonRequest(request)) return null;
+  let body;
+  try { body = await readJson(request); } catch { return queryError(); }
+
+  const advance = matchControlPlanePath(path, /^\/api\/control-plane\/v3\/incidents\/([^/]+)\/workflow\/advance$/);
+  if (advance) {
+    if (!validV3BaseCommand(body)) return queryError();
+    return { method: "POST", path: `/v3/incidents/${encodeURIComponent(advance)}/workflow/advance`, body, sse: false };
+  }
+  const rerun = matchControlPlanePath(path, /^\/api\/control-plane\/v3\/incidents\/([^/]+)\/workflow\/stages\/([^/]+)\/rerun$/);
+  if (rerun) {
+    if (!validV3Stage(rerun[1]) || !validV3ReasonCommand(body)) return queryError();
+    return { method: "POST", path: `/v3/incidents/${encodeURIComponent(rerun[0])}/workflow/stages/${encodeURIComponent(rerun[1])}/rerun`, body, sse: false };
+  }
+  const escalation = matchControlPlanePath(path, /^\/api\/control-plane\/v3\/incidents\/([^/]+)\/workflow\/escalations$/);
+  if (escalation) {
+    if (!validV3ReasonCommand(body)) return queryError();
+    return { method: "POST", path: `/v3/incidents/${encodeURIComponent(escalation)}/workflow/escalations`, body, sse: false };
+  }
+  const agentRun = matchControlPlanePath(path, /^\/api\/control-plane\/v3\/incidents\/([^/]+)\/agent-runs$/);
+  if (agentRun) {
+    if (!validV3AgentCommand(body)) return queryError();
+    return { method: "POST", path: `/v3/incidents/${encodeURIComponent(agentRun)}/agent-runs`, body, sse: false };
+  }
+  const approval = matchControlPlanePath(path, /^\/api\/control-plane\/v3\/incidents\/([^/]+)\/actions\/([^/]+)\/approval$/);
+  if (approval) {
+    if (!validV3ApprovalCommand(body)) return queryError();
+    return { method: "POST", path: `/v3/incidents/${encodeURIComponent(approval[0])}/actions/${encodeURIComponent(approval[1])}/approval`, body, sse: false };
   }
   return null;
 }
@@ -1225,9 +1299,23 @@ function controlPlaneHeaders(bearer, route) {
   return headers;
 }
 
-function controlPlaneUpstreamFailure(response, status) {
+async function controlPlaneUpstreamFailure(response, upstream) {
+  const status = upstream.status;
+  let detail = null;
+  try {
+    const contentType = String(upstream.headers.get("content-type") || "").toLowerCase();
+    if (contentType.startsWith("application/json")) {
+      const body = JSON.parse(await boundedUpstreamBody(upstream));
+      detail = typeof body?.detail === "string" ? body.detail : null;
+    }
+  } catch { /* preserve the bounded public status mapping */ }
   if ([401, 403].includes(status)) return json(response, status, { error: "control_plane_auth_failed" });
   if (status === 404) return json(response, 404, { error: "control_plane_not_found" });
+  if (status === 409 && detail === "REVALIDATION_REQUIRED") {
+    return json(response, 409, { error: "control_plane_revalidation_required" });
+  }
+  if (status === 409) return json(response, 409, { error: "control_plane_conflict" });
+  if (status === 422) return json(response, 422, { error: "control_plane_schema_invalid" });
   if (status >= 400 && status < 500) return json(response, status, { error: "control_plane_request_rejected" });
   return json(response, 503, { error: "control_plane_unavailable" });
 }
@@ -1284,6 +1372,35 @@ function validWorkspaceActionCommand(value, actionId) {
     && Number.isSafeInteger(value.projection_revision) && value.projection_revision >= 1
     && value.action_id === actionId && value.idempotency_key === value.action_id;
 }
+function validV3CommandObject(value, allowedKeys) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype) return false;
+  const keys = Object.keys(value);
+  if (keys.some((key) => !allowedKeys.includes(key)) || !["attempt_id", "expected_stage", "expected_workflow_revision", "idempotency_key"].every((key) => keys.includes(key))) return false;
+  return validControlPlaneId(value.attempt_id) && validV3Stage(value.expected_stage)
+    && Number.isSafeInteger(value.expected_workflow_revision) && value.expected_workflow_revision >= 1
+    && validControlPlaneId(value.idempotency_key);
+}
+function validV3BaseCommand(value) {
+  return validV3CommandObject(value, ["attempt_id", "expected_stage", "expected_workflow_revision", "idempotency_key"]);
+}
+function validV3ReasonCommand(value) {
+  return validV3CommandObject(value, ["attempt_id", "expected_stage", "expected_workflow_revision", "idempotency_key", "reason"])
+    && validControlPlaneText(value.reason, 500);
+}
+function validV3AgentCommand(value) {
+  return validV3CommandObject(value, ["attempt_id", "expected_stage", "expected_workflow_revision", "idempotency_key", "component_id", "question"])
+    && (value.component_id === undefined || validControlPlaneId(value.component_id))
+    && (value.question === undefined || validControlPlaneText(value.question, 1000));
+}
+function validV3ApprovalCommand(value) {
+  return validV3CommandObject(value, ["attempt_id", "expected_stage", "expected_workflow_revision", "idempotency_key", "decision", "expected_decision_revision", "reason"])
+    && ["APPROVE", "REJECT"].includes(value.decision)
+    && Number.isSafeInteger(value.expected_decision_revision) && value.expected_decision_revision >= 0
+    && (value.reason === undefined || validControlPlaneText(value.reason, 500));
+}
+function validV3Stage(value) {
+  return ["DETECT", "TRIAGE", "INVESTIGATE", "DECIDE", "RESPOND", "VERIFY"].includes(value);
+}
 
 async function serveStatic(pathname, response) {
   const requested = pathname === "/" ? "index.html" : pathname.slice(1);
@@ -1306,6 +1423,527 @@ async function readJson(request) {
     if (body.length > 32_000) throw new Error("Request body too large");
   }
   return body ? JSON.parse(body) : {};
+}
+
+class GuidedInternalError extends Error {
+  constructor(code, status) {
+    super(code);
+    this.code = code;
+    this.status = status;
+  }
+}
+
+async function handleGuidedInternalV3(request, response, url) {
+  if (request.method !== "POST" || url.search) return json(response, 404, { error: "not_found" });
+  try {
+    const rollbackPath = [
+      "/api/internal/control-plane/v3/actions/safe-rollback",
+      "/api/internal/control-plane/v3/actions/rollback",
+    ].includes(url.pathname);
+    const { body, fingerprint } = await readSignedGuidedJson(
+      request,
+      rollbackPath
+        ? "FLOWPULSE_V3_SAFE_ROLLBACK_HMAC_SECRET"
+        : "FLOWPULSE_V3_INTERNAL_BRIDGE_HMAC_SECRET",
+    );
+    if (url.pathname === "/api/internal/control-plane/v3/agent-runs") {
+      const input = validateGuidedAgentRequest(body);
+      const result = await reuseGuidedRequest(guidedAgentRequests, "agent", input.request_id, fingerprint, async () => {
+        const model = await guidedCodexAdapter.respond({
+          role: input.role,
+          context: guidedAgentContext(input)
+        });
+        if (model.tool_requests.length) throw new GuidedInternalError("agent_tool_request_not_executed", 422);
+        return {
+          schema_version: "flowpulse.guided-agent-bridge-response.v3",
+          request_id: input.request_id,
+          provider: model.provider,
+          model: model.model,
+          answer: model.answer,
+          evidence_refs: input.evidence_refs,
+          tool_requests: []
+        };
+      });
+      return json(response, 200, result);
+    }
+    if (url.pathname === "/api/internal/control-plane/v3/actions/preflight") {
+      const input = validateGuidedActionPreflightRequest(body);
+      const result = await reuseGuidedRequest(guidedActionPreflights, "preflight", input.request_id, fingerprint, () => guidedActionPreflight(input));
+      return json(response, 200, result);
+    }
+    if (url.pathname === "/api/internal/control-plane/v3/actions/execute") {
+      const input = validateGuidedActionExecutionRequest(body);
+      const result = await reuseGuidedRequest(guidedActionExecutions, "execution", input.execution_key, fingerprint, () => guidedActionExecution(input, fingerprint));
+      return json(response, 200, result);
+    }
+    if (rollbackPath) {
+      const input = validateGuidedActionExecutionRequest(body);
+      const result = await reuseGuidedRequest(
+        guidedRollbackExecutions, "rollback", input.execution_key, fingerprint,
+        () => guidedSafeRollbackExecution(input, fingerprint),
+      );
+      return json(response, 200, result);
+    }
+    return json(response, 404, { error: "not_found" });
+  } catch (error) {
+    if (error instanceof GuidedInternalError) return json(response, error.status, { error: error.code });
+    const code = typeof error?.code === "string" && error.code.startsWith("codex_")
+      ? error.code
+      : "guided_internal_unavailable";
+    return json(response, 503, { error: code });
+  }
+}
+
+async function readSignedGuidedJson(request, secretEnvironmentName) {
+  const secret = process.env[secretEnvironmentName];
+  if (typeof secret !== "string" || Buffer.byteLength(secret, "utf8") < 32) {
+    throw new GuidedInternalError("guided_internal_auth_unconfigured", 503);
+  }
+  if (!String(request.headers["content-type"] || "").toLowerCase().startsWith("application/json")) {
+    throw new GuidedInternalError("guided_internal_content_type_invalid", 415);
+  }
+  const provided = String(request.headers["x-flowpulse-internal-signature"] || "");
+  if (!/^[a-f0-9]{64}$/.test(provided)) throw new GuidedInternalError("guided_internal_signature_invalid", 401);
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of request) {
+    size += chunk.byteLength;
+    if (size > 64 * 1024) throw new GuidedInternalError("guided_internal_body_too_large", 413);
+    chunks.push(Buffer.from(chunk));
+  }
+  const raw = Buffer.concat(chunks);
+  const expected = createHmac("sha256", secret).update(raw).digest();
+  const candidate = Buffer.from(provided, "hex");
+  if (candidate.byteLength !== expected.byteLength || !timingSafeEqual(candidate, expected)) {
+    throw new GuidedInternalError("guided_internal_signature_invalid", 401);
+  }
+  let body;
+  try { body = JSON.parse(raw.toString("utf8")); } catch { throw new GuidedInternalError("guided_internal_schema_invalid", 422); }
+  if (!plainGuidedObject(body)) throw new GuidedInternalError("guided_internal_schema_invalid", 422);
+  return { body, fingerprint: createHmac("sha256", secret).update(raw).digest("hex") };
+}
+
+const GUIDED_LEDGER_RUN_ID = "flowpulse-internal-guided-v3";
+const GUIDED_LEDGER_INCIDENT_ID = "flowpulse-internal-control-plane";
+
+function guidedLedgerEventId(kind, phase, key) {
+  return `guided-v3-${kind}-${phase}-${sha256Canonical({ key }).slice(0, 32)}`;
+}
+
+function guidedLedgerEvent(kind, phase, key) {
+  return ledger.get(guidedLedgerEventId(kind, phase, key));
+}
+
+function appendGuidedLedgerEvent(kind, phase, key, fingerprint, payload, parentId = null) {
+  const result = ledger.appendIfAbsent({
+    id: guidedLedgerEventId(kind, phase, key),
+    runId: GUIDED_LEDGER_RUN_ID,
+    incidentId: GUIDED_LEDGER_INCIDENT_ID,
+    type: `guided.v3.${kind}.${phase}`,
+    actor: "internal-control-plane",
+    payload: { fingerprint, ...payload },
+    evidenceRefs: [],
+    parentId,
+    correlationId: `guided-v3-${kind}-${sha256Canonical({ key }).slice(0, 32)}`
+  });
+  if (result.event?.payload?.fingerprint !== fingerprint) {
+    throw new GuidedInternalError("guided_internal_idempotency_conflict", 409);
+  }
+  return result.event;
+}
+
+async function reuseGuidedRequest(store, kind, key, fingerprint, execute) {
+  const durable = guidedLedgerEvent(kind, "completed", key);
+  if (durable) {
+    if (durable.payload?.fingerprint !== fingerprint || !plainGuidedObject(durable.payload?.response)) {
+      throw new GuidedInternalError("guided_internal_idempotency_conflict", 409);
+    }
+    const response = durable.payload.response;
+    return { ...response, ...(Object.hasOwn(response, "reused") ? { reused: true } : {}) };
+  }
+  if (kind !== "execution") {
+    appendGuidedLedgerEvent(kind, "claimed", key, fingerprint, { request_key: key });
+  }
+  const existing = store.get(key);
+  if (existing) {
+    if (existing.fingerprint !== fingerprint) throw new GuidedInternalError("guided_internal_idempotency_conflict", 409);
+    const value = await existing.promise;
+    return { ...value, ...(Object.hasOwn(value, "reused") ? { reused: true } : {}) };
+  }
+  const promise = Promise.resolve().then(execute);
+  store.set(key, { fingerprint, promise });
+  try {
+    const value = await promise;
+    appendGuidedLedgerEvent(kind, "completed", key, fingerprint, { response: value });
+    return value;
+  } catch (error) {
+    // Never pin a rejected Promise. Action safety is recovered from the
+    // durable claimed/started phases below, not volatile process memory.
+    store.delete(key);
+    throw error;
+  }
+}
+
+function validateGuidedAgentRequest(value) {
+  const keys = ["schema_version", "request_id", "case_id", "attempt_id", "stage_run_id", "stage", "role", "selected_component", "incident_title", "incident_summary", "freshness", "component_ids", "edge_ids", "evidence_refs", "evidence_facts", "query_outcomes", "hypotheses"];
+  if (!exactGuidedKeys(value, keys)
+    || value.schema_version !== "flowpulse.guided-agent-bridge-request.v3"
+    || !guidedId(value.request_id) || !guidedId(value.case_id) || !guidedId(value.attempt_id) || !guidedId(value.stage_run_id)
+    || !["TRIAGE", "INVESTIGATE", "DECIDE"].includes(value.stage)
+    || !["observer", "investigator", "evaluator", "critic"].includes(value.role)
+    || !guidedId(value.selected_component)
+    || !guidedText(value.incident_title, 500) || !guidedText(value.incident_summary, 4_000)
+    || !validGuidedFreshness(value.freshness)
+    || !guidedIdList(value.component_ids, 1, 64)
+    || !guidedGraphIdList(value.edge_ids, 0, 128)
+    || !guidedIdList(value.evidence_refs, 0, 128)
+    || !validGuidedEvidenceFacts(value.evidence_facts, value)
+    || !validGuidedQueryOutcomes(value.query_outcomes, value)
+    || !validGuidedHypotheses(value.hypotheses, value)
+    || !value.component_ids.includes(value.selected_component)) {
+    throw new GuidedInternalError("guided_agent_schema_invalid", 422);
+  }
+  return value;
+}
+
+function guidedAgentContext(input) {
+  const evidence = new Map(input.evidence_refs.map((id) => [id, { id }]));
+  for (const fact of input.evidence_facts) {
+    for (const id of fact.evidence_refs) evidence.set(id, {
+      id,
+      kind: "canonical_signal",
+      label: fact.label,
+      value: fact.value,
+      observed_at: fact.observed_at,
+      component_ids: fact.component_ids,
+      edge_ids: fact.edge_ids,
+      raw_payload_excluded: true
+    });
+  }
+  return {
+    role: input.role === "critic" ? "evaluator" : input.role,
+    message: `Review only the canonical ${input.stage} evidence for ${input.selected_component}.`,
+    page_mode: "diagnose",
+    selected_component: input.selected_component,
+    topology: { component_ids: input.component_ids, edge_ids: input.edge_ids },
+    source_truth: input.freshness,
+    incident: { case_id: input.case_id, attempt_id: input.attempt_id, stage_run_id: input.stage_run_id, stage: input.stage, title: input.incident_title, summary: input.incident_summary },
+    human_gate: { state: "not_requested", model_authority: "read_only" },
+    evidence: [...evidence.values()],
+    role_context: {
+      bounded_to_stage: input.stage,
+      independent_role: input.role,
+      model_tool_execution: "disabled",
+      hypotheses: input.hypotheses
+    },
+    tool_allowlist: [],
+    tool_results: input.query_outcomes.map((query) => ({
+      tool: query.query_name,
+      state: query.state,
+      summary: query.result_summary,
+      component_ids: query.component_ids,
+      edge_ids: query.edge_ids,
+      evidence_refs: query.evidence_refs,
+      observation_timestamps: query.observation_timestamps,
+      triggered_replan: query.triggered_replan,
+      raw_payload_excluded: true
+    }))
+  };
+}
+
+function validateGuidedActionPreflightRequest(value) {
+  const keys = ["schema_version", "request_id", "case_id", "attempt_id", "stage_run_id", "command_id", "target_component_id", "decision_revision", "expected_before"];
+  if (!exactGuidedKeys(value, keys)
+    || value.schema_version !== "flowpulse.guided-action-preflight-request.v3"
+    || ![value.request_id, value.case_id, value.attempt_id, value.stage_run_id].every(guidedId)
+    || value.command_id !== "astronomy.restore-payment-and-recreate-checkout"
+    || value.target_component_id !== "checkout"
+    || !Number.isSafeInteger(value.decision_revision) || value.decision_revision < 1
+    || value.expected_before !== "paymentUnreachable=on") {
+    throw new GuidedInternalError("guided_action_preflight_schema_invalid", 422);
+  }
+  return value;
+}
+
+async function guidedActionPreflight(input) {
+  const [manifest, flag] = await Promise.all([
+    developmentAdapter.developmentChangeManifest(),
+    developmentAdapter.readAllowlistedFlagVariant()
+  ]);
+  if (manifest.repair_command_id !== input.command_id || manifest.target !== "checkout"
+    || manifest.flag !== "paymentUnreachable" || manifest.after !== "on" || manifest.known_good !== "off"
+    || flag.flag !== manifest.flag || !["on", "off"].includes(flag.variant)) {
+    throw new GuidedInternalError("guided_action_manifest_invalid", 409);
+  }
+  const passed = flag.variant === "on";
+  const manifestHash = sha256Canonical(manifest);
+  return {
+    schema_version: "flowpulse.guided-action-preflight-response.v3",
+    request_id: input.request_id,
+    command_id: input.command_id,
+    target_component_id: input.target_component_id,
+    receipt_id: `preflight-${manifestHash.slice(0, 24)}-${input.decision_revision}`,
+    flag_name: manifest.flag,
+    expected_variant: manifest.after,
+    observed_variant: flag.variant,
+    mutation_targets: [`flag:${manifest.flag}`, "container:checkout"],
+    blast_radius: "Pinned local Astronomy Shop payment flag and Checkout container only",
+    manifest_hash: manifestHash,
+    rollback_supported: guidedSafeRollbackConfigured(),
+    passed,
+    summary: passed
+      ? "Allowlisted flag is on; bounded Checkout recovery preconditions passed."
+      : "Allowlisted flag is not on; the decision must be revalidated.",
+    checked_at: new Date().toISOString()
+  };
+}
+
+function validateGuidedActionExecutionRequest(value) {
+  const keys = ["schema_version", "execution_key", "action_id", "attempt_id", "command_id", "decision_revision", "expected_before", "expected_after"];
+  if (!exactGuidedKeys(value, keys)
+    || value.schema_version !== "flowpulse.guided-action-bridge-request.v3"
+    || ![value.execution_key, value.action_id, value.attempt_id].every(guidedId)
+    || value.command_id !== "astronomy.restore-payment-and-recreate-checkout"
+    || !Number.isSafeInteger(value.decision_revision) || value.decision_revision < 1
+    || value.expected_before !== "paymentUnreachable=on"
+    || value.expected_after !== "paymentUnreachable=off") {
+    throw new GuidedInternalError("guided_action_execution_schema_invalid", 422);
+  }
+  return value;
+}
+
+async function guidedActionExecution(input, fingerprint) {
+  const claim = appendGuidedLedgerEvent(
+    "execution", "claimed", input.execution_key, fingerprint,
+    { action_id: input.action_id, command_id: input.command_id },
+  );
+  const [manifest, before] = await Promise.all([
+    developmentAdapter.developmentChangeManifest(),
+    developmentAdapter.readAllowlistedFlagVariant()
+  ]);
+  if (manifest.repair_command_id !== input.command_id || manifest.target !== "checkout"
+    || manifest.flag !== "paymentUnreachable" || manifest.after !== "on" || manifest.known_good !== "off") {
+    throw new GuidedInternalError("guided_action_manifest_invalid", 409);
+  }
+  const started = guidedLedgerEvent("execution", "started", input.execution_key);
+  if (started) {
+    if (started.payload?.fingerprint !== fingerprint) {
+      throw new GuidedInternalError("guided_internal_idempotency_conflict", 409);
+    }
+    if (before.flag === manifest.flag && before.variant === "off") {
+      const currentCheckout = await developmentAdapter.readCheckoutRuntimeIdentity();
+      if (!checkoutRecreatedAfterStarted(started, currentCheckout)) {
+        // A flag write and a container recreation are two distinct effects.
+        // Never infer the second from the first and never issue another
+        // mutation when recovery cannot prove where the crash occurred.
+        throw new GuidedInternalError("guided_action_reconciliation_requires_human", 409);
+      }
+      return {
+        schema_version: "flowpulse.guided-action-bridge-response.v3",
+        execution_key: input.execution_key,
+        command_id: input.command_id,
+        reused: true,
+        started_at: started.recorded_at,
+        completed_at: new Date().toISOString(),
+        output_summary: "Recovered the durable execution receipt; paymentUnreachable is off and a newer Checkout runtime proves recreation completed.",
+        before: "paymentUnreachable=on",
+        after: "paymentUnreachable=off"
+      };
+    }
+  }
+  if (before.flag !== manifest.flag || before.variant !== "on") {
+    throw new GuidedInternalError("guided_action_precondition_changed", 409);
+  }
+  const preExecutionCheckout = started
+    ? null
+    : await developmentAdapter.readCheckoutRuntimeIdentity();
+  const startedEvent = started || appendGuidedLedgerEvent(
+    "execution", "started", input.execution_key, fingerprint,
+    {
+      action_id: input.action_id,
+      command_id: input.command_id,
+      pre_execution_checkout: preExecutionCheckout
+    }, claim.id,
+  );
+  const startedAt = startedEvent.recorded_at;
+  const execution = await developmentAdapter.executeApprovedRollback({ commandId: input.command_id });
+  const [after, currentCheckout] = await Promise.all([
+    developmentAdapter.readAllowlistedFlagVariant(),
+    developmentAdapter.readCheckoutRuntimeIdentity()
+  ]);
+  if (after.flag !== manifest.flag || after.variant !== "off" || execution.command_id !== input.command_id
+    || !checkoutRecreatedAfterStarted(startedEvent, currentCheckout)) {
+    throw new GuidedInternalError("guided_action_postcondition_failed", 409);
+  }
+  return {
+    schema_version: "flowpulse.guided-action-bridge-response.v3",
+    execution_key: input.execution_key,
+    command_id: input.command_id,
+    reused: false,
+    started_at: startedAt,
+    completed_at: execution.completed_at || new Date().toISOString(),
+    output_summary: "paymentUnreachable set to off and Checkout recreated from the pinned manifest.",
+    before: "paymentUnreachable=on",
+    after: "paymentUnreachable=off"
+  };
+}
+
+async function guidedSafeRollbackExecution(input, fingerprint) {
+  const claim = appendGuidedLedgerEvent(
+    "rollback", "claimed", input.execution_key, fingerprint,
+    { action_id: input.action_id, command_id: input.command_id },
+  );
+  const [manifest, flag] = await Promise.all([
+    developmentAdapter.developmentChangeManifest(),
+    developmentAdapter.readAllowlistedFlagVariant(),
+  ]);
+  if (manifest.repair_command_id !== input.command_id || manifest.target !== "checkout"
+    || manifest.flag !== "paymentUnreachable" || manifest.known_good !== "off") {
+    throw new GuidedInternalError("guided_rollback_manifest_invalid", 409);
+  }
+  if (flag.flag !== manifest.flag || flag.variant !== "off") {
+    // Safe compensation must never re-enable or otherwise rewrite the fault.
+    throw new GuidedInternalError("guided_rollback_requires_fault_off", 409);
+  }
+  const started = guidedLedgerEvent("rollback", "started", input.execution_key);
+  if (started) {
+    if (started.payload?.fingerprint !== fingerprint) {
+      throw new GuidedInternalError("guided_internal_idempotency_conflict", 409);
+    }
+    const currentCheckout = await developmentAdapter.readCheckoutRuntimeIdentity();
+    if (!checkoutRecreatedAfterStarted(started, currentCheckout)) {
+      throw new GuidedInternalError("guided_rollback_reconciliation_requires_human", 409);
+    }
+    return guidedRollbackResponse(input, started, new Date().toISOString(), true);
+  }
+
+  const preExecutionCheckout = await developmentAdapter.readCheckoutRuntimeIdentity();
+  const startedEvent = appendGuidedLedgerEvent(
+    "rollback", "started", input.execution_key, fingerprint,
+    {
+      action_id: input.action_id,
+      command_id: input.command_id,
+      pre_execution_checkout: preExecutionCheckout,
+    },
+    claim.id,
+  );
+  const execution = await developmentAdapter.executeSafeCheckoutRecreate({
+    commandId: input.command_id,
+  });
+  const [after, currentCheckout] = await Promise.all([
+    developmentAdapter.readAllowlistedFlagVariant(),
+    developmentAdapter.readCheckoutRuntimeIdentity(),
+  ]);
+  if (after.flag !== manifest.flag || after.variant !== "off"
+    || execution.command_id !== input.command_id
+    || !checkoutRecreatedAfterStarted(startedEvent, currentCheckout)) {
+    throw new GuidedInternalError("guided_rollback_postcondition_failed", 409);
+  }
+  return guidedRollbackResponse(
+    input,
+    startedEvent,
+    execution.completed_at || new Date().toISOString(),
+    false,
+  );
+}
+
+function guidedRollbackResponse(input, startedEvent, completedAt, recovered) {
+  return {
+    schema_version: "flowpulse.guided-rollback-bridge-response.v3",
+    rollback_receipt_id: `rollback-${sha256Canonical({ execution_key: input.execution_key }).slice(0, 24)}`,
+    execution_key: input.execution_key,
+    action_id: input.action_id,
+    command_id: input.command_id,
+    status: "ROLLED_BACK",
+    started_at: startedEvent.recorded_at,
+    completed_at: completedAt,
+    output_summary: recovered
+      ? "Recovered durable proof that Checkout was safely recreated while paymentUnreachable remained off."
+      : "Checkout safely recreated from the pinned manifest while paymentUnreachable remained off.",
+  };
+}
+
+function checkoutRecreatedAfterStarted(startedEvent, current) {
+  const previous = startedEvent?.payload?.pre_execution_checkout;
+  if (!validCheckoutRuntimeIdentity(previous) || !validCheckoutRuntimeIdentity(current) || current.running !== true) return false;
+  const actionStartedAt = Date.parse(startedEvent.recorded_at);
+  const previousStartedAt = Date.parse(previous.started_at);
+  const currentStartedAt = Date.parse(current.started_at);
+  if (![actionStartedAt, previousStartedAt, currentStartedAt].every(Number.isFinite)) return false;
+  const runtimeChanged = current.container_id !== previous.container_id || currentStartedAt > previousStartedAt;
+  return runtimeChanged && currentStartedAt >= actionStartedAt;
+}
+
+function validCheckoutRuntimeIdentity(value) {
+  return plainGuidedObject(value)
+    && typeof value.container_id === "string" && /^[a-f0-9]{12,128}$/i.test(value.container_id)
+    && typeof value.started_at === "string" && Number.isFinite(Date.parse(value.started_at))
+    && typeof value.running === "boolean";
+}
+
+function guidedSafeRollbackConfigured() {
+  const secret = process.env.FLOWPULSE_V3_SAFE_ROLLBACK_HMAC_SECRET;
+  const url = process.env.FLOWPULSE_V3_SAFE_ROLLBACK_URL;
+  return typeof secret === "string" && Buffer.byteLength(secret, "utf8") >= 32
+    && typeof url === "string" && /^http:\/\/(?:127\.0\.0\.1|localhost|host\.docker\.internal)(?::\d+)?(?:\/)?$/.test(url);
+}
+
+function exactGuidedKeys(value, keys) {
+  return plainGuidedObject(value) && Object.keys(value).sort().join(",") === [...keys].sort().join(",");
+}
+function plainGuidedObject(value) { return Boolean(value) && typeof value === "object" && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype; }
+function guidedId(value) { return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/.test(value); }
+function guidedText(value, maximum) { return typeof value === "string" && Buffer.byteLength(value, "utf8") > 0 && Buffer.byteLength(value, "utf8") <= maximum; }
+function guidedIdList(value, minimum, maximum) { return Array.isArray(value) && value.length >= minimum && value.length <= maximum && value.every(guidedId) && new Set(value).size === value.length; }
+function guidedGraphIdList(value, minimum, maximum) { return Array.isArray(value) && value.length >= minimum && value.length <= maximum && value.every((item) => typeof item === "string" && /^[A-Za-z0-9][A-Za-z0-9._:>\-]{0,199}$/.test(item)) && new Set(value).size === value.length; }
+function guidedSubset(values, allowed) { return values.every((item) => allowed.includes(item)); }
+function validGuidedEvidenceFacts(items, request) {
+  return Array.isArray(items) && items.length <= 32 && items.every((item) =>
+    exactGuidedKeys(item, ["fact_id", "label", "value", "observed_at", "component_ids", "edge_ids", "evidence_refs"])
+    && guidedId(item.fact_id) && guidedText(item.label, 1_000) && guidedText(item.value, 2_000)
+    && typeof item.observed_at === "string" && Number.isFinite(Date.parse(item.observed_at))
+    && guidedIdList(item.component_ids, 1, 32) && guidedGraphIdList(item.edge_ids, 0, 32)
+    && guidedIdList(item.evidence_refs, 1, 32)
+    && guidedSubset(item.component_ids, request.component_ids)
+    && guidedSubset(item.edge_ids, request.edge_ids)
+    && guidedSubset(item.evidence_refs, request.evidence_refs));
+}
+function validGuidedQueryOutcomes(items, request) {
+  return Array.isArray(items) && items.length <= 16 && items.every((item) =>
+    exactGuidedKeys(item, ["schema_version", "query_id", "attempt_id", "stage_run_id", "stage", "worker_activity_id", "query_name", "state", "parameters_hash", "result_summary", "component_ids", "edge_ids", "evidence_refs", "observation_timestamps", "triggered_replan", "started_at", "completed_at", "failure_code"])
+    && item.schema_version === "flowpulse.evidence-query-result.v3"
+    && [item.query_id, item.attempt_id, item.stage_run_id, item.worker_activity_id, item.parameters_hash].every(guidedId)
+    && item.attempt_id === request.attempt_id && item.stage === "INVESTIGATE"
+    && item.query_name === "incident.current-signals.v1"
+    && ["RUNNING", "SUCCEEDED", "FAILED"].includes(item.state)
+    && guidedText(item.result_summary, 4_000)
+    && guidedIdList(item.component_ids, 0, 64) && guidedGraphIdList(item.edge_ids, 0, 128)
+    && guidedIdList(item.evidence_refs, 0, 128)
+    && Array.isArray(item.observation_timestamps) && item.observation_timestamps.length <= 128
+    && item.observation_timestamps.every((value) => typeof value === "string" && Number.isFinite(Date.parse(value)))
+    && typeof item.triggered_replan === "boolean"
+    && typeof item.started_at === "string" && Number.isFinite(Date.parse(item.started_at))
+    && (item.completed_at === null || (typeof item.completed_at === "string" && Number.isFinite(Date.parse(item.completed_at))))
+    && (item.failure_code === null || guidedText(item.failure_code, 500))
+    && guidedSubset(item.component_ids, request.component_ids)
+    && guidedSubset(item.edge_ids, request.edge_ids)
+    && guidedSubset(item.evidence_refs, request.evidence_refs));
+}
+function validGuidedHypotheses(items, request) {
+  return Array.isArray(items) && items.length <= 32 && items.every((item) =>
+    exactGuidedKeys(item, ["hypothesis_id", "stage_run_id", "statement", "confidence", "supporting_evidence_refs", "contradicting_evidence_refs", "falsification_condition", "status"])
+    && guidedId(item.hypothesis_id) && guidedId(item.stage_run_id)
+    && guidedText(item.statement, 4_000) && guidedText(item.falsification_condition, 4_000) && guidedText(item.status, 160)
+    && typeof item.confidence === "number" && Number.isFinite(item.confidence) && item.confidence >= 0 && item.confidence <= 1
+    && guidedIdList(item.supporting_evidence_refs, 0, 64)
+    && guidedIdList(item.contradicting_evidence_refs, 0, 64)
+    && guidedSubset(item.supporting_evidence_refs, request.evidence_refs)
+    && guidedSubset(item.contradicting_evidence_refs, request.evidence_refs));
+}
+function validGuidedFreshness(value) {
+  return exactGuidedKeys(value, ["state", "observed_at", "fresh_until"])
+    && ["CURRENT", "AGING", "STALE", "UNKNOWN"].includes(value.state)
+    && [value.observed_at, value.fresh_until].every((item) => typeof item === "string" && Number.isFinite(Date.parse(item)));
 }
 
 function requireJson(request) {

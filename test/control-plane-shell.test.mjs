@@ -8,31 +8,25 @@ const controlPlaneApp = await readFile(new URL("../public/control-plane-app.mjs"
 const legacyApp = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
 const stylesCss = await readFile(new URL("../public/styles.css", import.meta.url), "utf8");
 
-test("the established FlowPulse shell is the only visible standard-path workspace", () => {
+test("the V3 shell is the only standard-path runtime", () => {
   assert.doesNotMatch(indexHtml, /id="control-plane-app"/);
-  assert.match(indexHtml, /id="app-shell"[^>]*data-mode="architecture"(?![^>]*\bhidden\b)/);
+  assert.match(indexHtml, /id="app-shell"[^>]*data-mode="live"(?![^>]*\bhidden\b)/);
   assert.match(indexHtml, /id="twin-canvas"/);
   assert.match(indexHtml, /id="context-drawer"/);
   assert.match(indexHtml, /id="incident-stage-rail"/);
   assert.match(indexHtml, /id="timeline-dock"/);
   const modes = [...indexHtml.matchAll(/class="mode-button[^>]*data-mode="([^"]+)"/g)].map((match) => match[1]);
-  assert.deepEqual(modes, ["architecture", "live", "incident"]);
-  assert.match(indexHtml, /src="\/app\.js"[\s\S]*src="\/control-plane-app\.mjs"/);
+  assert.deepEqual(modes, ["live", "incident"]);
+  assert.doesNotMatch(indexHtml, /src="\/app\.js"/);
+  assert.match(indexHtml, /src="\/control-plane-app\.mjs"/);
   assert.doesNotMatch(controlPlaneApp, /\/api\/(?:state|source|demo|agent-control)\b/);
   assert.match(controlPlaneApp, /new ControlPlaneClient\(\)/);
 });
 
 test("a pinned Incident URL hydrates without waiting for global discovery or module evaluation", () => {
-  assert.match(controlPlaneApp, /render\(\);\s*void bootstrap\(\);/);
-  const bootstrapBody = controlPlaneApp.slice(
-    controlPlaneApp.indexOf("async function bootstrap()"),
-    controlPlaneApp.indexOf("\nfunction dispatch(", controlPlaneApp.indexOf("async function bootstrap()"))
-  );
-  assert.ok(
-    bootstrapBody.indexOf("void loadPinnedCase()") < bootstrapBody.indexOf("await client.activeIncidents()"),
-    "the pinned projection must start before global incident discovery"
-  );
-  assert.match(controlPlaneApp, /async function loadPinnedCase\(\)[\s\S]*runEffect\(\{ type: "projection\.load", case_id: initialCaseId, identity: null \}\)/);
+  assert.match(controlPlaneApp, /render\(\);\s*if \(state\.mode === "incident"\) void v3Workbench\.activate\(initialCaseId\);/);
+  assert.match(controlPlaneApp, /const initialCaseId = requestedCaseId\(\);\s*let state = createControlPlaneState\(\{ caseId: initialCaseId \}\);/);
+  assert.doesNotMatch(controlPlaneApp, /if \(state\.mode === "incident"\) void bootstrap\(\)/);
 });
 
 test("Architecture and Live retain the baseline renderer while the control-plane adapter owns Incident only", () => {
@@ -40,7 +34,9 @@ test("Architecture and Live retain the baseline renderer while the control-plane
   assert.match(legacyApp, /renderSourceCanvas\("live", shared\?\.topology/);
   assert.match(legacyApp, /if \(nextMode === "incident" && els\["app-shell"\]\.dataset\.controlPlaneAdapter === "true"\) return;/);
   assert.match(legacyApp, /function showToast\(message, error = false\) \{\s*if \(els\["app-shell"\]\.dataset\.controlPlaneMode === "incident"\) return;/);
-  assert.match(controlPlaneApp, /button\.addEventListener\("click", \(\) => \{\s*state = \{ \.\.\.state, mode: button\.dataset\.mode \};\s*render\(\);\s*\}, true\);/);
+  assert.match(controlPlaneApp, /if \(nextMode === "incident"\) \{[\s\S]*?v3Workbench\.activate\(requestedCaseId\(\) \|\| state\.pinned_case_id\)/);
+  assert.match(controlPlaneApp, /if \(nextMode === "live"\) \{\s*closeSubscriptions\(\);\s*void v3Live\.activate\(\);\s*return;/);
+  assert.match(controlPlaneApp, /else if \(state\.mode === "live"\) \{\s*closeSubscriptions\(\);\s*void v3Live\.activate\(\);/);
   assert.match(controlPlaneApp, /if \(state\.mode !== "incident"\) \{[\s\S]*?return;/);
   assert.match(controlPlaneApp, /root\.dataset\.controlPlaneMode = "incident"/);
   assert.match(controlPlaneApp, /function renderToast\(\) \{\s*const toast = state\.mode === "incident" \? null : state\.toast;/);

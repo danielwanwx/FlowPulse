@@ -1,4 +1,13 @@
-import { applyDevelopmentCase, developmentStatus, setupDevelopment, startDevelopment, stopDevelopment } from "../src/development-adapter.mjs";
+import {
+  applyDevelopmentCase,
+  developmentChangeManifest,
+  developmentStatus,
+  readAllowlistedFlagVariant,
+  readCheckoutRuntimeIdentity,
+  setupDevelopment,
+  startDevelopment,
+  stopDevelopment,
+} from "../src/development-adapter.mjs";
 
 const command = process.argv[2] || "check";
 const actions = {
@@ -6,6 +15,9 @@ const actions = {
   setup: setupDevelopment,
   start: startDevelopment,
   case: applyDevelopmentCase,
+  flag: readAllowlistedFlagVariant,
+  runtime: readCheckoutRuntimeIdentity,
+  manifest: developmentChangeManifest,
   stop: stopDevelopment
 };
 if (!actions[command]) throw new Error(`Unknown live demo command: ${command}`);

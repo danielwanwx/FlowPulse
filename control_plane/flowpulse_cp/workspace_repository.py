@@ -33,9 +33,17 @@ from .workspace_investigation import (
     validate_workspace_investigation_commit,
 )
 from .workspace_v3_models import (
+    IncidentEventV3,
     IncidentExecutionIdentityV3,
+    IncidentLifecycleStateV3,
+    IncidentProjectionV3,
+    LiveEventV3,
+    LiveIncidentSummaryV3,
+    LiveSnapshotV3,
     TemporalExecutionPointerV3,
     TemporalExecutionRolloverV3,
+    WorkflowRealtimeSyncCommitV3,
+    WorkflowTransitionCommitV3,
 )
 
 
@@ -95,6 +103,20 @@ class InMemoryWorkspaceRepository:
         self.temporal_execution_pointers_v3: Dict[
             Tuple[str, str], TemporalExecutionPointerV3
         ] = {}
+        self.workflow_projections_v3: Dict[
+            Tuple[str, str], List[IncidentProjectionV3]
+        ] = defaultdict(list)
+        self.workflow_events_v3: Dict[
+            Tuple[str, str], List[IncidentEventV3]
+        ] = defaultdict(list)
+        self.workflow_commands_v3: Dict[
+            Tuple[str, str, str], WorkflowTransitionCommitV3
+        ] = {}
+        self.workflow_realtime_syncs_v3: Dict[
+            Tuple[str, str, str], WorkflowRealtimeSyncCommitV3
+        ] = {}
+        self.workflow_live_events_v3: Dict[str, List[LiveEventV3]] = defaultdict(list)
+        self.workflow_live_sequence_v3: Dict[str, int] = defaultdict(int)
         # Test-only seam: a checkpoint raises inside the same in-memory
         # transaction simulation and restores every append-only collection.
         self.failure_injector = failure_injector
@@ -174,6 +196,251 @@ class InMemoryWorkspaceRepository:
             raise PolicyViolation("workspace_v3_execution_pointer_cas_conflict")
         self.temporal_execution_pointers_v3[key] = rollover.replacement
         return rollover.replacement
+
+    async def initialize_workspace_v3(
+        self, projection: IncidentProjectionV3, event: IncidentEventV3,
+    ) -> IncidentProjectionV3:
+        key = (projection.tenant_id, projection.case_id)
+        existing = self.workflow_projections_v3.get(key, [])
+        if existing:
+            if existing[0] == projection:
+                return existing[-1]
+            raise PolicyViolation("workflow_v3_already_initialized")
+        if (
+            projection.workflow_revision != 1
+            or projection.projection_revision != 1
+            or projection.sequence != 1
+            or event.sequence != 1
+            or event.tenant_id != projection.tenant_id
+            or event.case_id != projection.case_id
+            or event.workflow_revision != 1
+            or event.projection_revision != 1
+        ):
+            raise PolicyViolation("workflow_v3_initial_projection_invalid")
+        self.workflow_projections_v3[key].append(projection)
+        self.workflow_events_v3[key].append(event)
+        self._append_workspace_live_events_v3(projection, [event])
+        return projection
+
+    def _append_workspace_live_events_v3(
+        self, projection: IncidentProjectionV3, events: List[IncidentEventV3],
+    ) -> None:
+        for event in events:
+            self.workflow_live_sequence_v3[projection.tenant_id] += 1
+            self.workflow_live_events_v3[projection.tenant_id].append(LiveEventV3(
+                event_id=event.event_id,
+                sequence=self.workflow_live_sequence_v3[projection.tenant_id],
+                event_type=event.event_type.value,
+                occurred_at=event.occurred_at,
+                incident=LiveIncidentSummaryV3.from_projection(projection),
+            ))
+
+    async def workspace_projection_v3(
+        self, tenant_id: str, case_id: str,
+    ) -> Optional[IncidentProjectionV3]:
+        records = self.workflow_projections_v3.get((tenant_id, case_id), [])
+        return records[-1] if records else None
+
+    async def workspace_projection_v3_at_revision(
+        self, tenant_id: str, case_id: str, workflow_revision: int,
+    ) -> Optional[IncidentProjectionV3]:
+        return next((
+            item for item in reversed(
+                self.workflow_projections_v3.get((tenant_id, case_id), [])
+            )
+            if item.workflow_revision == workflow_revision
+        ), None)
+
+    async def workspace_events_v3_after(
+        self, tenant_id: str, case_id: str, after: int,
+    ) -> List[IncidentEventV3]:
+        return [
+            item for item in self.workflow_events_v3.get((tenant_id, case_id), [])
+            if item.sequence > after
+        ]
+
+    async def workspace_event_bounds_v3(
+        self, tenant_id: str, case_id: str,
+    ) -> Tuple[Optional[int], Optional[int]]:
+        records = self.workflow_events_v3.get((tenant_id, case_id), [])
+        return (
+            (records[0].sequence, records[-1].sequence)
+            if records else (None, None)
+        )
+
+    async def workspace_active_projections_v3(
+        self, tenant_id: str, limit: int = 100,
+    ) -> List[IncidentProjectionV3]:
+        projections = [
+            records[-1]
+            for (record_tenant, _), records in self.workflow_projections_v3.items()
+            if record_tenant == tenant_id and records
+            and records[-1].lifecycle_state != IncidentLifecycleStateV3.RESOLVED
+        ]
+        return sorted(
+            projections,
+            key=lambda item: (item.generated_at, item.case_id),
+            reverse=True,
+        )[:limit]
+
+    async def workspace_live_snapshot_v3(
+        self, tenant_id: str, limit: int = 100,
+    ) -> LiveSnapshotV3:
+        """Read incident summaries and their resume cursor as one snapshot."""
+
+        # This method intentionally contains no await: one event-loop turn
+        # observes the append-only projection and live outbox collections at
+        # the same point, mirroring Postgres' one-statement MVCC snapshot.
+        projections = [
+            records[-1]
+            for (record_tenant, _), records in self.workflow_projections_v3.items()
+            if record_tenant == tenant_id and records
+            and records[-1].lifecycle_state != IncidentLifecycleStateV3.RESOLVED
+        ]
+        projections = sorted(
+            projections,
+            key=lambda item: (item.generated_at, item.case_id),
+            reverse=True,
+        )[:limit]
+        records = self.workflow_live_events_v3.get(tenant_id, [])
+        return LiveSnapshotV3(
+            generated_at=self._now(),
+            sequence=records[-1].sequence if records else 0,
+            incidents=[
+                LiveIncidentSummaryV3.from_projection(item)
+                for item in projections
+            ],
+        )
+
+    async def workspace_live_events_v3_after(
+        self, tenant_id: str, after: int,
+    ) -> List[LiveEventV3]:
+        return [
+            event for event in self.workflow_live_events_v3.get(tenant_id, [])
+            if event.sequence > after
+        ][:100]
+
+    async def workspace_live_event_bounds_v3(
+        self, tenant_id: str,
+    ) -> Tuple[Optional[int], Optional[int]]:
+        records = self.workflow_live_events_v3.get(tenant_id, [])
+        return (
+            (records[0].sequence, records[-1].sequence)
+            if records else (None, None)
+        )
+
+    async def workspace_live_cursor_v3(self, tenant_id: str) -> int:
+        records = self.workflow_live_events_v3.get(tenant_id, [])
+        return records[-1].sequence if records else 0
+
+    async def workspace_command_v3(
+        self, tenant_id: str, case_id: str, idempotency_key: str,
+    ) -> Optional[WorkflowTransitionCommitV3]:
+        return self.workflow_commands_v3.get((tenant_id, case_id, idempotency_key))
+
+    async def workspace_realtime_sync_v3(
+        self, tenant_id: str, case_id: str, sync_key: str,
+    ) -> Optional[WorkflowRealtimeSyncCommitV3]:
+        return self.workflow_realtime_syncs_v3.get((tenant_id, case_id, sync_key))
+
+    async def commit_workspace_realtime_sync_v3(
+        self, commit: WorkflowRealtimeSyncCommitV3,
+    ) -> WorkflowRealtimeSyncCommitV3:
+        """CAS one telemetry refresh without advancing the guided workflow."""
+        sync_key = (commit.tenant_id, commit.case_id, commit.sync_key)
+        existing = self.workflow_realtime_syncs_v3.get(sync_key)
+        if existing is not None:
+            if existing.sync_hash != commit.sync_hash:
+                raise PolicyViolation("workflow_v3_realtime_sync_conflict")
+            return existing
+        key = (commit.tenant_id, commit.case_id)
+        records = self.workflow_projections_v3.get(key, [])
+        if not records:
+            raise PolicyViolation("workflow_v3_projection_not_found")
+        current = records[-1]
+        if commit.expected_projection_revision != current.projection_revision:
+            raise PolicyViolation("workflow_v3_realtime_projection_conflict")
+        if (
+            commit.projection.projection_revision != current.projection_revision + 1
+            or commit.projection.workflow_revision != current.workflow_revision
+            or commit.projection.decision_revision != current.decision_revision
+            or commit.events[0].sequence != current.sequence + 1
+            or commit.projection.sequence != commit.events[-1].sequence
+            or any(
+                event.projection_revision != commit.projection.projection_revision
+                or event.workflow_revision != current.workflow_revision
+                for event in commit.events
+            )
+        ):
+            raise PolicyViolation("workflow_v3_realtime_sync_not_monotonic")
+        snapshots = (
+            copy.deepcopy(self.workflow_projections_v3),
+            copy.deepcopy(self.workflow_events_v3),
+            copy.deepcopy(self.workflow_realtime_syncs_v3),
+            copy.deepcopy(self.workflow_live_events_v3),
+            copy.deepcopy(self.workflow_live_sequence_v3),
+        )
+        try:
+            self.workflow_projections_v3[key].append(commit.projection)
+            self.workflow_events_v3[key].extend(commit.events)
+            self._append_workspace_live_events_v3(commit.projection, commit.events)
+            self.workflow_realtime_syncs_v3[sync_key] = commit
+            return commit
+        except Exception:
+            (
+                self.workflow_projections_v3,
+                self.workflow_events_v3,
+                self.workflow_realtime_syncs_v3,
+                self.workflow_live_events_v3,
+                self.workflow_live_sequence_v3,
+            ) = snapshots
+            raise
+
+    async def commit_workspace_transition_v3(
+        self, commit: WorkflowTransitionCommitV3,
+    ) -> WorkflowTransitionCommitV3:
+        command_key = (commit.tenant_id, commit.case_id, commit.idempotency_key)
+        existing = self.workflow_commands_v3.get(command_key)
+        if existing is not None:
+            if existing.command_hash != commit.command_hash:
+                raise PolicyViolation("workflow_v3_idempotency_conflict")
+            return existing
+        key = (commit.tenant_id, commit.case_id)
+        records = self.workflow_projections_v3.get(key, [])
+        if not records:
+            raise PolicyViolation("workflow_v3_projection_not_found")
+        current = records[-1]
+        if commit.expected_workflow_revision != current.workflow_revision:
+            raise PolicyViolation("workflow_v3_revision_conflict")
+        if (
+            commit.projection.workflow_revision != current.workflow_revision + 1
+            or commit.projection.projection_revision != current.projection_revision + 1
+            or commit.events[0].sequence != current.sequence + 1
+            or commit.projection.sequence != commit.events[-1].sequence
+        ):
+            raise PolicyViolation("workflow_v3_transition_not_monotonic")
+        snapshots = (
+            copy.deepcopy(self.workflow_projections_v3),
+            copy.deepcopy(self.workflow_events_v3),
+            copy.deepcopy(self.workflow_commands_v3),
+            copy.deepcopy(self.workflow_live_events_v3),
+            copy.deepcopy(self.workflow_live_sequence_v3),
+        )
+        try:
+            self.workflow_projections_v3[key].append(commit.projection)
+            self.workflow_events_v3[key].extend(commit.events)
+            self._append_workspace_live_events_v3(commit.projection, commit.events)
+            self.workflow_commands_v3[command_key] = commit
+            return commit
+        except Exception:
+            (
+                self.workflow_projections_v3,
+                self.workflow_events_v3,
+                self.workflow_commands_v3,
+                self.workflow_live_events_v3,
+                self.workflow_live_sequence_v3,
+            ) = snapshots
+            raise
 
     async def grant_workspace_subject(
         self, binding: IncidentRunBinding, subject_id: str, roles=None, permissions=None,

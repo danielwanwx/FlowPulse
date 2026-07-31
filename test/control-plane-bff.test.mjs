@@ -138,6 +138,60 @@ test("BFF exposes only exact canonical Workspace Action routes and rejects forge
   assert.equal(upstream.requests.length, count);
 });
 
+test("V3 BFF allowlists Live, typed series, ordered SSE, and workflow commands without browser-controlled authority", async (context) => {
+  const upstream = await startUpstream(context);
+  const frontend = await startFrontend(context, upstream.baseUrl);
+  for (const [browserPath, upstreamPath] of [
+    ["/api/control-plane/v3/live/snapshot", "/v3/live/snapshot"],
+    ["/api/control-plane/v3/incidents/case-checkout/projection", "/v3/incidents/case-checkout/projection"],
+    ["/api/control-plane/v3/incidents/case-checkout/series", "/v3/incidents/case-checkout/series"]
+  ]) {
+    const response = await fetch(frontend.baseUrl + browserPath);
+    assert.equal(response.status, 200);
+    assert.equal(upstream.requests.at(-1).pathname, upstreamPath);
+    assert.equal(upstream.requests.at(-1).authorization, "Bearer trusted-server-only-test-token");
+  }
+
+  const stream = await fetch(`${frontend.baseUrl}/api/control-plane/v3/incidents/case-checkout/events?after=12`, { headers: { "Last-Event-ID": "12" } });
+  assert.equal(stream.status, 200);
+  assert.match(stream.headers.get("content-type"), /^text\/event-stream/);
+  assert.match(await stream.text(), /event: incident-event-v3/);
+  assert.equal(upstream.requests.at(-1).lastEventId, "12");
+
+  const base = { attempt_id: "attempt-1", expected_stage: "TRIAGE", expected_workflow_revision: 2, idempotency_key: "next:attempt-1:2:triage" };
+  const commands = [
+    ["/api/control-plane/v3/incidents/case-checkout/workflow/advance", base],
+    ["/api/control-plane/v3/incidents/case-checkout/workflow/stages/TRIAGE/rerun", { ...base, idempotency_key: "rerun:attempt-1:2:triage", reason: "Retry current evidence" }],
+    ["/api/control-plane/v3/incidents/case-checkout/workflow/escalations", { ...base, idempotency_key: "escalate:attempt-1:2:triage", reason: "Owner input required" }],
+    ["/api/control-plane/v3/incidents/case-checkout/agent-runs", { ...base, idempotency_key: "agent:attempt-1:2:checkout", component_id: "checkout", question: "Investigate this component" }],
+    ["/api/control-plane/v3/incidents/case-checkout/actions/action-1/approval", { ...base, idempotency_key: "approve:attempt-1:2:action-1", decision: "APPROVE", expected_decision_revision: 1 }]
+  ];
+  for (const [path, body] of commands) {
+    const response = await fetch(frontend.baseUrl + path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    assert.equal(response.status, 200);
+    assert.deepEqual(JSON.parse(upstream.requests.at(-1).body), body);
+  }
+
+  const before = upstream.requests.length;
+  for (const body of [{ ...base, tenant_id: "tenant-attacker" }, { ...base, provider: "shell" }, { ...base, upstream: "http://attacker" }]) {
+    const response = await fetch(`${frontend.baseUrl}/api/control-plane/v3/incidents/case-checkout/workflow/advance`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    assert.equal(response.status, 400);
+  }
+  assert.equal(upstream.requests.length, before);
+
+  for (const [caseId, status, error] of [
+    ["case-conflict", 409, "control_plane_conflict"],
+    ["case-revalidate", 409, "control_plane_revalidation_required"],
+    ["case-invalid", 422, "control_plane_schema_invalid"]
+  ]) {
+    const response = await fetch(`${frontend.baseUrl}/api/control-plane/v3/incidents/${caseId}/workflow/advance`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(base)
+    });
+    assert.equal(response.status, status);
+    assert.deepEqual(await response.json(), { error });
+  }
+});
+
 async function startUpstream(context) {
   const requests = [];
   const server = createHttpServer(async (request, response) => {
@@ -152,14 +206,31 @@ async function startUpstream(context) {
       lastEventId: request.headers["last-event-id"] || null,
       body
     });
-    if (url.pathname === "/v1/incidents/events") {
+    if (url.pathname === "/v1/incidents/events" || url.pathname === "/v3/incidents/case-checkout/events") {
       response.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache" });
-      response.end("id: cursor-2\nevent: incident-notification\ndata: {\"notification_id\":\"notification-2\"}\n\n");
+      response.end(url.pathname.startsWith("/v3/")
+        ? "id: 13\nevent: incident-event-v3\ndata: {\"event_id\":\"event-13\"}\n\n"
+        : "id: cursor-2\nevent: incident-notification\ndata: {\"notification_id\":\"notification-2\"}\n\n");
       return;
     }
     if (url.pathname === "/v1/incidents/case-auth/projection") {
       response.writeHead(401, { "content-type": "application/json" });
       response.end(JSON.stringify({ detail: "upstream secret detail" }));
+      return;
+    }
+    if (url.pathname.includes("/v3/incidents/case-conflict/")) {
+      response.writeHead(409, { "content-type": "application/json" });
+      response.end(JSON.stringify({ detail: "private revision mismatch detail" }));
+      return;
+    }
+    if (url.pathname.includes("/v3/incidents/case-revalidate/")) {
+      response.writeHead(409, { "content-type": "application/json" });
+      response.end(JSON.stringify({ detail: "REVALIDATION_REQUIRED" }));
+      return;
+    }
+    if (url.pathname.includes("/v3/incidents/case-invalid/")) {
+      response.writeHead(422, { "content-type": "application/json" });
+      response.end(JSON.stringify({ detail: "private validation detail" }));
       return;
     }
     if (request.method === "POST" && url.pathname === "/v1/incidents/case-test/node-explanations") {
