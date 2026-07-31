@@ -450,9 +450,11 @@ export function actionInvocationCommand(projection, action) {
   });
 }
 
-export function createControlPlaneState({ caseId = null } = {}) {
+export function createControlPlaneState({ caseId = null, mode = caseId ? "incident" : "live" } = {}) {
   return {
-    mode: "live",
+    // A case_id is an explicit deep link to the incident operator workspace;
+    // otherwise retain Live as the normal landing surface.
+    mode,
     connection: "connecting",
     projection: null,
     projections: new Map(),

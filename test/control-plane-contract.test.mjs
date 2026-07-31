@@ -86,6 +86,13 @@ function summaryFor(projectionValue) {
   };
 }
 
+test("a URL-pinned incident starts in the Incident workspace", () => {
+  const state = createControlPlaneState({ caseId: "case-direct-incident" });
+
+  assert.equal(state.mode, "incident");
+  assert.equal(state.pinned_case_id, "case-direct-incident");
+});
+
 function notificationFor(projectionValue) {
   return {
     notification_id: `notification-${projectionValue.case_id}`,
