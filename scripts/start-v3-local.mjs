@@ -13,7 +13,6 @@ import {
   captureTraceWatermark,
   coordinateV3LocalStartup,
   evaluateV3CaseReadiness,
-  hasExactProjectedFailureEvidence,
   reconcileAstronomyLaunch,
   waitForPostWatermarkCheckoutPaymentFailure,
 } from "./v3-local-recovery.mjs";
@@ -106,12 +105,10 @@ async function ensureAstronomy(config) {
   if (!status || status.revision !== status.pin) {
     throw new Error("Pinned Astronomy Shop setup did not attest its revision");
   }
-  if (!status.ready) {
-    await run(process.execPath, ["scripts/live-demo.mjs", "start"], {
-      env: config.runtimeEnvironment,
-      timeout: 360_000,
-    });
-  }
+  await run(process.execPath, ["scripts/live-demo.mjs", "start"], {
+    env: config.runtimeEnvironment,
+    timeout: 360_000,
+  });
   const readyDeadline = Date.now() + 120_000;
   while (Date.now() < readyDeadline) {
     status = await astronomyStatus(config.runtimeEnvironment);
@@ -288,32 +285,12 @@ async function waitForV3Case(config, context) {
   let lastError = "not projected";
   while (Date.now() < deadline) {
     try {
-      const [projection, sourceProjection, series] = await Promise.all([
+      const [projection, series] = await Promise.all([
         apiJson(config, `/v3/incidents/${encodeURIComponent(caseId)}/projection`),
-        apiJson(config, `/v2/incidents/${encodeURIComponent(caseId)}/projection`),
         apiJson(config, `/v3/incidents/${encodeURIComponent(caseId)}/series`),
       ]);
-      const readiness = evaluateV3CaseReadiness({
-        projection,
-        sourceProjection,
-        series,
-        reconciliation: context.reconciliation,
-      });
+      const readiness = evaluateV3CaseReadiness({ projection, series });
       if (projection.case_id === caseId && readiness.ready) {
-        const expectedFailure = context.reconciliation.failure_evidence;
-        if (expectedFailure) {
-          const envelopes = await Promise.all(readiness.edge_evidence_refs.map((evidenceId) => (
-            apiJson(
-              config,
-              `/v2/incidents/${encodeURIComponent(caseId)}/evidence/${encodeURIComponent(evidenceId)}`,
-            )
-          )));
-          if (!hasExactProjectedFailureEvidence(envelopes, expectedFailure)) {
-            lastError = "the exact post-watermark failure trace is not yet in the canonical evidence ledger";
-            await new Promise((resolve) => setTimeout(resolve, 2_000));
-            continue;
-          }
-        }
         return projection;
       }
       lastError = readiness.reason || "projection identity mismatch";

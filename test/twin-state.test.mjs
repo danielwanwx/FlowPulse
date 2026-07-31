@@ -915,15 +915,14 @@ test("light and pure-black themes have a persisted accessible toggle", () => {
   assert.match(stylesCss, /\.theme-toggle:focus-visible/);
 });
 
-test("the product opens on architecture and keeps advanced actions in an accessible menu", () => {
-  assert.match(indexHtml, /id="app-shell"[^>]+data-mode="architecture"/);
-  assert.match(indexHtml, /data-mode="architecture">Architecture</);
+test("the product opens on the V3 Live surface without loading legacy controls", () => {
+  assert.match(indexHtml, /id="app-shell"[^>]+data-mode="live"/);
+  assert.doesNotMatch(indexHtml, /data-mode="architecture">Architecture</);
+  assert.match(indexHtml, /data-mode="live">Live</);
   assert.match(indexHtml, /data-mode="incident">Incident</);
   assert.doesNotMatch(indexHtml, /Recovery Console|data-mode="replay">Diagnose|data-mode="compare">Compare/);
-  assert.match(indexHtml, /id="workspace-menu"[^>]*class="workspace-menu"/);
-  assert.match(indexHtml, /id="live-button"[^>]*>Run GPT-5\.6</);
-  assert.match(indexHtml, /id="details-button"[^>]*>Inspect run</);
-  assert.match(appJs, /let mode = "architecture"/);
+  assert.match(indexHtml, /id="workspace-menu"[^>]*class="workspace-menu"[^>]*hidden/);
+  assert.doesNotMatch(indexHtml, /src="\/app\.js"/);
   assert.match(stylesCss, /\.mission-bar \{[^}]+display: flex;[^}]+justify-content: center;/s);
   assert.match(stylesCss, /\.mission-summary \{[^}]+clip-path: inset\(50%\)/s);
   assert.match(stylesCss, /\.stage-readout \{ display: none;/);
@@ -1441,7 +1440,6 @@ test("Incident is the sole persistent incident workspace and reserves the shared
   const primaryModes = [...indexHtml.matchAll(/<button class="mode-button[^>]*data-mode="([^"]+)"[^>]*>([^<]+)<\/button>/g)]
     .map(([, id, label]) => ({ id, label: label.trim() }));
   assert.deepEqual(primaryModes, [
-    { id: "architecture", label: "Architecture" },
     { id: "live", label: "Live" },
     { id: "incident", label: "Incident" }
   ]);

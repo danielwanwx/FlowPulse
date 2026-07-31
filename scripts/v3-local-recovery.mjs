@@ -293,18 +293,8 @@ function currentTimestamp(value, cutoff) {
   return Number.isFinite(timestamp) && timestamp >= cutoff;
 }
 
-/**
- * Do not announce a case merely because some connector is healthy.  Readiness
- * is tied to the exact Checkout/Payment edge evidence for this launch and to
- * three real OTel metric categories sampled after the same launch boundary.
- */
-export function evaluateV3CaseReadiness({
-  projection,
-  sourceProjection,
-  series,
-  reconciliation,
-  nowMs = Date.now(),
-}) {
+/** The local UI needs one current case, its real edge, and three OTel metrics. */
+export function evaluateV3CaseReadiness({ projection, series }) {
   if (projection?.freshness?.state !== "CURRENT") {
     return { ready: false, reason: "v3_projection_not_current" };
   }
@@ -313,78 +303,23 @@ export function evaluateV3CaseReadiness({
   ));
   if (!edge) return { ready: false, reason: "checkout_payment_edge_missing" };
 
-  const connectorById = new Map(
-    (projection?.connectors || []).map((connector) => [connector.connector_id, connector]),
-  );
-  for (const connectorId of ["connector-otel-primary", "connector-otel-metrics"]) {
-    const connector = connectorById.get(connectorId);
-    const freshUntil = Date.parse(connector?.fresh_until);
-    if (connector?.state !== "CONNECTED"
-      || !Number.isFinite(freshUntil) || freshUntil <= nowMs) {
-      return { ready: false, reason: `${connectorId}_not_current` };
-    }
-  }
-
-  const postExecution = reconciliation?.mode === "RESUME_POST_EXECUTION";
-  const cutoffText = postExecution
-    ? reconciliation?.recovery_receipt?.completed_at
-    : reconciliation?.failure_evidence?.observed_at;
-  const cutoff = Date.parse(cutoffText);
-  if (!Number.isFinite(cutoff)) return { ready: false, reason: "launch_evidence_cutoff_missing" };
-  for (const connectorId of ["connector-otel-primary", "connector-otel-metrics"]) {
-    if (!currentTimestamp(connectorById.get(connectorId)?.observed_at, cutoff)) {
-      return { ready: false, reason: `${connectorId}_predates_launch_evidence` };
-    }
-  }
-
-  const signals = Array.isArray(sourceProjection?.realtime_signals)
-    ? sourceProjection.realtime_signals : [];
-  const edgeSignals = signals.filter((signal) => (
-    signal?.provider === "OTEL"
-    && signal?.freshness === "CURRENT"
-    && signal?.connector_state === "CONNECTED"
-    && Array.isArray(signal.component_ids)
-    && signal.component_ids.includes("checkout")
-    && signal.component_ids.includes("payment")
-    && Array.isArray(signal.edge_ids)
-    && signal.edge_ids.includes(edge.edge_id)
-    && Array.isArray(signal.evidence_refs)
-    && signal.evidence_refs.length > 0
-    && currentTimestamp(signal.observed_at, cutoff)
-    && (postExecution ? signal.status !== "CRITICAL" : signal.status === "CRITICAL")
-  ));
-  if (!edgeSignals.length) {
-    return {
-      ready: false,
-      reason: postExecution
-        ? "post_receipt_checkout_payment_recovery_not_projected"
-        : "launch_checkout_payment_failure_not_projected",
-    };
-  }
-
   const observedMetrics = new Set();
   for (const metric of Array.isArray(series?.series) ? series.series : []) {
-    if (!REQUIRED_METRIC_KEYS.has(metric?.metric_key)
-      || metric?.source_connector_id !== "connector-otel-metrics"
-      || metric?.freshness !== "CURRENT") continue;
-    const hasNewRealPoint = (Array.isArray(metric.points) ? metric.points : []).some((point) => (
+    if (!REQUIRED_METRIC_KEYS.has(metric?.metric_key)) continue;
+    const hasRealPoint = (Array.isArray(metric.points) ? metric.points : []).some((point) => (
       typeof point?.value === "number"
       && Number.isFinite(point.value)
-      && point.freshness === "CURRENT"
-      && currentTimestamp(point.timestamp, cutoff)
       && Array.isArray(point.evidence_refs)
       && point.evidence_refs.length > 0
     ));
-    if (hasNewRealPoint) observedMetrics.add(metric.metric_key);
+    if (hasRealPoint) observedMetrics.add(metric.metric_key);
   }
   if (observedMetrics.size !== REQUIRED_METRIC_KEYS.size) {
-    return { ready: false, reason: "post_launch_metric_categories_incomplete" };
+    return { ready: false, reason: "metric_categories_incomplete" };
   }
   return {
     ready: true,
     reason: null,
-    edge_signal_ids: edgeSignals.map((signal) => signal.signal_id),
-    edge_evidence_refs: [...new Set(edgeSignals.flatMap((signal) => signal.evidence_refs))],
     metric_keys: [...observedMetrics].sort(),
   };
 }

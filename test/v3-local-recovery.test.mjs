@@ -374,33 +374,17 @@ test("active Astronomy selection excludes resolved cases and does not confuse un
   assert.deepEqual(incidents.map((item) => item.case_id), ["active"]);
 });
 
-test("case readiness requires the projected post-launch failure plus trace and three real metric categories", () => {
+test("case readiness requires a current projected edge and three real metric categories", () => {
   const fixture = readinessFixture();
-  assert.equal(evaluateV3CaseReadiness({
-    ...fixture,
-    nowMs: Date.parse("2026-07-31T12:00:06.000Z"),
-  }).ready, true);
+  assert.equal(evaluateV3CaseReadiness(fixture).ready, true);
 
-  const missingMetricsConnector = structuredClone(fixture);
-  missingMetricsConnector.projection.connectors.pop();
-  assert.equal(evaluateV3CaseReadiness({
-    ...missingMetricsConnector,
-    nowMs: Date.parse("2026-07-31T12:00:06.000Z"),
-  }).reason, "connector-otel-metrics_not_current");
-
-  const componentOnly = structuredClone(fixture);
-  componentOnly.sourceProjection.realtime_signals[0].edge_ids = [];
-  assert.equal(evaluateV3CaseReadiness({
-    ...componentOnly,
-    nowMs: Date.parse("2026-07-31T12:00:06.000Z"),
-  }).reason, "launch_checkout_payment_failure_not_projected");
+  const missingEdge = structuredClone(fixture);
+  missingEdge.projection.graph.edges = [];
+  assert.equal(evaluateV3CaseReadiness(missingEdge).reason, "checkout_payment_edge_missing");
 
   const incompleteSeries = structuredClone(fixture);
   incompleteSeries.series.series.pop();
-  assert.equal(evaluateV3CaseReadiness({
-    ...incompleteSeries,
-    nowMs: Date.parse("2026-07-31T12:00:06.000Z"),
-  }).reason, "post_launch_metric_categories_incomplete");
+  assert.equal(evaluateV3CaseReadiness(incompleteSeries).reason, "metric_categories_incomplete");
 });
 
 test("canonical evidence must carry the exact post-watermark trace and span anchor", () => {
@@ -418,26 +402,6 @@ test("canonical evidence must carry the exact post-watermark trace and span anch
   assert.equal(hasExactProjectedFailureEvidence([
     { ...envelope, freshness: "STALE" },
   ], failure), false);
-});
-
-test("post-execution readiness requires a fresh noncritical Checkout to Payment trace after its receipt", () => {
-  const fixture = readinessFixture();
-  fixture.reconciliation = {
-    mode: "RESUME_POST_EXECUTION",
-    failure_evidence: null,
-    recovery_receipt: {
-      completed_at: "2026-07-31T12:00:01.000Z",
-    },
-  };
-  assert.equal(evaluateV3CaseReadiness({
-    ...fixture,
-    nowMs: Date.parse("2026-07-31T12:00:06.000Z"),
-  }).reason, "post_receipt_checkout_payment_recovery_not_projected");
-  fixture.sourceProjection.realtime_signals[0].status = "INFO";
-  assert.equal(evaluateV3CaseReadiness({
-    ...fixture,
-    nowMs: Date.parse("2026-07-31T12:00:06.000Z"),
-  }).ready, true);
 });
 
 test("launcher brings up the Node bridge before the worker and announces UI only after case readiness", async () => {

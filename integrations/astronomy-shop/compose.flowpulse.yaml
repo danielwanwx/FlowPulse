@@ -1,4 +1,7 @@
 services:
+  checkout:
+    environment:
+      OTEL_METRIC_EXPORT_INTERVAL: "2000"
   otel-collector:
     volumes:
       - ${FLOWPULSE_CAPTURE_DIR}:/flowpulse
