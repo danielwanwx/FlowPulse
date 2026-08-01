@@ -421,7 +421,18 @@ class GuidedWorkflowV3Tests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("paymentUnreachable", detect.output.summary)
 
     async def test_bootstrap_links_every_evidence_impacted_graph_component(self):
-        source = realtime_projection().copy(update={"impacted_path": ["checkout"]})
+        source = realtime_projection()
+        graph = source.graph.copy(update={
+            "nodes": [
+                node.copy(update={"impact_status": "unknown"})
+                if node.component_id == "payment" else node
+                for node in source.graph.nodes
+            ],
+        })
+        source = source.copy(update={
+            "impacted_path": ["checkout"],
+            "graph": graph,
+        })
         repository = InMemoryWorkspaceRepository()
         projection = await GuidedWorkflowCoordinatorV3(repository).bootstrap(
             source, actor_subject_id="subject-a", now=NOW,
