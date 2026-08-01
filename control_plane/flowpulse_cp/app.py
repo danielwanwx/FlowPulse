@@ -456,7 +456,9 @@ def create_app(
         request: Request,
         actor: AuthContext = Depends(trusted_auth_context),
     ) -> MetricSeriesCollectionV3:
-        await _required_v3_projection(request, actor, case_id)
+        projection = await _required_v3_projection(request, actor, case_id)
+        if projection.resolved_series_snapshot is not None:
+            return projection.resolved_series_snapshot
         repository = getattr(request.app.state, "realtime_repository", None) or _workspace_repository(request)
         return await _workspace_call(
             repository, ("realtime_series",), actor.tenant_id, case_id,

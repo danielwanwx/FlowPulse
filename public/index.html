@@ -12,7 +12,7 @@
   </head>
   <body>
     <a class="skip-link" href="#twin-canvas">Skip to system canvas</a>
-    <div id="app-shell" class="app-shell is-loading" data-mode="live">
+    <div id="app-shell" class="app-shell is-loading" data-mode="architecture">
       <header class="topbar">
         <div class="brand" aria-label="FlowPulse">
           <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
@@ -57,7 +57,8 @@
           </div>
 
           <div class="mode-switch" aria-label="Digital twin mode">
-            <button class="mode-button is-active" type="button" data-mode="live">Live</button>
+            <button class="mode-button is-active" type="button" data-mode="architecture">Architecture</button>
+            <button class="mode-button" type="button" data-mode="live">Live</button>
             <button class="mode-button" type="button" data-mode="incident">Incident</button>
           </div>
 
@@ -125,7 +126,6 @@
                   <span class="plane-guide control-guide"><strong>FlowPulse control plane</strong><small>Change, evaluation, and evidence</small></span>
                 </div>
                 <div id="canvas-layers" class="canvas-layers"></div>
-                <section id="v3-live-topology" class="v3-live-topology" role="region" aria-label="V3 live incident topology" tabindex="0" hidden></section>
                 <section id="incident-stage-panel" class="incident-stage-panel" aria-live="polite" hidden></section>
                 <div id="compare-handle" class="compare-handle" aria-hidden="true" hidden><i></i><span></span></div>
                 <input id="compare-canvas-range" class="compare-canvas-range" type="range" min="0" max="100" value="50" step="1" aria-label="Drag to compare incident and verified recovery" hidden>
@@ -207,6 +207,7 @@
     </div>
 
     <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+    <script type="module" src="/app.js"></script>
     <script type="module" src="/control-plane-app.mjs"></script>
   </body>
 </html>

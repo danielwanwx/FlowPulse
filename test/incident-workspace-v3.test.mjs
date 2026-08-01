@@ -127,6 +127,8 @@ test("current-stage Agent activity is scoped to the exact stage run", () => {
   const html = renderIncidentWorkbenchV3(value, { connection: "connected" });
   assert.match(html, /CURRENT AGENT RESULT/);
   assert.doesNotMatch(html, /OLD SUPERSEDED AGENT RESULT/);
+  assert.match(html, /Agent room/);
+  assert.match(html, /Current run/);
 });
 
 test("Investigate shows typed Evidence Worker query progress, real samples, and the bounded replan", () => {
@@ -153,6 +155,8 @@ test("Investigate shows typed Evidence Worker query progress, real samples, and 
   assert.match(html, /Checkout cannot reach Payment in three fresh traces/);
   assert.match(html, /2 samples/);
   assert.match(html, /Replan triggered/);
+  assert.match(html, /data-open-panel="graph">Open diagnostic graph/);
+  assert.doesNotMatch(html, /data-inline-graph-node/);
 
   const drawer = renderIncidentWorkbenchV3(value, { connection: "connected", panel: "evidence" });
   assert.match(drawer, /Worker activity/);
@@ -279,20 +283,46 @@ test("Verify publishes the backend-owned deadline and real signal cards show tre
   assert.deepEqual(metricTrendV3(series.series[0]), { direction: "falling", label: "Falling 50%" });
 });
 
-test("a completed incident replaces workflow controls with the immutable final audit report", () => {
+test("a completed incident keeps a compact visual summary and opens the immutable audit on demand", () => {
   const value = completedAuditProjection();
-  const html = renderIncidentWorkbenchV3(value, { connection: "connected" });
+  const series = { series: [{
+    series_id: "recovered-errors", metric_key: "checkout.error_rate", component_id: "checkout",
+    label: "Recovered error rate", unit: "ratio", thresholds: { critical: 0.05 }, freshness: "STALE",
+    observed_window_start: "2026-07-31T00:09:55Z", observed_window_end: "2026-07-31T00:10:02Z",
+    points: [
+      { timestamp: "2026-07-31T00:09:58Z", value: 0, freshness: "CURRENT", evidence_refs: ["e1"] },
+      { timestamp: "2026-07-31T00:10:02Z", value: null, freshness: "STALE", missing_reason: "CONNECTOR_STALE", evidence_refs: [] }
+    ]
+  }] };
+  const html = renderIncidentWorkbenchV3(value, { connection: "connected", series });
 
   assert.match(html, /data-audit-report="report-1"/);
-  assert.match(html, /Immutable incident audit/);
-  assert.match(html, /Attempt lineage/);
-  assert.match(html, /Immutable stage outputs/);
+  assert.match(html, /Incident resolved/);
+  assert.match(html, /Recovery verified/);
+  assert.match(html, />10m 00s</);
+  assert.match(html, /data-open-panel="audit"/);
+  assert.match(html, /Agent room/);
+  assert.match(html, /iw3-stage-rail/);
   assert.match(html, /Fresh Checkout to Payment trace observed/);
-  assert.match(html, /operator-local/);
-  assert.match(html, /receipt-1/);
   assert.match(html, /Payment dependency recovered/);
-  assert.match(html, /evidence-verify-fresh/);
-  assert.doesNotMatch(html, /data-workflow-command|iw3-stage-rail|Complete incident/);
+  assert.match(html, /Recovered error rate/);
+  assert.match(html, />0 ratio</);
+  assert.doesNotMatch(html, /Connector Stale/);
+  assert.doesNotMatch(html, /Attempt lineage|Immutable stage outputs|operator-local|receipt-1|evidence-verify-fresh/);
+  assert.doesNotMatch(html, /data-workflow-command|Complete incident/);
+
+  const history = renderIncidentWorkbenchV3(value, { connection: "connected", reviewStage: "DETECT", series });
+  assert.match(history, /Reviewing completed stage/);
+  assert.match(history, /DETECT visible result/);
+  assert.doesNotMatch(history, /Recovery verified/);
+
+  const audit = renderIncidentWorkbenchV3(value, { connection: "connected", panel: "audit", series });
+  assert.match(audit, /Immutable incident audit/);
+  assert.match(audit, /Attempt lineage/);
+  assert.match(audit, /Immutable stage outputs/);
+  assert.match(audit, /operator-local/);
+  assert.match(audit, /receipt-1/);
+  assert.match(audit, /evidence-verify-fresh/);
 });
 
 test("active stage rendering never exposes audit material from a later stage", () => {
@@ -336,6 +366,23 @@ test("a series sample committed during refresh triggers a bounded projection rer
   const coherent = await loadCoherentIncidentV3(client, "case-checkout");
   assert.equal(projectionReads, 2);
   assert.equal(coherent.projection.signal_revision, coherent.series.signal_revision);
+});
+
+test("a resolved incident accepts later series revisions because the UI freezes them at completion", async () => {
+  let projectionReads = 0;
+  const client = {
+    async projection() {
+      projectionReads += 1;
+      return { ...completedAuditProjection(), signal_revision: 9 };
+    },
+    async series() {
+      return { case_id: "case-checkout", signal_revision: 10, series: [] };
+    }
+  };
+  const coherent = await loadCoherentIncidentV3(client, "case-checkout");
+  assert.equal(projectionReads, 1);
+  assert.equal(coherent.projection.lifecycle_state, "RESOLVED");
+  assert.equal(coherent.series.signal_revision, 10);
 });
 
 test("Next, retry, rerun, and escalation commands bind canonical attempt and revision", () => {
@@ -485,6 +532,7 @@ test("V3 stage shell owns viewport overflow and collapses safely at 451 by 859",
   assert.match(styles, /\.iw3-stage-surface \{[^}]*min-width: 0;[^}]*overflow: auto;/);
   assert.match(styles, /@media \(max-width: 640px\)[\s\S]*\.iw3-stage-rail \{ display: flex; overflow-x: auto;/);
   assert.match(styles, /@media \(max-width: 640px\)[\s\S]*\.iw3-stage-grid, \.iw3-detect-grid \{ grid-template-columns: minmax\(0, 1fr\); \}/);
+  assert.match(styles, /@media \(max-width: 640px\)[\s\S]*#development-button \{ display: none !important; \}/);
   assert.match(styles, /@media \(prefers-reduced-motion: reduce\)[\s\S]*\.iw3-graph-edge\.is-active[^}]*animation: none;/);
 });
 

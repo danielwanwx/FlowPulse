@@ -16,6 +16,7 @@ from .realtime_models import (
     ConnectorHealthState,
     ConnectorProvider,
     ConnectorTruthLabel,
+    IncidentClockState,
     IncidentProjectionV2,
     RealtimeSignal,
     RealtimeSignalStatus,
@@ -622,6 +623,11 @@ class GuidedWorkflowCoordinatorV3:
             or source.topology_revision != prior.topology_revision
         ):
             raise PolicyViolation("workflow_v3_realtime_identity_mismatch")
+        if (
+            prior.lifecycle_state == IncidentLifecycleStateV3.RESOLVED
+            or prior.current_attempt.status == WorkflowAttemptStateV3.COMPLETED
+        ):
+            return prior
 
         live_connectors = [
             item for item in source.connector_health
@@ -721,7 +727,7 @@ class GuidedWorkflowCoordinatorV3:
             "current_premise_fingerprint": decision_premise_fingerprint_v3(source),
             "title": source.operator_title,
             "summary": source.operator_summary,
-            "severity": source.status,
+            "severity": prior.severity,
             "lifecycle_state": lifecycle,
             "incident_clock": source.incident_clock,
             "freshness": FreshnessV3(
@@ -1017,7 +1023,6 @@ class GuidedWorkflowCoordinatorV3:
                 stage=WorkflowStageV3.VERIFY,
                 stage_run_id=current.stage_run_id,
                 evidence_refs=current.evidence_refs,
-                stage_output=current.output,
             )
             audit_records = [*prior.audit_records, completion_audit]
             stage_audit_ids = [
@@ -1053,11 +1058,29 @@ class GuidedWorkflowCoordinatorV3:
                 content_hash=content_hash,
                 **report_material,
             )
+            incident_clock = prior.incident_clock.copy(update={
+                "state": IncidentClockState.RESOLVED,
+                "resolved_at": now,
+                "as_of": now,
+                "elapsed_seconds": max(
+                    prior.incident_clock.elapsed_seconds,
+                    int((now - prior.incident_clock.started_at).total_seconds()),
+                ),
+            })
+            resolved_series = await self.repository.realtime_series(
+                tenant_id, case_id,
+            )
+            resolved_series = resolved_series.copy(update={
+                "signal_revision": prior.signal_revision,
+                "generated_at": now,
+            })
             projection = self._next_base(
                 prior, event_count=1, now=now, attempt=attempt,
                 lifecycle_state=IncidentLifecycleStateV3.RESOLVED,
+                incident_clock=incident_clock,
                 audit_records=audit_records,
                 final_report=final_report,
+                resolved_series_snapshot=resolved_series,
             )
             event = self._event(
                 projection, projection.sequence,

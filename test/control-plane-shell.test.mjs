@@ -8,16 +8,16 @@ const controlPlaneApp = await readFile(new URL("../public/control-plane-app.mjs"
 const legacyApp = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
 const stylesCss = await readFile(new URL("../public/styles.css", import.meta.url), "utf8");
 
-test("the V3 shell is the only standard-path runtime", () => {
+test("the V3 workflow keeps the established three-surface product shell", () => {
   assert.doesNotMatch(indexHtml, /id="control-plane-app"/);
-  assert.match(indexHtml, /id="app-shell"[^>]*data-mode="live"(?![^>]*\bhidden\b)/);
+  assert.match(indexHtml, /id="app-shell"[^>]*data-mode="architecture"(?![^>]*\bhidden\b)/);
   assert.match(indexHtml, /id="twin-canvas"/);
   assert.match(indexHtml, /id="context-drawer"/);
   assert.match(indexHtml, /id="incident-stage-rail"/);
   assert.match(indexHtml, /id="timeline-dock"/);
   const modes = [...indexHtml.matchAll(/class="mode-button[^>]*data-mode="([^"]+)"/g)].map((match) => match[1]);
-  assert.deepEqual(modes, ["live", "incident"]);
-  assert.doesNotMatch(indexHtml, /src="\/app\.js"/);
+  assert.deepEqual(modes, ["architecture", "live", "incident"]);
+  assert.match(indexHtml, /src="\/app\.js"/);
   assert.match(indexHtml, /src="\/control-plane-app\.mjs"/);
   assert.doesNotMatch(controlPlaneApp, /\/api\/(?:state|source|demo|agent-control)\b/);
   assert.match(controlPlaneApp, /new ControlPlaneClient\(\)/);
@@ -25,7 +25,7 @@ test("the V3 shell is the only standard-path runtime", () => {
 
 test("a pinned Incident URL hydrates without waiting for global discovery or module evaluation", () => {
   assert.match(controlPlaneApp, /render\(\);\s*if \(state\.mode === "incident"\) void v3Workbench\.activate\(initialCaseId\);/);
-  assert.match(controlPlaneApp, /const initialCaseId = requestedCaseId\(\);\s*let state = createControlPlaneState\(\{ caseId: initialCaseId \}\);/);
+  assert.match(controlPlaneApp, /const initialCaseId = requestedCaseId\(\);\s*let state = createControlPlaneState\(\{ caseId: initialCaseId, mode: initialCaseId \? "incident" : "architecture" \}\);/);
   assert.doesNotMatch(controlPlaneApp, /if \(state\.mode === "incident"\) void bootstrap\(\)/);
 });
 
@@ -37,6 +37,9 @@ test("Architecture and Live retain the baseline renderer while the control-plane
   assert.match(controlPlaneApp, /if \(nextMode === "incident"\) \{[\s\S]*?v3Workbench\.activate\(requestedCaseId\(\) \|\| state\.pinned_case_id\)/);
   assert.match(controlPlaneApp, /if \(nextMode === "live"\) \{\s*closeSubscriptions\(\);\s*void v3Live\.activate\(\);\s*return;/);
   assert.match(controlPlaneApp, /else if \(state\.mode === "live"\) \{\s*closeSubscriptions\(\);\s*void v3Live\.activate\(\);/);
+  assert.match(controlPlaneApp, /if \(state\.mode === "live"\) \{\s*restoreLegacyV2Chrome\(\);/);
+  assert.match(controlPlaneApp, /topologyElement: null/);
+  assert.match(controlPlaneApp, /legacySurfaces: \[\]/);
   assert.match(controlPlaneApp, /if \(state\.mode !== "incident"\) \{[\s\S]*?return;/);
   assert.match(controlPlaneApp, /root\.dataset\.controlPlaneMode = "incident"/);
   assert.match(controlPlaneApp, /function renderToast\(\) \{\s*const toast = state\.mode === "incident" \? null : state\.toast;/);

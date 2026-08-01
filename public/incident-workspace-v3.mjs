@@ -2,7 +2,7 @@ import { incidentTopologyView } from "./control-plane-topology-layout.mjs";
 import { INCIDENT_STAGES_V3, STAGE_STATES_V3, WORKFLOW_COMMANDS_V3 } from "./incident-v3-types.mjs";
 
 export { INCIDENT_STAGES_V3, STAGE_STATES_V3 } from "./incident-v3-types.mjs";
-const PANELS = new Set(["metrics", "evidence", "activity", "timeline", "component", "graph"]);
+const PANELS = new Set(["metrics", "evidence", "activity", "timeline", "component", "graph", "audit"]);
 const COMMANDS = new Set(WORKFLOW_COMMANDS_V3);
 const PATH_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/;
 
@@ -182,7 +182,7 @@ export function renderIncidentWorkbenchV3(projection, ui = {}) {
   const duration = workbenchDurationV3(projection, ui.now);
   const connection = ui.connection || "connecting";
   if (projection.lifecycle_state === "RESOLVED" && projection.current_attempt?.status === "COMPLETED") {
-    return finalAuditMarkup(projection, duration, connection);
+    return finalAuditMarkup(projection, duration, connection, ui, view);
   }
   const available = new Set(projection.available_commands || []);
   const currentRun = view.rail.find((item) => item.current)?.run;
@@ -202,40 +202,91 @@ export function renderIncidentWorkbenchV3(projection, ui = {}) {
     </header>
     ${commandErrorMarkup(ui.error)}
     ${stageRailMarkup(view)}
-    <main class="iw3-stage-surface" id="incident-stage-surface" tabindex="-1">
-      ${view.reviewingHistory ? '<div class="iw3-review-banner"><strong>Reviewing completed stage</strong><span>This history is read-only. Rerun explicitly to change the workflow.</span></div>' : ""}
-      ${stageMarkup(view, projection, ui)}
-    </main>
+    <div class="iw3-workspace-body">
+      <main class="iw3-stage-surface" id="incident-stage-surface" tabindex="-1">
+        ${view.reviewingHistory ? '<div class="iw3-review-banner"><strong>Reviewing completed stage</strong><span>This history is read-only. Rerun explicitly to change the workflow.</span></div>' : ""}
+        ${stageMarkup(view, projection, ui)}
+      </main>
+      ${agentRoomMarkup(projection, view)}
+    </div>
     ${footerMarkup(view, available, projection.available_rerun_stages || [], canNext, ui.commandPending)}
     ${panelMarkup(view, projection, ui)}
   </div>`;
 }
 
-function finalAuditMarkup(projection, duration, connection) {
+function finalAuditMarkup(projection, duration, connection, ui, view) {
   const report = projection.final_report || null;
-  const freshness = duration.freshness || projection.freshness?.state || "UNKNOWN";
+  const verify = projection.current_attempt.stage_runs.find((run) => run.stage === "VERIFY") || null;
+  const action = [...(projection.actions || [])].reverse().find((item) => item.receipt) || null;
+  const completedAt = projection.current_attempt.completed_at || report?.generated_at || verify?.completed_at;
+  const completedSeries = metricSeriesAt(ui.series, completedAt);
+  const completedUi = { ...ui, series: completedSeries };
+  const startedAtMs = Date.parse(projection.incident_clock?.started_at || "");
+  const completedAtMs = Date.parse(completedAt || "");
+  const completedElapsed = Number.isFinite(startedAtMs) && Number.isFinite(completedAtMs)
+    ? Math.max(0, Math.floor((completedAtMs - startedAtMs) / 1000))
+    : duration.elapsed_seconds;
+  const primary = view.reviewingHistory
+    ? `<main class="iw3-stage-surface" id="incident-stage-surface" tabindex="-1"><div class="iw3-review-banner"><strong>Reviewing completed stage</strong><span>This resolved incident is read-only.</span></div>${stageMarkup(view, projection, completedUi)}</main>`
+    : `<main class="iw3-resolution-surface" id="incident-stage-surface" tabindex="-1">
+        <header class="iw3-resolution-hero"><div><span>Incident resolved</span><h3>Recovery verified</h3><p>${escapeHtml(verify?.output?.summary || verify?.summary || "Fresh post-action evidence satisfied the recovery conditions.")}</p></div><button type="button" data-open-panel="audit">Open audit details</button></header>
+        <div class="iw3-resolution-grid">
+          <section class="iw3-panel iw3-resolution-signals"><div class="iw3-panel-heading"><h4>Recovered signals</h4><button type="button" data-open-panel="metrics">Open metrics</button></div>${signalCardsMarkup(completedSeries)}</section>
+          <section class="iw3-panel"><h4>Verification evidence</h4>${listMarkup((verify?.output?.facts || []).slice(0, 4), "No verification facts were published.")}</section>
+          <section class="iw3-panel"><h4>Executed response</h4><strong class="iw3-resolution-action">${escapeHtml(action?.title || "Restore Payment reachability")}</strong><p>${escapeHtml(action?.receipt?.output_summary || "The bounded response completed before verification.")}</p><small>${escapeHtml(action?.component_id || "checkout")} · ${escapeHtml(titleCase(action?.execution_state || "succeeded"))}</small></section>
+        </div>
+      </main>`;
+  return `<div class="iw3-shell iw3-resolved-shell" data-audit-report="${escapeHtml(report?.report_id || "unavailable")}" data-connection="${escapeHtml(connection)}">
+    <header class="iw3-command-bar iw3-resolved-command">
+      <div class="iw3-command-title"><span class="iw3-severity is-resolved">RESOLVED</span><div><h2>${escapeHtml(projection.title)}</h2><p>Checkout to Payment recovery was verified with fresh post-action telemetry.</p></div></div>
+      <dl class="iw3-command-facts">
+        <div><dt>State</dt><dd class="is-current">Resolved</dd></div>
+        <div><dt>Duration</dt><dd>${escapeHtml(formatDuration(completedElapsed))}</dd></div>
+        <div><dt>Completed</dt><dd>${escapeHtml(shortTime(completedAt))}</dd></div>
+        <div><dt>Owner</dt><dd>${escapeHtml(projection.owner_subject_id)}</dd></div>
+        <div><dt>Attempt</dt><dd>#${escapeHtml(String(projection.current_attempt.attempt_number || 1))}</dd></div>
+      </dl>
+      <div class="iw3-stream-state" role="status" data-state="resolved"><span aria-hidden="true"></span>Audit sealed</div>
+    </header>
+    ${stageRailMarkup(view)}
+    <div class="iw3-workspace-body">
+      ${primary}
+      ${agentRoomMarkup(projection, view, { completed: !view.reviewingHistory })}
+    </div>
+    ${panelMarkup(view, projection, completedUi)}
+  </div>`;
+}
+
+function metricSeriesAt(collection, timestamp) {
+  const cutoff = Date.parse(timestamp || "");
+  if (!Number.isFinite(cutoff) || !collection?.series) return collection;
+  return {
+    ...collection,
+    series: collection.series.map((series) => {
+      const points = (series.points || []).filter((point) => Date.parse(point.timestamp || "") <= cutoff);
+      const latest = points.at(-1);
+      return {
+        ...series,
+        points,
+        observed_window_end: latest?.timestamp || series.observed_window_end,
+        freshness: latest?.freshness || series.freshness
+      };
+    }).filter((series) => series.points.length)
+  };
+}
+
+function auditDetailMarkup(projection) {
+  const report = projection.final_report || null;
   const records = new Map((projection.audit_records || []).map((record) => [record.audit_id, record]));
   const attempts = new Map([...(projection.attempt_history || []), projection.current_attempt].map((attempt) => [attempt.attempt_id, attempt]));
-  const stageRecords = (report?.stage_output_audit_ids || []).map((auditId) => records.get(auditId)).filter(Boolean);
+  const stageRecords = (report?.stage_output_audit_ids || []).map((auditId) => records.get(auditId)).filter((record) => record && record.record_type !== "INCIDENT_COMPLETED");
   const receiptRecords = (report?.action_receipt_audit_ids || []).map((auditId) => records.get(auditId)).filter(Boolean);
   const lineage = (report?.attempt_lineage || []).map((attemptId) => attempts.get(attemptId)).filter(Boolean);
   const lineageIds = new Set(report?.attempt_lineage || []);
   const approvals = (projection.audit_records || []).filter((record) => record.record_type === "APPROVAL_RECORDED" && lineageIds.has(record.attempt_id));
   const verificationRecords = (projection.audit_records || []).filter((record) => ["VERIFICATION_RECORDED", "INCIDENT_COMPLETED"].includes(record.record_type) && lineageIds.has(record.attempt_id));
-  return `<div class="iw3-shell iw3-audit-shell" data-audit-report="${escapeHtml(report?.report_id || "unavailable")}" data-connection="${escapeHtml(connection)}" data-freshness="${escapeHtml(String(freshness).toLowerCase())}">
-    <header class="iw3-command-bar">
-      <div class="iw3-command-title"><span class="iw3-severity">${escapeHtml(projection.severity)}</span><div><h2>${escapeHtml(projection.title)}</h2><p>${escapeHtml(projection.summary)}</p></div></div>
-      <dl class="iw3-command-facts">
-        <div><dt>State</dt><dd>${escapeHtml(titleCase(projection.lifecycle_state))}</dd></div>
-        <div><dt>Duration</dt><dd data-incident-duration>${escapeHtml(formatDuration(duration.elapsed_seconds))}</dd></div>
-        <div><dt>Freshness</dt><dd class="is-${escapeHtml(String(freshness).toLowerCase())}">${escapeHtml(titleCase(freshness))}</dd></div>
-        <div><dt>Owner</dt><dd>${escapeHtml(projection.owner_subject_id)}</dd></div>
-        <div><dt>Attempt</dt><dd>#${escapeHtml(String(projection.current_attempt.attempt_number || 1))} · r${escapeHtml(String(projection.workflow_revision))}</dd></div>
-      </dl>
-      <div class="iw3-stream-state" role="status" data-state="${escapeHtml(connection)}"><span aria-hidden="true"></span>${escapeHtml(connectionCopy(connection))}</div>
-    </header>
-    <main class="iw3-audit-surface" aria-labelledby="iw3-audit-title" data-read-only="true">
-      <header class="iw3-audit-hero"><div><span>Resolved · read-only</span><h3 id="iw3-audit-title">Immutable incident audit</h3><p>${report ? "Verify succeeded and this report is bound to immutable workflow, approval, execution, and evidence records." : "The incident is resolved, but the canonical projection has not published its final audit report."}</p></div>${report ? `<code>${escapeHtml(report.report_id)}</code>` : '<strong role="alert">Audit report unavailable</strong>'}</header>
+  return `<div class="iw3-audit-surface" data-read-only="true">
+      <header class="iw3-audit-hero"><div><span>Resolved · read-only</span><h4>Immutable incident audit</h4><p>${report ? "Bound to immutable workflow, approval, execution, and evidence records." : "The canonical projection has not published its final audit report."}</p></div>${report ? `<code>${escapeHtml(report.report_id)}</code>` : '<strong role="alert">Audit report unavailable</strong>'}</header>
       ${report ? `<div class="iw3-audit-grid">
         <section class="iw3-audit-card iw3-audit-integrity"><h4>Report integrity</h4><dl class="iw3-record"><div><dt>Content hash</dt><dd><code>${escapeHtml(report.content_hash)}</code></dd></div><div><dt>Generated</dt><dd>${escapeHtml(report.generated_at)}</dd></div><div><dt>Workflow revision</dt><dd>${escapeHtml(String(report.workflow_revision))}</dd></div><div><dt>Decision revision</dt><dd>${escapeHtml(String(report.decision_revision))}</dd></div></dl></section>
         <section class="iw3-audit-card"><h4>Attempt lineage</h4>${auditLineageMarkup(lineage)}</section>
@@ -244,8 +295,7 @@ function finalAuditMarkup(projection, duration, connection) {
         <section class="iw3-audit-card"><h4>Action receipts</h4><div class="iw3-audit-records">${receiptRecords.map(auditReceiptMarkup).join("") || '<p class="iw3-empty">No referenced action receipt records were published.</p>'}</div></section>
         <section class="iw3-audit-card iw3-audit-span"><h4>Verification</h4>${auditEvidenceMarkup(report.verification_evidence_refs)}<div class="iw3-audit-records">${verificationRecords.map(auditVerificationMarkup).join("") || '<p class="iw3-empty">No verification audit records were published.</p>'}</div></section>
       </div>` : ""}
-    </main>
-  </div>`;
+    </div>`;
 }
 
 function auditLineageMarkup(lineage) {
@@ -386,14 +436,23 @@ function commandErrorMarkup(error) {
 function panelMarkup(view, projection, ui) {
   if (!ui.panel) return "";
   if (ui.panel === "graph") return graphModalMarkup(view, projection, ui.componentId, ui.now);
-  const title = ({ metrics: "Metrics", evidence: "Evidence", activity: "Agent activity", timeline: "Timeline", component: "Component" })[ui.panel] || "Detail";
+  const title = ({ metrics: "Metrics", evidence: "Evidence", activity: "Agent activity", timeline: "Timeline", component: "Component", audit: "Immutable incident audit" })[ui.panel] || "Detail";
   let body = "";
   if (ui.panel === "metrics") body = signalCardsMarkup(ui.series, true);
   else if (ui.panel === "activity") body = activityMarkup(projection, view.visibleStage);
   else if (ui.panel === "evidence") body = evidenceMarkup(view.visibleRun, projection);
   else if (ui.panel === "component") body = componentMarkup(projection, ui.componentId);
+  else if (ui.panel === "audit") body = auditDetailMarkup(projection);
   else body = timelineMarkup(projection, view);
-  return `<section class="iw3-detail-layer" role="dialog" aria-modal="true" aria-labelledby="iw3-detail-title" tabindex="-1" data-workbench-modal><div class="iw3-detail"><header><h3 id="iw3-detail-title">${escapeHtml(title)}</h3><button type="button" data-panel-close aria-label="Close ${escapeHtml(title)}">Close</button></header>${body}</div></section>`;
+  return `<section class="iw3-detail-layer" role="dialog" aria-modal="true" aria-labelledby="iw3-detail-title" tabindex="-1" data-workbench-modal><div class="iw3-detail${ui.panel === "audit" ? " is-audit" : ""}"><header><h3 id="iw3-detail-title">${escapeHtml(title)}</h3><button type="button" data-panel-close aria-label="Close ${escapeHtml(title)}">Close</button></header>${body}</div></section>`;
+}
+
+function agentRoomMarkup(projection, view, { completed = false } = {}) {
+  const items = (projection.agent_activity || []).filter((activity) => completed
+    || (activity.stage === view.visibleStage && activity.stage_run_id === view.visibleRun?.stage_run_id)).slice(-8);
+  const canInvestigate = !completed && !view.reviewingHistory && view.currentStage === "INVESTIGATE";
+  const component = projection.impacted_path?.[0] || null;
+  return `<aside class="iw3-agent-room" aria-label="Agent room"><header><div><span>Agent room</span><strong>${completed ? "Incident handoff" : `${stageLabel(view.visibleStage)} team`}</strong></div><small>${items.some((item) => item.state === "RUNNING") ? "Working live" : completed ? "Read-only" : "Current stage"}</small></header><ol>${items.map((activity) => `<li data-state="${escapeHtml(activity.state.toLowerCase())}"><span aria-hidden="true"></span><div><strong>${escapeHtml(activity.label)}</strong><small>${escapeHtml(titleCase(activity.role || "agent"))} · ${escapeHtml(shortTime(activity.occurred_at))}</small><p>${escapeHtml(activity.summary)}</p><em>${(activity.evidence_refs || []).length} evidence</em></div></li>`).join("") || '<li class="iw3-agent-empty">Waiting for the current stage Agent to publish activity.</li>'}</ol>${canInvestigate && component ? `<footer><button type="button" data-agent-investigate="${escapeHtml(component)}">Ask Agent to investigate ${escapeHtml(component)}</button></footer>` : ""}</aside>`;
 }
 
 function graphModalMarkup(view, projection, selectedComponent, now) {

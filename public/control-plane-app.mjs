@@ -24,7 +24,7 @@ const client = new ControlPlaneClient();
 const els = Object.fromEntries([...document.querySelectorAll("[id]")].map((element) => [element.id, element]));
 const root = els["app-shell"];
 const initialCaseId = requestedCaseId();
-let state = createControlPlaneState({ caseId: initialCaseId });
+let state = createControlPlaneState({ caseId: initialCaseId, mode: initialCaseId ? "incident" : "architecture" });
 let globalSubscription = null;
 let caseSubscription = null;
 let streamedCaseId = null;
@@ -46,21 +46,9 @@ const v3Workbench = new IncidentWorkbenchControllerV3({
 const v3Live = new LiveIncidentAdapterV3({
   element: els["v3-live-incidents"],
   client: v3Client,
-  topologyElement: els["v3-live-topology"],
-  legacyTopology: els["canvas-layers"],
-  legacyRoot: root,
-  legacySurfaces: [
-    document.querySelector(".canvas-toolbar"),
-    document.querySelector(".metric-cluster"),
-    els["incident-stage-rail"],
-    els["canvas-loading"],
-    els["incident-stage-panel"],
-    els["annotation-layer"],
-    els["compare-handle"],
-    els["compare-canvas-range"],
-    els["approval-banner"],
-    els["incident-strip"]
-  ],
+  topologyElement: null,
+  legacyTopology: null,
+  legacySurfaces: [],
   onOpen: openV3Incident
 });
 
@@ -86,7 +74,7 @@ for (const button of document.querySelectorAll("button.mode-button[data-mode]"))
       return;
     }
     void bootstrap();
-  });
+  }, true);
 }
 els["open-incident-button"].addEventListener("click", () => dispatch({ type: "toast.focus" }));
 els["retry-button"].addEventListener("click", bootstrap);
@@ -315,6 +303,7 @@ function render() {
     return;
   }
   if (state.mode === "live") {
+    restoreLegacyV2Chrome();
     root.dataset.controlPlaneMode = "live";
     root.dataset.mode = "live";
     delete root.dataset.incidentWorkspace;
@@ -394,8 +383,9 @@ function syncV3ProjectionChrome(projection) {
   root.dataset.projectionRevision = String(projection.projection_revision);
   root.dataset.projectionSequence = String(projection.sequence);
   els["workspace-title"].textContent = projection.title;
-  els.stage.textContent = titleCase(projection.current_attempt.current_stage);
-  els["status-text"].textContent = `${titleCase(projection.freshness.state)} · attempt ${projection.current_attempt.attempt_id}`;
+  const resolved = projection.lifecycle_state === "RESOLVED" || projection.current_attempt.status === "COMPLETED";
+  els.stage.textContent = resolved ? "Resolved" : titleCase(projection.current_attempt.current_stage);
+  els["status-text"].textContent = resolved ? "Recovery verified" : `${titleCase(projection.freshness.state)} · attempt ${projection.current_attempt.attempt_number}`;
 }
 
 function hideLegacyV2IncidentChrome() {

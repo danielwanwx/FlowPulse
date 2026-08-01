@@ -12,7 +12,12 @@ from typing import Any, Dict, List, Optional
 from pydantic import Field, StrictBool, StrictStr, conint, root_validator, validator
 
 from .models import FreshnessStatus, NonEmpty, PositiveInt, StrictModel, UnitIntervalFloat
-from .realtime_models import ConnectorHealth, GraphPulse, IncidentClock
+from .realtime_models import (
+    ConnectorHealth,
+    GraphPulse,
+    IncidentClock,
+    MetricSeriesCollectionV3,
+)
 from .workspace_models import IncidentGraph, IncidentGraphEdge, IncidentGraphNode
 
 
@@ -992,6 +997,7 @@ class IncidentProjectionV3(StrictModel):
     actions: List[IncidentActionV3] = Field(default_factory=list, max_items=32)
     audit_records: List[WorkflowAuditRecordV3] = Field(default_factory=list, max_items=256)
     final_report: Optional[IncidentAuditReportV3] = None
+    resolved_series_snapshot: Optional[MetricSeriesCollectionV3] = None
     generated_at: datetime
 
     @root_validator(allow_reuse=True)
@@ -1097,6 +1103,14 @@ class IncidentProjectionV3(StrictModel):
                 or not set(final_report.action_receipt_audit_ids).issubset(set(audit_ids))
             ):
                 raise ValueError("workflow_v3_final_report_scope_invalid")
+        resolved_series = values.get("resolved_series_snapshot")
+        if resolved_series is not None and (
+            values.get("lifecycle_state") != IncidentLifecycleStateV3.RESOLVED
+            or attempt.status != WorkflowAttemptStateV3.COMPLETED
+            or resolved_series.case_id != values.get("case_id")
+            or resolved_series.signal_revision != values.get("signal_revision")
+        ):
+            raise ValueError("workflow_v3_resolved_series_scope_invalid")
         return values
 
 

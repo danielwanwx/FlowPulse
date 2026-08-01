@@ -99,19 +99,18 @@ test("Live activation hides legacy topology, renders a V3-only node, removes com
   assert.equal(legacyTopology.innerHTML.includes("legacy-only"), true);
 });
 
-test("V3 Live integration suppresses legacy canvas, loading, annotations, stage overlays, and toolbar content", async () => {
+test("V3 Live integration overlays incidents without replacing the established runtime canvas", async () => {
   const [app, styles, html] = await Promise.all([
     readSource("../public/control-plane-app.mjs"),
     readSource("../public/styles.css"),
     readSource("../public/index.html")
   ]);
-  assert.match(html, /id="v3-live-topology"[^>]*role="region"[^>]*tabindex="0"/);
-  for (const id of ["canvas-loading", "incident-stage-panel", "annotation-layer", "canvas-layers"]) assert.match(app, new RegExp(`els\\["${id}"\\]`));
-  assert.match(app, /document\.querySelector\("\.canvas-toolbar"\)/);
-  assert.match(app, /legacyRoot: root/);
-  assert.match(styles, /\.app-shell\[data-v3-live-active="true"\] #annotation-layer/);
-  assert.match(styles, /\.app-shell\[data-v3-live-active="true"\] #canvas-loading/);
-  assert.match(styles, /\.app-shell\[data-v3-live-active="true"\] \.canvas-toolbar/);
+  assert.doesNotMatch(html, /id="v3-live-topology"/);
+  assert.match(app, /topologyElement: null/);
+  assert.match(app, /legacyTopology: null/);
+  assert.match(app, /legacySurfaces: \[\]/);
+  assert.doesNotMatch(app, /legacyRoot: root/);
+  assert.doesNotMatch(styles, /data-v3-live-active/);
 });
 
 test("an ordered Live SSE update refreshes only the affected V3 projection", async () => {

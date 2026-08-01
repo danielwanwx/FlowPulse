@@ -35,7 +35,11 @@ export async function loadCoherentIncidentV3(client, caseId, maxSnapshotReads = 
     client.projection(caseId),
     client.series(caseId)
   ]);
-  for (let attempt = 1; series.signal_revision !== projection.signal_revision && attempt < maxSnapshotReads; attempt += 1) {
+  const isCoherent = () => series.signal_revision === projection.signal_revision
+    || (projection.lifecycle_state === "RESOLVED"
+      && projection.current_attempt?.status === "COMPLETED"
+      && series.signal_revision > projection.signal_revision);
+  for (let attempt = 1; !isCoherent() && attempt < maxSnapshotReads; attempt += 1) {
     [projection, series] = await Promise.all([
       client.projection(caseId),
       client.series(caseId)
@@ -47,7 +51,7 @@ export async function loadCoherentIncidentV3(client, caseId, maxSnapshotReads = 
   if (series.case_id !== projection.case_id) {
     throw new ControlPlaneV3ClientError("control_plane_identity_mismatch");
   }
-  if (series.signal_revision !== projection.signal_revision) {
+  if (!isCoherent()) {
     throw new ControlPlaneV3ClientError("control_plane_snapshot_unstable");
   }
   const components = new Set((projection.graph?.nodes || []).map((node) => node.component_id));

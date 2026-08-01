@@ -1406,12 +1406,59 @@ class GuidedStageRuntimeTests(unittest.IsolatedAsyncioTestCase):
         report = completed.projection.final_report
         self.assertIsNotNone(report)
         self.assertEqual("RESOLVED", completed.projection.lifecycle_state.value)
+        self.assertEqual(
+            IncidentClockState.RESOLVED,
+            completed.projection.incident_clock.state,
+        )
+        self.assertEqual(post_times[-1], completed.projection.incident_clock.resolved_at)
+        self.assertEqual(
+            self.repository.series_collection.series,
+            completed.projection.resolved_series_snapshot.series,
+        )
+        self.assertEqual(
+            completed.projection.signal_revision,
+            completed.projection.resolved_series_snapshot.signal_revision,
+        )
         self.assertIn("trace-post-action", report.verification_evidence_refs)
         self.assertTrue(report.action_receipt_audit_ids)
         self.assertTrue(report.stage_output_audit_ids)
         self.assertEqual(
+            report.stage_output_audit_ids,
+            [
+                item.audit_id
+                for item in completed.projection.audit_records
+                if item.record_type.value in {
+                    "STAGE_COMPLETED", "VERIFICATION_RECORDED",
+                }
+                and item.stage_output is not None
+            ],
+        )
+        self.assertEqual(
             "INCIDENT_COMPLETED",
             completed.projection.audit_records[-1].record_type.value,
+        )
+        self.assertIsNone(completed.projection.audit_records[-1].stage_output)
+
+        event_count = len(await self.repository.workspace_events_v3_after(
+            "tenant-a", "case-a", 0,
+        ))
+        late_at = post_times[-1] + timedelta(seconds=2)
+        late_source = source_projection(late_at).copy(update={
+            "projection_revision": 99,
+            "sequence": 99,
+            "source_revision": 99,
+        })
+        unchanged = await self.coordinator.sync_realtime(
+            late_source,
+            actor_subject_id="flowpulse-realtime",
+            now=late_at,
+        )
+        self.assertEqual(completed.projection, unchanged)
+        self.assertEqual(
+            event_count,
+            len(await self.repository.workspace_events_v3_after(
+                "tenant-a", "case-a", 0,
+            )),
         )
 
     async def test_safe_rollback_success_requires_explicit_diagnostic_branch(self):
