@@ -2,6 +2,9 @@ services:
   checkout:
     environment:
       OTEL_METRIC_EXPORT_INTERVAL: "2000"
+  load-generator:
+    environment:
+      LOAD_GENERATOR_VUS: "16"
   otel-collector:
     volumes:
       - ${FLOWPULSE_CAPTURE_DIR}:/flowpulse
