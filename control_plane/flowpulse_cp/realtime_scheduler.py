@@ -221,10 +221,15 @@ class RealtimeIngestScheduler:
                         await self.repository.append_external_identity_binding(
                             binding,
                         )
-                    result = await connector.poll(
-                        projection,
-                        acl_subjects=[self.actor_subject_id],
-                    )
+                    accepted = 0
+                    for _ in range(getattr(connector, "poll_burst", 1)):
+                        result = await connector.poll(
+                            projection,
+                            acl_subjects=[self.actor_subject_id],
+                        )
+                        if not result.accepted:
+                            break
+                        accepted += 1
                 except Exception as error:
                     unavailable += 1
                     realtime_telemetry.record(
@@ -238,9 +243,8 @@ class RealtimeIngestScheduler:
                         },
                     )
                     continue
-                if result.accepted:
-                    polled += 1
-                else:
+                polled += accepted
+                if accepted == 0:
                     unavailable += 1
         dispatched = await self.dispatch_pending_once()
         return {

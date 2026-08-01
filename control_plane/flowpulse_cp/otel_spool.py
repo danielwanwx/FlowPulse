@@ -692,6 +692,7 @@ class ConfiguredOtelSpoolConnector:
         max_lines_per_poll: int = 256,
         max_bytes_per_poll: int = 2 * 1024 * 1024,
         lookback_bytes: int = 512 * 1024,
+        poll_burst: int = 1,
     ) -> None:
         if registration.provider != ConnectorProvider.OTEL:
             raise ValueError("otel_spool_registration_provider_mismatch")
@@ -701,6 +702,8 @@ class ConfiguredOtelSpoolConnector:
             raise ValueError("otel_spool_byte_limit_invalid")
         if lookback_bytes < 0 or lookback_bytes > max_bytes_per_poll:
             raise ValueError("otel_spool_lookback_invalid")
+        if poll_burst < 1 or poll_burst > 64:
+            raise ValueError("otel_spool_poll_burst_invalid")
         self.registration = registration
         self.spool_path = Path(spool_path)
         self.external_resource_id = external_resource_id
@@ -709,6 +712,7 @@ class ConfiguredOtelSpoolConnector:
         self.max_lines_per_poll = max_lines_per_poll
         self.max_bytes_per_poll = max_bytes_per_poll
         self.lookback_bytes = lookback_bytes
+        self.poll_burst = poll_burst
         self.normalizer = OtelSpoolNormalizer()
         try:
             self.stream_kind = {

@@ -955,6 +955,52 @@ class OutboxDispatchTests(unittest.IsolatedAsyncioTestCase):
             result,
         )
 
+    async def test_connector_poll_burst_drains_current_trace_backlog(self):
+        repository = InMemoryRealtimeRepository()
+        await repository.register_connector(registration())
+
+        async def workspace_active_incidents(tenant_id, limit):
+            return [type("Summary", (), {"case_id": "case-a"})()]
+
+        async def workspace_projection(tenant_id, case_id):
+            return projection()
+
+        repository.workspace_active_incidents = workspace_active_incidents
+        repository.workspace_projection = workspace_projection
+
+        class BurstConnector:
+            registration = registration()
+            poll_burst = 4
+            calls = 0
+
+            async def poll(self, *args, **kwargs):
+                self.calls += 1
+                return type("Result", (), {"accepted": self.calls < 4})()
+
+        connector = BurstConnector()
+        bounded = BurstConnector()
+        bounded.poll = AsyncMock(
+            side_effect=lambda *args, **kwargs: type(
+                "Result", (), {"accepted": True},
+            )(),
+        )
+        result = await RealtimeIngestScheduler(
+            repository=repository,
+            connectors={"burst": connector, "bounded": bounded},
+            temporal_dispatch=AsyncMock(),
+            tenant_id="tenant-a",
+            binding_templates=[],
+            workflow_eligible=AsyncMock(return_value=True),
+            clock=lambda: NOW,
+        ).run_once()
+
+        self.assertEqual(4, connector.calls)
+        self.assertEqual(4, bounded.poll.await_count)
+        self.assertEqual(
+            {"polled": 7, "unavailable": 0, "ineligible": 0, "dispatched": 0},
+            result,
+        )
+
 
 class ServerBindingTemplateTests(unittest.TestCase):
     def test_binding_template_is_explicit_and_caller_cannot_supply_scope(self):

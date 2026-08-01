@@ -878,6 +878,7 @@ async def run_worker(
                 repository=repository,
                 max_bytes_per_poll=max_bytes,
                 lookback_bytes=(512 * 1024 if data_class == "TRACE" else 0),
+                poll_burst=(16 if data_class == "TRACE" else 1),
             )
         else:
             await UnavailableOtelAdapter(otel_registration, repository).health()
