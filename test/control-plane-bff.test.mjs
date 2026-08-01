@@ -192,6 +192,16 @@ test("V3 BFF allowlists Live, typed series, ordered SSE, and workflow commands w
   }
 });
 
+test("V3 BFF forwards a full realtime series window", async (context) => {
+  const upstream = await startUpstream(context);
+  const frontend = await startFrontend(context, upstream.baseUrl);
+  const response = await fetch(`${frontend.baseUrl}/api/control-plane/v3/incidents/case-large/series`);
+  const body = await response.text();
+  assert.equal(response.status, 200);
+  assert.equal(Buffer.byteLength(body, "utf8") > 512 * 1024, true);
+  assert.equal(JSON.parse(body).series.length, 8);
+});
+
 async function startUpstream(context) {
   const requests = [];
   const server = createHttpServer(async (request, response) => {
@@ -231,6 +241,13 @@ async function startUpstream(context) {
     if (url.pathname.includes("/v3/incidents/case-invalid/")) {
       response.writeHead(422, { "content-type": "application/json" });
       response.end(JSON.stringify({ detail: "private validation detail" }));
+      return;
+    }
+    if (url.pathname === "/v3/incidents/case-large/series") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ series: Array.from({ length: 8 }, () => ({
+        points: "x".repeat(84 * 1024)
+      })) }));
       return;
     }
     if (request.method === "POST" && url.pathname === "/v1/incidents/case-test/node-explanations") {

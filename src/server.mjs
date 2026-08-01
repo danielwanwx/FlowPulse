@@ -56,6 +56,7 @@ const authorityReceiptSecret = randomBytes(32);
 const authorityReceiptBindings = new Map();
 const CAPTURE_CLOCK_SKEW_MS = 1_000;
 const BROWSER_RESPONSE_MAX_BYTES = 512 * 1024;
+const CONTROL_PLANE_SERIES_MAX_BYTES = 2 * 1024 * 1024;
 const DEVELOPMENT_STATUS_CACHE_TTL_MS = 10_000;
 // This is a server-side work bound, deliberately much smaller than an
 // unbounded ledger scan and independent of the 256 KiB browser response cap.
@@ -1108,7 +1109,12 @@ async function proxyControlPlane(request, response, url) {
   }
   if (!contentType.startsWith("application/json")) return json(response, 502, { error: "control_plane_schema_invalid" });
   try {
-    const body = await boundedUpstreamBody(upstream);
+    const body = await boundedUpstreamBody(
+      upstream,
+      route.path.endsWith("/series")
+        ? CONTROL_PLANE_SERIES_MAX_BYTES
+        : BROWSER_RESPONSE_MAX_BYTES,
+    );
     response.writeHead(upstream.status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
     response.end(body);
   } catch {
@@ -1320,8 +1326,7 @@ async function controlPlaneUpstreamFailure(response, upstream) {
   return json(response, 503, { error: "control_plane_unavailable" });
 }
 
-async function boundedUpstreamBody(upstream) {
-  const limit = 512 * 1024;
+async function boundedUpstreamBody(upstream, limit = BROWSER_RESPONSE_MAX_BYTES) {
   let size = 0;
   const chunks = [];
   if (upstream.body) {
