@@ -447,6 +447,10 @@ export class IncidentWorkbenchControllerV3 {
       error: this.error,
       commandPending: this.commandPending
     })}${commandDialogMarkup(this.ui.commandDialog)}</div>`;
+    for (const node of this.element.querySelectorAll("[data-graph-x][data-graph-y]")) {
+      node.style.left = `${node.dataset.graphX}%`;
+      node.style.top = `${node.dataset.graphY}%`;
+    }
     if (this.ui.panel || this.ui.commandDialog) this.applyModalInert();
     restoreCapturedFocus(this.element, focus);
     const now = Date.now();

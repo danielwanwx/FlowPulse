@@ -5031,7 +5031,7 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .iw3-graph-canvas svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
 .iw3-graph-edge { fill: none; stroke: var(--line-strong); stroke-width: 1.8; vector-effect: non-scaling-stroke; }
 .iw3-graph-edge.is-active { stroke: var(--red); stroke-dasharray: 7 8; animation: iw3-edge-pulse 1.8s linear infinite; }
-.iw3-graph-node { position: absolute; left: var(--x); top: var(--y); display: grid; width: 150px; min-height: 58px; align-content: center; padding: 9px; border: 1px solid var(--line-strong); border-left: 3px solid var(--red); border-radius: 5px; color: var(--ink); background: var(--surface); box-shadow: 0 6px 16px color-mix(in srgb, var(--ink) 8%, transparent); text-align: left; transform: translate(-50%, -50%); cursor: pointer; }
+.iw3-graph-node { position: absolute; left: 0; top: 0; display: grid; width: 150px; min-height: 58px; align-content: center; padding: 9px; border: 1px solid var(--line-strong); border-left: 3px solid var(--red); border-radius: 5px; color: var(--ink); background: var(--surface); box-shadow: 0 6px 16px color-mix(in srgb, var(--ink) 8%, transparent); text-align: left; transform: translate(-50%, -50%); cursor: pointer; }
 .iw3-graph-node.is-selected { outline: 3px solid color-mix(in srgb, var(--blue) 28%, transparent); border-color: var(--blue); }
 .iw3-graph-node strong { overflow: hidden; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .iw3-graph-node small { margin-top: 2px; color: var(--muted); font-size: 8px; }

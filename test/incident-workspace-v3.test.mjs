@@ -501,6 +501,8 @@ test("Investigate graph is an accessible modal without turning node review into 
   assert.match(html, /data-graph-close/);
   assert.match(html, /data-graph-node="checkout"/);
   assert.match(html, /data-graph-node="payment"/);
+  assert.match(html, /data-graph-x="42" data-graph-y="46"/);
+  assert.doesNotMatch(html, /style="--x:/);
   assert.match(html, /class="iw3-graph-edge/);
   assert.doesNotMatch(html, /No evidence-backed impact graph is available/);
   assert.match(html, /data-agent-investigate="checkout"/);
@@ -541,6 +543,8 @@ test("controller traps modal focus, closes on Escape, restores focus, and uses i
   assert.match(source, /querySelector\(this\.previousFocus\)\?\.focus\(\)/);
   assert.match(source, /workflow\.dataset\.rerunStage \|\| this\.ui\.reviewStage/);
   assert.match(source, /if \(this\.ui\.reviewStage\) return;/);
+  assert.match(source, /node\.style\.left = `\$\{node\.dataset\.graphX\}%`/);
+  assert.match(source, /node\.style\.top = `\$\{node\.dataset\.graphY\}%`/);
 });
 
 test("V3 stage shell owns viewport overflow and collapses safely at 451 by 859", async () => {
