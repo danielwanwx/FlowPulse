@@ -324,7 +324,7 @@ function stageRailMarkup(view) {
 
 function stageLeadMarkup(stage, projection, run, series, now) {
   const path = pathLabel(projection);
-  if (stage === "DETECT") return '<p class="iw3-stage-lead">Checkout → Payment error elevated</p>';
+  if (stage === "DETECT") return `<p class="iw3-stage-lead">${escapeHtml(path)} error elevated</p>`;
   if (stage === "TRIAGE") {
     const bounded = triageIsBounded(run);
     if (!bounded) return '<p class="iw3-stage-lead">Scope under review</p>';
@@ -339,11 +339,13 @@ function stageLeadMarkup(stage, projection, run, series, now) {
   if (stage === "DECIDE") {
     const candidate = decisionCandidate(projection, run);
     const risk = compactRisk(candidate?.risk);
-    return candidate ? `<p class="iw3-stage-lead">Recommended action: ${escapeHtml(candidate.title)}${risk ? ` · Risk: ${escapeHtml(risk)}` : ""}</p>` : "";
+    const label = approvedActionLabel(candidate);
+    return label ? `<p class="iw3-stage-lead">Recommended action: ${label}${risk ? ` · Risk: ${escapeHtml(risk)}` : ""}</p>` : "";
   }
   if (stage === "RESPOND") {
     const action = currentAction(projection, run);
-    return action ? `<p class="iw3-stage-lead">${escapeHtml(action.title)} · ${escapeHtml(action.status === "AWAITING_APPROVAL" ? "Approval required" : titleCase(action.status))}</p>` : "";
+    const label = approvedActionLabel(action);
+    return label ? `<p class="iw3-stage-lead">${label} · ${escapeHtml(action.status === "AWAITING_APPROVAL" ? "Approval required" : titleCase(action.status))}</p>` : "";
   }
   if (stage === "VERIFY" && run.status === "RUNNING") {
     const deadline = Date.parse(run.verification_deadline_at || "");
@@ -359,12 +361,12 @@ function triageIsBounded(run) {
     .some((value) => ["BOUNDED", "CONFIRMED"].includes(String(value || "").toUpperCase()));
 }
 
-function compactPathMarkup(projection) {
+function compactPathMarkup(projection, now) {
   const nodes = new Map((projection.graph?.nodes || []).map((node) => [node.component_id, node]));
   const path = projection.impacted_path || [];
   return `<div class="iw3-path-visual" aria-label="${escapeHtml(pathLabel(projection))}">${path.map((id) => {
     const node = nodes.get(id) || { component_id: id, display_name: id };
-    return `<span data-tone="${escapeHtml(graphNodeTone(node, projection))}">${escapeHtml(node.display_name)}</span>`;
+    return `<span data-tone="${escapeHtml(graphNodeTone(node, projection, now))}">${escapeHtml(node.display_name)}</span>`;
   }).join('<i aria-hidden="true">→</i>')}</div>`;
 }
 
@@ -387,6 +389,12 @@ function currentAction(projection, run) {
   return (projection.actions || []).find((action) => action.attempt_id === projection.current_attempt?.attempt_id && action.stage_run_id === run?.stage_run_id) || null;
 }
 
+function approvedActionLabel(action) {
+  return action?.command_id === "astronomy.restore-payment-and-recreate-checkout"
+    ? "Restore Payment reachability"
+    : null;
+}
+
 function compactRisk(value) {
   return /bounded/i.test(String(value || "")) ? "bounded" : null;
 }
@@ -399,15 +407,19 @@ function actionPreflight(projection, action) {
   return candidate;
 }
 
-function graphHealth(projection) {
-  if (String(projection.freshness?.state || "").toUpperCase() !== "CURRENT") return "stale";
-  const tones = (projection.graph?.nodes || []).map((node) => graphNodeTone(node, projection));
+function graphFreshness(projection, now) {
+  return workbenchDurationV3(projection, now).freshness;
+}
+
+function graphHealth(projection, now) {
+  if (graphFreshness(projection, now) !== "CURRENT") return "stale";
+  const tones = (projection.graph?.nodes || []).map((node) => graphNodeTone(node, projection, now));
   if (tones.includes("affected")) return "affected";
   return tones.includes("healthy") ? "healthy" : "observed";
 }
 
-function graphNodeTone(node, projection) {
-  if (String(projection.freshness?.state || "").toUpperCase() !== "CURRENT") return "stale";
+function graphNodeTone(node, projection, now) {
+  if (graphFreshness(projection, now) !== "CURRENT") return "stale";
   const runtime = String(node.runtime_status || "").toLowerCase();
   const impact = String(node.impact_status || "").toLowerCase();
   if (["healthy", "verified", "recovered", "ok"].includes(runtime) || ["healthy", "verified", "recovered"].includes(impact)) return "healthy";
@@ -420,11 +432,11 @@ function stageMarkup(view, projection, ui) {
   if (!run) return `<section class="iw3-stage iw3-stage-empty" aria-labelledby="iw3-stage-title"><h3 id="iw3-stage-title">${stageLabel(view.visibleStage)}</h3></section>`;
   const header = `<header class="iw3-stage-heading"><div><span>${stageLabel(view.visibleStage)}</span><h3 id="iw3-stage-title">${stageLabel(view.visibleStage)}</h3>${stageLeadMarkup(view.visibleStage, projection, run, ui.series, ui.now)}</div><div class="iw3-run-state" data-state="${escapeHtml(run.status.toLowerCase())}" aria-label="${escapeHtml(stateLabel(run.status))}"><span aria-hidden="true"></span></div></header>`;
   const content = ({
-    DETECT: () => detectMarkup(projection, run, ui.series),
-    TRIAGE: () => triageMarkup(projection, run),
-    INVESTIGATE: () => investigateMarkup(projection, run),
-    DECIDE: () => decideMarkup(projection, run),
-    RESPOND: () => respondMarkup(projection, run, ui.commandPending),
+    DETECT: () => detectMarkup(projection, run, ui.series, ui.now),
+    TRIAGE: () => triageMarkup(projection, run, ui.now),
+    INVESTIGATE: () => investigateMarkup(projection, run, ui.now),
+    DECIDE: () => decideMarkup(projection, run, ui.now),
+    RESPOND: () => respondMarkup(projection, run, ui.commandPending, ui.now),
     VERIFY: () => verifyMarkup(projection, run, ui.series, ui.now)
   })[view.visibleStage]();
   const failure = ["FAILED", "NEEDS_HUMAN"].includes(run.status)
@@ -433,43 +445,43 @@ function stageMarkup(view, projection, ui) {
   return `<section class="iw3-stage" aria-labelledby="iw3-stage-title">${header}${failure}${content}</section>`;
 }
 
-function detectMarkup(projection, run, series) {
+function detectMarkup(projection, run, series, now) {
   return `<div class="iw3-stage-deck">
     <section class="iw3-stage-card iw3-stage-card-signals">${signalCardsMarkup(series)}</section>
-    <section class="iw3-stage-card iw3-stage-card-path">${compactPathMarkup(projection)}</section>
+    <section class="iw3-stage-card iw3-stage-card-path">${compactPathMarkup(projection, now)}</section>
     ${activityCapsuleMarkup(projection, "DETECT", run)}
   </div>`;
 }
 
-function triageMarkup(projection, run) {
+function triageMarkup(projection, run, now) {
   const facts = run.output?.facts || [];
   const unknowns = run.output?.unknowns || [];
   return `<div class="iw3-stage-deck">
-    <section class="iw3-stage-card iw3-stage-card-path">${compactPathMarkup(projection)}</section>
+    <section class="iw3-stage-card iw3-stage-card-path">${compactPathMarkup(projection, now)}</section>
     ${triageIsBounded(run) ? `<section class="iw3-stage-card iw3-stage-card-stats"><strong>${facts.length} facts</strong><strong>${unknowns.length} open question${unknowns.length === 1 ? "" : "s"}</strong></section>` : ""}
     ${activityCapsuleMarkup(projection, "TRIAGE", run)}
   </div>`;
 }
 
-function investigateMarkup(projection, run) {
+function investigateMarkup(projection, run, now) {
   const hypotheses = (projection.hypotheses || []).filter((item) => item.stage_run_id === run.stage_run_id);
   const queries = (projection.evidence_queries || []).filter((item) => item.stage_run_id === run.stage_run_id);
   const leading = leadingHypothesis(hypotheses);
   return `<div class="iw3-stage-deck">
-    <section class="iw3-stage-card iw3-stage-card-path">${compactPathMarkup(projection)}</section>
+    <section class="iw3-stage-card iw3-stage-card-path">${compactPathMarkup(projection, now)}</section>
     <section class="iw3-stage-card iw3-stage-card-stats"><strong>${leading ? `${Math.round(Number(leading.confidence || 0) * 100)}%` : "—"}</strong><strong>${queries.length === 1 ? "1 query" : `${queries.length} queries`}</strong><button type="button" data-open-panel="evidence">Evidence</button></section>
     ${activityCapsuleMarkup(projection, "INVESTIGATE", run)}
   </div>`;
 }
 
-function decideMarkup(projection, run) {
+function decideMarkup(projection, run, now) {
   return `<div class="iw3-stage-deck">
-    <section class="iw3-stage-card iw3-stage-card-path">${compactPathMarkup(projection)}</section>
+    <section class="iw3-stage-card iw3-stage-card-path">${compactPathMarkup(projection, now)}</section>
     ${activityCapsuleMarkup(projection, "DECIDE", run)}
   </div>`;
 }
 
-function respondMarkup(projection, run, pending) {
+function respondMarkup(projection, run, pending, now) {
   const actions = (projection.actions || []).filter((action) =>
     action.attempt_id === projection.current_attempt.attempt_id
     && action.stage_run_id === run.stage_run_id
@@ -480,7 +492,8 @@ function respondMarkup(projection, run, pending) {
     const preflight = actionPreflight(projection, action);
     const canApprove = Boolean(preflight) && action.status === "AWAITING_APPROVAL" && revisionCurrent && available.has("APPROVE_ACTION") && !pending;
     const canReject = Boolean(preflight) && action.status === "AWAITING_APPROVAL" && revisionCurrent && available.has("REJECT_ACTION") && !pending;
-    return `<article class="iw3-stage-card iw3-action-card" data-action-id="${escapeHtml(action.action_id)}"><header><strong>${escapeHtml(action.title)}</strong><span>${escapeHtml(action.status === "AWAITING_APPROVAL" ? "Approval required" : titleCase(action.status))}</span></header>${preflight ? `<div class="iw3-action-chips"><span>paymentUnreachable: on → off</span><span>Checkout: recreate</span><span>Scope: local Astronomy Shop</span></div>` : '<div class="iw3-action-chips"><span>Revalidation required</span></div>'}<button type="button" data-open-panel="action">Action details</button>${action.status === "AWAITING_APPROVAL" ? `<div class="iw3-action-buttons"><button type="button" data-action-decision="REJECT_ACTION" data-action-id="${escapeHtml(action.action_id)}"${canReject ? "" : " disabled"}>Reject</button><button type="button" class="is-primary" data-action-decision="APPROVE_ACTION" data-action-id="${escapeHtml(action.action_id)}"${canApprove ? "" : " disabled"}>${pending ? "Working…" : "Approve action"}</button></div>` : ""}</article>`;
+    const label = approvedActionLabel(action) || "Action";
+    return `<article class="iw3-stage-card iw3-action-card" data-action-id="${escapeHtml(action.action_id)}"><header><strong>${label}</strong><span>${escapeHtml(action.status === "AWAITING_APPROVAL" ? "Approval required" : titleCase(action.status))}</span></header>${preflight ? `<div class="iw3-action-chips"><span>paymentUnreachable: on → off</span><span>Checkout: recreate</span><span>Scope: local Astronomy Shop</span></div>` : '<div class="iw3-action-chips"><span>Revalidation required</span></div>'}<button type="button" data-open-panel="action">Action details</button>${action.status === "AWAITING_APPROVAL" ? `<div class="iw3-action-buttons"><button type="button" data-action-decision="REJECT_ACTION" data-action-id="${escapeHtml(action.action_id)}"${canReject ? "" : " disabled"}>Reject</button><button type="button" class="is-primary" data-action-decision="APPROVE_ACTION" data-action-id="${escapeHtml(action.action_id)}"${canApprove ? "" : " disabled"}>${pending ? "Working…" : "Approve action"}</button></div>` : ""}</article>`;
   }).join("")}${activityCapsuleMarkup(projection, "RESPOND", run)}</div>`;
 }
 
@@ -490,7 +503,7 @@ function verifyMarkup(projection, run, series, now) {
     ? Math.max(0, Math.ceil((deadline - (now ?? Date.now())) / 1000))
     : null;
   return `<div class="iw3-stage-deck">
-    <section class="iw3-stage-card iw3-stage-card-observation"><strong data-verification-remaining${Number.isFinite(deadline) ? ` data-deadline="${escapeHtml(run.verification_deadline_at)}"` : ""}>${remaining === null ? "—" : escapeHtml(formatDuration(remaining))}</strong><span data-tone="${escapeHtml(graphHealth(projection))}">${escapeHtml(titleCase(graphHealth(projection)))}</span></section>
+    <section class="iw3-stage-card iw3-stage-card-observation"><strong data-verification-remaining${Number.isFinite(deadline) ? ` data-deadline="${escapeHtml(run.verification_deadline_at)}"` : ""}>${remaining === null ? "—" : escapeHtml(formatDuration(remaining))}</strong><span data-tone="${escapeHtml(graphHealth(projection, now))}">${escapeHtml(titleCase(graphHealth(projection, now)))}</span></section>
     <section class="iw3-stage-card iw3-stage-card-signals">${signalCardsMarkup(series)}</section>
     ${activityCapsuleMarkup(projection, "VERIFY", run)}
   </div>`;
@@ -534,7 +547,7 @@ function panelMarkup(view, projection, ui) {
   else if (ui.panel === "action") body = actionDetailMarkup(projection, view.visibleRun);
   else if (ui.panel === "audit") body = auditDetailMarkup(projection);
   else body = timelineMarkup(projection, view);
-  return `<section class="iw3-detail-layer" role="dialog" aria-modal="true" aria-labelledby="iw3-detail-title" tabindex="-1" data-workbench-modal><div class="iw3-detail${ui.panel === "audit" ? " is-audit" : ""}"><header><h3 id="iw3-detail-title">${escapeHtml(title)}</h3><button type="button" data-panel-close aria-label="Close ${escapeHtml(title)}">Close</button></header>${body}</div></section>`;
+  return `<section class="iw3-detail-layer" role="dialog" aria-modal="true" aria-labelledby="iw3-detail-title" tabindex="-1" data-workbench-modal><div class="iw3-detail${ui.panel === "audit" ? " is-audit" : ""}"><header><h3 id="iw3-detail-title">${escapeHtml(title)}</h3><button type="button" data-panel-close aria-label="Close ${escapeHtml(title)}">Close</button></header><div class="iw3-detail-body">${body}</div></div></section>`;
 }
 
 function actionDetailMarkup(projection, run) {
@@ -556,7 +569,9 @@ function graphModalMarkup(view, projection, selectedComponent, now, series) {
     impacted_path: [...componentIds],
     incident_focus: { incident_relation_edge_ids: relations.map((edge) => edge.edge_id) }
   });
-  const activeEdges = new Set((projection.graph?.active_pulses || []).filter((pulse) => Date.parse(pulse.expires_at) > (now ?? Date.now())).flatMap((pulse) => pulse.edge_ids));
+  const activeEdges = graphFreshness(projection, now) === "CURRENT"
+    ? new Set((projection.graph?.active_pulses || []).filter((pulse) => Date.parse(pulse.expires_at) > (now ?? Date.now())).flatMap((pulse) => pulse.edge_ids))
+    : new Set();
   const nodeById = new Map(topology.nodes.map((node) => [node.component_id, node]));
   const edges = topology.available ? topology.edges.map((edge) => {
     const source = topology.positions.get(edge.source_component_id);
@@ -564,17 +579,19 @@ function graphModalMarkup(view, projection, selectedComponent, now, series) {
     if (!source || !target) return "";
     const middle = (source.x + target.x) / 2;
     const d = `M ${source.x} ${source.y} C ${middle} ${source.y}, ${middle} ${target.y}, ${target.x} ${target.y}`;
-    const tone = graphEdgeTone(edge, nodeById, projection);
+    const tone = graphEdgeTone(edge, nodeById, projection, now);
     return `<path class="iw3-graph-edge is-${tone}" d="${d}"/>${activeEdges.has(edge.edge_id) ? `<path class="iw3-graph-pulse is-${tone}" d="${d}"/>` : ""}`;
   }).join("") : "";
   const nodes = topology.available ? topology.nodes.map((node) => {
     const position = topology.positions.get(node.component_id);
-    const tone = graphNodeTone(node, projection);
+    const tone = graphNodeTone(node, projection, now);
     return `<button type="button" class="iw3-graph-node is-${tone}${node.component_id === selectedComponent ? " is-selected" : ""}" data-graph-node="${escapeHtml(node.component_id)}" data-graph-x="${position.x}" data-graph-y="${position.y}"><strong>${escapeHtml(node.display_name)}</strong><small>${escapeHtml(titleCase(node.runtime_status))}</small></button>`;
   }).join("") : '<p class="iw3-graph-unavailable">No evidence-backed impact graph is available.</p>';
   const selected = nodeById.get(selectedComponent) || null;
   const metric = selected ? componentMetricLabel(series, selected.component_id) : null;
-  return `<section class="iw3-graph-layer" role="dialog" aria-modal="true" aria-labelledby="iw3-graph-title" tabindex="-1" data-workbench-modal data-graph-modal><div class="iw3-graph-dialog"><header><div><span>${stageLabel(view.visibleStage)}</span><h3 id="iw3-graph-title">Dataflow</h3></div><button type="button" data-graph-close aria-label="Close Dataflow">Close</button></header><div class="iw3-graph-legend"><span data-tone="affected">Red: affected</span><span data-tone="healthy">Green: healthy</span><span data-tone="observed">Moving pulse: observed traffic</span><span data-tone="stale">Gray: no recent traffic / stale</span></div><div class="iw3-graph-canvas" role="region" aria-label="Evidence-backed incident topology"><svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">${edges}</svg>${nodes}</div>${selected ? `<aside class="iw3-node-peek"><div><span>Selected component</span><h4>${escapeHtml(selected.display_name)}</h4><p>${escapeHtml(titleCase(selected.runtime_status))} · ${escapeHtml(titleCase(selected.impact_status))}${metric ? ` · ${escapeHtml(metric)}` : ""}</p></div>${view.reviewingHistory ? '<span class="iw3-read-only-note">Historical graph · read-only</span>' : `<button type="button" data-agent-investigate="${escapeHtml(selected.component_id)}">Let Agent investigate this node</button>`}</aside>` : ""}</div></section>`;
+  const readOnly = view.reviewingHistory || projection.lifecycle_state === "RESOLVED" || projection.current_attempt?.status === "COMPLETED";
+  const canInvestigateNode = !readOnly && view.currentStage === "INVESTIGATE" && view.visibleStage === "INVESTIGATE";
+  return `<section class="iw3-graph-layer" role="dialog" aria-modal="true" aria-labelledby="iw3-graph-title" tabindex="-1" data-workbench-modal data-graph-modal><div class="iw3-graph-dialog"><header><div><span>${stageLabel(view.visibleStage)}</span><h3 id="iw3-graph-title">Dataflow</h3></div><button type="button" data-graph-close aria-label="Close Dataflow">Close</button></header><div class="iw3-graph-legend"><span data-tone="affected">Red: affected</span><span data-tone="healthy">Green: healthy</span><span data-tone="observed">Moving pulse: observed traffic</span><span data-tone="stale">Gray: no recent traffic / stale</span></div><div class="iw3-graph-canvas" role="region" aria-label="Evidence-backed incident topology"><svg viewBox="0 0 100 100" preserveAspectRatio="none">${edges}</svg>${nodes}</div>${selected ? `<aside class="iw3-node-peek"><div><span>Selected component</span><h4>${escapeHtml(selected.display_name)}</h4><p>${escapeHtml(titleCase(selected.runtime_status))} · ${escapeHtml(titleCase(selected.impact_status))} · ${escapeHtml(metric || (graphFreshness(projection, now) === "CURRENT" ? "Fresh" : "Stale"))}</p></div>${readOnly ? `<span class="iw3-read-only-note">${view.reviewingHistory ? "Historical graph · read-only" : "Read-only"}</span>` : canInvestigateNode ? `<button type="button" data-agent-investigate="${escapeHtml(selected.component_id)}">Let Agent investigate this node</button>` : ""}</aside>` : ""}</div></section>`;
 }
 
 function signalCardsMarkup(collection, expanded = false) {
@@ -585,6 +602,7 @@ function signalCardsMarkup(collection, expanded = false) {
     const series = seriesById.get(path.seriesId);
     const latest = series?.points?.at(-1) || null;
     const current = latest && typeof latest.value === "number" && Number.isFinite(latest.value) ? latest : null;
+    const tone = signalTone(series, current);
     const currentLabel = current
       ? formatMetric(current.value, series.unit)
       : expanded ? `Unavailable${latest?.missing_reason ? ` · ${titleCase(latest.missing_reason)}` : ""}` : "No sample";
@@ -597,21 +615,40 @@ function signalCardsMarkup(collection, expanded = false) {
     const d = path.segments.map((segment) => segment.map((point, index) => `${index ? "L" : "M"}${point.x} ${point.y}`).join(" "));
     const compactFooter = `<span data-tone="${escapeHtml(String(series?.freshness || "unknown").toLowerCase())}">${escapeHtml(titleCase(series?.freshness || "unknown"))}</span>`;
     const detailFooter = `<span>${path.segments.reduce((count, segment) => count + segment.length, 0)} samples</span><span data-trend="${escapeHtml(trend.direction)}">${escapeHtml(trend.label)}</span><span>${observedSeconds === null ? "Window pending" : `${escapeHtml(formatDuration(observedSeconds))} window`}</span><span>${escapeHtml(thresholdCopy(series?.thresholds, series?.unit))}</span><span>${escapeHtml(titleCase(series?.freshness || "unknown"))} · ${escapeHtml(shortTime(latest?.timestamp))}</span>`;
-    return `<article class="iw3-signal-card" data-series-id="${escapeHtml(path.seriesId)}"><header><div><span>${escapeHtml(series?.component_id || "Component")}</span><h5>${escapeHtml(series?.label || series?.metric_key || path.seriesId)}</h5></div><strong>${escapeHtml(currentLabel)}</strong></header><svg viewBox="0 0 ${expanded ? 520 : 240} 76" preserveAspectRatio="none" role="img" aria-label="${escapeHtml(series?.label || path.seriesId)} samples">${d.map((value) => `<path d="${value}"/>`).join("")}</svg><footer>${expanded ? detailFooter : compactFooter}</footer></article>`;
+    const label = expanded ? series?.label || series?.metric_key || path.seriesId : compactMetricLabel(series);
+    return `<article class="iw3-signal-card" data-series-id="${escapeHtml(path.seriesId)}" data-tone="${tone}"><header><div><span>${escapeHtml(series?.component_id || "Component")}</span><h5>${escapeHtml(label)}</h5></div><strong>${escapeHtml(currentLabel)}</strong></header><svg viewBox="0 0 ${expanded ? 520 : 240} 76" preserveAspectRatio="none" role="img" aria-label="${escapeHtml(series?.label || path.seriesId)} samples">${d.map((value) => `<path d="${value}"/>`).join("")}</svg><footer>${expanded ? detailFooter : compactFooter}</footer></article>`;
   }).join("") || '<p class="iw3-empty">Waiting for typed metric samples.</p>'}</div>`;
 }
 
-function graphEdgeTone(edge, nodes, projection) {
-  if (String(projection.freshness?.state || "").toUpperCase() !== "CURRENT") return "stale";
-  const tones = [nodes.get(edge.source_component_id), nodes.get(edge.target_component_id)].filter(Boolean).map((node) => graphNodeTone(node, projection));
+function compactMetricLabel(series) {
+  const key = String(series?.metric_key || "").toLowerCase();
+  if (key.includes("error")) return "Errors";
+  if (key.includes("latency") || key.includes("duration")) return "Latency";
+  if (key.includes("request")) return "Traffic";
+  return "Signal";
+}
+
+function signalTone(series, current) {
+  if (!current || String(series?.freshness || "").toUpperCase() !== "CURRENT") return "stale";
+  const critical = typeof series?.thresholds?.critical === "number" ? series.thresholds.critical : null;
+  const warning = typeof series?.thresholds?.warning === "number" ? series.thresholds.warning : null;
+  if (Number.isFinite(critical) && current.value >= critical) return "affected";
+  if (Number.isFinite(warning) && current.value >= warning) return "warning";
+  return Number.isFinite(critical) || Number.isFinite(warning) ? "healthy" : "observed";
+}
+
+function graphEdgeTone(edge, nodes, projection, now) {
+  if (graphFreshness(projection, now) !== "CURRENT") return "stale";
+  const tones = [nodes.get(edge.source_component_id), nodes.get(edge.target_component_id)].filter(Boolean).map((node) => graphNodeTone(node, projection, now));
   if (tones.includes("affected")) return "affected";
   return tones.every((tone) => tone === "healthy") ? "healthy" : "observed";
 }
 
 function componentMetricLabel(collection, componentId) {
-  const series = (collection?.series || []).find((item) => item.component_id === componentId && typeof item.points?.at(-1)?.value === "number");
+  const series = (collection?.series || []).find((item) => item.component_id === componentId && /error|latency|duration/.test(item.metric_key || "") && typeof item.points?.at(-1)?.value === "number")
+    || (collection?.series || []).find((item) => item.component_id === componentId && typeof item.points?.at(-1)?.value === "number");
   const point = series?.points?.at(-1);
-  return point ? formatMetric(point.value, series.unit) : null;
+  return point ? `${compactMetricLabel(series)} ${formatMetric(point.value, series.unit)}` : null;
 }
 
 function activityMarkup(projection, stage, { roles = null, excludeRoles = [], stageRunId = null } = {}) {

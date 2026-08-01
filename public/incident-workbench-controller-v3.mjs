@@ -239,7 +239,7 @@ export class IncidentWorkbenchControllerV3 {
     }
     const investigate = event.target.closest("[data-agent-investigate]");
     if (investigate) {
-      if (this.ui.reviewStage) return;
+      if (this.ui.reviewStage || this.projection.current_attempt?.current_stage !== "INVESTIGATE" || this.projection.lifecycle_state === "RESOLVED" || this.projection.current_attempt?.status === "COMPLETED") return;
       const base = this.command("START_AGENT_RUN", `agent:${this.projection.current_attempt.attempt_id}:${this.projection.workflow_revision}:${investigate.dataset.agentInvestigate}`);
       await this.execute(() => this.client.startAgentRun(this.caseId, { ...base, component_id: investigate.dataset.agentInvestigate, question: "Investigate this component" }), "START_AGENT_RUN");
       return;

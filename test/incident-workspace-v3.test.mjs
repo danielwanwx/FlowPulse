@@ -280,6 +280,11 @@ test("Verify publishes the backend-owned deadline and real signal cards show tre
         { timestamp: "2026-07-31T00:01:20Z", value: 8, evidence_refs: ["e1"] },
         { timestamp: "2026-07-31T00:01:40Z", value: 4, evidence_refs: ["e2"] }
       ]
+    }, {
+      series_id: "checkout-traffic", metric_key: "checkout.request_count", component_id: "checkout",
+      label: "Checkout request count", unit: "requests", thresholds: { critical: null, warning: null }, freshness: "CURRENT",
+      observed_window_start: "2026-07-31T00:01:20Z", observed_window_end: "2026-07-31T00:01:40Z",
+      points: [{ timestamp: "2026-07-31T00:01:40Z", value: 1, evidence_refs: ["e3"] }]
     }]
   };
 
@@ -288,6 +293,9 @@ test("Verify publishes the backend-owned deadline and real signal cards show tre
   });
   assert.match(html, /data-verification-remaining data-deadline="2026-07-31T00:02:00Z">0m 15s/);
   assert.match(html, /Observing post-action telemetry · 0m 15s left/);
+  assert.match(html, /data-series-id="checkout-errors" data-tone="healthy"/);
+  assert.match(html, /data-series-id="checkout-traffic" data-tone="observed"/);
+  assert.match(html, /<h5>Errors<\/h5>|<h5>Traffic<\/h5>/);
   assert.doesNotMatch(html, /data-trend="falling">Falling 50%|0m 20s window/);
   const monitor = renderIncidentWorkbenchV3(value, {
     connection: "connected", panel: "metrics", series, now: Date.parse("2026-07-31T00:01:45Z")
@@ -318,7 +326,7 @@ test("a completed incident keeps a compact visual summary and opens the immutabl
   assert.doesNotMatch(html, /Agent room/);
   assert.match(html, /iw3-stage-rail/);
   assert.doesNotMatch(html, /Fresh Checkout to Payment trace observed|Payment dependency recovered/);
-  assert.match(html, /Recovered error rate/);
+  assert.match(html, /<h5>Errors<\/h5>/);
   assert.match(html, />0 ratio</);
   assert.doesNotMatch(html, /Connector Stale/);
   assert.doesNotMatch(html, /Attempt lineage|Immutable stage outputs|operator-local|receipt-1|evidence-verify-fresh/);
@@ -335,6 +343,10 @@ test("a completed incident keeps a compact visual summary and opens the immutabl
   assert.match(audit, /operator-local/);
   assert.match(audit, /receipt-1/);
   assert.match(audit, /evidence-verify-fresh/);
+
+  const graph = renderIncidentWorkbenchV3(value, { connection: "connected", panel: "graph", componentId: "checkout", series });
+  assert.match(graph, /Read-only/);
+  assert.doesNotMatch(graph, /data-agent-investigate=/);
 });
 
 test("active stage rendering never exposes audit material from a later stage", () => {
@@ -531,6 +543,24 @@ test("a historical Investigate graph remains inspectable but cannot start a curr
   assert.doesNotMatch(html, /data-agent-investigate=/);
 });
 
+test("Dataflow remains inspect-only outside the Investigate stage", () => {
+  const html = renderIncidentWorkbenchV3(projection(), {
+    connection: "connected", panel: "graph", componentId: "checkout", now: Date.parse("2026-07-31T00:01:05Z")
+  });
+  assert.doesNotMatch(html, /data-agent-investigate=/);
+  assert.match(html, /Degraded · Impacted · Fresh/);
+});
+
+test("Dataflow turns stale immediately when the canonical clock expires", () => {
+  const value = projection();
+  const html = renderIncidentWorkbenchV3(value, {
+    connection: "connected", panel: "graph", componentId: "checkout", now: Date.parse("2026-07-31T00:02:00Z")
+  });
+  assert.match(html, /iw3-graph-node is-stale/);
+  assert.match(html, /iw3-graph-edge is-stale/);
+  assert.doesNotMatch(html, /iw3-graph-pulse/);
+});
+
 test("projection refreshes coalesce while preserving one trailing refresh", async () => {
   const loop = new TrailingRefreshV3();
   let release;
@@ -554,7 +584,7 @@ test("controller traps modal focus, closes on Escape, restores focus, and uses i
   assert.match(source, /setAttribute\("inert", ""\)/);
   assert.match(source, /querySelector\(this\.previousFocus\)\?\.focus\(\)/);
   assert.match(source, /workflow\.dataset\.rerunStage \|\| this\.ui\.reviewStage/);
-  assert.match(source, /if \(this\.ui\.reviewStage\) return;/);
+  assert.match(source, /if \(this\.ui\.reviewStage \|\| this\.projection\.current_attempt\?\.current_stage !== "INVESTIGATE"/);
   assert.match(source, /node\.style\.left = `\$\{node\.dataset\.graphX\}%`/);
   assert.match(source, /node\.style\.top = `\$\{node\.dataset\.graphY\}%`/);
 });
@@ -562,7 +592,7 @@ test("controller traps modal focus, closes on Escape, restores focus, and uses i
 test("V3 stage shell owns viewport overflow and collapses safely at 451 by 859", async () => {
   const styles = await readFile(new URL("../public/styles.css", import.meta.url), "utf8");
   assert.match(styles, /\.iw3-controller-root, \.iw3-shell \{ width: 100%; height: 100%; min-width: 0; min-height: 0; \}/);
-  assert.match(styles, /\.app-shell\[data-incident-workspace="v3"\] main \{ display: grid; grid-template-rows: 64px minmax\(0, 1fr\); overflow: hidden; \}/);
+  assert.match(styles, /\.app-shell\[data-incident-workspace="v3"\] > main \{ display: grid; grid-template-rows: 64px minmax\(0, 1fr\); overflow: hidden; \}/);
   assert.match(styles, /\.iw3-stage-surface \{[^}]*min-width: 0;[^}]*overflow: auto;/);
   assert.match(styles, /@media \(max-width: 640px\)[\s\S]*\.iw3-stage-rail \{ display: flex; overflow-x: auto;/);
   assert.match(styles, /@media \(max-width: 640px\)[\s\S]*\.iw3-stage-grid, \.iw3-detect-grid \{ grid-template-columns: minmax\(0, 1fr\); \}/);
