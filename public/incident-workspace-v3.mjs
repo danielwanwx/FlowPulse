@@ -585,15 +585,20 @@ function graphModalMarkup(view, projection, selectedComponent, now, series) {
   const relations = (projection.graph?.edges || [])
     .filter((edge) => impacted.has(edge.source_component_id) && impacted.has(edge.target_component_id));
   const componentIds = new Set([...impacted, ...relations.flatMap((edge) => [edge.source_component_id, edge.target_component_id])]);
-  const topology = incidentTopologyView({
-    graph: projection.graph,
-    impacted_path: [...componentIds],
-    incident_focus: { incident_relation_edge_ids: relations.map((edge) => edge.edge_id) }
-  });
-  const compact = topology.available && topology.nodes.length >= 2 && topology.nodes.length <= 3;
+  const selectedNodes = [...componentIds]
+    .map((componentId) => (projection.graph?.nodes || []).find((node) => node.component_id === componentId))
+    .filter(Boolean);
+  const topology = selectedNodes.length === 1 && relations.length === 0
+    ? { available: true, nodes: selectedNodes, edges: [], positions: new Map() }
+    : incidentTopologyView({
+      graph: projection.graph,
+      impacted_path: [...componentIds],
+      incident_focus: { incident_relation_edge_ids: relations.map((edge) => edge.edge_id) }
+    });
+  const compact = topology.available && topology.nodes.length >= 1 && topology.nodes.length <= 3;
   const positions = compact
     ? new Map(topology.nodes.map((node, index) => [node.component_id, {
-      x: topology.nodes.length === 2 ? 32 + index * 36 : 20 + index * 30,
+      x: topology.nodes.length === 1 ? 50 : topology.nodes.length === 2 ? 32 + index * 36 : 20 + index * 30,
       y: 50
     }]))
     : topology.positions;
@@ -692,6 +697,13 @@ function componentMetricLabel(collection, componentId) {
   return point ? `${compactMetricLabel(series)} ${formatMetric(point.value, series.unit)}` : null;
 }
 
+function componentMetricEvidenceRefs(collection, componentIds) {
+  const scoped = new Set(componentIds.filter(Boolean));
+  return uniqueOrdered((collection?.series || [])
+    .filter((series) => scoped.has(series.component_id))
+    .flatMap((series) => series.points?.at(-1)?.evidence_refs || []));
+}
+
 function activityMarkup(projection, stage, { roles = null, excludeRoles = [], stageRunId = null } = {}) {
   const items = (projection.agent_activity || []).filter((activity) => activity.stage === stage
     && (!stageRunId || activity.stage_run_id === stageRunId)
@@ -732,7 +744,11 @@ function agentPortalMarkup(view, projection, ui) {
     activity.selected_component_id === componentId
     || (edge && activity.selected_edge_id === edge.edge_id)
   ));
+  const scopedComponentIds = edge
+    ? [componentId, edge.target_component_id]
+    : [componentId];
   const evidenceRefs = uniqueOrdered([
+    ...componentMetricEvidenceRefs(ui.series, scopedComponentIds),
     ...relatedQueries.flatMap((query) => query.evidence_refs || []),
     ...relatedActivity.flatMap((activity) => activity.evidence_refs || [])
   ]);

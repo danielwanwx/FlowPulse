@@ -553,6 +553,8 @@ test("Dataflow never turns an adjacent but unimpacted component into the inciden
   const html = renderIncidentWorkbenchV3(value, {
     connection: "connected", panel: "graph", componentId: "checkout", now: Date.parse("2026-07-31T00:01:05Z")
   });
+  assert.match(html, /data-graph-node="checkout"[^>]*data-graph-x="50" data-graph-y="50"/);
+  assert.doesNotMatch(html, /No evidence-backed impact graph is available/);
   assert.doesNotMatch(html, /data-graph-node="payment"|data-graph-edge="checkout-payment"/);
 });
 
@@ -571,6 +573,11 @@ test("Agent Portal stays hidden until a real component is selected and only expo
     query_id: "query-checkout", stage_run_id: "stage-run-2", component_ids: ["checkout"], edge_ids: ["checkout-payment"],
     query_name: "incident.current-signals.v1", state: "SUCCEEDED", result_summary: "Checkout has fresh error evidence.", evidence_refs: ["evidence-checkout"]
   }];
+  const series = { series: [{
+    series_id: "checkout-errors", metric_key: "checkout.error_rate", component_id: "checkout",
+    label: "Checkout error rate", unit: "ratio", thresholds: { warning: null, critical: 0.1 }, freshness: "CURRENT",
+    points: [{ timestamp: "2026-07-31T00:00:30Z", value: 1, evidence_refs: ["metric-checkout"] }]
+  }] };
 
   const closed = renderIncidentWorkbenchV3(value, { connection: "connected" });
   assert.doesNotMatch(closed, /class="iw3-agent-portal"|Checkout error and dependency failure correlate/);
@@ -578,12 +585,13 @@ test("Agent Portal stays hidden until a real component is selected and only expo
   assert.match(closed, /data-edge-select="checkout-payment"/);
 
   const portal = renderIncidentWorkbenchV3(value, {
-    connection: "connected", portalOpen: true, componentId: "checkout", edgeId: "checkout-payment", portalTab: "evidence"
+    connection: "connected", series, portalOpen: true, componentId: "checkout", edgeId: "checkout-payment", portalTab: "evidence"
   });
   assert.match(portal, /Agent Portal/);
   assert.match(portal, /Checkout → Payment/);
   assert.match(portal, /Checkout has fresh error evidence/);
   assert.match(portal, /evidence-checkout/);
+  assert.match(portal, /metric-checkout/);
   assert.doesNotMatch(portal, /PAYMENT ONLY|evidence-payment/);
   assert.match(portal, /data-agent-question/);
 });

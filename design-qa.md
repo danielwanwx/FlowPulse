@@ -39,3 +39,29 @@ Scope: interactive Compare wipe; connected Live topology; globally sequenced pul
 - P0 orchestration is an additive contract/replay harness. It does not yet start separate workers or live specialist model calls, and it does not replace the append-only incident ledger as runtime authority.
 
 final result: passed
+
+## 2026-07-31 Incident glass workspace
+
+### Comparison input
+
+Reviewed in one side-by-side image input:
+
+- Reference: `/var/folders/2j/cqqt4_3j51z2f5s1q0m9_8nw0000gn/T/codex-clipboard-54028d5d-24be-47aa-9a7a-199fabb7b516.png`
+- Implementation: `/private/tmp/flowpulse-agent-portal-evidence.jpg`
+- Composite: `/private/tmp/flowpulse-reference-vs-portal-final.jpg`
+
+The reference is a health dashboard and the implementation is an incident workspace, so this checks the shared visual language rather than copying the product layout.
+
+### Verified
+
+- Soft ice-grey canvas, rounded translucent panels, and low-contrast shadow hierarchy replace hard card borders.
+- Signal cards, path nodes, graph nodes, and controls are rounded, borderless glass surfaces; blue is reserved for navigation/actions and red/green for live incident state.
+- The right Agent Portal is hidden until a real component or relation is selected. Its displayed evidence count includes the latest metric-point references, not a fabricated text summary.
+- Dataflow renders only the real evidence-backed `Checkout → Payment` path, with a directional edge, bounded active pulse, and a component-to-Portal action. A valid one-node path remains inspectable.
+- Full-suite verification passed (`437` passed, `1` intentionally skipped); the focused V3 workspace suite passed `29/29` after the two Staff-review fixes.
+
+### Independent Staff review
+
+An independent Staff review initially found two P1 issues: metric evidence was omitted from the Portal count, and a one-node path could render unavailable. Both were fixed and re-reviewed with no P0/P1/P2 remaining.
+
+final result: passed
