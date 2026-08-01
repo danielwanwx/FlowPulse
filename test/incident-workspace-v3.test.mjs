@@ -352,20 +352,37 @@ test("completed stages are reviewable but locked and future stages cannot be sel
   assert.doesNotMatch(history.match(/data-stage="TRIAGE"[^>]*>/)?.[0] || "", /disabled/);
 });
 
-test("a series sample committed during refresh triggers a bounded projection reread", async () => {
+test("a newer telemetry series can render beside the current workflow projection", async () => {
   let projectionReads = 0;
   const client = {
     async projection() {
       projectionReads += 1;
-      return projection({ signal_revision: projectionReads === 1 ? 9 : 10 });
+      return projection({ signal_revision: 9 });
     },
     async series() {
       return { case_id: "case-checkout", signal_revision: 10, series: [] };
     }
   };
   const coherent = await loadCoherentIncidentV3(client, "case-checkout");
-  assert.equal(projectionReads, 2);
-  assert.equal(coherent.projection.signal_revision, coherent.series.signal_revision);
+  assert.equal(projectionReads, 1);
+  assert.equal(coherent.projection.signal_revision, 9);
+  assert.equal(coherent.series.signal_revision, 10);
+});
+
+test("a lagging series is reread until it reaches the workflow projection", async () => {
+  let seriesReads = 0;
+  const client = {
+    async projection() {
+      return projection({ signal_revision: 10 });
+    },
+    async series() {
+      seriesReads += 1;
+      return { case_id: "case-checkout", signal_revision: seriesReads === 1 ? 9 : 10, series: [] };
+    }
+  };
+  const coherent = await loadCoherentIncidentV3(client, "case-checkout");
+  assert.equal(seriesReads, 2);
+  assert.equal(coherent.series.signal_revision, 10);
 });
 
 test("a resolved incident accepts later series revisions because the UI freezes them at completion", async () => {

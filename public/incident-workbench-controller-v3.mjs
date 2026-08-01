@@ -35,10 +35,7 @@ export async function loadCoherentIncidentV3(client, caseId, maxSnapshotReads = 
     client.projection(caseId),
     client.series(caseId)
   ]);
-  const isCoherent = () => series.signal_revision === projection.signal_revision
-    || (projection.lifecycle_state === "RESOLVED"
-      && projection.current_attempt?.status === "COMPLETED"
-      && series.signal_revision > projection.signal_revision);
+  const isCoherent = () => series.signal_revision >= projection.signal_revision;
   for (let attempt = 1; !isCoherent() && attempt < maxSnapshotReads; attempt += 1) {
     [projection, series] = await Promise.all([
       client.projection(caseId),
