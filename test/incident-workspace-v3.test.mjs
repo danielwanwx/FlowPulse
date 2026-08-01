@@ -361,6 +361,14 @@ test("signal cards use evidence-backed visual grammars without fabricating a his
   assert.match(portal, /Latest signal<\/span><strong>Latency 800 ms<\/strong>/);
   assert.match(portal, /Evidence<\/span><strong>1<\/strong><small>reference<\/small>/);
   assert.match(html, />1 request</);
+
+  const gapped = structuredClone(series);
+  Object.assign(gapped.series.at(-1).points.at(-1), { value: null, missing_reason: "CONNECTOR_STALE" });
+  const gapPortal = renderIncidentWorkbenchV3(value, {
+    connection: "connected", series: gapped, portalOpen: true, componentId: "checkout", seriesId: "checkout-traffic"
+  });
+  assert.match(gapPortal, /Latest signal<\/span><strong>No numeric sample<\/strong>/);
+  assert.doesNotMatch(gapPortal, /Latest signal<\/span><strong>Errors/);
 });
 
 test("a completed incident keeps a compact visual summary and opens the immutable audit on demand", () => {

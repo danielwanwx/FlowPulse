@@ -65,3 +65,31 @@ The reference is a health dashboard and the implementation is an incident worksp
 An independent Staff review initially found two P1 issues: metric evidence was omitted from the Portal count, and a one-node path could render unavailable. Both were fixed and re-reviewed with no P0/P1/P2 remaining.
 
 final result: passed
+
+## 2026-07-31 Evidence-backed metric diagrams
+
+### Comparison input
+
+Visual grammar was compared against the supplied reference cards:
+
+- `/var/folders/2j/cqqt4_3j51z2f5s1q0m9_8nw0000gn/T/codex-clipboard-c9cd0759-c762-4022-98d5-bdc70ea6fc55.png`
+- `/var/folders/2j/cqqt4_3j51z2f5s1q0m9_8nw0000gn/T/codex-clipboard-fca6b75d-33b1-4219-9867-d687b108d79c.png`
+- `/var/folders/2j/cqqt4_3j51z2f5s1q0m9_8nw0000gn/T/codex-clipboard-0aaf95d3-8607-4698-9908-7489aa974bc0.png`
+- `/var/folders/2j/cqqt4_3j51z2f5s1q0m9_8nw0000gn/T/codex-clipboard-71bbe562-97b4-4d9c-a8a2-1b024279c4e8.png`
+- `/var/folders/2j/cqqt4_3j51z2f5s1q0m9_8nw0000gn/T/codex-clipboard-0e626852-4d8b-4a48-bad5-a0e06b9284cc.png`
+
+Implementation capture: `/private/tmp/flowpulse-metric-final.jpg`.
+
+### Verified
+
+- Error rate uses an exact real-sample line with a quiet semantic area and current marker; latency uses one vertical stem per real numeric sample; traffic uses one rounded tile per real sample and preserves gaps.
+- The compact card hierarchy is label/icon → diagram → current value, with the actual observed live window and sample count. It has no invented seven-day or month control.
+- The Monitor dialog expands the same real series, including window, threshold, freshness, and evidence context.
+- Selecting a card persists its `series` identifier in the URL and keeps the Agent Portal on that exact metric. A terminal gap shows `No numeric sample`; it never substitutes Errors or another available metric.
+- The current V3 API exposes only its bounded recent observed window. Historic 7D/30D views remain intentionally absent until the backend owns a range/downsampling contract.
+
+### Independent Staff review
+
+The independent Staff reviewer found one P1: a selected series ending in a gap could fall back to a different metric in Agent Portal. The fix preserves the selected series and adds a gap regression test. Post-fix review found no P0/P1/P2 issues. Focused V3 tests passed `30/30`.
+
+final result: passed

@@ -745,11 +745,12 @@ function graphEdgeTone(edge, nodes, projection, now) {
 }
 
 function componentMetricLabel(collection, componentId, preferredSeriesId = null) {
-  const series = (collection?.series || []).find((item) => item.component_id === componentId && item.series_id === preferredSeriesId && typeof item.points?.at(-1)?.value === "number")
-    || (collection?.series || []).find((item) => item.component_id === componentId && /error|latency|duration/.test(item.metric_key || "") && typeof item.points?.at(-1)?.value === "number")
-    || (collection?.series || []).find((item) => item.component_id === componentId && typeof item.points?.at(-1)?.value === "number");
+  const metrics = collection?.series || [];
+  const series = metrics.find((item) => item.component_id === componentId && item.series_id === preferredSeriesId)
+    || metrics.find((item) => item.component_id === componentId && /error|latency|duration/.test(item.metric_key || "") && typeof item.points?.at(-1)?.value === "number")
+    || metrics.find((item) => item.component_id === componentId && typeof item.points?.at(-1)?.value === "number");
   const point = series?.points?.at(-1);
-  return point ? `${compactMetricLabel(series)} ${formatMetric(point.value, series.unit)}` : null;
+  return typeof point?.value === "number" && Number.isFinite(point.value) ? `${compactMetricLabel(series)} ${formatMetric(point.value, series.unit)}` : null;
 }
 
 function componentMetricEvidenceRefs(collection, componentIds, preferredSeriesId = null) {
