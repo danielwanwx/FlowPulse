@@ -337,7 +337,7 @@ test("signal cards use evidence-backed visual grammars without fabricating a his
       points: [
         { timestamp: "2026-07-31T00:01:20Z", value: 12, evidence_refs: ["e7"] },
         { timestamp: "2026-07-31T00:01:30Z", value: null, missing_reason: "CONNECTOR_STALE", evidence_refs: [] },
-        { timestamp: "2026-07-31T00:01:40Z", value: 28, evidence_refs: ["e8"] }
+        { timestamp: "2026-07-31T00:01:40Z", value: 1, evidence_refs: ["e8"] }
       ]
     }]
   };
@@ -360,6 +360,7 @@ test("signal cards use evidence-backed visual grammars without fabricating a his
   });
   assert.match(portal, /Latest signal<\/span><strong>Latency 800 ms<\/strong>/);
   assert.match(portal, /Evidence<\/span><strong>1<\/strong><small>reference<\/small>/);
+  assert.match(html, />1 request</);
 });
 
 test("a completed incident keeps a compact visual summary and opens the immutable audit on demand", () => {

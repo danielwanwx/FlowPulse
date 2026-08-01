@@ -5519,7 +5519,7 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .app-shell[data-incident-workspace="v3"] .iw3-signal-card-head small { color: var(--muted); font: 700 9px/1 var(--font); text-transform: capitalize; }
 .app-shell[data-incident-workspace="v3"] .iw3-signal-card-label { color: var(--ink); font-size: 11px; line-height: 1.15; }
 .app-shell[data-incident-workspace="v3"] .iw3-signal-icon { display: grid; width: 28px; height: 28px; flex: 0 0 28px; place-items: center; border-radius: 999px; color: var(--blue); background: rgba(225, 235, 244, .82); }
-.app-shell[data-incident-workspace="v3"] .iw3-signal-icon > svg { width: 15px; height: 15px; margin: 0; }
+.app-shell[data-incident-workspace="v3"] .iw3-signal-icon .ph { font-size: 15px; }
 .app-shell[data-incident-workspace="v3"] .iw3-signal-card[data-tone="affected"] .iw3-signal-icon { color: var(--red); background: color-mix(in srgb, var(--red) 9%, rgba(255,255,255,.82)); }
 .app-shell[data-incident-workspace="v3"] .iw3-signal-card[data-tone="warning"] .iw3-signal-icon { color: var(--amber); background: color-mix(in srgb, var(--amber) 10%, rgba(255,255,255,.82)); }
 .app-shell[data-incident-workspace="v3"] .iw3-signal-card[data-tone="healthy"] .iw3-signal-icon { color: var(--green); background: color-mix(in srgb, var(--green) 9%, rgba(255,255,255,.82)); }

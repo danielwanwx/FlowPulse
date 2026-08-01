@@ -679,14 +679,8 @@ function signalVisualKind(series) {
 
 function signalIconMarkup(series) {
   const kind = signalVisualKind(series);
-  const path = kind === "area"
-    ? '<path d="M4 12h3l2-5 3 10 2-5h4"/>'
-    : kind === "stems"
-      ? '<path d="M5 16V8m5 8V5m5 11V9m5 7V6"/>'
-      : kind === "tiles"
-        ? '<path d="M5 6h5v5H5zm9 0h5v5h-5zM5 15h5v5H5zm9 0h5v5h-5z"/>'
-        : '<path d="M4 16 9 10l4 4 7-8"/>';
-  return `<span class="iw3-signal-icon is-${kind}" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${path}</svg></span>`;
+  const icon = kind === "area" ? "activity" : kind === "stems" ? "waveform" : kind === "tiles" ? "queue" : "activity";
+  return `<span class="iw3-signal-icon is-${kind}" aria-hidden="true"><i class="ph ph-${icon}"></i></span>`;
 }
 
 function signalVisualMarkup(series, path, { width, height, tone }) {
@@ -893,6 +887,7 @@ function formatDuration(seconds) {
 
 function formatMetric(value, unit) {
   const formatted = Number.isInteger(value) ? String(value) : Number(value).toLocaleString("en", { maximumFractionDigits: 2 });
+  if (unit === "requests") return `${formatted} ${Number(value) === 1 ? "request" : "requests"}`;
   return unit === "percent" || unit === "%" ? `${formatted}%` : unit === "ms" ? `${formatted} ms` : unit ? `${formatted} ${unit}` : formatted;
 }
 
