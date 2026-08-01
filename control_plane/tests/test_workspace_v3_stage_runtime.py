@@ -1412,8 +1412,8 @@ class GuidedStageRuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(post_times[-1], completed.projection.incident_clock.resolved_at)
         self.assertEqual(
-            self.repository.series_collection.series,
-            completed.projection.resolved_series_snapshot.series,
+            self.repository.series_collection,
+            completed.projection.resolved_series_snapshot,
         )
         self.assertEqual(
             completed.projection.signal_revision,

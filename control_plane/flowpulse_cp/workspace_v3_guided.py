@@ -1070,12 +1070,9 @@ class GuidedWorkflowCoordinatorV3:
             resolved_series = await self.repository.realtime_series(
                 tenant_id, case_id,
             )
-            resolved_series = resolved_series.copy(update={
-                "signal_revision": prior.signal_revision,
-                "generated_at": now,
-            })
             projection = self._next_base(
                 prior, event_count=1, now=now, attempt=attempt,
+                signal_revision=resolved_series.signal_revision,
                 lifecycle_state=IncidentLifecycleStateV3.RESOLVED,
                 incident_clock=incident_clock,
                 audit_records=audit_records,
