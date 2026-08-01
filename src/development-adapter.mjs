@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -78,10 +78,39 @@ export async function executeApprovedRollback({ commandId }) {
   if (!flags.flags?.[change.flag]) throw new Error(`Upstream flag ${change.flag} is unavailable`);
   flags.flags[change.flag].defaultVariant = change.known_good;
   await writeFlags(flags);
-  const result = await execute("docker", composeArgs("up", "-d", "--no-deps", "--force-recreate", "checkout"), {
+  const result = await execute("docker", composeArgs("up", "-d", "--no-deps", "--force-recreate", "--wait", "--wait-timeout", String(change.timeout_seconds), "checkout"), {
     cwd: checkout, env: composeEnv(), timeout: change.timeout_seconds * 1_000, maxBuffer: 1_000_000
   });
-  return { change, completed_at: new Date().toISOString(), command_id: commandId, stdout: summarize(result.stdout), stderr: summarize(result.stderr) };
+  const completedAt = new Date().toISOString();
+  await exerciseCheckoutPaymentPath();
+  return { change, completed_at: completedAt, command_id: commandId, stdout: summarize(result.stdout), stderr: summarize(result.stderr) };
+}
+
+export async function exerciseCheckoutPaymentPath({ baseUrl, fetcher = fetch, userId = `flowpulse-verify-${randomUUID()}` } = {}) {
+  const endpoint = baseUrl || await resolveDockerUrl("frontend-proxy", "8080/tcp");
+  const headers = { "content-type": "application/json" };
+  const cart = await fetcher(`${endpoint}/api/cart`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ item: { productId: "0PUK6V6EV0", quantity: 1 }, userId }),
+    signal: AbortSignal.timeout(10_000)
+  });
+  if (!cart.ok) throw new Error(`Checkout verification cart request failed (${cart.status})`);
+  await cart.arrayBuffer();
+  const order = await fetcher(`${endpoint}/api/checkout`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      email: "flowpulse-probe@example.com",
+      address: { streetAddress: "1600 Amphitheatre Parkway", zipCode: "94043", city: "Mountain View", state: "CA", country: "United States" },
+      userCurrency: "USD",
+      creditCard: { creditCardNumber: "4432-8015-6152-0454", creditCardExpirationMonth: 1, creditCardExpirationYear: 2039, creditCardCvv: 672 },
+      userId
+    }),
+    signal: AbortSignal.timeout(10_000)
+  });
+  if (!order.ok) throw new Error(`Checkout verification request failed (${order.status})`);
+  await order.arrayBuffer();
 }
 
 /**
@@ -98,7 +127,7 @@ export async function executeSafeCheckoutRecreate({ commandId }) {
   if (flag.flag !== change.flag || flag.variant !== change.known_good) {
     throw new Error("Safe Checkout compensation requires paymentUnreachable to remain off");
   }
-  const result = await execute("docker", composeArgs("up", "-d", "--no-deps", "--force-recreate", "checkout"), {
+  const result = await execute("docker", composeArgs("up", "-d", "--no-deps", "--force-recreate", "--wait", "--wait-timeout", String(change.timeout_seconds), "checkout"), {
     cwd: checkout, env: composeEnv(), timeout: change.timeout_seconds * 1_000, maxBuffer: 1_000_000
   });
   return {
@@ -232,9 +261,12 @@ async function writeFlags(data) {
 async function readJson(path) { return JSON.parse(await readFile(path, "utf8")); }
 async function resolveFlagUrl() {
   if (process.env.FLOWPULSE_FLAGD_UI_URL) return process.env.FLOWPULSE_FLAGD_UI_URL;
-  const result = await execute("docker", ["port", "flagd-ui", "4000/tcp"], { timeout: 5_000 });
+  return resolveDockerUrl("flagd-ui", "4000/tcp");
+}
+async function resolveDockerUrl(container, port) {
+  const result = await execute("docker", ["port", container, port], { timeout: 5_000 });
   const address = result.stdout.trim().split(/\r?\n/)[0].replace(/^0\.0\.0\.0:/, "127.0.0.1:").replace(/^\[::\]:/, "127.0.0.1:");
-  if (!address) throw new Error("flagd-ui port is unavailable");
+  if (!address) throw new Error(`${container} port is unavailable`);
   return `http://${address}`;
 }
 function assertEnabled() { if (process.env.FLOWPULSE_DEVELOPMENT_ENABLED !== "1") throw new Error("Local development mutation is disabled"); }
