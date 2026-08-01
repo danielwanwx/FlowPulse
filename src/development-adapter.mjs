@@ -64,8 +64,10 @@ export async function applyDevelopmentCase() {
   const change = await developmentChangeManifest();
   const flags = await readFlags();
   if (!flags.flags?.[change.flag]) throw new Error(`Upstream flag ${change.flag} is unavailable`);
+  if (flags.flags?.loadGeneratorVUs?.variants?.["10"] !== 10) throw new Error("Upstream loadGeneratorVUs flag is unavailable");
   const before = flags.flags[change.flag].defaultVariant;
   flags.flags[change.flag].defaultVariant = change.after;
+  flags.flags.loadGeneratorVUs.defaultVariant = "10";
   await writeFlags(flags);
   return { change, before, after: change.after, applied_at: new Date().toISOString(), source: "official flagd-ui API" };
 }
