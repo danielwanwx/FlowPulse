@@ -302,6 +302,7 @@ test("Verify publishes the backend-owned deadline and real signal cards show tre
   });
   assert.match(monitor, /data-trend="falling">Falling 50%/);
   assert.match(monitor, /0m 20s window/);
+  assert.match(monitor, /<polygon class="iw3-signal-area" data-series-segment="0" fill="var\(--green\)" fill-opacity="0\.12" points="0,7\.35 520,68\.65 520,76 0,76"\/>/);
   assert.deepEqual(metricTrendV3(series.series[0]), { direction: "falling", label: "Falling 50%" });
 });
 
@@ -519,15 +520,21 @@ test("typed metric paths preserve gaps and never connect points across series", 
 
 test("Investigate graph is an accessible modal without turning node review into an agent command", () => {
   const value = projection({ current_stage: "INVESTIGATE", impacted_path: ["checkout"] });
-  const html = renderIncidentWorkbenchV3(value, { connection: "connected", panel: "graph", componentId: "checkout" });
+  value.graph.nodes.push({ component_id: "catalog", display_name: "Catalog", runtime_status: "healthy", impact_status: "unaffected" });
+  const html = renderIncidentWorkbenchV3(value, { connection: "connected", panel: "graph", componentId: "checkout", now: Date.parse("2026-07-31T00:01:05Z") });
   assert.match(html, /role="dialog"/);
   assert.match(html, /aria-modal="true"/);
   assert.match(html, /data-graph-close/);
   assert.match(html, /data-graph-node="checkout"/);
   assert.match(html, /data-graph-node="payment"/);
-  assert.match(html, /data-graph-x="42" data-graph-y="46"/);
+  assert.match(html, /iw3-graph-dialog is-compact/);
+  assert.match(html, /data-graph-layout="compact"/);
+  assert.match(html, /data-graph-x="32" data-graph-y="50"/);
+  assert.match(html, /data-graph-node="payment" data-graph-x="68" data-graph-y="50"/);
+  assert.doesNotMatch(html, /data-graph-node="catalog"/);
   assert.doesNotMatch(html, /style="--x:/);
   assert.match(html, /class="iw3-graph-edge/);
+  assert.match(html, /class="iw3-graph-pulse/);
   assert.doesNotMatch(html, /No evidence-backed impact graph is available/);
   assert.match(html, /data-agent-investigate="checkout"/);
   assert.doesNotMatch(html.match(/data-graph-node="checkout"[^>]*>/)?.[0] || "", /data-agent-investigate/);

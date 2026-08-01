@@ -569,13 +569,20 @@ function graphModalMarkup(view, projection, selectedComponent, now, series) {
     impacted_path: [...componentIds],
     incident_focus: { incident_relation_edge_ids: relations.map((edge) => edge.edge_id) }
   });
+  const compact = topology.available && topology.nodes.length >= 2 && topology.nodes.length <= 3;
+  const positions = compact
+    ? new Map(topology.nodes.map((node, index) => [node.component_id, {
+      x: topology.nodes.length === 2 ? 32 + index * 36 : 20 + index * 30,
+      y: 50
+    }]))
+    : topology.positions;
   const activeEdges = graphFreshness(projection, now) === "CURRENT"
     ? new Set((projection.graph?.active_pulses || []).filter((pulse) => Date.parse(pulse.expires_at) > (now ?? Date.now())).flatMap((pulse) => pulse.edge_ids))
     : new Set();
   const nodeById = new Map(topology.nodes.map((node) => [node.component_id, node]));
   const edges = topology.available ? topology.edges.map((edge) => {
-    const source = topology.positions.get(edge.source_component_id);
-    const target = topology.positions.get(edge.target_component_id);
+    const source = positions.get(edge.source_component_id);
+    const target = positions.get(edge.target_component_id);
     if (!source || !target) return "";
     const middle = (source.x + target.x) / 2;
     const d = `M ${source.x} ${source.y} C ${middle} ${source.y}, ${middle} ${target.y}, ${target.x} ${target.y}`;
@@ -583,7 +590,7 @@ function graphModalMarkup(view, projection, selectedComponent, now, series) {
     return `<path class="iw3-graph-edge is-${tone}" d="${d}"/>${activeEdges.has(edge.edge_id) ? `<path class="iw3-graph-pulse is-${tone}" d="${d}"/>` : ""}`;
   }).join("") : "";
   const nodes = topology.available ? topology.nodes.map((node) => {
-    const position = topology.positions.get(node.component_id);
+    const position = positions.get(node.component_id);
     const tone = graphNodeTone(node, projection, now);
     return `<button type="button" class="iw3-graph-node is-${tone}${node.component_id === selectedComponent ? " is-selected" : ""}" data-graph-node="${escapeHtml(node.component_id)}" data-graph-x="${position.x}" data-graph-y="${position.y}"><strong>${escapeHtml(node.display_name)}</strong><small>${escapeHtml(titleCase(node.runtime_status))}</small></button>`;
   }).join("") : '<p class="iw3-graph-unavailable">No evidence-backed impact graph is available.</p>';
@@ -591,11 +598,13 @@ function graphModalMarkup(view, projection, selectedComponent, now, series) {
   const metric = selected ? componentMetricLabel(series, selected.component_id) : null;
   const readOnly = view.reviewingHistory || projection.lifecycle_state === "RESOLVED" || projection.current_attempt?.status === "COMPLETED";
   const canInvestigateNode = !readOnly && view.currentStage === "INVESTIGATE" && view.visibleStage === "INVESTIGATE";
-  return `<section class="iw3-graph-layer" role="dialog" aria-modal="true" aria-labelledby="iw3-graph-title" tabindex="-1" data-workbench-modal data-graph-modal><div class="iw3-graph-dialog"><header><div><span>${stageLabel(view.visibleStage)}</span><h3 id="iw3-graph-title">Dataflow</h3></div><button type="button" data-graph-close aria-label="Close Dataflow">Close</button></header><div class="iw3-graph-legend"><span data-tone="affected">Red: affected</span><span data-tone="healthy">Green: healthy</span><span data-tone="observed">Moving pulse: observed traffic</span><span data-tone="stale">Gray: no recent traffic / stale</span></div><div class="iw3-graph-canvas" role="region" aria-label="Evidence-backed incident topology"><svg viewBox="0 0 100 100" preserveAspectRatio="none">${edges}</svg>${nodes}</div>${selected ? `<aside class="iw3-node-peek"><div><span>Selected component</span><h4>${escapeHtml(selected.display_name)}</h4><p>${escapeHtml(titleCase(selected.runtime_status))} · ${escapeHtml(titleCase(selected.impact_status))} · ${escapeHtml(metric || (graphFreshness(projection, now) === "CURRENT" ? "Fresh" : "Stale"))}</p></div>${readOnly ? `<span class="iw3-read-only-note">${view.reviewingHistory ? "Historical graph · read-only" : "Read-only"}</span>` : canInvestigateNode ? `<button type="button" data-agent-investigate="${escapeHtml(selected.component_id)}">Let Agent investigate this node</button>` : ""}</aside>` : ""}</div></section>`;
+  return `<section class="iw3-graph-layer" role="dialog" aria-modal="true" aria-labelledby="iw3-graph-title" tabindex="-1" data-workbench-modal data-graph-modal><div class="iw3-graph-dialog${compact ? " is-compact" : ""}"><header><div><span>${stageLabel(view.visibleStage)}</span><h3 id="iw3-graph-title">Dataflow</h3></div><button type="button" data-graph-close aria-label="Close Dataflow">Close</button></header><div class="iw3-graph-legend"><span data-tone="affected">Red: affected</span><span data-tone="healthy">Green: healthy</span><span data-tone="observed">Moving pulse: observed traffic</span><span data-tone="stale">Gray: no recent traffic / stale</span></div><div class="iw3-graph-canvas" role="region" aria-label="Evidence-backed incident topology" data-graph-layout="${compact ? "compact" : "topology"}"><svg viewBox="0 0 100 100" preserveAspectRatio="none">${edges}</svg>${nodes}</div>${selected ? `<aside class="iw3-node-peek"><div><span>Selected component</span><h4>${escapeHtml(selected.display_name)}</h4><p>${escapeHtml(titleCase(selected.runtime_status))} · ${escapeHtml(titleCase(selected.impact_status))} · ${escapeHtml(metric || (graphFreshness(projection, now) === "CURRENT" ? "Fresh" : "Stale"))}</p></div>${readOnly ? `<span class="iw3-read-only-note">${view.reviewingHistory ? "Historical graph · read-only" : "Read-only"}</span>` : canInvestigateNode ? `<button type="button" data-agent-investigate="${escapeHtml(selected.component_id)}">Let Agent investigate this node</button>` : ""}</aside>` : ""}</div></section>`;
 }
 
 function signalCardsMarkup(collection, expanded = false) {
-  const allPaths = metricSeriesPathsV3(collection || { series: [] }, expanded ? 520 : 240, 76);
+  const width = expanded ? 520 : 240;
+  const height = 76;
+  const allPaths = metricSeriesPathsV3(collection || { series: [] }, width, height);
   const paths = expanded ? allPaths : allPaths.slice(0, 3);
   const seriesById = new Map((collection?.series || []).map((series) => [series.series_id, series]));
   return `<div class="iw3-signal-cards${expanded ? " is-expanded" : ""}">${paths.map((path) => {
@@ -613,10 +622,12 @@ function signalCardsMarkup(collection, expanded = false) {
       ? Math.max(0, Math.round((observedEnd - observedStart) / 1000))
       : null;
     const d = path.segments.map((segment) => segment.map((point, index) => `${index ? "L" : "M"}${point.x} ${point.y}`).join(" "));
+    const fill = `var(--${({ affected: "red", warning: "amber", healthy: "green", observed: "blue" })[tone] || "faint"})`;
+    const areas = path.segments.filter((segment) => segment.length > 1).map((segment, index) => `<polygon class="iw3-signal-area" data-series-segment="${index}" fill="${fill}" fill-opacity="0.12" points="${segment.map((point) => `${point.x},${point.y}`).join(" ")} ${segment.at(-1).x},${height} ${segment[0].x},${height}"/>`).join("");
     const compactFooter = `<span data-tone="${escapeHtml(String(series?.freshness || "unknown").toLowerCase())}">${escapeHtml(titleCase(series?.freshness || "unknown"))}</span>`;
     const detailFooter = `<span>${path.segments.reduce((count, segment) => count + segment.length, 0)} samples</span><span data-trend="${escapeHtml(trend.direction)}">${escapeHtml(trend.label)}</span><span>${observedSeconds === null ? "Window pending" : `${escapeHtml(formatDuration(observedSeconds))} window`}</span><span>${escapeHtml(thresholdCopy(series?.thresholds, series?.unit))}</span><span>${escapeHtml(titleCase(series?.freshness || "unknown"))} · ${escapeHtml(shortTime(latest?.timestamp))}</span>`;
     const label = expanded ? series?.label || series?.metric_key || path.seriesId : compactMetricLabel(series);
-    return `<article class="iw3-signal-card" data-series-id="${escapeHtml(path.seriesId)}" data-tone="${tone}"><header><div><span>${escapeHtml(series?.component_id || "Component")}</span><h5>${escapeHtml(label)}</h5></div><strong>${escapeHtml(currentLabel)}</strong></header><svg viewBox="0 0 ${expanded ? 520 : 240} 76" preserveAspectRatio="none" role="img" aria-label="${escapeHtml(series?.label || path.seriesId)} samples">${d.map((value) => `<path d="${value}"/>`).join("")}</svg><footer>${expanded ? detailFooter : compactFooter}</footer></article>`;
+    return `<article class="iw3-signal-card" data-series-id="${escapeHtml(path.seriesId)}" data-tone="${tone}"><header><div><span>${escapeHtml(series?.component_id || "Component")}</span><h5>${escapeHtml(label)}</h5></div><strong>${escapeHtml(currentLabel)}</strong></header><svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="${escapeHtml(series?.label || path.seriesId)} samples">${areas}${d.map((value) => `<path d="${value}"/>`).join("")}</svg><footer>${expanded ? detailFooter : compactFooter}</footer></article>`;
   }).join("") || '<p class="iw3-empty">Waiting for typed metric samples.</p>'}</div>`;
 }
 
