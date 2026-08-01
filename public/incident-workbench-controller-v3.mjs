@@ -92,7 +92,7 @@ export class IncidentWorkbenchControllerV3 {
     this.eventState = { lastSequence: 0, projectionRevision: 0 };
     this.refreshLoop = new TrailingRefreshV3();
     this.previousFocus = null;
-    this.ui = { reviewStage: null, panel: null, componentId: null, edgeId: null, portalOpen: false, portalTab: "now", agentDraft: "", commandDialog: null };
+    this.ui = { reviewStage: null, panel: null, componentId: null, edgeId: null, seriesId: null, portalOpen: false, portalTab: "now", agentDraft: "", commandDialog: null };
     this.onClick = (event) => { void this.handleClick(event); };
     this.onInput = (event) => {
       if (event.target.matches?.("[data-command-reason]") && this.ui.commandDialog) {
@@ -126,6 +126,7 @@ export class IncidentWorkbenchControllerV3 {
       panel: restored.panel,
       componentId: restored.componentId,
       edgeId: restored.edgeId,
+      seriesId: restored.seriesId,
       portalOpen: restored.portalOpen,
       portalTab: restored.portalTab,
       agentDraft: "",
@@ -225,12 +226,12 @@ export class IncidentWorkbenchControllerV3 {
     }
     const component = event.target.closest("[data-component-select], [data-portal-component]");
     if (component?.dataset.componentSelect || component?.dataset.portalComponent) {
-      this.openPortal({ componentId: component.dataset.componentSelect || component.dataset.portalComponent });
+      this.openPortal({ componentId: component.dataset.componentSelect || component.dataset.portalComponent, seriesId: component.dataset.seriesId || null });
       return;
     }
     const edge = event.target.closest("[data-edge-select]");
     if (edge) {
-      this.openPortal({ componentId: edge.dataset.edgeSource || null, edgeId: edge.dataset.edgeSelect });
+      this.openPortal({ componentId: edge.dataset.edgeSource || null, edgeId: edge.dataset.edgeSelect, seriesId: null });
       return;
     }
     const question = event.target.closest("[data-agent-question-submit]");
@@ -331,9 +332,10 @@ export class IncidentWorkbenchControllerV3 {
     }
   }
 
-  openPortal({ componentId = null, edgeId = null }) {
+  openPortal({ componentId = null, edgeId = null, seriesId = null }) {
     if (componentId) this.ui.componentId = componentId;
     this.ui.edgeId = edgeId;
+    this.ui.seriesId = seriesId;
     this.ui.panel = null;
     this.ui.portalOpen = true;
     this.ui.portalTab = "now";
@@ -433,6 +435,7 @@ export class IncidentWorkbenchControllerV3 {
     if (!this.ui.portalOpen) {
       this.ui.componentId = null;
       this.ui.edgeId = null;
+      this.ui.seriesId = null;
     }
     this.persistUrl();
     this.render();
@@ -498,6 +501,7 @@ export class IncidentWorkbenchControllerV3 {
       panel: this.ui.panel,
       componentId: this.ui.componentId,
       edgeId: this.ui.edgeId,
+      seriesId: this.ui.seriesId,
       portalOpen: this.ui.portalOpen,
       portalTab: this.ui.portalTab
     });

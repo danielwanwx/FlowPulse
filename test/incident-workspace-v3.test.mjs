@@ -302,8 +302,64 @@ test("Verify publishes the backend-owned deadline and real signal cards show tre
   });
   assert.match(monitor, /data-trend="falling">Falling 50%/);
   assert.match(monitor, /0m 20s window/);
-  assert.match(monitor, /<polygon class="iw3-signal-area" data-series-segment="0" fill="var\(--green\)" fill-opacity="0\.12" points="0,7\.35 520,68\.65 520,76 0,76"\/>/);
+  assert.match(monitor, /data-signal-visual="area"/);
+  assert.match(monitor, /class="iw3-signal-viz is-area"/);
+  assert.match(monitor, /class="iw3-signal-area"/);
+  assert.match(monitor, /class="iw3-signal-dot"/);
   assert.deepEqual(metricTrendV3(series.series[0]), { direction: "falling", label: "Falling 50%" });
+});
+
+test("signal cards use evidence-backed visual grammars without fabricating a history", () => {
+  const value = projection({ current_stage: "DETECT" });
+  const series = {
+    series: [{
+      series_id: "checkout-errors", metric_key: "checkout.error_rate", component_id: "checkout",
+      label: "Checkout error rate", unit: "ratio", thresholds: { critical: 0.05 }, freshness: "CURRENT",
+      observed_window_start: "2026-07-31T00:01:20Z", observed_window_end: "2026-07-31T00:01:40Z",
+      points: [
+        { timestamp: "2026-07-31T00:01:20Z", value: 0.08, evidence_refs: ["e1"] },
+        { timestamp: "2026-07-31T00:01:30Z", value: 0.06, evidence_refs: ["e2"] },
+        { timestamp: "2026-07-31T00:01:40Z", value: 0.04, evidence_refs: ["e3"] }
+      ]
+    }, {
+      series_id: "checkout-latency", metric_key: "checkout.mean_latency", component_id: "checkout",
+      label: "Checkout mean latency", unit: "ms", thresholds: { warning: 500, critical: 1500 }, freshness: "CURRENT",
+      observed_window_start: "2026-07-31T00:01:20Z", observed_window_end: "2026-07-31T00:01:40Z",
+      points: [
+        { timestamp: "2026-07-31T00:01:20Z", value: 900, evidence_refs: ["e4"] },
+        { timestamp: "2026-07-31T00:01:30Z", value: 1100, evidence_refs: ["e5"] },
+        { timestamp: "2026-07-31T00:01:40Z", value: 800, evidence_refs: ["e6"] }
+      ]
+    }, {
+      series_id: "checkout-traffic", metric_key: "checkout.request_count", component_id: "checkout",
+      label: "Checkout request count", unit: "requests", thresholds: {}, freshness: "CURRENT",
+      observed_window_start: "2026-07-31T00:01:20Z", observed_window_end: "2026-07-31T00:01:40Z",
+      points: [
+        { timestamp: "2026-07-31T00:01:20Z", value: 12, evidence_refs: ["e7"] },
+        { timestamp: "2026-07-31T00:01:30Z", value: null, missing_reason: "CONNECTOR_STALE", evidence_refs: [] },
+        { timestamp: "2026-07-31T00:01:40Z", value: 28, evidence_refs: ["e8"] }
+      ]
+    }]
+  };
+
+  const html = renderIncidentWorkbenchV3(value, { connection: "connected", series });
+  assert.match(html, /data-signal-visual="area"/);
+  assert.match(html, /data-signal-visual="stems"/);
+  assert.match(html, /data-signal-visual="tiles"/);
+  assert.match(html, /data-signal-stem="0"/);
+  assert.match(html, /data-signal-stem="2"/);
+  assert.match(html, /data-signal-tile="0"/);
+  assert.match(html, /data-signal-tile="2"/);
+  assert.match(html, /iw3-signal-tile is-gap/);
+  assert.doesNotMatch(html, /data-signal-tile="3"/);
+  assert.match(html, /Live · 0m 20s/);
+  assert.doesNotMatch(html, /Week|Month/);
+
+  const portal = renderIncidentWorkbenchV3(value, {
+    connection: "connected", series, portalOpen: true, componentId: "checkout", seriesId: "checkout-latency"
+  });
+  assert.match(portal, /Latest signal<\/span><strong>Latency 800 ms<\/strong>/);
+  assert.match(portal, /Evidence<\/span><strong>1<\/strong><small>reference<\/small>/);
 });
 
 test("a completed incident keeps a compact visual summary and opens the immutable audit on demand", () => {
@@ -455,12 +511,13 @@ test("Next, retry, rerun, and escalation commands bind canonical attempt and rev
 });
 
 test("workspace URL restores only canonical case, completed review, panel, and Portal state", () => {
-  assert.deepEqual(parseIncidentWorkspaceUrlV3(new URL("https://flowpulse.test/?case_id=case-checkout&stage=DETECT&panel=graph&component=checkout&edge=checkout-payment&portal=open&portal_tab=evidence")), {
+  assert.deepEqual(parseIncidentWorkspaceUrlV3(new URL("https://flowpulse.test/?case_id=case-checkout&stage=DETECT&panel=graph&component=checkout&edge=checkout-payment&series=checkout-latency&portal=open&portal_tab=evidence")), {
     caseId: "case-checkout",
     reviewStage: "DETECT",
     panel: "graph",
     componentId: "checkout",
     edgeId: "checkout-payment",
+    seriesId: "checkout-latency",
     portalOpen: true,
     portalTab: "evidence"
   });
@@ -470,6 +527,7 @@ test("workspace URL restores only canonical case, completed review, panel, and P
     panel: null,
     componentId: null,
     edgeId: null,
+    seriesId: null,
     portalOpen: false,
     portalTab: "now"
   });

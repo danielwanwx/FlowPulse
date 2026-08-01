@@ -78,6 +78,7 @@ export function parseIncidentWorkspaceUrlV3(url) {
   const panel = url.searchParams.get("panel");
   const componentId = url.searchParams.get("component");
   const edgeId = url.searchParams.get("edge");
+  const seriesId = url.searchParams.get("series");
   const portalTab = url.searchParams.get("portal_tab");
   return {
     caseId: PATH_ID.test(caseId || "") ? caseId : null,
@@ -85,6 +86,7 @@ export function parseIncidentWorkspaceUrlV3(url) {
     panel: PANELS.has(panel) ? panel : null,
     componentId: PATH_ID.test(componentId || "") ? componentId : null,
     edgeId: PATH_ID.test(edgeId || "") ? edgeId : null,
+    seriesId: PATH_ID.test(seriesId || "") ? seriesId : null,
     portalOpen: url.searchParams.get("portal") === "open",
     portalTab: PORTAL_TABS.has(portalTab) ? portalTab : "now"
   };
@@ -92,7 +94,7 @@ export function parseIncidentWorkspaceUrlV3(url) {
 
 export function updateIncidentWorkspaceUrlV3(url, {
   caseId, reviewStage = null, panel = null, componentId = null,
-  edgeId = null, portalOpen = false, portalTab = "now"
+  edgeId = null, seriesId = null, portalOpen = false, portalTab = "now"
 }) {
   const next = new URL(url);
   setParam(next, "case_id", PATH_ID.test(caseId || "") ? caseId : null);
@@ -100,6 +102,7 @@ export function updateIncidentWorkspaceUrlV3(url, {
   setParam(next, "panel", PANELS.has(panel) ? panel : null);
   setParam(next, "component", PATH_ID.test(componentId || "") ? componentId : null);
   setParam(next, "edge", PATH_ID.test(edgeId || "") ? edgeId : null);
+  setParam(next, "series", PATH_ID.test(seriesId || "") ? seriesId : null);
   setParam(next, "portal", portalOpen ? "open" : null);
   setParam(next, "portal_tab", PORTAL_TABS.has(portalTab) ? portalTab : null);
   return next;
@@ -638,7 +641,7 @@ function graphModalMarkup(view, projection, selectedComponent, now, series) {
 
 function signalCardsMarkup(collection, expanded = false) {
   const width = expanded ? 520 : 240;
-  const height = 76;
+  const height = expanded ? 116 : 78;
   const allPaths = metricSeriesPathsV3(collection || { series: [] }, width, height);
   const paths = expanded ? allPaths : allPaths.slice(0, 3);
   const seriesById = new Map((collection?.series || []).map((series) => [series.series_id, series]));
@@ -656,14 +659,71 @@ function signalCardsMarkup(collection, expanded = false) {
     const observedSeconds = Number.isFinite(observedStart) && Number.isFinite(observedEnd)
       ? Math.max(0, Math.round((observedEnd - observedStart) / 1000))
       : null;
-    const d = path.segments.map((segment) => segment.map((point, index) => `${index ? "L" : "M"}${point.x} ${point.y}`).join(" "));
-    const fill = `var(--${({ affected: "red", warning: "amber", healthy: "green", observed: "blue" })[tone] || "faint"})`;
-    const areas = path.segments.filter((segment) => segment.length > 1).map((segment, index) => `<polygon class="iw3-signal-area" data-series-segment="${index}" fill="${fill}" fill-opacity="0.12" points="${segment.map((point) => `${point.x},${point.y}`).join(" ")} ${segment.at(-1).x},${height} ${segment[0].x},${height}"/>`).join("");
-    const compactFooter = `<span data-tone="${escapeHtml(String(series?.freshness || "unknown").toLowerCase())}">${escapeHtml(titleCase(series?.freshness || "unknown"))}</span>`;
+    const sampleCount = (series?.points || []).filter((point) => typeof point.value === "number" && Number.isFinite(point.value)).length;
+    const windowLabel = observedSeconds === null ? "Window pending" : `Live · ${formatDuration(observedSeconds)}`;
     const detailFooter = `<span>${path.segments.reduce((count, segment) => count + segment.length, 0)} samples</span><span data-trend="${escapeHtml(trend.direction)}">${escapeHtml(trend.label)}</span><span>${observedSeconds === null ? "Window pending" : `${escapeHtml(formatDuration(observedSeconds))} window`}</span><span>${escapeHtml(thresholdCopy(series?.thresholds, series?.unit))}</span><span>${escapeHtml(titleCase(series?.freshness || "unknown"))} · ${escapeHtml(shortTime(latest?.timestamp))}</span>`;
     const label = expanded ? series?.label || series?.metric_key || path.seriesId : compactMetricLabel(series);
-    return `<button type="button" class="iw3-signal-card" data-component-select="${escapeHtml(series?.component_id || "")}" data-series-id="${escapeHtml(path.seriesId)}" data-tone="${tone}" aria-label="Open ${escapeHtml(series?.component_id || "component")} in Agent Portal"><span class="iw3-signal-card-head"><span><small>${escapeHtml(series?.component_id || "Component")}</small><strong class="iw3-signal-card-label">${escapeHtml(label)}</strong></span><strong>${escapeHtml(currentLabel)}</strong></span><svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="${escapeHtml(series?.label || path.seriesId)} samples">${areas}${d.map((value) => `<path d="${value}"/>`).join("")}</svg><span class="iw3-signal-card-foot">${expanded ? detailFooter : compactFooter}</span></button>`;
+    const visual = signalVisualMarkup(series, path, { width, height, tone });
+    const compactFooter = `<span class="iw3-signal-window">${escapeHtml(windowLabel)} · ${sampleCount} sample${sampleCount === 1 ? "" : "s"}</span><span data-tone="${escapeHtml(String(series?.freshness || "unknown").toLowerCase())}">${escapeHtml(titleCase(series?.freshness || "unknown"))}</span>`;
+    return `<button type="button" class="iw3-signal-card" data-component-select="${escapeHtml(series?.component_id || "")}" data-series-id="${escapeHtml(path.seriesId)}" data-tone="${tone}" data-signal-visual="${signalVisualKind(series)}" aria-label="Open ${escapeHtml(series?.component_id || "component")} in Agent Portal"><span class="iw3-signal-card-head">${signalIconMarkup(series)}<span><small>${escapeHtml(series?.component_id || "Component")}</small><strong class="iw3-signal-card-label">${escapeHtml(label)}</strong></span></span>${visual}<span class="iw3-signal-card-foot"><strong class="iw3-signal-card-value">${escapeHtml(currentLabel)}</strong>${expanded ? `<span class="iw3-signal-card-detail">${detailFooter}</span>` : compactFooter}</span></button>`;
   }).join("") || '<p class="iw3-empty">Waiting for typed metric samples.</p>'}</div>`;
+}
+
+function signalVisualKind(series) {
+  const key = String(series?.metric_key || "").toLowerCase();
+  if (key.includes("error")) return "area";
+  if (key.includes("latency") || key.includes("duration")) return "stems";
+  if (key.includes("request")) return "tiles";
+  return "line";
+}
+
+function signalIconMarkup(series) {
+  const kind = signalVisualKind(series);
+  const path = kind === "area"
+    ? '<path d="M4 12h3l2-5 3 10 2-5h4"/>'
+    : kind === "stems"
+      ? '<path d="M5 16V8m5 8V5m5 11V9m5 7V6"/>'
+      : kind === "tiles"
+        ? '<path d="M5 6h5v5H5zm9 0h5v5h-5zM5 15h5v5H5zm9 0h5v5h-5z"/>'
+        : '<path d="M4 16 9 10l4 4 7-8"/>';
+  return `<span class="iw3-signal-icon is-${kind}" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${path}</svg></span>`;
+}
+
+function signalVisualMarkup(series, path, { width, height, tone }) {
+  const kind = signalVisualKind(series);
+  const color = `var(--${({ affected: "red", warning: "amber", healthy: "green", observed: "blue" })[tone] || "faint"})`;
+  if (kind === "tiles") return trafficTilesMarkup(series, { width, height, color });
+  const samples = path.segments.flat();
+  const latest = samples.at(-1) || null;
+  if (kind === "stems") {
+    return `<svg class="iw3-signal-viz is-stems" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="${escapeHtml(series?.label || path.seriesId)} samples">${samples.map((point, index) => `<line class="iw3-signal-stem${index === samples.length - 1 ? " is-latest" : ""}" data-signal-stem="${index}" x1="${point.x}" x2="${point.x}" y1="${height - 7}" y2="${point.y}" stroke="${color}"/>`).join("")}${latest ? `<circle class="iw3-signal-dot" cx="${latest.x}" cy="${latest.y}" r="3.5" fill="${color}"/>` : ""}</svg>`;
+  }
+  const d = path.segments.map((segment) => segment.map((point, index) => `${index ? "L" : "M"}${point.x} ${point.y}`).join(" "));
+  const areas = kind === "area" ? path.segments.filter((segment) => segment.length > 1).map((segment, index) => `<polygon class="iw3-signal-area" data-series-segment="${index}" fill="${color}" fill-opacity="0.13" points="${segment.map((point) => `${point.x},${point.y}`).join(" ")} ${segment.at(-1).x},${height} ${segment[0].x},${height}"/>`).join("") : "";
+  return `<svg class="iw3-signal-viz is-${kind}" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="${escapeHtml(series?.label || path.seriesId)} samples">${areas}${d.map((value, index) => `<path class="iw3-signal-line" data-series-segment="${index}" d="${value}" stroke="${color}"/>`).join("")}${latest ? `<circle class="iw3-signal-dot" cx="${latest.x}" cy="${latest.y}" r="3.5" fill="${color}"/>` : ""}</svg>`;
+}
+
+function trafficTilesMarkup(series, { width, height, color }) {
+  const points = (series?.points || []).slice(-24);
+  const numeric = points.filter((point) => typeof point.value === "number" && Number.isFinite(point.value));
+  const min = numeric.length ? Math.min(...numeric.map((point) => point.value)) : 0;
+  const max = numeric.length ? Math.max(...numeric.map((point) => point.value)) : min;
+  const columns = Math.min(8, Math.max(1, points.length));
+  const rows = Math.max(1, Math.ceil(points.length / columns));
+  const gap = 5;
+  const tileWidth = Math.min(34, Math.max(10, (width - gap * (columns - 1)) / columns));
+  const tileHeight = Math.max(10, Math.min(20, (height - gap * (rows - 1)) / rows));
+  const gridWidth = tileWidth * columns + gap * (columns - 1);
+  const left = (width - gridWidth) / 2;
+  const gridHeight = tileHeight * rows + gap * (rows - 1);
+  const top = (height - gridHeight) / 2;
+  return `<svg class="iw3-signal-viz is-tiles" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="${escapeHtml(series?.label || "Traffic")} samples">${points.map((point, index) => {
+    const row = Math.floor(index / columns);
+    const column = index % columns;
+    const value = typeof point.value === "number" && Number.isFinite(point.value) ? point.value : null;
+    const intensity = value === null ? 0.13 : max === min ? 0.62 : 0.26 + ((value - min) / (max - min) * 0.7);
+    return `<rect class="iw3-signal-tile${value === null ? " is-gap" : ""}${index === points.length - 1 ? " is-latest" : ""}" data-signal-tile="${index}" x="${left + column * (tileWidth + gap)}" y="${top + row * (tileHeight + gap)}" width="${tileWidth}" height="${tileHeight}" rx="${Math.min(tileHeight / 2, 8)}" fill="${color}" fill-opacity="${intensity.toFixed(2)}"/>`;
+  }).join("")}</svg>`;
 }
 
 function compactMetricLabel(series) {
@@ -690,17 +750,19 @@ function graphEdgeTone(edge, nodes, projection, now) {
   return tones.every((tone) => tone === "healthy") ? "healthy" : "observed";
 }
 
-function componentMetricLabel(collection, componentId) {
-  const series = (collection?.series || []).find((item) => item.component_id === componentId && /error|latency|duration/.test(item.metric_key || "") && typeof item.points?.at(-1)?.value === "number")
+function componentMetricLabel(collection, componentId, preferredSeriesId = null) {
+  const series = (collection?.series || []).find((item) => item.component_id === componentId && item.series_id === preferredSeriesId && typeof item.points?.at(-1)?.value === "number")
+    || (collection?.series || []).find((item) => item.component_id === componentId && /error|latency|duration/.test(item.metric_key || "") && typeof item.points?.at(-1)?.value === "number")
     || (collection?.series || []).find((item) => item.component_id === componentId && typeof item.points?.at(-1)?.value === "number");
   const point = series?.points?.at(-1);
   return point ? `${compactMetricLabel(series)} ${formatMetric(point.value, series.unit)}` : null;
 }
 
-function componentMetricEvidenceRefs(collection, componentIds) {
+function componentMetricEvidenceRefs(collection, componentIds, preferredSeriesId = null) {
   const scoped = new Set(componentIds.filter(Boolean));
-  return uniqueOrdered((collection?.series || [])
-    .filter((series) => scoped.has(series.component_id))
+  const series = (collection?.series || []).filter((item) => scoped.has(item.component_id));
+  const selected = series.filter((item) => item.series_id === preferredSeriesId);
+  return uniqueOrdered((selected.length ? selected : series)
     .flatMap((series) => series.points?.at(-1)?.evidence_refs || []));
 }
 
@@ -748,12 +810,12 @@ function agentPortalMarkup(view, projection, ui) {
     ? [componentId, edge.target_component_id]
     : [componentId];
   const evidenceRefs = uniqueOrdered([
-    ...componentMetricEvidenceRefs(ui.series, scopedComponentIds),
+    ...componentMetricEvidenceRefs(ui.series, scopedComponentIds, ui.seriesId),
     ...relatedQueries.flatMap((query) => query.evidence_refs || []),
     ...relatedActivity.flatMap((activity) => activity.evidence_refs || [])
   ]);
   const fresh = graphFreshness(projection, ui.now);
-  const metric = componentId ? componentMetricLabel(ui.series, componentId) : null;
+  const metric = componentId ? componentMetricLabel(ui.series, componentId, ui.seriesId) : null;
   const relation = edge ? `${node?.display_name || edge.source_component_id} → ${(graph.nodes || []).find((item) => item.component_id === edge.target_component_id)?.display_name || edge.target_component_id}` : null;
   const canAsk = !view.reviewingHistory
     && ["TRIAGE", "INVESTIGATE", "DECIDE"].includes(view.currentStage)
