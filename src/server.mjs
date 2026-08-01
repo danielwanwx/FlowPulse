@@ -1585,13 +1585,14 @@ async function reuseGuidedRequest(store, kind, key, fingerprint, execute) {
 }
 
 function validateGuidedAgentRequest(value) {
-  const keys = ["schema_version", "request_id", "case_id", "attempt_id", "stage_run_id", "stage", "role", "selected_component", "incident_title", "incident_summary", "freshness", "component_ids", "edge_ids", "evidence_refs", "evidence_facts", "query_outcomes", "hypotheses"];
+  const keys = ["schema_version", "request_id", "case_id", "attempt_id", "stage_run_id", "stage", "role", "selected_component", "question", "incident_title", "incident_summary", "freshness", "component_ids", "edge_ids", "evidence_refs", "evidence_facts", "query_outcomes", "hypotheses"];
   if (!exactGuidedKeys(value, keys)
     || value.schema_version !== "flowpulse.guided-agent-bridge-request.v3"
     || !guidedId(value.request_id) || !guidedId(value.case_id) || !guidedId(value.attempt_id) || !guidedId(value.stage_run_id)
     || !["TRIAGE", "INVESTIGATE", "DECIDE"].includes(value.stage)
     || !["observer", "investigator", "evaluator", "critic"].includes(value.role)
     || !guidedId(value.selected_component)
+    || (value.question !== null && !guidedText(value.question, 1_000))
     || !guidedText(value.incident_title, 500) || !guidedText(value.incident_summary, 4_000)
     || !validGuidedFreshness(value.freshness)
     || !guidedIdList(value.component_ids, 1, 64)
@@ -1623,6 +1624,7 @@ function guidedAgentContext(input) {
   return {
     role: input.role === "critic" ? "evaluator" : input.role,
     message: `Review only the canonical ${input.stage} evidence for ${input.selected_component}.`,
+    operator_question: input.question,
     page_mode: "diagnose",
     selected_component: input.selected_component,
     topology: { component_ids: input.component_ids, edge_ids: input.edge_ids },

@@ -1857,6 +1857,7 @@ class GuidedWorkflowCoordinatorV3:
                 command.component_id
                 or (prior.impacted_path[0] if prior.impacted_path else prior.graph.nodes[0].component_id)
             ),
+            question=command.question or None,
             state=AgentRunStateV3.RUNNING,
             label={
                 "TRIAGE": "Triage agent",

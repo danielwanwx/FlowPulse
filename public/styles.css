@@ -5435,3 +5435,239 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
   .app-shell[data-incident-workspace="v3"] .iw3-signal-cards.is-expanded { grid-template-columns: minmax(0, 1fr); }
   .app-shell[data-incident-workspace="v3"] .iw3-signal-card, .app-shell[data-incident-workspace="v3"] .iw3-signal-cards.is-expanded .iw3-signal-card { min-height: 0; }
 }
+
+/* Reference glass Agent Portal: soft surfaces, no chrome borders, real data only. */
+.app-shell[data-incident-workspace="v3"] {
+  --iw3-glass: rgba(255, 255, 255, .64);
+  --iw3-glass-strong: rgba(255, 255, 255, .84);
+  --iw3-shadow: 0 16px 34px rgba(77, 96, 115, .11), inset 0 1px 0 rgba(255, 255, 255, .92);
+}
+.app-shell[data-incident-workspace="v3"] > main { background: #e8eef3; }
+.app-shell[data-incident-workspace="v3"] .iw3-command-bar,
+.app-shell[data-incident-workspace="v3"] .iw3-stage-heading,
+.app-shell[data-incident-workspace="v3"] .iw3-stage-card,
+.app-shell[data-incident-workspace="v3"] .iw3-agent-portal,
+.app-shell[data-incident-workspace="v3"] .iw3-detail,
+.app-shell[data-incident-workspace="v3"] .iw3-graph-dialog,
+.app-shell[data-incident-workspace="v3"] .iw3-confirm-dialog {
+  border: 0;
+  border-radius: 24px;
+  background: var(--iw3-glass);
+  box-shadow: var(--iw3-shadow);
+}
+.app-shell[data-incident-workspace="v3"] .iw3-command-bar { margin: 12px 14px 0; padding: 11px 14px; }
+.app-shell[data-incident-workspace="v3"] .iw3-stage-rail,
+.app-shell[data-incident-workspace="v3"] .iw3-action-footer {
+  border: 0;
+  background: rgba(255, 255, 255, .34);
+}
+.app-shell[data-incident-workspace="v3"] .iw3-stage-step,
+.app-shell[data-incident-workspace="v3"] .iw3-stage-step > span,
+.app-shell[data-incident-workspace="v3"] .iw3-stage-step::after { border: 0; }
+.app-shell[data-incident-workspace="v3"] .iw3-stage-step > span { background: rgba(211, 220, 226, .7); }
+.app-shell[data-incident-workspace="v3"] .iw3-stage-step.is-current > span { background: var(--blue); }
+.app-shell[data-incident-workspace="v3"] .iw3-stage-surface,
+.app-shell[data-incident-workspace="v3"] .iw3-resolution-surface {
+  background-image: none;
+}
+.app-shell[data-incident-workspace="v3"] .iw3-workspace-body.is-portal-open {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 360px);
+  align-items: stretch;
+  gap: 14px;
+  padding: 14px;
+  overflow: auto;
+}
+.app-shell[data-incident-workspace="v3"] .iw3-workspace-body.is-portal-open .iw3-stage-surface {
+  min-height: 0;
+  padding: 16px;
+  border-radius: 26px;
+  background: rgba(255, 255, 255, .28);
+}
+.app-shell[data-incident-workspace="v3"] .iw3-workspace-body.is-portal-open .iw3-stage { width: 100%; }
+.app-shell[data-incident-workspace="v3"] .iw3-stage-heading { padding: 14px 16px; }
+.app-shell[data-incident-workspace="v3"] .iw3-stage-lead {
+  font-size: clamp(18px, 2.1vw, 25px);
+  font-weight: 720;
+  letter-spacing: -.035em;
+}
+.app-shell[data-incident-workspace="v3"] .iw3-stage-card { padding: 14px; min-height: 0; }
+.app-shell[data-incident-workspace="v3"] .iw3-stage-card-signals { background: rgba(255, 255, 255, .42); }
+.app-shell[data-incident-workspace="v3"] .iw3-signal-cards { gap: 12px; }
+.app-shell[data-incident-workspace="v3"] .iw3-signal-card {
+  display: grid;
+  width: 100%;
+  min-height: 152px;
+  padding: 14px;
+  border: 0;
+  border-radius: 20px;
+  color: var(--ink);
+  background: rgba(255, 255, 255, .7);
+  box-shadow: 0 9px 22px rgba(76, 94, 111, .075), inset 0 1px 0 rgba(255, 255, 255, .9);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+.app-shell[data-incident-workspace="v3"] .iw3-signal-card:hover,
+.app-shell[data-incident-workspace="v3"] .iw3-signal-card:focus-visible { background: var(--iw3-glass-strong); box-shadow: 0 13px 28px rgba(55, 87, 119, .13), inset 0 1px 0 rgba(255, 255, 255, .96); }
+.app-shell[data-incident-workspace="v3"] .iw3-signal-card:active { transform: translateY(1px); }
+.app-shell[data-incident-workspace="v3"] .iw3-signal-card[data-tone] { border-top: 0; }
+.app-shell[data-incident-workspace="v3"] .iw3-signal-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.app-shell[data-incident-workspace="v3"] .iw3-signal-card-head > span { display: grid; gap: 3px; }
+.app-shell[data-incident-workspace="v3"] .iw3-signal-card-head small { color: var(--muted); font: 700 9px/1 var(--font); text-transform: capitalize; }
+.app-shell[data-incident-workspace="v3"] .iw3-signal-card-label { color: var(--ink); font-size: 11px; line-height: 1.15; }
+.app-shell[data-incident-workspace="v3"] .iw3-signal-card-head > strong { color: var(--ink); font-size: 18px; line-height: 1; }
+.app-shell[data-incident-workspace="v3"] .iw3-signal-card[data-tone="affected"] .iw3-signal-card-head > strong { color: var(--red); }
+.app-shell[data-incident-workspace="v3"] .iw3-signal-card[data-tone="warning"] .iw3-signal-card-head > strong { color: var(--amber); }
+.app-shell[data-incident-workspace="v3"] .iw3-signal-card[data-tone="healthy"] .iw3-signal-card-head > strong { color: var(--green); }
+.app-shell[data-incident-workspace="v3"] .iw3-signal-card[data-tone="observed"] .iw3-signal-card-head > strong { color: var(--blue); }
+.app-shell[data-incident-workspace="v3"] .iw3-signal-card-foot { display: flex; justify-content: flex-end; gap: 6px; margin-top: 6px; color: var(--muted); font-size: 9px; }
+.app-shell[data-incident-workspace="v3"] .iw3-stage-card-path { padding: 12px; background: rgba(255, 255, 255, .38); }
+.app-shell[data-incident-workspace="v3"] .iw3-path-visual { gap: 10px; padding: 1px; overflow: visible; }
+.app-shell[data-incident-workspace="v3"] .iw3-path-node {
+  position: relative;
+  flex: 1 1 128px;
+  min-height: 68px;
+  padding: 12px 16px;
+  border: 0;
+  border-radius: 20px;
+  color: var(--ink);
+  background: rgba(255, 255, 255, .74);
+  box-shadow: 0 10px 21px rgba(79, 97, 115, .09), inset 0 1px 0 rgba(255,255,255,.94);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+.app-shell[data-incident-workspace="v3"] .iw3-path-node > span,
+.app-shell[data-incident-workspace="v3"] .iw3-graph-node-state {
+  position: absolute;
+  top: 13px;
+  right: 13px;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--faint);
+}
+.app-shell[data-incident-workspace="v3"] .iw3-path-node[data-tone="affected"] > span,
+.app-shell[data-incident-workspace="v3"] .iw3-graph-node.is-affected .iw3-graph-node-state { background: var(--red); box-shadow: 0 0 0 4px color-mix(in srgb, var(--red) 12%, transparent); }
+.app-shell[data-incident-workspace="v3"] .iw3-path-node[data-tone="healthy"] > span,
+.app-shell[data-incident-workspace="v3"] .iw3-graph-node.is-healthy .iw3-graph-node-state { background: var(--green); box-shadow: 0 0 0 4px color-mix(in srgb, var(--green) 12%, transparent); }
+.app-shell[data-incident-workspace="v3"] .iw3-path-node:hover,
+.app-shell[data-incident-workspace="v3"] .iw3-path-node:focus-visible { background: var(--iw3-glass-strong); box-shadow: 0 14px 28px rgba(55, 87, 119, .14), inset 0 1px 0 #fff; }
+.app-shell[data-incident-workspace="v3"] .iw3-path-node strong { font-size: 13px; }
+.app-shell[data-incident-workspace="v3"] .iw3-path-arrow {
+  flex: 0 0 40px;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  color: var(--blue);
+  background: rgba(218, 230, 244, .78);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.88), 0 7px 16px rgba(75, 105, 135, .1);
+  cursor: pointer;
+  font: 800 16px/1 var(--font);
+}
+.app-shell[data-incident-workspace="v3"] .iw3-path-arrow.is-affected { color: var(--red); background: color-mix(in srgb, var(--red) 10%, rgba(255,255,255,.78)); }
+.app-shell[data-incident-workspace="v3"] .iw3-path-arrow:hover,
+.app-shell[data-incident-workspace="v3"] .iw3-path-arrow:focus-visible { transform: translateX(1px); box-shadow: inset 0 1px 0 rgba(255,255,255,.94), 0 10px 20px rgba(75, 105, 135, .16); }
+.app-shell[data-incident-workspace="v3"] .iw3-tool-row button,
+.app-shell[data-incident-workspace="v3"] .iw3-stage-card button:not(.iw3-signal-card),
+.app-shell[data-incident-workspace="v3"] .iw3-agent-portal button,
+.app-shell[data-incident-workspace="v3"] .iw3-node-peek button {
+  border: 0;
+  border-radius: 999px;
+  box-shadow: none;
+}
+.app-shell[data-incident-workspace="v3"] .iw3-tool-row button,
+.app-shell[data-incident-workspace="v3"] .iw3-activity-capsules button { background: rgba(255,255,255,.58); }
+.app-shell[data-incident-workspace="v3"] .iw3-activity-capsules button { border: 0; box-shadow: 0 6px 16px rgba(79, 97, 115, .06); }
+.app-shell[data-incident-workspace="v3"] .iw3-agent-portal {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  min-width: 0;
+  min-height: 0;
+  padding: 16px;
+  overflow: hidden;
+  background: rgba(248, 252, 255, .68);
+  backdrop-filter: blur(24px) saturate(122%);
+  -webkit-backdrop-filter: blur(24px) saturate(122%);
+}
+.app-shell[data-incident-workspace="v3"] .iw3-portal-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 2px 2px 13px; }
+.app-shell[data-incident-workspace="v3"] .iw3-portal-header span { color: var(--blue); font: 750 9px/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+.app-shell[data-incident-workspace="v3"] .iw3-portal-header h3 { margin: 5px 0 0; color: var(--ink); font-size: 18px; letter-spacing: -.03em; line-height: 1.15; }
+.app-shell[data-incident-workspace="v3"] .iw3-portal-header button { min-width: 34px; min-height: 34px; color: var(--muted); background: rgba(255,255,255,.62); font: 700 9px/1 var(--mono); cursor: pointer; }
+.app-shell[data-incident-workspace="v3"] .iw3-portal-tabs { display: flex; gap: 5px; padding: 4px; border-radius: 999px; background: rgba(212, 222, 231, .52); }
+.app-shell[data-incident-workspace="v3"] .iw3-portal-tabs button { flex: 1; min-height: 30px; color: var(--muted); background: transparent; font: 750 10px/1 var(--font); cursor: pointer; }
+.app-shell[data-incident-workspace="v3"] .iw3-portal-tabs button[aria-selected="true"] { color: #fff; background: var(--blue); box-shadow: 0 6px 12px color-mix(in srgb, var(--blue) 26%, transparent); }
+.app-shell[data-incident-workspace="v3"] .iw3-portal-body { min-height: 0; overflow: auto; padding: 14px 2px; }
+.app-shell[data-incident-workspace="v3"] .iw3-portal-now { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
+.app-shell[data-incident-workspace="v3"] .iw3-portal-now section,
+.app-shell[data-incident-workspace="v3"] .iw3-portal-evidence article,
+.app-shell[data-incident-workspace="v3"] .iw3-portal-activity li { border: 0; border-radius: 17px; background: rgba(255,255,255,.58); box-shadow: inset 0 1px 0 rgba(255,255,255,.88); }
+.app-shell[data-incident-workspace="v3"] .iw3-portal-now section { display: grid; gap: 5px; min-height: 86px; padding: 12px; }
+.app-shell[data-incident-workspace="v3"] .iw3-portal-now section.is-relation { grid-column: 1 / -1; min-height: 0; }
+.app-shell[data-incident-workspace="v3"] .iw3-portal-now span { color: var(--muted); font: 700 8px/1 var(--mono); text-transform: uppercase; }
+.app-shell[data-incident-workspace="v3"] .iw3-portal-now strong { color: var(--ink); font-size: 14px; line-height: 1.15; }
+.app-shell[data-incident-workspace="v3"] .iw3-portal-now small,
+.app-shell[data-incident-workspace="v3"] .iw3-portal-activity small,
+.app-shell[data-incident-workspace="v3"] .iw3-portal-evidence small { color: var(--muted); font-size: 10px; }
+.app-shell[data-incident-workspace="v3"] .iw3-portal-now section[data-tone="affected"] strong { color: var(--red); }
+.app-shell[data-incident-workspace="v3"] .iw3-portal-activity { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.app-shell[data-incident-workspace="v3"] .iw3-portal-activity li { display: grid; grid-template-columns: 7px minmax(0, 1fr); gap: 9px; padding: 11px; }
+.app-shell[data-incident-workspace="v3"] .iw3-portal-activity > li > span { width: 7px; height: 7px; margin-top: 4px; border-radius: 50%; background: var(--green); }
+.app-shell[data-incident-workspace="v3"] .iw3-portal-activity li[data-state="running"] > span { background: var(--blue); animation: iw3-status-pulse 1.5s ease-in-out infinite; }
+.app-shell[data-incident-workspace="v3"] .iw3-portal-activity li[data-state="failed"] > span { background: var(--red); }
+.app-shell[data-incident-workspace="v3"] .iw3-portal-activity strong { font-size: 11px; }
+.app-shell[data-incident-workspace="v3"] .iw3-portal-activity p,
+.app-shell[data-incident-workspace="v3"] .iw3-portal-evidence p,
+.app-shell[data-incident-workspace="v3"] .iw3-portal-empty { margin: 4px 0 5px; color: var(--muted); font-size: 11px; line-height: 1.42; }
+.app-shell[data-incident-workspace="v3"] .iw3-portal-evidence { display: grid; gap: 8px; }
+.app-shell[data-incident-workspace="v3"] .iw3-portal-evidence article { display: grid; gap: 4px; padding: 11px; }
+.app-shell[data-incident-workspace="v3"] .iw3-portal-evidence article strong { color: var(--ink); font: 700 10px/1.25 var(--mono); }
+.app-shell[data-incident-workspace="v3"] .iw3-portal-evidence ul { display: grid; gap: 5px; margin: 2px 0 0; padding: 0; list-style: none; }
+.app-shell[data-incident-workspace="v3"] .iw3-portal-evidence li { overflow: hidden; padding: 7px 9px; border-radius: 10px; background: rgba(216, 226, 235, .5); text-overflow: ellipsis; white-space: nowrap; }
+.app-shell[data-incident-workspace="v3"] .iw3-portal-evidence code { color: var(--muted); font-size: 9px; }
+.app-shell[data-incident-workspace="v3"] .iw3-portal-footer { display: grid; gap: 9px; padding-top: 11px; }
+.app-shell[data-incident-workspace="v3"] .iw3-portal-footer > button { justify-self: start; min-height: 31px; padding: 0 12px; color: var(--blue); background: rgba(218, 230, 244, .7); cursor: pointer; font: 750 10px/1 var(--font); }
+.app-shell[data-incident-workspace="v3"] .iw3-portal-footer > p { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.4; }
+.app-shell[data-incident-workspace="v3"] .iw3-portal-composer { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 7px; }
+.app-shell[data-incident-workspace="v3"] .iw3-portal-composer textarea { min-width: 0; min-height: 42px; max-height: 88px; padding: 9px 10px; border: 0; border-radius: 15px; color: var(--ink); background: rgba(255,255,255,.76); box-shadow: inset 0 1px 0 rgba(255,255,255,.92); font: 11px/1.35 var(--font); outline: 0; resize: vertical; }
+.app-shell[data-incident-workspace="v3"] .iw3-portal-composer button { min-height: 38px; padding: 0 12px; color: #fff; background: var(--blue); cursor: pointer; font: 750 10px/1 var(--font); }
+.app-shell[data-incident-workspace="v3"] .iw3-graph-dialog { border: 0; background: rgba(248,252,255,.88); }
+.app-shell[data-incident-workspace="v3"] .iw3-graph-canvas { border: 0; border-radius: 22px; background: linear-gradient(145deg, rgba(225,235,244,.74), rgba(247,251,255,.52)); }
+.app-shell[data-incident-workspace="v3"] .iw3-graph-edge { stroke-width: 1.65; opacity: .62; }
+.app-shell[data-incident-workspace="v3"] .iw3-graph-canvas marker path { fill: context-stroke; }
+.app-shell[data-incident-workspace="v3"] .iw3-graph-pulse { stroke-width: 3.5; }
+.app-shell[data-incident-workspace="v3"] .iw3-graph-node { min-width: 170px; min-height: 76px; padding: 13px 15px; border: 0; border-left: 0; border-radius: 19px; background: rgba(255,255,255,.82); box-shadow: 0 12px 25px rgba(59,80,103,.13), inset 0 1px 0 rgba(255,255,255,.94); }
+.app-shell[data-incident-workspace="v3"] .iw3-graph-node strong { display: block; padding-right: 14px; color: var(--ink); font-size: 12px; }
+.app-shell[data-incident-workspace="v3"] .iw3-graph-node small { display: block; margin-top: 7px; color: var(--muted); }
+.app-shell[data-incident-workspace="v3"] .iw3-graph-node.is-selected { box-shadow: 0 0 0 3px color-mix(in srgb, var(--blue) 14%, transparent), 0 12px 25px rgba(59,80,103,.15); }
+.app-shell[data-incident-workspace="v3"] .iw3-graph-edge-peek { position: absolute; z-index: 3; width: 30px; height: 30px; padding: 0; transform: translate(-50%, -50%); border: 0; border-radius: 50%; color: var(--blue); background: rgba(255,255,255,.82); box-shadow: 0 7px 15px rgba(75,105,135,.14); cursor: pointer; font: 800 14px/1 var(--font); }
+.app-shell[data-incident-workspace="v3"] .iw3-node-peek { border: 0; border-radius: 18px; background: rgba(226, 235, 244, .48); }
+.app-shell[data-incident-workspace="v3"] .iw3-node-peek-actions { display: flex; align-items: center; gap: 7px; }
+.app-shell[data-incident-workspace="v3"] .iw3-node-peek-actions button { min-height: 32px; padding: 0 11px; color: #fff; background: var(--blue); cursor: pointer; font: 700 10px/1 var(--font); }
+.app-shell[data-incident-workspace="v3"] .iw3-tool-row button:focus-visible,
+.app-shell[data-incident-workspace="v3"] button:focus-visible,
+.app-shell[data-incident-workspace="v3"] textarea:focus-visible { outline: 2px solid color-mix(in srgb, var(--blue) 72%, #fff); outline-offset: 2px; }
+@media (max-width: 900px) {
+  .app-shell[data-incident-workspace="v3"] .iw3-workspace-body.is-portal-open { grid-template-columns: minmax(0, 1fr); overflow: auto; }
+  .app-shell[data-incident-workspace="v3"] .iw3-agent-portal { min-height: 360px; }
+}
+@media (max-width: 640px) {
+  .app-shell[data-incident-workspace="v3"] .iw3-workspace-body.is-portal-open { padding: 9px; gap: 9px; }
+  .app-shell[data-incident-workspace="v3"] .iw3-path-visual { align-items: stretch; flex-direction: column; overflow: visible; }
+  .app-shell[data-incident-workspace="v3"] .iw3-path-arrow { align-self: center; transform: rotate(90deg); }
+  .app-shell[data-incident-workspace="v3"] .iw3-path-arrow:hover,
+  .app-shell[data-incident-workspace="v3"] .iw3-path-arrow:focus-visible { transform: rotate(90deg) translateX(1px); }
+  .app-shell[data-incident-workspace="v3"] .iw3-portal-composer { grid-template-columns: minmax(0, 1fr); }
+  .app-shell[data-incident-workspace="v3"] .iw3-portal-composer button { width: 100%; }
+}
+@media (prefers-reduced-transparency: reduce) {
+  .app-shell[data-incident-workspace="v3"] .iw3-command-bar,
+  .app-shell[data-incident-workspace="v3"] .iw3-stage-heading,
+  .app-shell[data-incident-workspace="v3"] .iw3-stage-card,
+  .app-shell[data-incident-workspace="v3"] .iw3-agent-portal,
+  .app-shell[data-incident-workspace="v3"] .iw3-detail,
+  .app-shell[data-incident-workspace="v3"] .iw3-graph-dialog { background: #f8fbfe; backdrop-filter: none; -webkit-backdrop-filter: none; }
+}

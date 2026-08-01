@@ -92,12 +92,13 @@ export class IncidentWorkbenchControllerV3 {
     this.eventState = { lastSequence: 0, projectionRevision: 0 };
     this.refreshLoop = new TrailingRefreshV3();
     this.previousFocus = null;
-    this.ui = { reviewStage: null, panel: null, componentId: null, commandDialog: null };
+    this.ui = { reviewStage: null, panel: null, componentId: null, edgeId: null, portalOpen: false, portalTab: "now", agentDraft: "", commandDialog: null };
     this.onClick = (event) => { void this.handleClick(event); };
     this.onInput = (event) => {
       if (event.target.matches?.("[data-command-reason]") && this.ui.commandDialog) {
         this.ui.commandDialog.draft = event.target.value;
       }
+      if (event.target.matches?.("[data-agent-question]")) this.ui.agentDraft = event.target.value;
     };
     this.onKeyDown = (event) => this.handleKeyDown(event);
     this.element.addEventListener("click", this.onClick);
@@ -124,6 +125,10 @@ export class IncidentWorkbenchControllerV3 {
       reviewStage: restored.reviewStage,
       panel: restored.panel,
       componentId: restored.componentId,
+      edgeId: restored.edgeId,
+      portalOpen: restored.portalOpen,
+      portalTab: restored.portalTab,
+      agentDraft: "",
       commandDialog: null
     };
     this.caseId = targetCaseId;
@@ -210,6 +215,26 @@ export class IncidentWorkbenchControllerV3 {
     if (!this.active) return;
     const retry = event.target.closest("[data-workbench-retry]");
     if (retry) return this.activate(this.caseId);
+    if (event.target.closest("[data-portal-close]")) return this.closePortal();
+    const portalTab = event.target.closest("[data-portal-tab]");
+    if (portalTab) {
+      this.ui.portalTab = portalTab.dataset.portalTab;
+      this.persistUrl();
+      this.render();
+      return;
+    }
+    const component = event.target.closest("[data-component-select], [data-portal-component]");
+    if (component?.dataset.componentSelect || component?.dataset.portalComponent) {
+      this.openPortal({ componentId: component.dataset.componentSelect || component.dataset.portalComponent });
+      return;
+    }
+    const edge = event.target.closest("[data-edge-select]");
+    if (edge) {
+      this.openPortal({ componentId: edge.dataset.edgeSource || null, edgeId: edge.dataset.edgeSelect });
+      return;
+    }
+    const question = event.target.closest("[data-agent-question-submit]");
+    if (question) return this.startPortalAgentRun();
     const stage = event.target.closest("[data-stage]");
     if (stage && !stage.disabled) {
       this.ui.reviewStage = stage.dataset.stage === this.projection.current_attempt.current_stage ? null : stage.dataset.stage;
@@ -306,6 +331,34 @@ export class IncidentWorkbenchControllerV3 {
     }
   }
 
+  openPortal({ componentId = null, edgeId = null }) {
+    if (componentId) this.ui.componentId = componentId;
+    this.ui.edgeId = edgeId;
+    this.ui.panel = null;
+    this.ui.portalOpen = true;
+    this.ui.portalTab = "now";
+    this.persistUrl();
+    this.render();
+    this.element.querySelector("[data-portal-close]")?.focus();
+  }
+
+  async startPortalAgentRun() {
+    const question = this.ui.agentDraft.trim();
+    const stage = this.projection.current_attempt?.current_stage;
+    if (!question || this.ui.reviewStage || !["TRIAGE", "INVESTIGATE", "DECIDE"].includes(stage)
+      || this.projection.lifecycle_state === "RESOLVED" || this.projection.current_attempt?.status === "COMPLETED") {
+      this.element.querySelector("[data-agent-question]")?.focus();
+      return;
+    }
+    const componentId = this.ui.componentId || this.projection.impacted_path?.[0];
+    const nonce = this.window.Date?.now?.() || Date.now();
+    const base = this.command("START_AGENT_RUN", `portal-agent:${this.projection.current_attempt.attempt_id}:${this.projection.workflow_revision}:${componentId}:${nonce}`);
+    this.ui.agentDraft = "";
+    await this.execute(() => this.client.startAgentRun(this.caseId, {
+      ...base, component_id: componentId, question
+    }), "START_AGENT_RUN");
+  }
+
   command(command, idempotencyKey) {
     return buildWorkflowCommandV3(this.projection, command, { idempotencyKey });
   }
@@ -345,7 +398,13 @@ export class IncidentWorkbenchControllerV3 {
   handleKeyDown(event) {
     if (!this.active) return;
     const modal = this.element.querySelector("[data-workbench-modal]");
-    if (!modal) return;
+    if (!modal) {
+      if (event.key === "Escape" && this.ui.portalOpen) {
+        event.preventDefault();
+        this.closePortal();
+      }
+      return;
+    }
     if (event.key === "Escape") {
       event.preventDefault();
       if (this.ui.commandDialog) {
@@ -371,10 +430,21 @@ export class IncidentWorkbenchControllerV3 {
 
   closePanel() {
     this.ui.panel = null;
-    this.ui.componentId = null;
+    if (!this.ui.portalOpen) {
+      this.ui.componentId = null;
+      this.ui.edgeId = null;
+    }
     this.persistUrl();
     this.render();
     this.restoreFocus();
+  }
+
+  closePortal() {
+    this.ui.portalOpen = false;
+    this.ui.edgeId = null;
+    this.persistUrl();
+    this.render();
+    this.element.querySelector("#incident-stage-surface")?.focus();
   }
 
   focusModal() {
@@ -426,7 +496,10 @@ export class IncidentWorkbenchControllerV3 {
       caseId: this.caseId,
       reviewStage: this.ui.reviewStage,
       panel: this.ui.panel,
-      componentId: this.ui.componentId
+      componentId: this.ui.componentId,
+      edgeId: this.ui.edgeId,
+      portalOpen: this.ui.portalOpen,
+      portalTab: this.ui.portalTab
     });
     this.window.history.replaceState(null, "", url);
   }
@@ -498,7 +571,9 @@ function captureFocus(root, activeElement) {
   const attributes = [
     "data-command-reason", "data-command-confirm", "data-command-cancel",
     "data-panel-close", "data-graph-close", "data-graph-node", "data-stage",
-    "data-workflow-command", "data-action-decision", "data-agent-investigate"
+    "data-workflow-command", "data-action-decision", "data-agent-investigate",
+    "data-component-select", "data-edge-select", "data-portal-component", "data-portal-close",
+    "data-portal-tab", "data-agent-question", "data-agent-question-submit"
   ];
   let selector = activeElement.id ? `#${cssEscape(activeElement.id)}` : null;
   if (!selector && typeof activeElement.hasAttribute === "function") {

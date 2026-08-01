@@ -626,6 +626,7 @@ class AgentActivityV3(StrictModel):
     stage: WorkflowStageV3
     role: NonEmpty
     selected_component_id: Optional[StrictStr] = None
+    question: Optional[StrictStr] = None
     bridge_request: Optional["GuidedAgentBridgeRequestV3"] = None
     state: AgentRunStateV3
     label: NonEmpty
@@ -651,6 +652,9 @@ class AgentActivityV3(StrictModel):
             raise ValueError("workflow_v3_agent_success_requires_complete_progress")
         if state == AgentRunStateV3.FAILED and not values.get("failure_code"):
             raise ValueError("workflow_v3_agent_failure_requires_code")
+        question = values.get("question")
+        if question is not None and len(question) > 1000:
+            raise ValueError("workflow_v3_agent_question_too_long")
         bridge_request = values.get("bridge_request")
         if bridge_request is not None and (
             bridge_request.stage_run_id != values.get("stage_run_id")
@@ -661,6 +665,7 @@ class AgentActivityV3(StrictModel):
                 and bridge_request.selected_component
                 != values.get("selected_component_id")
             )
+            or bridge_request.question != question
         ):
             raise ValueError("workflow_v3_agent_bridge_snapshot_scope_invalid")
         return values
@@ -1255,6 +1260,7 @@ class GuidedAgentBridgeRequestV3(StrictModel):
     stage: WorkflowStageV3
     role: NonEmpty
     selected_component: NonEmpty
+    question: Optional[StrictStr] = None
     incident_title: NonEmpty
     incident_summary: NonEmpty
     freshness: FreshnessV3
@@ -1264,6 +1270,12 @@ class GuidedAgentBridgeRequestV3(StrictModel):
     evidence_facts: List[GuidedAgentEvidenceFactV3] = Field(default_factory=list, max_items=32)
     query_outcomes: List[EvidenceQueryResultV3] = Field(default_factory=list, max_items=16)
     hypotheses: List[WorkflowHypothesisV3] = Field(default_factory=list, max_items=32)
+
+    @validator("question", allow_reuse=True)
+    def question_is_bounded(cls, value):
+        if value is not None and len(value) > 1000:
+            raise ValueError("workflow_v3_agent_question_too_long")
+        return value
 
     @root_validator(allow_reuse=True)
     def safe_context_is_bounded_to_canonical_identity(cls, values):

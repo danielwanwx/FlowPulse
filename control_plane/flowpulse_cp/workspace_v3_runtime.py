@@ -383,6 +383,7 @@ class GuidedWorkflowActivityDispatcherV3:
         self, projection, role: str, request_discriminator: Optional[str] = None,
         hypotheses_override: Optional[List[WorkflowHypothesisV3]] = None,
         selected_component_override: Optional[str] = None,
+        question_override: Optional[str] = None,
     ) -> GuidedAgentBridgeRequestV3:
         attempt = projection.current_attempt
         current = next(
@@ -457,6 +458,7 @@ class GuidedWorkflowActivityDispatcherV3:
             stage=current.stage,
             role=role,
             selected_component=selected,
+            question=question_override,
             incident_title=projection.title,
             incident_summary=(
                 "{} Prior independent result: {}".format(
@@ -497,6 +499,7 @@ class GuidedWorkflowActivityDispatcherV3:
                 request_discriminator=agent.agent_run_id,
                 hypotheses_override=hypotheses_override,
                 selected_component_override=agent.selected_component_id,
+                question_override=agent.question,
             )
         request_bytes = len(request.json(
             sort_keys=True, separators=(",", ":"),

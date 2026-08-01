@@ -3,6 +3,7 @@ import { INCIDENT_STAGES_V3, STAGE_STATES_V3, WORKFLOW_COMMANDS_V3 } from "./inc
 
 export { INCIDENT_STAGES_V3, STAGE_STATES_V3 } from "./incident-v3-types.mjs";
 const PANELS = new Set(["metrics", "evidence", "activity", "timeline", "component", "graph", "action", "audit"]);
+const PORTAL_TABS = new Set(["now", "activity", "evidence"]);
 const COMMANDS = new Set(WORKFLOW_COMMANDS_V3);
 const PATH_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/;
 
@@ -76,20 +77,31 @@ export function parseIncidentWorkspaceUrlV3(url) {
   const reviewStage = url.searchParams.get("stage");
   const panel = url.searchParams.get("panel");
   const componentId = url.searchParams.get("component");
+  const edgeId = url.searchParams.get("edge");
+  const portalTab = url.searchParams.get("portal_tab");
   return {
     caseId: PATH_ID.test(caseId || "") ? caseId : null,
     reviewStage: INCIDENT_STAGES_V3.includes(reviewStage) ? reviewStage : null,
     panel: PANELS.has(panel) ? panel : null,
-    componentId: PATH_ID.test(componentId || "") ? componentId : null
+    componentId: PATH_ID.test(componentId || "") ? componentId : null,
+    edgeId: PATH_ID.test(edgeId || "") ? edgeId : null,
+    portalOpen: url.searchParams.get("portal") === "open",
+    portalTab: PORTAL_TABS.has(portalTab) ? portalTab : "now"
   };
 }
 
-export function updateIncidentWorkspaceUrlV3(url, { caseId, reviewStage = null, panel = null, componentId = null }) {
+export function updateIncidentWorkspaceUrlV3(url, {
+  caseId, reviewStage = null, panel = null, componentId = null,
+  edgeId = null, portalOpen = false, portalTab = "now"
+}) {
   const next = new URL(url);
   setParam(next, "case_id", PATH_ID.test(caseId || "") ? caseId : null);
   setParam(next, "stage", INCIDENT_STAGES_V3.includes(reviewStage) ? reviewStage : null);
   setParam(next, "panel", PANELS.has(panel) ? panel : null);
   setParam(next, "component", PATH_ID.test(componentId || "") ? componentId : null);
+  setParam(next, "edge", PATH_ID.test(edgeId || "") ? edgeId : null);
+  setParam(next, "portal", portalOpen ? "open" : null);
+  setParam(next, "portal_tab", PORTAL_TABS.has(portalTab) ? portalTab : null);
   return next;
 }
 
@@ -192,10 +204,11 @@ export function renderIncidentWorkbenchV3(projection, ui = {}) {
     ${commandBarMarkup(projection, view, duration, freshness, connection)}
     ${commandErrorMarkup(ui.error)}
     ${stageRailMarkup(view)}
-    <div class="iw3-workspace-body">
+    <div class="iw3-workspace-body${ui.portalOpen ? " is-portal-open" : ""}">
       <main class="iw3-stage-surface" id="incident-stage-surface" tabindex="-1">
         ${stageMarkup(view, projection, ui)}
       </main>
+      ${agentPortalMarkup(view, projection, ui)}
     </div>
     ${footerMarkup(view, available, projection.available_rerun_stages || [], canNext, ui.commandPending)}
     ${panelMarkup(view, projection, ui)}
@@ -224,8 +237,9 @@ function finalAuditMarkup(projection, duration, connection, ui, view) {
   return `<div class="iw3-shell iw3-resolved-shell" data-audit-report="${escapeHtml(report?.report_id || "unavailable")}" data-connection="${escapeHtml(connection)}">
     ${commandBarMarkup(projection, view, { elapsed_seconds: completedElapsed, freshness: "CURRENT" }, "CURRENT", "resolved")}
     ${stageRailMarkup(view)}
-    <div class="iw3-workspace-body">
+    <div class="iw3-workspace-body${ui.portalOpen ? " is-portal-open" : ""}">
       ${primary}
+      ${agentPortalMarkup(view, projection, completedUi)}
     </div>
     ${panelMarkup(view, projection, completedUi)}
   </div>`;
@@ -364,10 +378,17 @@ function triageIsBounded(run) {
 function compactPathMarkup(projection, now) {
   const nodes = new Map((projection.graph?.nodes || []).map((node) => [node.component_id, node]));
   const path = projection.impacted_path || [];
-  return `<div class="iw3-path-visual" aria-label="${escapeHtml(pathLabel(projection))}">${path.map((id) => {
+  const edges = projection.graph?.edges || [];
+  return `<div class="iw3-path-visual" aria-label="${escapeHtml(pathLabel(projection))}">${path.map((id, index) => {
     const node = nodes.get(id) || { component_id: id, display_name: id };
-    return `<span data-tone="${escapeHtml(graphNodeTone(node, projection, now))}">${escapeHtml(node.display_name)}</span>`;
-  }).join('<i aria-hidden="true">→</i>')}</div>`;
+    const nextId = path[index + 1];
+    const edge = nextId ? edges.find((candidate) => (
+      candidate.source_component_id === id && candidate.target_component_id === nextId
+    )) : null;
+    const component = `<button type="button" class="iw3-path-node" data-component-select="${escapeHtml(node.component_id)}" data-tone="${escapeHtml(graphNodeTone(node, projection, now))}" aria-label="Open ${escapeHtml(node.display_name)} in Agent Portal"><span aria-hidden="true"></span><strong>${escapeHtml(node.display_name)}</strong></button>`;
+    const relation = edge ? `<button type="button" class="iw3-path-arrow is-${escapeHtml(graphEdgeTone(edge, nodes, projection, now))}" data-edge-select="${escapeHtml(edge.edge_id)}" data-edge-source="${escapeHtml(id)}" aria-label="Open ${escapeHtml(node.display_name)} to ${escapeHtml(nodes.get(nextId)?.display_name || nextId)} relation in Agent Portal"><span aria-hidden="true">→</span></button>` : "";
+    return `${component}${relation}`;
+  }).join("")}</div>`;
 }
 
 function activityCapsuleMarkup(projection, stage, run) {
@@ -562,7 +583,7 @@ function actionDetailMarkup(projection, run) {
 function graphModalMarkup(view, projection, selectedComponent, now, series) {
   const impacted = new Set(projection.impacted_path || []);
   const relations = (projection.graph?.edges || [])
-    .filter((edge) => impacted.has(edge.source_component_id) || impacted.has(edge.target_component_id));
+    .filter((edge) => impacted.has(edge.source_component_id) && impacted.has(edge.target_component_id));
   const componentIds = new Set([...impacted, ...relations.flatMap((edge) => [edge.source_component_id, edge.target_component_id])]);
   const topology = incidentTopologyView({
     graph: projection.graph,
@@ -587,18 +608,27 @@ function graphModalMarkup(view, projection, selectedComponent, now, series) {
     const middle = (source.x + target.x) / 2;
     const d = `M ${source.x} ${source.y} C ${middle} ${source.y}, ${middle} ${target.y}, ${target.x} ${target.y}`;
     const tone = graphEdgeTone(edge, nodeById, projection, now);
-    return `<path class="iw3-graph-edge is-${tone}" d="${d}"/>${activeEdges.has(edge.edge_id) ? `<path class="iw3-graph-pulse is-${tone}" d="${d}"/>` : ""}`;
+    return `<path class="iw3-graph-edge is-${tone}" data-graph-edge="${escapeHtml(edge.edge_id)}" d="${d}" marker-end="url(#iw3-graph-arrow)"/>${activeEdges.has(edge.edge_id) ? `<path class="iw3-graph-pulse is-${tone}" d="${d}" marker-end="url(#iw3-graph-arrow)"/>` : ""}`;
+  }).join("") : "";
+  const edgePeeks = topology.available ? topology.edges.map((edge) => {
+    const source = positions.get(edge.source_component_id);
+    const target = positions.get(edge.target_component_id);
+    if (!source || !target) return "";
+    const sourceName = nodeById.get(edge.source_component_id)?.display_name || edge.source_component_id;
+    const targetName = nodeById.get(edge.target_component_id)?.display_name || edge.target_component_id;
+    return `<button type="button" class="iw3-graph-edge-peek" data-edge-select="${escapeHtml(edge.edge_id)}" data-edge-source="${escapeHtml(edge.source_component_id)}" data-graph-x="${(source.x + target.x) / 2}" data-graph-y="${source.y}" aria-label="Open ${escapeHtml(sourceName)} to ${escapeHtml(targetName)} relation in Agent Portal">→</button>`;
   }).join("") : "";
   const nodes = topology.available ? topology.nodes.map((node) => {
     const position = positions.get(node.component_id);
     const tone = graphNodeTone(node, projection, now);
-    return `<button type="button" class="iw3-graph-node is-${tone}${node.component_id === selectedComponent ? " is-selected" : ""}" data-graph-node="${escapeHtml(node.component_id)}" data-graph-x="${position.x}" data-graph-y="${position.y}"><strong>${escapeHtml(node.display_name)}</strong><small>${escapeHtml(titleCase(node.runtime_status))}</small></button>`;
+    const metric = componentMetricLabel(series, node.component_id);
+    return `<button type="button" class="iw3-graph-node is-${tone}${node.component_id === selectedComponent ? " is-selected" : ""}" data-graph-node="${escapeHtml(node.component_id)}" data-graph-x="${position.x}" data-graph-y="${position.y}"><span class="iw3-graph-node-state" aria-hidden="true"></span><strong>${escapeHtml(node.display_name)}</strong><small>${escapeHtml(metric || titleCase(node.runtime_status))}</small></button>`;
   }).join("") : '<p class="iw3-graph-unavailable">No evidence-backed impact graph is available.</p>';
   const selected = nodeById.get(selectedComponent) || null;
   const metric = selected ? componentMetricLabel(series, selected.component_id) : null;
   const readOnly = view.reviewingHistory || projection.lifecycle_state === "RESOLVED" || projection.current_attempt?.status === "COMPLETED";
   const canInvestigateNode = !readOnly && view.currentStage === "INVESTIGATE" && view.visibleStage === "INVESTIGATE";
-  return `<section class="iw3-graph-layer" role="dialog" aria-modal="true" aria-labelledby="iw3-graph-title" tabindex="-1" data-workbench-modal data-graph-modal><div class="iw3-graph-dialog${compact ? " is-compact" : ""}"><header><div><span>${stageLabel(view.visibleStage)}</span><h3 id="iw3-graph-title">Dataflow</h3></div><button type="button" data-graph-close aria-label="Close Dataflow">Close</button></header><div class="iw3-graph-legend"><span data-tone="affected">Red: affected</span><span data-tone="healthy">Green: healthy</span><span data-tone="observed">Moving pulse: observed traffic</span><span data-tone="stale">Gray: no recent traffic / stale</span></div><div class="iw3-graph-canvas" role="region" aria-label="Evidence-backed incident topology" data-graph-layout="${compact ? "compact" : "topology"}"><svg viewBox="0 0 100 100" preserveAspectRatio="none">${edges}</svg>${nodes}</div>${selected ? `<aside class="iw3-node-peek"><div><span>Selected component</span><h4>${escapeHtml(selected.display_name)}</h4><p>${escapeHtml(titleCase(selected.runtime_status))} · ${escapeHtml(titleCase(selected.impact_status))} · ${escapeHtml(metric || (graphFreshness(projection, now) === "CURRENT" ? "Fresh" : "Stale"))}</p></div>${readOnly ? `<span class="iw3-read-only-note">${view.reviewingHistory ? "Historical graph · read-only" : "Read-only"}</span>` : canInvestigateNode ? `<button type="button" data-agent-investigate="${escapeHtml(selected.component_id)}">Let Agent investigate this node</button>` : ""}</aside>` : ""}</div></section>`;
+  return `<section class="iw3-graph-layer" role="dialog" aria-modal="true" aria-labelledby="iw3-graph-title" tabindex="-1" data-workbench-modal data-graph-modal><div class="iw3-graph-dialog${compact ? " is-compact" : ""}"><header><div><span>${stageLabel(view.visibleStage)}</span><h3 id="iw3-graph-title">Dataflow</h3></div><button type="button" data-graph-close aria-label="Close Dataflow">Close</button></header><div class="iw3-graph-legend"><span data-tone="affected">Affected</span><span data-tone="healthy">Healthy</span><span data-tone="observed">Live pulse</span><span data-tone="stale">Stale</span></div><div class="iw3-graph-canvas" role="region" aria-label="Evidence-backed incident topology" data-graph-layout="${compact ? "compact" : "topology"}"><svg viewBox="0 0 100 100" preserveAspectRatio="none"><defs><marker id="iw3-graph-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="5" markerHeight="5" orient="auto"><path d="M 0 0 L 8 4 L 0 8 z"/></marker></defs>${edges}</svg>${edgePeeks}${nodes}</div>${selected ? `<aside class="iw3-node-peek"><div><span>Selected component</span><h4>${escapeHtml(selected.display_name)}</h4><p>${escapeHtml(titleCase(selected.runtime_status))} · ${escapeHtml(titleCase(selected.impact_status))} · ${escapeHtml(metric || (graphFreshness(projection, now) === "CURRENT" ? "Fresh" : "Stale"))}</p></div><div class="iw3-node-peek-actions"><button type="button" data-portal-component="${escapeHtml(selected.component_id)}">Open Agent Portal</button>${readOnly ? `<span class="iw3-read-only-note">${view.reviewingHistory ? "Historical graph · read-only" : "Read-only"}</span>` : canInvestigateNode ? `<button type="button" data-agent-investigate="${escapeHtml(selected.component_id)}">Let Agent investigate this node</button>` : ""}</div></aside>` : ""}</div></section>`;
 }
 
 function signalCardsMarkup(collection, expanded = false) {
@@ -627,7 +657,7 @@ function signalCardsMarkup(collection, expanded = false) {
     const compactFooter = `<span data-tone="${escapeHtml(String(series?.freshness || "unknown").toLowerCase())}">${escapeHtml(titleCase(series?.freshness || "unknown"))}</span>`;
     const detailFooter = `<span>${path.segments.reduce((count, segment) => count + segment.length, 0)} samples</span><span data-trend="${escapeHtml(trend.direction)}">${escapeHtml(trend.label)}</span><span>${observedSeconds === null ? "Window pending" : `${escapeHtml(formatDuration(observedSeconds))} window`}</span><span>${escapeHtml(thresholdCopy(series?.thresholds, series?.unit))}</span><span>${escapeHtml(titleCase(series?.freshness || "unknown"))} · ${escapeHtml(shortTime(latest?.timestamp))}</span>`;
     const label = expanded ? series?.label || series?.metric_key || path.seriesId : compactMetricLabel(series);
-    return `<article class="iw3-signal-card" data-series-id="${escapeHtml(path.seriesId)}" data-tone="${tone}"><header><div><span>${escapeHtml(series?.component_id || "Component")}</span><h5>${escapeHtml(label)}</h5></div><strong>${escapeHtml(currentLabel)}</strong></header><svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="${escapeHtml(series?.label || path.seriesId)} samples">${areas}${d.map((value) => `<path d="${value}"/>`).join("")}</svg><footer>${expanded ? detailFooter : compactFooter}</footer></article>`;
+    return `<button type="button" class="iw3-signal-card" data-component-select="${escapeHtml(series?.component_id || "")}" data-series-id="${escapeHtml(path.seriesId)}" data-tone="${tone}" aria-label="Open ${escapeHtml(series?.component_id || "component")} in Agent Portal"><span class="iw3-signal-card-head"><span><small>${escapeHtml(series?.component_id || "Component")}</small><strong class="iw3-signal-card-label">${escapeHtml(label)}</strong></span><strong>${escapeHtml(currentLabel)}</strong></span><svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="${escapeHtml(series?.label || path.seriesId)} samples">${areas}${d.map((value) => `<path d="${value}"/>`).join("")}</svg><span class="iw3-signal-card-foot">${expanded ? detailFooter : compactFooter}</span></button>`;
   }).join("") || '<p class="iw3-empty">Waiting for typed metric samples.</p>'}</div>`;
 }
 
@@ -686,6 +716,60 @@ function componentMarkup(projection, componentId) {
   const node = (projection.graph?.nodes || []).find((candidate) => candidate.component_id === componentId);
   if (!node) return '<p class="iw3-empty">Select a component from the diagnostic graph.</p>';
   return `<article class="iw3-component"><span>${escapeHtml(titleCase(node.impact_status))}</span><h4>${escapeHtml(node.display_name)}</h4><p>${escapeHtml(titleCase(node.runtime_status))}</p></article>`;
+}
+
+function agentPortalMarkup(view, projection, ui) {
+  if (!ui.portalOpen) return "";
+  const graph = projection.graph || { nodes: [], edges: [] };
+  const edge = (graph.edges || []).find((item) => item.edge_id === ui.edgeId) || null;
+  const componentId = ui.componentId || edge?.source_component_id || projection.impacted_path?.[0] || graph.nodes?.[0]?.component_id || null;
+  const node = (graph.nodes || []).find((item) => item.component_id === componentId) || null;
+  const tab = PORTAL_TABS.has(ui.portalTab) ? ui.portalTab : "now";
+  const relatedQueries = (projection.evidence_queries || []).filter((query) => (
+    query.component_ids?.includes(componentId) || (edge && query.edge_ids?.includes(edge.edge_id))
+  ));
+  const relatedActivity = (projection.agent_activity || []).filter((activity) => (
+    activity.selected_component_id === componentId
+    || (edge && activity.selected_edge_id === edge.edge_id)
+  ));
+  const evidenceRefs = uniqueOrdered([
+    ...relatedQueries.flatMap((query) => query.evidence_refs || []),
+    ...relatedActivity.flatMap((activity) => activity.evidence_refs || [])
+  ]);
+  const fresh = graphFreshness(projection, ui.now);
+  const metric = componentId ? componentMetricLabel(ui.series, componentId) : null;
+  const relation = edge ? `${node?.display_name || edge.source_component_id} → ${(graph.nodes || []).find((item) => item.component_id === edge.target_component_id)?.display_name || edge.target_component_id}` : null;
+  const canAsk = !view.reviewingHistory
+    && ["TRIAGE", "INVESTIGATE", "DECIDE"].includes(view.currentStage)
+    && view.visibleStage === view.currentStage
+    && projection.lifecycle_state !== "RESOLVED"
+    && projection.current_attempt?.status !== "COMPLETED";
+  const tabMarkup = tab === "now"
+    ? portalNowMarkup(node, relation, metric, fresh, evidenceRefs.length, graphNodeTone(node || {}, projection, ui.now))
+    : tab === "activity"
+      ? portalActivityMarkup(relatedActivity)
+      : portalEvidenceMarkup(relatedQueries, evidenceRefs);
+  return `<aside class="iw3-agent-portal" aria-label="Agent Portal" data-portal-context="${escapeHtml(componentId || "")}">
+    <header class="iw3-portal-header"><div><span>Agent Portal</span><h3>${escapeHtml(relation || node?.display_name || "Incident context")}</h3></div><button type="button" data-portal-close aria-label="Close Agent Portal">Close</button></header>
+    <div class="iw3-portal-tabs" role="tablist" aria-label="Agent Portal detail">${["now", "activity", "evidence"].map((item) => `<button type="button" role="tab" data-portal-tab="${item}" aria-selected="${tab === item}">${item === "now" ? "Now" : titleCase(item)}</button>`).join("")}</div>
+    <div class="iw3-portal-body">${tabMarkup}</div>
+    <footer class="iw3-portal-footer"><button type="button" data-open-panel="graph">Open Dataflow</button>${canAsk ? `<div class="iw3-portal-composer"><textarea data-agent-question maxlength="1000" placeholder="Ask about this component or relation">${escapeHtml(ui.agentDraft || "")}</textarea><button type="button" class="is-primary" data-agent-question-submit${ui.commandPending ? " disabled" : ""}>${ui.commandPending === "START_AGENT_RUN" ? "Running…" : "Ask Agent"}</button></div>` : `<p>Agent questions unlock in Triage, Investigate, and Decide.</p>`}</footer>
+  </aside>`;
+}
+
+function portalNowMarkup(node, relation, metric, freshness, evidenceCount, tone) {
+  if (!node) return '<p class="iw3-portal-empty">No evidence-backed component is selected.</p>';
+  return `<div class="iw3-portal-now"><section data-tone="${escapeHtml(tone)}"><span>Runtime</span><strong>${escapeHtml(titleCase(node.runtime_status))}</strong><small>${escapeHtml(titleCase(node.impact_status))}</small></section><section><span>Latest signal</span><strong>${escapeHtml(metric || "No numeric sample")}</strong><small>${escapeHtml(titleCase(freshness))}</small></section><section><span>Evidence</span><strong>${escapeHtml(String(evidenceCount))}</strong><small>${evidenceCount === 1 ? "reference" : "references"}</small></section>${relation ? `<section class="is-relation"><span>Relation</span><strong>${escapeHtml(relation)}</strong><small>Evidence-backed path</small></section>` : ""}</div>`;
+}
+
+function portalActivityMarkup(items) {
+  if (!items.length) return '<p class="iw3-portal-empty">No scoped Agent activity has been published.</p>';
+  return `<ol class="iw3-portal-activity">${items.slice(-5).reverse().map((activity) => `<li data-state="${escapeHtml(String(activity.state || "UNKNOWN").toLowerCase())}"><span aria-hidden="true"></span><div><strong>${escapeHtml(activity.label || titleCase(activity.role))}</strong><p>${escapeHtml(activity.summary)}</p><small>${escapeHtml(stateLabel(activity.state))} · ${escapeHtml(shortTime(activity.occurred_at))}</small></div></li>`).join("")}</ol>`;
+}
+
+function portalEvidenceMarkup(queries, refs) {
+  if (!queries.length && !refs.length) return '<p class="iw3-portal-empty">No scoped evidence reference has been published yet.</p>';
+  return `<div class="iw3-portal-evidence">${queries.slice(-3).map((query) => `<article><strong>${escapeHtml(query.query_name)}</strong><p>${escapeHtml(query.result_summary)}</p><small>${(query.evidence_refs || []).length} evidence · ${escapeHtml(stateLabel(query.state))}</small></article>`).join("")}<ul>${refs.map((reference) => `<li><code>${escapeHtml(reference)}</code></li>`).join("")}</ul></div>`;
 }
 
 function timelineMarkup(projection, view) {

@@ -617,6 +617,10 @@ class GuidedStageRuntimeTests(unittest.IsolatedAsyncioTestCase):
         manual_request = bridge.agent_calls[-1]
         self.assertEqual("payment", manual_request.selected_component)
         self.assertEqual(
+            "Investigate the clicked Payment node.",
+            manual_request.question,
+        )
+        self.assertEqual(
             stable_id(
                 "agent-bridge",
                 "case-a",

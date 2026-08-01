@@ -295,7 +295,7 @@ test("Verify publishes the backend-owned deadline and real signal cards show tre
   assert.match(html, /Observing post-action telemetry · 0m 15s left/);
   assert.match(html, /data-series-id="checkout-errors" data-tone="healthy"/);
   assert.match(html, /data-series-id="checkout-traffic" data-tone="observed"/);
-  assert.match(html, /<h5>Errors<\/h5>|<h5>Traffic<\/h5>/);
+  assert.match(html, /iw3-signal-card-label">Errors<\/strong>|iw3-signal-card-label">Traffic<\/strong>/);
   assert.doesNotMatch(html, /data-trend="falling">Falling 50%|0m 20s window/);
   const monitor = renderIncidentWorkbenchV3(value, {
     connection: "connected", panel: "metrics", series, now: Date.parse("2026-07-31T00:01:45Z")
@@ -327,7 +327,7 @@ test("a completed incident keeps a compact visual summary and opens the immutabl
   assert.doesNotMatch(html, /Agent room/);
   assert.match(html, /iw3-stage-rail/);
   assert.doesNotMatch(html, /Fresh Checkout to Payment trace observed|Payment dependency recovered/);
-  assert.match(html, /<h5>Errors<\/h5>/);
+  assert.match(html, /iw3-signal-card-label">Errors<\/strong>/);
   assert.match(html, />0 ratio</);
   assert.doesNotMatch(html, /Connector Stale/);
   assert.doesNotMatch(html, /Attempt lineage|Immutable stage outputs|operator-local|receipt-1|evidence-verify-fresh/);
@@ -454,18 +454,24 @@ test("Next, retry, rerun, and escalation commands bind canonical attempt and rev
   });
 });
 
-test("workspace URL restores only canonical case, completed review, panel, and component state", () => {
-  assert.deepEqual(parseIncidentWorkspaceUrlV3(new URL("https://flowpulse.test/?case_id=case-checkout&stage=DETECT&panel=graph&component=checkout")), {
+test("workspace URL restores only canonical case, completed review, panel, and Portal state", () => {
+  assert.deepEqual(parseIncidentWorkspaceUrlV3(new URL("https://flowpulse.test/?case_id=case-checkout&stage=DETECT&panel=graph&component=checkout&edge=checkout-payment&portal=open&portal_tab=evidence")), {
     caseId: "case-checkout",
     reviewStage: "DETECT",
     panel: "graph",
-    componentId: "checkout"
+    componentId: "checkout",
+    edgeId: "checkout-payment",
+    portalOpen: true,
+    portalTab: "evidence"
   });
   assert.deepEqual(parseIncidentWorkspaceUrlV3(new URL("https://flowpulse.test/?case_id=../../bad&stage=FUTURE&panel=debug&component=%2Fetc")), {
     caseId: null,
     reviewStage: null,
     panel: null,
-    componentId: null
+    componentId: null,
+    edgeId: null,
+    portalOpen: false,
+    portalTab: "now"
   });
 });
 
@@ -519,7 +525,7 @@ test("typed metric paths preserve gaps and never connect points across series", 
 });
 
 test("Investigate graph is an accessible modal without turning node review into an agent command", () => {
-  const value = projection({ current_stage: "INVESTIGATE", impacted_path: ["checkout"] });
+  const value = projection({ current_stage: "INVESTIGATE" });
   value.graph.nodes.push({ component_id: "catalog", display_name: "Catalog", runtime_status: "healthy", impact_status: "unaffected" });
   const html = renderIncidentWorkbenchV3(value, { connection: "connected", panel: "graph", componentId: "checkout", now: Date.parse("2026-07-31T00:01:05Z") });
   assert.match(html, /role="dialog"/);
@@ -534,10 +540,52 @@ test("Investigate graph is an accessible modal without turning node review into 
   assert.doesNotMatch(html, /data-graph-node="catalog"/);
   assert.doesNotMatch(html, /style="--x:/);
   assert.match(html, /class="iw3-graph-edge/);
+  assert.match(html, /data-graph-edge="checkout-payment"/);
+  assert.match(html, /marker-end="url\(#iw3-graph-arrow\)"/);
   assert.match(html, /class="iw3-graph-pulse/);
   assert.doesNotMatch(html, /No evidence-backed impact graph is available/);
   assert.match(html, /data-agent-investigate="checkout"/);
   assert.doesNotMatch(html.match(/data-graph-node="checkout"[^>]*>/)?.[0] || "", /data-agent-investigate/);
+});
+
+test("Dataflow never turns an adjacent but unimpacted component into the incident path", () => {
+  const value = projection({ current_stage: "INVESTIGATE", impacted_path: ["checkout"] });
+  const html = renderIncidentWorkbenchV3(value, {
+    connection: "connected", panel: "graph", componentId: "checkout", now: Date.parse("2026-07-31T00:01:05Z")
+  });
+  assert.doesNotMatch(html, /data-graph-node="payment"|data-graph-edge="checkout-payment"/);
+});
+
+test("Agent Portal stays hidden until a real component is selected and only exposes scoped evidence", () => {
+  const value = projection();
+  value.agent_activity = [{
+    activity_id: "checkout-agent", agent_run_id: "agent-checkout", stage_run_id: "stage-run-2", stage: "TRIAGE",
+    role: "OBSERVER", selected_component_id: "checkout", state: "SUCCEEDED", label: "Checkout review",
+    summary: "Checkout error and dependency failure correlate.", occurred_at: "2026-07-31T00:00:30Z", evidence_refs: ["evidence-checkout"]
+  }, {
+    activity_id: "payment-agent", agent_run_id: "agent-payment", stage_run_id: "stage-run-2", stage: "TRIAGE",
+    role: "OBSERVER", selected_component_id: "payment", state: "SUCCEEDED", label: "Payment review",
+    summary: "PAYMENT ONLY", occurred_at: "2026-07-31T00:00:31Z", evidence_refs: ["evidence-payment"]
+  }];
+  value.evidence_queries = [{
+    query_id: "query-checkout", stage_run_id: "stage-run-2", component_ids: ["checkout"], edge_ids: ["checkout-payment"],
+    query_name: "incident.current-signals.v1", state: "SUCCEEDED", result_summary: "Checkout has fresh error evidence.", evidence_refs: ["evidence-checkout"]
+  }];
+
+  const closed = renderIncidentWorkbenchV3(value, { connection: "connected" });
+  assert.doesNotMatch(closed, /class="iw3-agent-portal"|Checkout error and dependency failure correlate/);
+  assert.match(closed, /data-component-select="checkout"/);
+  assert.match(closed, /data-edge-select="checkout-payment"/);
+
+  const portal = renderIncidentWorkbenchV3(value, {
+    connection: "connected", portalOpen: true, componentId: "checkout", edgeId: "checkout-payment", portalTab: "evidence"
+  });
+  assert.match(portal, /Agent Portal/);
+  assert.match(portal, /Checkout → Payment/);
+  assert.match(portal, /Checkout has fresh error evidence/);
+  assert.match(portal, /evidence-checkout/);
+  assert.doesNotMatch(portal, /PAYMENT ONLY|evidence-payment/);
+  assert.match(portal, /data-agent-question/);
 });
 
 test("a historical Investigate graph remains inspectable but cannot start a current-stage Agent", () => {

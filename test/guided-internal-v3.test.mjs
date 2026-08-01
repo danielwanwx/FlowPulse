@@ -42,9 +42,18 @@ test("signed guided agent bridge is exact-schema, durable-idempotent, and reject
   });
   assert.equal(inventedFact.status, 422);
 
+  const missingQuestion = { ...request, request_id: "agent-request-missing-question" };
+  delete missingQuestion.question;
+  const missingQuestionResult = await signedPost(
+    fixture.baseUrl,
+    "/api/internal/control-plane/v3/agent-runs",
+    missingQuestion,
+  );
+  assert.equal(missingQuestionResult.status, 422);
+
   const conflict = await signedPost(fixture.baseUrl, "/api/internal/control-plane/v3/agent-runs", {
     ...request,
-    incident_summary: "Changed replay payload"
+    question: "A different operator question"
   });
   assert.equal(conflict.status, 409);
 });
@@ -265,6 +274,7 @@ function agentRequest() {
     stage: "INVESTIGATE",
     role: "investigator",
     selected_component: "checkout",
+    question: "Why is Checkout failing?",
     incident_title: "Checkout client error",
     incident_summary: "A current admitted trace reports a Checkout error.",
     freshness: {
