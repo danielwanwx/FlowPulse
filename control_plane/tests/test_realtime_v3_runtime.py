@@ -440,6 +440,42 @@ class TypedSeriesContractTests(unittest.TestCase):
             for point in series.points
         ))
 
+    def test_derived_trace_series_deduplicates_same_timestamp(self):
+        reg = registration()
+        bound = binding_template().materialize(
+            reg, projection(), valid_from=NOW - timedelta(minutes=1),
+        )
+        normalizer = OtelSpoolNormalizer()
+        start_ns = int(NOW.timestamp() * 1_000_000_000)
+        source = normalizer.normalize_component_error(
+            registration=reg,
+            binding=bound,
+            span=span(
+                "trace-same-time", "span-first", "checkout-parent",
+                start_ns, start_ns + 900_000_000, error=True,
+            ),
+            service="checkout",
+            received_at=NOW + timedelta(seconds=1),
+            raw_artifact_ref="tenant-a/sha256/" + "a" * 64,
+            raw_content_hash="a" * 64,
+            acl_subjects=["owner-a"],
+        )
+        duplicate = source.copy(update={
+            "source_event_id": source.source_event_id + "-duplicate",
+            "delivery_id": source.delivery_id + "-duplicate",
+        })
+
+        collection = build_metric_series_collection(
+            case_id="case-a",
+            sources=[source, duplicate],
+            signal_revision=2,
+            generated_at=NOW + timedelta(seconds=2),
+        )
+
+        by_key = {item.metric_key: item for item in collection.series}
+        self.assertEqual(1, len(by_key["trace.error_indicator"].points))
+        self.assertEqual(1, len(by_key["dependency.availability"].points))
+
 
 class OtelSpoolConnectorTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):

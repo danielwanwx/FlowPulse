@@ -133,13 +133,14 @@ def build_metric_series_collection(
     # a transition from failed client spans to healthy parent-child spans still
     # produces one continuous recovery series instead of duplicate cards.
     for (component_id, connector_id), records in sorted(otel_grouped.items()):
-        unique_by_identity = {
-            item.source_event_id: item for item in records
-        }
-        ordered = sorted(
-            unique_by_identity.values(),
+        ordered_by_identity = sorted(
+            {item.source_event_id: item for item in records}.values(),
             key=lambda item: (item.observed_at, item.source_event_id),
-        )[-359:]
+        )
+        unique_by_time = {}
+        for item in ordered_by_identity:
+            unique_by_time[item.observed_at] = item
+        ordered = list(unique_by_time.values())[-359:]
         deadline = expired_connectors.get(connector_id)
         error_points = [
             MetricPointV3(
