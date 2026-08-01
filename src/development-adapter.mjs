@@ -78,7 +78,7 @@ export async function executeApprovedRollback({ commandId }) {
   if (!flags.flags?.[change.flag]) throw new Error(`Upstream flag ${change.flag} is unavailable`);
   flags.flags[change.flag].defaultVariant = change.known_good;
   await writeFlags(flags);
-  const result = await execute("docker", composeArgs("up", "-d", "--no-deps", "--force-recreate", "--wait", "--wait-timeout", String(change.timeout_seconds), "checkout"), {
+  const result = await execute("docker", composeArgs("up", "-d", "--no-deps", "--force-recreate", "--wait", "checkout"), {
     cwd: checkout, env: composeEnv(), timeout: change.timeout_seconds * 1_000, maxBuffer: 1_000_000
   });
   const completedAt = new Date().toISOString();
@@ -127,7 +127,7 @@ export async function executeSafeCheckoutRecreate({ commandId }) {
   if (flag.flag !== change.flag || flag.variant !== change.known_good) {
     throw new Error("Safe Checkout compensation requires paymentUnreachable to remain off");
   }
-  const result = await execute("docker", composeArgs("up", "-d", "--no-deps", "--force-recreate", "--wait", "--wait-timeout", String(change.timeout_seconds), "checkout"), {
+  const result = await execute("docker", composeArgs("up", "-d", "--no-deps", "--force-recreate", "--wait", "checkout"), {
     cwd: checkout, env: composeEnv(), timeout: change.timeout_seconds * 1_000, maxBuffer: 1_000_000
   });
   return {
