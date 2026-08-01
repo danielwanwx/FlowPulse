@@ -49,6 +49,7 @@ const v3Live = new LiveIncidentAdapterV3({
   topologyElement: null,
   legacyTopology: null,
   legacySurfaces: [],
+  linkedTopology: els["canvas-layers"],
   onOpen: openV3Incident
 });
 

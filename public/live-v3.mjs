@@ -64,6 +64,26 @@ export function liveTopologyProjectionSetV3(projections, now = Date.now()) {
     .sort((left, right) => left.case_id.localeCompare(right.case_id));
 }
 
+export function liveLinkedImpactV3(projections) {
+  const values = projections instanceof Map ? [...projections.values()] : [...(projections || [])];
+  const componentIds = new Set();
+  const edgeIds = new Set();
+  for (const projection of values) {
+    if (!projection || projection.lifecycle_state === "RESOLVED") continue;
+    for (const componentId of projection.impacted_path || []) componentIds.add(componentId);
+    for (const node of projection.graph?.nodes || []) {
+      if (node.impact_status === "impacted") componentIds.add(node.component_id);
+    }
+    for (const edge of projection.graph?.edges || []) {
+      if (["critical", "degraded", "impacted"].includes(edge.status)
+        || componentIds.has(edge.source_component_id) && componentIds.has(edge.target_component_id)) {
+        edgeIds.add(edge.edge_id);
+      }
+    }
+  }
+  return { componentIds, edgeIds };
+}
+
 export function renderLiveTopologyV3(projections, connection = "connecting", now = Date.now()) {
   const graphs = liveTopologyProjectionSetV3(projections, now);
   return `<div class="lv3-topology-shell" data-connection="${escapeHtml(connection)}"><header class="lv3-topology-header"><div><span>V3 live topology</span><h2>Canonical incident graph${graphs.length === 1 ? "" : "s"}</h2><p>Nodes, relations, status and pulses come only from current V3 incident projections.</p></div><div><strong>${graphs.length}</strong><small role="status">${escapeHtml(connectionCopy(connection))}</small></div></header><div class="lv3-topology-grid">${graphs.map(graphMarkup).join("") || `<section class="lv3-topology-empty" role="status"><strong>${connection === "connected" ? "No active V3 incident graph" : "Loading V3 incident topology"}</strong><p>${connection === "connected" ? "The active snapshot contains no incident projection to display." : "The legacy topology is suppressed while the canonical V3 source connects."}</p></section>`}</div></div>`;
@@ -82,6 +102,7 @@ export class LiveIncidentAdapterV3 {
     topologyElement,
     legacyTopology,
     legacySurfaces = [],
+    linkedTopology = null,
     legacyRoot = null,
     client = new ControlPlaneV3Client(),
     window: windowImpl = globalThis,
@@ -93,6 +114,7 @@ export class LiveIncidentAdapterV3 {
     this.legacyTopology = legacyTopology;
     this.legacySurfaces = [...new Set([legacyTopology, ...legacySurfaces].filter(Boolean))];
     this.legacyRoot = legacyRoot;
+    this.linkedTopology = linkedTopology;
     this.client = client;
     this.window = windowImpl;
     this.onOpen = onOpen;
@@ -167,6 +189,7 @@ export class LiveIncidentAdapterV3 {
       this.legacyRootMarker = null;
     }
     this.restoreLegacySurfaces();
+    this.clearLinkedTopology();
   }
 
   async hydrate() {
@@ -323,9 +346,33 @@ export class LiveIncidentAdapterV3 {
   }
 
   renderTopology() {
-    if (!this.active || !this.topologyElement) return;
+    if (!this.active) return;
+    this.renderLinkedTopology();
+    if (!this.topologyElement) return;
     this.topologyElement.innerHTML = renderLiveTopologyV3(this.projections, this.connection);
     this.schedulePulseExpiry();
+  }
+
+  renderLinkedTopology() {
+    if (!this.linkedTopology) return;
+    const impact = liveLinkedImpactV3(this.projections);
+    for (const node of this.linkedTopology.querySelectorAll("[data-node-id]")) {
+      const active = impact.componentIds.has(node.dataset.nodeId);
+      node.classList.toggle("is-v3-impacted", active);
+      if (active) node.dataset.v3Impact = "true";
+      else delete node.dataset.v3Impact;
+    }
+    for (const edge of this.linkedTopology.querySelectorAll("[data-edge-id]")) {
+      edge.classList.toggle("is-v3-impacted", impact.edgeIds.has(edge.dataset.edgeId));
+    }
+  }
+
+  clearLinkedTopology() {
+    if (!this.linkedTopology) return;
+    for (const element of this.linkedTopology.querySelectorAll(".is-v3-impacted")) {
+      element.classList.remove("is-v3-impacted");
+      delete element.dataset.v3Impact;
+    }
   }
 
   schedulePulseExpiry() {

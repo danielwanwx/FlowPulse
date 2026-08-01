@@ -395,6 +395,16 @@ def _validated_projection(projection: IncidentProjectionV3, **updates) -> Incide
     return IncidentProjectionV3.parse_obj({**projection.dict(), **updates})
 
 
+def _impacted_components(source: IncidentProjectionV2) -> List[str]:
+    return list(dict.fromkeys([
+        *source.impacted_path,
+        *[
+            node.component_id for node in source.graph.nodes
+            if node.impact_status == "impacted"
+        ],
+    ]))
+
+
 def bootstrap_projection_v3(
     source: IncidentProjectionV2,
     *,
@@ -513,7 +523,7 @@ def bootstrap_projection_v3(
         graph=IncidentGraphV3(
             **source.graph.dict(), active_pulses=source.active_graph_pulses,
         ),
-        impacted_path=source.impacted_path,
+        impacted_path=_impacted_components(source),
         connectors=[ConnectorStatusV3(
             connector_id=item.connector_id,
             provider=item.provider.value,
@@ -738,7 +748,7 @@ class GuidedWorkflowCoordinatorV3:
             "graph": IncidentGraphV3(
                 **source.graph.dict(), active_pulses=source.active_graph_pulses,
             ),
-            "impacted_path": source.impacted_path,
+            "impacted_path": _impacted_components(source),
             "connectors": [ConnectorStatusV3(
                 connector_id=item.connector_id,
                 provider=item.provider.value,

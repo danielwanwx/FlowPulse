@@ -420,6 +420,14 @@ class GuidedWorkflowV3Tests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(4, len(detect.output.facts))
         self.assertNotIn("paymentUnreachable", detect.output.summary)
 
+    async def test_bootstrap_links_every_evidence_impacted_graph_component(self):
+        source = realtime_projection().copy(update={"impacted_path": ["checkout"]})
+        repository = InMemoryWorkspaceRepository()
+        projection = await GuidedWorkflowCoordinatorV3(repository).bootstrap(
+            source, actor_subject_id="subject-a", now=NOW,
+        )
+        self.assertEqual(["checkout", "payment"], projection.impacted_path)
+
     async def test_detect_does_not_complete_from_metrics_and_arbitrary_log(self):
         source = realtime_projection()
         arbitrary_log = source.realtime_signals[0].copy(update={

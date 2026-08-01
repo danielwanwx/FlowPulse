@@ -2853,6 +2853,8 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .is-live-source .source-node.is-root,
 .is-live-source .source-node.is-rejected,
 .is-live-source .source-node.is-fault { --live-status: var(--red); }
+.is-live-source .source-node.is-v3-impacted { --live-status: var(--red); border-color: color-mix(in srgb, var(--red) 72%, var(--line)); box-shadow: 0 0 0 3px color-mix(in srgb, var(--red) 13%, transparent), 0 10px 28px color-mix(in srgb, var(--red) 20%, transparent); }
+.is-live-source .edge-group.is-v3-impacted .edge-line { stroke: var(--red); stroke-width: 2; opacity: .9; }
 .is-live-source .source-node.is-idle,
 .is-live-source .source-node.is-quiet,
 .is-live-source .source-node.is-dormant,

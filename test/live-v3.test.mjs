@@ -4,6 +4,7 @@ import {
   applyLiveEventV3,
   LiveIncidentAdapterV3,
   liveIncidentMatchesProjectionV3,
+  liveLinkedImpactV3,
   liveTopologyProjectionSetV3,
   renderLiveIncidentsV3,
   renderLiveTopologyV3
@@ -35,6 +36,14 @@ test("dedicated V3 topology renders projection-only nodes plus canonical edges a
   assert.match(html, /data-v3-live-edge="payment-v3-only"/);
   assert.match(html.match(/<path[^>]*data-v3-live-edge="payment-v3-only"[^>]*>/)?.[0] || "", /is-active/);
   assert.doesNotMatch(html, /legacy-only/);
+});
+
+test("the established Live canvas receives V3 impact links for the same components and edges", () => {
+  const projection = v3Projection();
+  projection.impacted_path = ["checkout"];
+  const impact = liveLinkedImpactV3([projection]);
+  assert.deepEqual([...impact.componentIds].sort(), ["checkout", "payment"]);
+  assert.deepEqual([...impact.edgeIds], ["checkout-payment"]);
 });
 
 test("Live activation hides legacy topology, renders a V3-only node, removes completed graph, and restores cleanup", async () => {
@@ -109,8 +118,10 @@ test("V3 Live integration overlays incidents without replacing the established r
   assert.match(app, /topologyElement: null/);
   assert.match(app, /legacyTopology: null/);
   assert.match(app, /legacySurfaces: \[\]/);
+  assert.match(app, /linkedTopology: els\["canvas-layers"\]/);
   assert.doesNotMatch(app, /legacyRoot: root/);
   assert.doesNotMatch(styles, /data-v3-live-active/);
+  assert.match(styles, /\.is-live-source \.source-node\.is-v3-impacted/);
 });
 
 test("an ordered Live SSE update refreshes only the affected V3 projection", async () => {
