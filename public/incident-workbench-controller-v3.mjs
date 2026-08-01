@@ -164,10 +164,6 @@ export class IncidentWorkbenchControllerV3 {
       if (!this.series || series.signal_revision >= this.series.signal_revision) this.series = series;
       const view = workbenchViewV3(projection, this.ui);
       this.ui.reviewStage = view.reviewingHistory ? view.visibleStage : null;
-      if (this.ui.panel === "graph" && view.visibleStage !== "INVESTIGATE") {
-        this.ui.panel = null;
-        this.ui.componentId = null;
-      }
       this.eventState = { lastSequence: projection.sequence, projectionRevision: projection.projection_revision };
       this.connection = "connected";
       this.error = null;

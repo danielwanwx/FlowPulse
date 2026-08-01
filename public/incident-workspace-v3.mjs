@@ -2,7 +2,7 @@ import { incidentTopologyView } from "./control-plane-topology-layout.mjs";
 import { INCIDENT_STAGES_V3, STAGE_STATES_V3, WORKFLOW_COMMANDS_V3 } from "./incident-v3-types.mjs";
 
 export { INCIDENT_STAGES_V3, STAGE_STATES_V3 } from "./incident-v3-types.mjs";
-const PANELS = new Set(["metrics", "evidence", "activity", "timeline", "component", "graph", "audit"]);
+const PANELS = new Set(["metrics", "evidence", "activity", "timeline", "component", "graph", "action", "audit"]);
 const COMMANDS = new Set(WORKFLOW_COMMANDS_V3);
 const PATH_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/;
 
@@ -189,25 +189,13 @@ export function renderIncidentWorkbenchV3(projection, ui = {}) {
   const canNext = !view.reviewingHistory && currentRun?.status === "SUCCEEDED" && available.has(view.currentStage === "VERIFY" ? "COMPLETE_INCIDENT" : "NEXT");
   const freshness = duration.freshness || projection.freshness?.state || "UNKNOWN";
   return `<div class="iw3-shell" data-active-stage="${escapeHtml(view.visibleStage)}" data-current-stage="${escapeHtml(view.currentStage)}" data-connection="${escapeHtml(connection)}" data-freshness="${escapeHtml(String(freshness).toLowerCase())}">
-    <header class="iw3-command-bar">
-      <div class="iw3-command-title"><span class="iw3-severity">${escapeHtml(projection.severity)}</span><div><h2>${escapeHtml(projection.title)}</h2><p>${escapeHtml(projection.summary)}</p></div></div>
-      <dl class="iw3-command-facts">
-        <div><dt>State</dt><dd>${escapeHtml(titleCase(projection.lifecycle_state))}</dd></div>
-        <div><dt>Duration</dt><dd data-incident-duration>${escapeHtml(formatDuration(duration.elapsed_seconds))}</dd></div>
-        <div><dt>Freshness</dt><dd class="is-${escapeHtml(String(freshness).toLowerCase())}">${escapeHtml(titleCase(freshness))}</dd></div>
-        <div><dt>Owner</dt><dd>${escapeHtml(projection.owner_subject_id)}</dd></div>
-        <div><dt>Attempt</dt><dd>#${escapeHtml(String(projection.current_attempt.attempt_number || 1))} · r${escapeHtml(String(projection.workflow_revision))}</dd></div>
-      </dl>
-      <div class="iw3-stream-state" role="status" data-state="${escapeHtml(connection)}"><span aria-hidden="true"></span>${escapeHtml(connectionCopy(connection))}</div>
-    </header>
+    ${commandBarMarkup(projection, view, duration, freshness, connection)}
     ${commandErrorMarkup(ui.error)}
     ${stageRailMarkup(view)}
     <div class="iw3-workspace-body">
       <main class="iw3-stage-surface" id="incident-stage-surface" tabindex="-1">
-        ${view.reviewingHistory ? '<div class="iw3-review-banner"><strong>Reviewing completed stage</strong><span>This history is read-only. Rerun explicitly to change the workflow.</span></div>' : ""}
         ${stageMarkup(view, projection, ui)}
       </main>
-      ${agentRoomMarkup(projection, view)}
     </div>
     ${footerMarkup(view, available, projection.available_rerun_stages || [], canNext, ui.commandPending)}
     ${panelMarkup(view, projection, ui)}
@@ -217,7 +205,6 @@ export function renderIncidentWorkbenchV3(projection, ui = {}) {
 function finalAuditMarkup(projection, duration, connection, ui, view) {
   const report = projection.final_report || null;
   const verify = projection.current_attempt.stage_runs.find((run) => run.stage === "VERIFY") || null;
-  const action = [...(projection.actions || [])].reverse().find((item) => item.receipt) || null;
   const completedAt = projection.current_attempt.completed_at || report?.generated_at || verify?.completed_at;
   const completedSeries = metricSeriesAt(ui.series, completedAt);
   const completedUi = { ...ui, series: completedSeries };
@@ -227,31 +214,18 @@ function finalAuditMarkup(projection, duration, connection, ui, view) {
     ? Math.max(0, Math.floor((completedAtMs - startedAtMs) / 1000))
     : duration.elapsed_seconds;
   const primary = view.reviewingHistory
-    ? `<main class="iw3-stage-surface" id="incident-stage-surface" tabindex="-1"><div class="iw3-review-banner"><strong>Reviewing completed stage</strong><span>This resolved incident is read-only.</span></div>${stageMarkup(view, projection, completedUi)}</main>`
+    ? `<main class="iw3-stage-surface" id="incident-stage-surface" tabindex="-1">${stageMarkup(view, projection, completedUi)}</main>`
     : `<main class="iw3-resolution-surface" id="incident-stage-surface" tabindex="-1">
-        <header class="iw3-resolution-hero"><div><span>Incident resolved</span><h3>Recovery verified</h3><p>${escapeHtml(verify?.output?.summary || verify?.summary || "Fresh post-action evidence satisfied the recovery conditions.")}</p></div><button type="button" data-open-panel="audit">Open audit details</button></header>
+        <header class="iw3-resolution-hero"><div><span>Resolved</span><h3>${escapeHtml(pathLabel(projection))}</h3><div class="iw3-status-chips"><span data-tone="healthy">Recovered</span><span>${escapeHtml(formatDuration(completedElapsed))}</span></div></div><div class="iw3-tool-row"><button type="button" data-open-panel="graph">Dataflow</button><button type="button" data-open-panel="metrics">Monitor</button><button type="button" data-open-panel="audit">Incident audit</button></div></header>
         <div class="iw3-resolution-grid">
-          <section class="iw3-panel iw3-resolution-signals"><div class="iw3-panel-heading"><h4>Recovered signals</h4><button type="button" data-open-panel="metrics">Open metrics</button></div>${signalCardsMarkup(completedSeries)}</section>
-          <section class="iw3-panel"><h4>Verification evidence</h4>${listMarkup((verify?.output?.facts || []).slice(0, 4), "No verification facts were published.")}</section>
-          <section class="iw3-panel"><h4>Executed response</h4><strong class="iw3-resolution-action">${escapeHtml(action?.title || "Restore Payment reachability")}</strong><p>${escapeHtml(action?.receipt?.output_summary || "The bounded response completed before verification.")}</p><small>${escapeHtml(action?.component_id || "checkout")} · ${escapeHtml(titleCase(action?.execution_state || "succeeded"))}</small></section>
+          <section class="iw3-panel iw3-resolution-signals">${signalCardsMarkup(completedSeries)}</section>
         </div>
       </main>`;
   return `<div class="iw3-shell iw3-resolved-shell" data-audit-report="${escapeHtml(report?.report_id || "unavailable")}" data-connection="${escapeHtml(connection)}">
-    <header class="iw3-command-bar iw3-resolved-command">
-      <div class="iw3-command-title"><span class="iw3-severity is-resolved">RESOLVED</span><div><h2>${escapeHtml(projection.title)}</h2><p>Checkout to Payment recovery was verified with fresh post-action telemetry.</p></div></div>
-      <dl class="iw3-command-facts">
-        <div><dt>State</dt><dd class="is-current">Resolved</dd></div>
-        <div><dt>Duration</dt><dd>${escapeHtml(formatDuration(completedElapsed))}</dd></div>
-        <div><dt>Completed</dt><dd>${escapeHtml(shortTime(completedAt))}</dd></div>
-        <div><dt>Owner</dt><dd>${escapeHtml(projection.owner_subject_id)}</dd></div>
-        <div><dt>Attempt</dt><dd>#${escapeHtml(String(projection.current_attempt.attempt_number || 1))}</dd></div>
-      </dl>
-      <div class="iw3-stream-state" role="status" data-state="resolved"><span aria-hidden="true"></span>Audit sealed</div>
-    </header>
+    ${commandBarMarkup(projection, view, { elapsed_seconds: completedElapsed, freshness: "CURRENT" }, "CURRENT", "resolved")}
     ${stageRailMarkup(view)}
     <div class="iw3-workspace-body">
       ${primary}
-      ${agentRoomMarkup(projection, view, { completed: !view.reviewingHistory })}
     </div>
     ${panelMarkup(view, projection, completedUi)}
   </div>`;
@@ -329,14 +303,122 @@ function uniqueOrdered(values) {
   return [...new Set(values)];
 }
 
+function commandBarMarkup(projection, view, duration, freshness, connection) {
+  const graphAvailable = (projection.graph?.nodes || []).length > 0;
+  return `<header class="iw3-command-bar">
+    <div class="iw3-command-context"><span class="iw3-severity${projection.lifecycle_state === "RESOLVED" ? " is-resolved" : ""}">${escapeHtml(projection.lifecycle_state === "RESOLVED" ? "RESOLVED" : projection.severity)}</span><h2>${escapeHtml(pathLabel(projection))}</h2></div>
+    <div class="iw3-command-chips" role="status" data-state="${escapeHtml(connection)}"><span data-incident-duration>${escapeHtml(formatDuration(duration.elapsed_seconds))}</span><span class="is-${escapeHtml(String(freshness).toLowerCase())}">${escapeHtml(titleCase(freshness))}</span><span>${escapeHtml(stageLabel(view.currentStage))}</span></div>
+    <div class="iw3-tool-row"><button type="button" data-open-panel="graph"${graphAvailable ? "" : " disabled"}>Dataflow</button><button type="button" data-open-panel="metrics">Monitor</button><button type="button" data-open-panel="activity">Activity</button></div>
+  </header>`;
+}
+
+function pathLabel(projection) {
+  const nodes = new Map((projection.graph?.nodes || []).map((node) => [node.component_id, node]));
+  const labels = (projection.impacted_path || []).map((id) => nodes.get(id)?.display_name || id).filter(Boolean);
+  return labels.join(" → ") || projection.title || "Incident";
+}
+
 function stageRailMarkup(view) {
-  return `<nav class="iw3-stage-rail" aria-label="Incident workflow">${view.rail.map((item, index) => `<button type="button" class="iw3-stage-step${item.current ? " is-current" : ""}${item.visible ? " is-visible" : ""}" data-stage="${item.stage}" data-stage-status="${item.status}"${item.current || item.reviewable ? "" : " disabled"}${item.current ? ' aria-current="step"' : ""}><span>${index + 1}</span><strong>${stageLabel(item.stage)}</strong><small>${stateLabel(item.status)}</small></button>`).join("")}</nav>`;
+  return `<nav class="iw3-stage-rail" aria-label="Incident workflow">${view.rail.map((item, index) => `<button type="button" class="iw3-stage-step${item.current ? " is-current" : ""}${item.visible ? " is-visible" : ""}" data-stage="${item.stage}" data-stage-status="${item.status}" aria-label="${escapeHtml(`${stageLabel(item.stage)} · ${stateLabel(item.status)}`)}"${item.current || item.reviewable ? "" : " disabled"}${item.current ? ' aria-current="step"' : ""}><span>${index + 1}</span><strong>${stageLabel(item.stage)}</strong></button>`).join("")}</nav>`;
+}
+
+function stageLeadMarkup(stage, projection, run, series, now) {
+  const path = pathLabel(projection);
+  if (stage === "DETECT") return '<p class="iw3-stage-lead">Checkout → Payment error elevated</p>';
+  if (stage === "TRIAGE") {
+    const bounded = triageIsBounded(run);
+    if (!bounded) return '<p class="iw3-stage-lead">Scope under review</p>';
+    const facts = (run.output?.facts || []).length;
+    const unknowns = (run.output?.unknowns || []).length;
+    return `<p class="iw3-stage-lead">Affected path: ${escapeHtml(path)} · ${facts} facts · ${unknowns} open question${unknowns === 1 ? "" : "s"}</p>`;
+  }
+  if (stage === "INVESTIGATE") {
+    const leading = leadingHypothesis((projection.hypotheses || []).filter((item) => item.stage_run_id === run.stage_run_id));
+    return `<p class="iw3-stage-lead">${leading ? `Leading evidence path · ${Math.round(Number(leading.confidence || 0) * 100)}%` : `Investigating ${escapeHtml(path)}`}</p>`;
+  }
+  if (stage === "DECIDE") {
+    const candidate = decisionCandidate(projection, run);
+    const risk = compactRisk(candidate?.risk);
+    return candidate ? `<p class="iw3-stage-lead">Recommended action: ${escapeHtml(candidate.title)}${risk ? ` · Risk: ${escapeHtml(risk)}` : ""}</p>` : "";
+  }
+  if (stage === "RESPOND") {
+    const action = currentAction(projection, run);
+    return action ? `<p class="iw3-stage-lead">${escapeHtml(action.title)} · ${escapeHtml(action.status === "AWAITING_APPROVAL" ? "Approval required" : titleCase(action.status))}</p>` : "";
+  }
+  if (stage === "VERIFY" && run.status === "RUNNING") {
+    const deadline = Date.parse(run.verification_deadline_at || "");
+    const remaining = Number.isFinite(deadline) ? Math.max(0, Math.ceil((deadline - (now ?? Date.now())) / 1000)) : null;
+    const healthy = Number.isSafeInteger(run.output?.healthy_sample_count) ? run.output.healthy_sample_count : null;
+    return `<p class="iw3-stage-lead">Observing post-action telemetry${remaining === null ? "" : ` · ${escapeHtml(formatDuration(remaining))} left`}${healthy === null ? "" : ` · ${healthy}/3 healthy samples`}</p>`;
+  }
+  return "";
+}
+
+function triageIsBounded(run) {
+  return [run.output?.scope_status, run.output?.impact_scope?.status]
+    .some((value) => ["BOUNDED", "CONFIRMED"].includes(String(value || "").toUpperCase()));
+}
+
+function compactPathMarkup(projection) {
+  const nodes = new Map((projection.graph?.nodes || []).map((node) => [node.component_id, node]));
+  const path = projection.impacted_path || [];
+  return `<div class="iw3-path-visual" aria-label="${escapeHtml(pathLabel(projection))}">${path.map((id) => {
+    const node = nodes.get(id) || { component_id: id, display_name: id };
+    return `<span data-tone="${escapeHtml(graphNodeTone(node, projection))}">${escapeHtml(node.display_name)}</span>`;
+  }).join('<i aria-hidden="true">→</i>')}</div>`;
+}
+
+function activityCapsuleMarkup(projection, stage, run) {
+  const items = (projection.agent_activity || []).filter((activity) => activity.stage === stage && activity.stage_run_id === run?.stage_run_id).slice(-3);
+  if (!items.length) return "";
+  return `<div class="iw3-activity-capsules">${items.map((activity) => `<button type="button" data-open-panel="activity" data-state="${escapeHtml(String(activity.state || "UNKNOWN").toLowerCase())}"><span aria-hidden="true"></span>${escapeHtml(titleCase(activity.role || "AGENT"))} · ${(activity.evidence_refs || []).length} evidence · ${escapeHtml(titleCase(activity.state))}</button>`).join("")}</div>`;
+}
+
+function leadingHypothesis(items) {
+  return [...(items || [])].sort((left, right) => Number(right.confidence || 0) - Number(left.confidence || 0))[0] || null;
+}
+
+function decisionCandidate(projection, run) {
+  const actionIds = new Set(run?.output?.action_ids || []);
+  return run?.output?.action_candidate || (projection.actions || []).find((item) => actionIds.has(item.action_id)) || null;
+}
+
+function currentAction(projection, run) {
+  return (projection.actions || []).find((action) => action.attempt_id === projection.current_attempt?.attempt_id && action.stage_run_id === run?.stage_run_id) || null;
+}
+
+function compactRisk(value) {
+  return /bounded/i.test(String(value || "")) ? "bounded" : null;
+}
+
+function actionPreflight(projection, action) {
+  const candidate = [...(projection.current_attempt?.stage_runs || [])].reverse().find((run) => run.stage === "DECIDE" && run.output?.action_candidate)?.output?.action_candidate;
+  if (!candidate || action.command_id !== "astronomy.restore-payment-and-recreate-checkout") return null;
+  if (candidate.decision_revision !== action.decision_revision || candidate.command_id !== action.command_id || candidate.component_id !== action.component_id) return null;
+  if (candidate.expected_before !== "paymentUnreachable=on" || candidate.observed_before !== "paymentUnreachable=on") return null;
+  return candidate;
+}
+
+function graphHealth(projection) {
+  if (String(projection.freshness?.state || "").toUpperCase() !== "CURRENT") return "stale";
+  const tones = (projection.graph?.nodes || []).map((node) => graphNodeTone(node, projection));
+  if (tones.includes("affected")) return "affected";
+  return tones.includes("healthy") ? "healthy" : "observed";
+}
+
+function graphNodeTone(node, projection) {
+  if (String(projection.freshness?.state || "").toUpperCase() !== "CURRENT") return "stale";
+  const runtime = String(node.runtime_status || "").toLowerCase();
+  const impact = String(node.impact_status || "").toLowerCase();
+  if (["healthy", "verified", "recovered", "ok"].includes(runtime) || ["healthy", "verified", "recovered"].includes(impact)) return "healthy";
+  if (["critical", "degraded", "unreachable", "failed", "error"].includes(runtime) || ["impacted", "critical", "degraded"].includes(impact)) return "affected";
+  return "observed";
 }
 
 function stageMarkup(view, projection, ui) {
   const run = view.visibleRun;
-  if (!run) return `<section class="iw3-stage-empty" aria-labelledby="iw3-stage-title"><h3 id="iw3-stage-title">${stageLabel(view.visibleStage)}</h3><p>This stage has not started.</p></section>`;
-  const header = `<header class="iw3-stage-heading"><div><span>${stageLabel(view.visibleStage)}</span><h3 id="iw3-stage-title">${escapeHtml(stageHeadline(view.visibleStage, run))}</h3><p>${escapeHtml(run.summary || stageDescription(view.visibleStage))}</p></div><div class="iw3-run-state" data-state="${escapeHtml(run.status.toLowerCase())}"><span aria-hidden="true"></span>${escapeHtml(stateLabel(run.status))}${run.status === "RUNNING" ? ` · ${run.progress_percent}%` : ""}</div></header>`;
+  if (!run) return `<section class="iw3-stage iw3-stage-empty" aria-labelledby="iw3-stage-title"><h3 id="iw3-stage-title">${stageLabel(view.visibleStage)}</h3></section>`;
+  const header = `<header class="iw3-stage-heading"><div><span>${stageLabel(view.visibleStage)}</span><h3 id="iw3-stage-title">${stageLabel(view.visibleStage)}</h3>${stageLeadMarkup(view.visibleStage, projection, run, ui.series, ui.now)}</div><div class="iw3-run-state" data-state="${escapeHtml(run.status.toLowerCase())}" aria-label="${escapeHtml(stateLabel(run.status))}"><span aria-hidden="true"></span></div></header>`;
   const content = ({
     DETECT: () => detectMarkup(projection, run, ui.series),
     TRIAGE: () => triageMarkup(projection, run),
@@ -346,40 +428,45 @@ function stageMarkup(view, projection, ui) {
     VERIFY: () => verifyMarkup(projection, run, ui.series, ui.now)
   })[view.visibleStage]();
   const failure = ["FAILED", "NEEDS_HUMAN"].includes(run.status)
-    ? `<div class="iw3-stage-failure" role="alert"><strong>${escapeHtml(run.failure_code || stateLabel(run.status))}</strong><span>${escapeHtml(run.summary || "This stage requires operator attention.")}</span></div>`
+    ? '<div class="iw3-stage-failure" role="alert" aria-label="Needs attention"></div>'
     : "";
   return `<section class="iw3-stage" aria-labelledby="iw3-stage-title">${header}${failure}${content}</section>`;
 }
 
 function detectMarkup(projection, run, series) {
-  return `<div class="iw3-detect-grid">
-    <section class="iw3-panel iw3-signals"><div class="iw3-panel-heading"><h4>Live signals</h4><button type="button" data-open-panel="metrics">Open metrics</button></div>${signalCardsMarkup(series)}</section>
-    <section class="iw3-panel"><h4>Impact path</h4>${impactPathMarkup(projection)}${projection.current_attempt.current_stage === "INVESTIGATE" ? '<button type="button" data-open-panel="graph">Open diagnostic graph</button>' : ""}</section>
-    <section class="iw3-panel"><h4>Sources</h4><ul class="iw3-compact-list">${(projection.connectors || []).map((connector) => `<li><span>${escapeHtml(titleCase(connector.provider))}</span><strong>${escapeHtml(titleCase(connector.state))}</strong><small>${escapeHtml(shortTime(connector.observed_at))} · ${escapeHtml(String(connector.lag_seconds ?? 0))}s lag</small></li>`).join("") || "<li>No connector status published.</li>"}</ul></section>
-    ${factsMarkup(run.output)}
+  return `<div class="iw3-stage-deck">
+    <section class="iw3-stage-card iw3-stage-card-signals">${signalCardsMarkup(series)}</section>
+    <section class="iw3-stage-card iw3-stage-card-path">${compactPathMarkup(projection)}</section>
+    ${activityCapsuleMarkup(projection, "DETECT", run)}
   </div>`;
 }
 
 function triageMarkup(projection, run) {
-  return `<div class="iw3-stage-grid"><section class="iw3-panel"><h4>Confirmed facts</h4>${listMarkup(run.output?.facts, "No confirmed facts yet.")}</section><section class="iw3-panel"><h4>Unknowns</h4>${listMarkup(run.output?.unknowns, "No open unknowns were published.")}</section><section class="iw3-panel iw3-span-two"><h4>Agent workstream</h4>${activityMarkup(projection, "TRIAGE", { stageRunId: run.stage_run_id })}</section></div>`;
+  const facts = run.output?.facts || [];
+  const unknowns = run.output?.unknowns || [];
+  return `<div class="iw3-stage-deck">
+    <section class="iw3-stage-card iw3-stage-card-path">${compactPathMarkup(projection)}</section>
+    ${triageIsBounded(run) ? `<section class="iw3-stage-card iw3-stage-card-stats"><strong>${facts.length} facts</strong><strong>${unknowns.length} open question${unknowns.length === 1 ? "" : "s"}</strong></section>` : ""}
+    ${activityCapsuleMarkup(projection, "TRIAGE", run)}
+  </div>`;
 }
 
 function investigateMarkup(projection, run) {
   const hypotheses = (projection.hypotheses || []).filter((item) => item.stage_run_id === run.stage_run_id);
-  return `<div class="iw3-stage-grid"><section class="iw3-panel"><div class="iw3-panel-heading"><h4>Hypotheses</h4><button type="button" data-open-panel="graph">Open diagnostic graph</button></div>${hypothesisMarkup(hypotheses)}</section><section class="iw3-panel"><h4>Independent critic</h4>${activityMarkup(projection, "INVESTIGATE", { roles: ["CRITIC"], stageRunId: run.stage_run_id })}</section><section class="iw3-panel iw3-span-two"><div class="iw3-panel-heading"><h4>Evidence Worker queries</h4><button type="button" data-open-panel="evidence">Review evidence</button></div>${evidenceQueryMarkup(projection, run)}${activityMarkup(projection, "INVESTIGATE", { excludeRoles: ["CRITIC", "EVIDENCE_WORKER"], stageRunId: run.stage_run_id })}</section></div>`;
+  const queries = (projection.evidence_queries || []).filter((item) => item.stage_run_id === run.stage_run_id);
+  const leading = leadingHypothesis(hypotheses);
+  return `<div class="iw3-stage-deck">
+    <section class="iw3-stage-card iw3-stage-card-path">${compactPathMarkup(projection)}</section>
+    <section class="iw3-stage-card iw3-stage-card-stats"><strong>${leading ? `${Math.round(Number(leading.confidence || 0) * 100)}%` : "—"}</strong><strong>${queries.length === 1 ? "1 query" : `${queries.length} queries`}</strong><button type="button" data-open-panel="evidence">Evidence</button></section>
+    ${activityCapsuleMarkup(projection, "INVESTIGATE", run)}
+  </div>`;
 }
 
 function decideMarkup(projection, run) {
-  const hypothesisIds = new Set(run.output?.hypothesis_ids || []);
-  const rootCause = run.output?.root_cause || null;
-  const candidates = (projection.hypotheses || []).filter((item) =>
-    hypothesisIds.has(item.hypothesis_id) || (rootCause && item.statement === rootCause)
-  );
-  const likely = [...candidates].sort((left, right) => Number(right.confidence || 0) - Number(left.confidence || 0))[0];
-  const actionIds = new Set(run.output?.action_ids || []);
-  const recommendation = run.output?.action_candidate
-    || (projection.actions || []).find((item) => actionIds.has(item.action_id));
-  return `<div class="iw3-stage-grid"><section class="iw3-panel"><h4>Most likely cause</h4>${rootCause ? `<p class="iw3-root-cause">${escapeHtml(rootCause)}</p>${likely ? hypothesisMarkup([likely]) : ""}` : '<p class="iw3-empty">No root-cause decision has been published.</p>'}</section><section class="iw3-panel"><h4>Recommended response</h4>${recommendation ? actionDecisionMarkup(recommendation) : '<p class="iw3-empty">No response candidate has been published.</p>'}</section><section class="iw3-panel"><h4>Decision evidence</h4>${listMarkup(run.output?.facts, "No decision facts published.")}</section><section class="iw3-panel"><h4>Risk, rollback, verification</h4>${recommendation ? `<dl class="iw3-record"><div><dt>Blast radius</dt><dd>${escapeHtml(recommendation.blast_radius)}</dd></div><div><dt>Risk</dt><dd>${escapeHtml(recommendation.risk)}</dd></div><div><dt>Rollback</dt><dd>${escapeHtml(recommendation.rollback_plan)}</dd></div></dl>${listMarkup(recommendation.verification_conditions, "No verification conditions published.")}` : '<p class="iw3-empty">No bounded action contract has been published.</p>'}</section></div>`;
+  return `<div class="iw3-stage-deck">
+    <section class="iw3-stage-card iw3-stage-card-path">${compactPathMarkup(projection)}</section>
+    ${activityCapsuleMarkup(projection, "DECIDE", run)}
+  </div>`;
 }
 
 function respondMarkup(projection, run, pending) {
@@ -388,30 +475,32 @@ function respondMarkup(projection, run, pending) {
     && action.stage_run_id === run.stage_run_id
   );
   const available = new Set(projection.available_commands || []);
-  return `<div class="iw3-action-list">${actions.map((action) => {
+  return `<div class="iw3-stage-deck iw3-action-list">${actions.map((action) => {
     const revisionCurrent = action.decision_revision === projection.decision_revision;
-    const canApprove = action.status === "AWAITING_APPROVAL" && revisionCurrent && available.has("APPROVE_ACTION") && !pending;
-    const canReject = action.status === "AWAITING_APPROVAL" && revisionCurrent && available.has("REJECT_ACTION") && !pending;
-    return `<article class="iw3-action-card" data-action-id="${escapeHtml(action.action_id)}"><header><div><span>${escapeHtml(titleCase(action.status))}</span><h4>${escapeHtml(action.title)}</h4></div><strong>${escapeHtml(action.component_id || "Local runtime")}</strong></header><p>${escapeHtml(action.summary || "")}</p><dl><div><dt>Command</dt><dd>${escapeHtml(action.command_label || "Bounded local action")}</dd></div><div><dt>Decision revision</dt><dd>${escapeHtml(String(action.decision_revision ?? projection.decision_revision))}</dd></div><div><dt>Blast radius</dt><dd>${escapeHtml(action.blast_radius || "Not published")}</dd></div><div><dt>Risk</dt><dd>${escapeHtml(action.risk || "Not published")}</dd></div><div><dt>Rollback</dt><dd>${escapeHtml(action.rollback_plan || "Not published")}</dd></div></dl><h5>Verification conditions</h5>${listMarkup(action.verification_conditions, "No verification conditions published.")}${action.status === "AWAITING_APPROVAL" ? `<div class="iw3-action-buttons"><button type="button" data-action-decision="REJECT_ACTION" data-action-id="${escapeHtml(action.action_id)}"${canReject ? "" : " disabled"}>Reject</button><button type="button" class="is-primary" data-action-decision="APPROVE_ACTION" data-action-id="${escapeHtml(action.action_id)}"${canApprove ? "" : " disabled"}>${pending ? "Working…" : "Approve action"}</button></div>` : `${receiptMarkup(action.receipt)}${rollbackReceiptMarkup(action.rollback_receipt)}`}</article>`;
-  }).join("") || '<section class="iw3-panel"><h4>No action available</h4><p>The backend has not published an executable response.</p></section>'}</div>`;
+    const preflight = actionPreflight(projection, action);
+    const canApprove = Boolean(preflight) && action.status === "AWAITING_APPROVAL" && revisionCurrent && available.has("APPROVE_ACTION") && !pending;
+    const canReject = Boolean(preflight) && action.status === "AWAITING_APPROVAL" && revisionCurrent && available.has("REJECT_ACTION") && !pending;
+    return `<article class="iw3-stage-card iw3-action-card" data-action-id="${escapeHtml(action.action_id)}"><header><strong>${escapeHtml(action.title)}</strong><span>${escapeHtml(action.status === "AWAITING_APPROVAL" ? "Approval required" : titleCase(action.status))}</span></header>${preflight ? `<div class="iw3-action-chips"><span>paymentUnreachable: on → off</span><span>Checkout: recreate</span><span>Scope: local Astronomy Shop</span></div>` : '<div class="iw3-action-chips"><span>Revalidation required</span></div>'}<button type="button" data-open-panel="action">Action details</button>${action.status === "AWAITING_APPROVAL" ? `<div class="iw3-action-buttons"><button type="button" data-action-decision="REJECT_ACTION" data-action-id="${escapeHtml(action.action_id)}"${canReject ? "" : " disabled"}>Reject</button><button type="button" class="is-primary" data-action-decision="APPROVE_ACTION" data-action-id="${escapeHtml(action.action_id)}"${canApprove ? "" : " disabled"}>${pending ? "Working…" : "Approve action"}</button></div>` : ""}</article>`;
+  }).join("")}${activityCapsuleMarkup(projection, "RESPOND", run)}</div>`;
 }
 
 function verifyMarkup(projection, run, series, now) {
-  const action = (projection.actions || []).find((action) =>
-    action.receipt?.receipt_id === projection.current_attempt.action_receipt_id
-  );
   const deadline = Date.parse(run.verification_deadline_at || "");
   const remaining = Number.isFinite(deadline)
     ? Math.max(0, Math.ceil((deadline - (now ?? Date.now())) / 1000))
     : null;
-  return `<div class="iw3-stage-grid"><section class="iw3-panel"><h4>Verification status</h4>${recordMarkup(run.output?.summary || run.summary, "Verification is waiting for fresh evidence.")}${listMarkup(run.output?.facts, "No recovery facts published yet.")}</section><section class="iw3-panel"><h4>Observation window</h4><dl class="iw3-record"><div><dt>Progress</dt><dd>${escapeHtml(String(run.progress_percent))}%</dd></div><div><dt>Remaining</dt><dd data-verification-remaining${Number.isFinite(deadline) ? ` data-deadline="${escapeHtml(run.verification_deadline_at)}"` : ""}>${remaining === null ? "Awaiting deadline" : escapeHtml(formatDuration(remaining))}</dd></div><div><dt>Freshness</dt><dd>${escapeHtml(titleCase(projection.freshness.state))}</dd></div><div><dt>Last sample</dt><dd>${escapeHtml(shortTime(projection.freshness.observed_at))}</dd></div></dl>${receiptMarkup(action?.receipt)}${rollbackReceiptMarkup(action?.rollback_receipt)}${listMarkup(run.output?.unknowns, "No unresolved recovery conditions published.")}</section><section class="iw3-panel iw3-span-two"><div class="iw3-panel-heading"><h4>Fresh post-action signals</h4><button type="button" data-open-panel="metrics">Open metrics</button></div>${signalCardsMarkup(series)}</section></div>`;
+  return `<div class="iw3-stage-deck">
+    <section class="iw3-stage-card iw3-stage-card-observation"><strong data-verification-remaining${Number.isFinite(deadline) ? ` data-deadline="${escapeHtml(run.verification_deadline_at)}"` : ""}>${remaining === null ? "—" : escapeHtml(formatDuration(remaining))}</strong><span data-tone="${escapeHtml(graphHealth(projection))}">${escapeHtml(titleCase(graphHealth(projection)))}</span></section>
+    <section class="iw3-stage-card iw3-stage-card-signals">${signalCardsMarkup(series)}</section>
+    ${activityCapsuleMarkup(projection, "VERIFY", run)}
+  </div>`;
 }
 
 function footerMarkup(view, available, availableRerunStages, canNext, pending) {
   const run = view.visibleRun;
   if (view.reviewingHistory) {
     const canRerun = available.has("RERUN_FROM_STAGE") && availableRerunStages.includes(view.visibleStage);
-    return `<footer class="iw3-action-footer"><div><strong>${stageLabel(view.visibleStage)} complete</strong><span>Reviewing immutable run ${escapeHtml(run?.stage_run_id || "")}</span></div><button type="button" data-workflow-command="RERUN_FROM_STAGE" data-rerun-stage="${escapeHtml(view.visibleStage)}"${canRerun && !pending ? "" : " disabled"}>Rerun from this stage</button></footer>`;
+    return `<footer class="iw3-action-footer"><button type="button" data-workflow-command="RERUN_FROM_STAGE" data-rerun-stage="${escapeHtml(view.visibleStage)}"${canRerun && !pending ? "" : " disabled"}>Rerun from this stage</button></footer>`;
   }
   const failed = ["FAILED", "NEEDS_HUMAN"].includes(run?.status);
   const terminal = view.currentStage === "VERIFY";
@@ -421,41 +510,43 @@ function footerMarkup(view, available, availableRerunStages, canNext, pending) {
     : null;
   const recovery = revalidation || branchTarget;
   const rerunTarget = revalidation ? "DECIDE" : branchTarget;
-  const rerunLabel = branchTarget ? `Branch from ${stageLabel(branchTarget)}` : "Rerun Decide";
-  return `<footer class="iw3-action-footer"><div><strong>${escapeHtml(stateLabel(run?.status || "READY"))}</strong><span>${escapeHtml(footerCopy(run))}</span></div><div class="iw3-footer-actions">${failed && available.has("RETRY") ? `<button type="button" data-workflow-command="RETRY"${pending ? " disabled" : ""}>Retry</button>` : ""}${recovery ? `<button type="button" class="is-primary" data-workflow-command="RERUN_FROM_STAGE" data-rerun-stage="${escapeHtml(rerunTarget)}"${pending ? " disabled" : ""}>${escapeHtml(rerunLabel)}</button>` : ""}<button type="button" data-workflow-command="ESCALATE"${available.has("ESCALATE") && !pending ? "" : " disabled"}>Escalate</button>${recovery ? "" : `<button type="button" class="is-primary" data-workflow-command="${terminal ? "COMPLETE_INCIDENT" : "NEXT"}"${canNext && !pending ? "" : " disabled"}>${pending ? "Working…" : terminal ? "Complete incident" : "Next"}</button>`}</div></footer>`;
+  const rerunLabel = `Rerun from ${stageLabel(rerunTarget || "DECIDE")}`;
+  return `<footer class="iw3-action-footer"><div class="iw3-footer-actions">${failed && available.has("RETRY") ? `<button type="button" data-workflow-command="RETRY"${pending ? " disabled" : ""}>Retry</button>` : ""}${recovery ? `<button type="button" class="is-primary" data-workflow-command="RERUN_FROM_STAGE" data-rerun-stage="${escapeHtml(rerunTarget)}"${pending ? " disabled" : ""}>${escapeHtml(rerunLabel)}</button>` : ""}<button type="button" data-workflow-command="ESCALATE"${available.has("ESCALATE") && !pending ? "" : " disabled"}>Escalate</button>${recovery ? "" : `<button type="button" class="is-primary" data-workflow-command="${terminal ? "COMPLETE_INCIDENT" : "NEXT"}"${canNext && !pending ? " disabled" : ""}>${pending ? "Working…" : terminal ? "Complete incident" : "Next"}</button>`}</div></footer>`;
 }
 
 function commandErrorMarkup(error) {
   if (!error) return "";
   if (error === "control_plane_revalidation_required") {
-    return '<div class="iw3-command-error" role="alert"><strong>Decision inputs changed</strong><span>The latest telemetry no longer matches this decision. Rerun Decide before entering Respond.</span></div>';
+    return '<div class="iw3-command-error" role="alert"><strong>Revalidation required</strong></div>';
   }
-  return `<div class="iw3-command-error" role="alert"><strong>Command was not accepted</strong><span>${escapeHtml(error)}</span></div>`;
+  return "";
 }
 
 function panelMarkup(view, projection, ui) {
   if (!ui.panel) return "";
-  if (ui.panel === "graph") return graphModalMarkup(view, projection, ui.componentId, ui.now);
-  const title = ({ metrics: "Metrics", evidence: "Evidence", activity: "Agent activity", timeline: "Timeline", component: "Component", audit: "Immutable incident audit" })[ui.panel] || "Detail";
+  if (ui.panel === "graph") return graphModalMarkup(view, projection, ui.componentId, ui.now, ui.series);
+  const title = ({ metrics: "Monitor", evidence: "Evidence", activity: "Activity", timeline: "Timeline", component: "Component", action: "Action details", audit: "Immutable incident audit" })[ui.panel] || "Detail";
   let body = "";
   if (ui.panel === "metrics") body = signalCardsMarkup(ui.series, true);
-  else if (ui.panel === "activity") body = activityMarkup(projection, view.visibleStage);
+  else if (ui.panel === "activity") body = activityMarkup(projection, view.visibleStage, { stageRunId: view.visibleRun?.stage_run_id });
   else if (ui.panel === "evidence") body = evidenceMarkup(view.visibleRun, projection);
   else if (ui.panel === "component") body = componentMarkup(projection, ui.componentId);
+  else if (ui.panel === "action") body = actionDetailMarkup(projection, view.visibleRun);
   else if (ui.panel === "audit") body = auditDetailMarkup(projection);
   else body = timelineMarkup(projection, view);
   return `<section class="iw3-detail-layer" role="dialog" aria-modal="true" aria-labelledby="iw3-detail-title" tabindex="-1" data-workbench-modal><div class="iw3-detail${ui.panel === "audit" ? " is-audit" : ""}"><header><h3 id="iw3-detail-title">${escapeHtml(title)}</h3><button type="button" data-panel-close aria-label="Close ${escapeHtml(title)}">Close</button></header>${body}</div></section>`;
 }
 
-function agentRoomMarkup(projection, view, { completed = false } = {}) {
-  const items = (projection.agent_activity || []).filter((activity) => completed
-    || (activity.stage === view.visibleStage && activity.stage_run_id === view.visibleRun?.stage_run_id)).slice(-8);
-  const canInvestigate = !completed && !view.reviewingHistory && view.currentStage === "INVESTIGATE";
-  const component = projection.impacted_path?.[0] || null;
-  return `<aside class="iw3-agent-room" aria-label="Agent room"><header><div><span>Agent room</span><strong>${completed ? "Incident handoff" : `${stageLabel(view.visibleStage)} team`}</strong></div><small>${items.some((item) => item.state === "RUNNING") ? "Working live" : completed ? "Read-only" : "Current stage"}</small></header><ol>${items.map((activity) => `<li data-state="${escapeHtml(activity.state.toLowerCase())}"><span aria-hidden="true"></span><div><strong>${escapeHtml(activity.label)}</strong><small>${escapeHtml(titleCase(activity.role || "agent"))} · ${escapeHtml(shortTime(activity.occurred_at))}</small><p>${escapeHtml(activity.summary)}</p><em>${(activity.evidence_refs || []).length} evidence</em></div></li>`).join("") || '<li class="iw3-agent-empty">Waiting for the current stage Agent to publish activity.</li>'}</ol>${canInvestigate && component ? `<footer><button type="button" data-agent-investigate="${escapeHtml(component)}">Ask Agent to investigate ${escapeHtml(component)}</button></footer>` : ""}</aside>`;
+function actionDetailMarkup(projection, run) {
+  const action = currentAction(projection, run)
+    || (projection.actions || []).find((item) => item.receipt?.receipt_id === projection.current_attempt?.action_receipt_id)
+    || null;
+  if (!action) return '<p class="iw3-empty">No action is available for this stage.</p>';
+  const candidate = actionPreflight(projection, action);
+  return `<article class="iw3-action-detail"><strong>${escapeHtml(action.title)}</strong><p>${escapeHtml(action.summary || "")}</p><dl class="iw3-record"><div><dt>Command</dt><dd>${escapeHtml(action.command_label || action.command_id)}</dd></div><div><dt>Scope</dt><dd>${escapeHtml(action.blast_radius || "Not published")}</dd></div><div><dt>Risk</dt><dd>${escapeHtml(action.risk || "Not published")}</dd></div><div><dt>Rollback</dt><dd>${escapeHtml(action.rollback_plan || "Not published")}</dd></div>${candidate ? `<div><dt>Preflight</dt><dd>${escapeHtml(candidate.observed_before)} → paymentUnreachable=off</dd></div>` : ""}</dl>${listMarkup(action.verification_conditions, "No verification conditions published.")}${receiptMarkup(action.receipt)}${rollbackReceiptMarkup(action.rollback_receipt)}</article>`;
 }
 
-function graphModalMarkup(view, projection, selectedComponent, now) {
+function graphModalMarkup(view, projection, selectedComponent, now, series) {
   const impacted = new Set(projection.impacted_path || []);
   const relations = (projection.graph?.edges || [])
     .filter((edge) => impacted.has(edge.source_component_id) || impacted.has(edge.target_component_id));
@@ -472,19 +563,23 @@ function graphModalMarkup(view, projection, selectedComponent, now) {
     const target = topology.positions.get(edge.target_component_id);
     if (!source || !target) return "";
     const middle = (source.x + target.x) / 2;
-    return `<path class="iw3-graph-edge${activeEdges.has(edge.edge_id) ? " is-active" : ""}" d="M ${source.x} ${source.y} C ${middle} ${source.y}, ${middle} ${target.y}, ${target.x} ${target.y}"/>`;
+    const d = `M ${source.x} ${source.y} C ${middle} ${source.y}, ${middle} ${target.y}, ${target.x} ${target.y}`;
+    const tone = graphEdgeTone(edge, nodeById, projection);
+    return `<path class="iw3-graph-edge is-${tone}" d="${d}"/>${activeEdges.has(edge.edge_id) ? `<path class="iw3-graph-pulse is-${tone}" d="${d}"/>` : ""}`;
   }).join("") : "";
   const nodes = topology.available ? topology.nodes.map((node) => {
     const position = topology.positions.get(node.component_id);
-    return `<button type="button" class="iw3-graph-node${node.component_id === selectedComponent ? " is-selected" : ""}" data-graph-node="${escapeHtml(node.component_id)}" data-graph-x="${position.x}" data-graph-y="${position.y}"><strong>${escapeHtml(node.display_name)}</strong><small>${escapeHtml(titleCase(node.runtime_status))}</small></button>`;
+    const tone = graphNodeTone(node, projection);
+    return `<button type="button" class="iw3-graph-node is-${tone}${node.component_id === selectedComponent ? " is-selected" : ""}" data-graph-node="${escapeHtml(node.component_id)}" data-graph-x="${position.x}" data-graph-y="${position.y}"><strong>${escapeHtml(node.display_name)}</strong><small>${escapeHtml(titleCase(node.runtime_status))}</small></button>`;
   }).join("") : '<p class="iw3-graph-unavailable">No evidence-backed impact graph is available.</p>';
   const selected = nodeById.get(selectedComponent) || null;
-  return `<section class="iw3-graph-layer" role="dialog" aria-modal="true" aria-labelledby="iw3-graph-title" tabindex="-1" data-workbench-modal data-graph-modal><div class="iw3-graph-dialog"><header><div><span>${stageLabel(view.visibleStage)}</span><h3 id="iw3-graph-title">Diagnostic graph</h3></div><button type="button" data-graph-close aria-label="Close diagnostic graph">Close</button></header><div class="iw3-graph-canvas" role="region" aria-label="Evidence-backed incident topology"><svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">${edges}</svg>${nodes}</div>${selected ? `<aside class="iw3-node-peek"><div><span>Selected component</span><h4>${escapeHtml(selected.display_name)}</h4><p>${escapeHtml(titleCase(selected.runtime_status))} · ${escapeHtml(titleCase(selected.impact_status))}</p></div>${view.reviewingHistory ? '<span class="iw3-read-only-note">Historical graph · read-only</span>' : `<button type="button" data-agent-investigate="${escapeHtml(selected.component_id)}">Let Agent investigate this node</button>`}</aside>` : ""}</div></section>`;
+  const metric = selected ? componentMetricLabel(series, selected.component_id) : null;
+  return `<section class="iw3-graph-layer" role="dialog" aria-modal="true" aria-labelledby="iw3-graph-title" tabindex="-1" data-workbench-modal data-graph-modal><div class="iw3-graph-dialog"><header><div><span>${stageLabel(view.visibleStage)}</span><h3 id="iw3-graph-title">Dataflow</h3></div><button type="button" data-graph-close aria-label="Close Dataflow">Close</button></header><div class="iw3-graph-legend"><span data-tone="affected">Red: affected</span><span data-tone="healthy">Green: healthy</span><span data-tone="observed">Moving pulse: observed traffic</span><span data-tone="stale">Gray: no recent traffic / stale</span></div><div class="iw3-graph-canvas" role="region" aria-label="Evidence-backed incident topology"><svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">${edges}</svg>${nodes}</div>${selected ? `<aside class="iw3-node-peek"><div><span>Selected component</span><h4>${escapeHtml(selected.display_name)}</h4><p>${escapeHtml(titleCase(selected.runtime_status))} · ${escapeHtml(titleCase(selected.impact_status))}${metric ? ` · ${escapeHtml(metric)}` : ""}</p></div>${view.reviewingHistory ? '<span class="iw3-read-only-note">Historical graph · read-only</span>' : `<button type="button" data-agent-investigate="${escapeHtml(selected.component_id)}">Let Agent investigate this node</button>`}</aside>` : ""}</div></section>`;
 }
 
 function signalCardsMarkup(collection, expanded = false) {
   const allPaths = metricSeriesPathsV3(collection || { series: [] }, expanded ? 520 : 240, 76);
-  const paths = expanded ? allPaths : allPaths.slice(0, 4);
+  const paths = expanded ? allPaths : allPaths.slice(0, 3);
   const seriesById = new Map((collection?.series || []).map((series) => [series.series_id, series]));
   return `<div class="iw3-signal-cards${expanded ? " is-expanded" : ""}">${paths.map((path) => {
     const series = seriesById.get(path.seriesId);
@@ -492,7 +587,7 @@ function signalCardsMarkup(collection, expanded = false) {
     const current = latest && typeof latest.value === "number" && Number.isFinite(latest.value) ? latest : null;
     const currentLabel = current
       ? formatMetric(current.value, series.unit)
-      : `Unavailable${latest?.missing_reason ? ` · ${titleCase(latest.missing_reason)}` : ""}`;
+      : expanded ? `Unavailable${latest?.missing_reason ? ` · ${titleCase(latest.missing_reason)}` : ""}` : "No sample";
     const trend = metricTrendV3(series);
     const observedStart = Date.parse(series?.observed_window_start || "");
     const observedEnd = Date.parse(series?.observed_window_end || "");
@@ -500,13 +595,23 @@ function signalCardsMarkup(collection, expanded = false) {
       ? Math.max(0, Math.round((observedEnd - observedStart) / 1000))
       : null;
     const d = path.segments.map((segment) => segment.map((point, index) => `${index ? "L" : "M"}${point.x} ${point.y}`).join(" "));
-    return `<article class="iw3-signal-card" data-series-id="${escapeHtml(path.seriesId)}"><header><div><span>${escapeHtml(series?.component_id || "Component")}</span><h5>${escapeHtml(series?.label || series?.metric_key || path.seriesId)}</h5></div><strong>${escapeHtml(currentLabel)}</strong></header><svg viewBox="0 0 ${expanded ? 520 : 240} 76" preserveAspectRatio="none" role="img" aria-label="${escapeHtml(series?.label || path.seriesId)} samples">${d.map((value) => `<path d="${value}"/>`).join("")}</svg><footer><span>${path.segments.reduce((count, segment) => count + segment.length, 0)} samples</span><span data-trend="${escapeHtml(trend.direction)}">${escapeHtml(trend.label)}</span><span>${observedSeconds === null ? "Window pending" : `${escapeHtml(formatDuration(observedSeconds))} window`}</span><span>${escapeHtml(thresholdCopy(series?.thresholds, series?.unit))}</span><span>${escapeHtml(titleCase(series?.freshness || "unknown"))} · ${escapeHtml(shortTime(latest?.timestamp))}</span></footer></article>`;
+    const compactFooter = `<span data-tone="${escapeHtml(String(series?.freshness || "unknown").toLowerCase())}">${escapeHtml(titleCase(series?.freshness || "unknown"))}</span>`;
+    const detailFooter = `<span>${path.segments.reduce((count, segment) => count + segment.length, 0)} samples</span><span data-trend="${escapeHtml(trend.direction)}">${escapeHtml(trend.label)}</span><span>${observedSeconds === null ? "Window pending" : `${escapeHtml(formatDuration(observedSeconds))} window`}</span><span>${escapeHtml(thresholdCopy(series?.thresholds, series?.unit))}</span><span>${escapeHtml(titleCase(series?.freshness || "unknown"))} · ${escapeHtml(shortTime(latest?.timestamp))}</span>`;
+    return `<article class="iw3-signal-card" data-series-id="${escapeHtml(path.seriesId)}"><header><div><span>${escapeHtml(series?.component_id || "Component")}</span><h5>${escapeHtml(series?.label || series?.metric_key || path.seriesId)}</h5></div><strong>${escapeHtml(currentLabel)}</strong></header><svg viewBox="0 0 ${expanded ? 520 : 240} 76" preserveAspectRatio="none" role="img" aria-label="${escapeHtml(series?.label || path.seriesId)} samples">${d.map((value) => `<path d="${value}"/>`).join("")}</svg><footer>${expanded ? detailFooter : compactFooter}</footer></article>`;
   }).join("") || '<p class="iw3-empty">Waiting for typed metric samples.</p>'}</div>`;
 }
 
-function impactPathMarkup(projection) {
-  const nodes = new Map((projection.graph?.nodes || []).map((node) => [node.component_id, node]));
-  return `<ol class="iw3-impact-path">${(projection.impacted_path || []).map((id) => `<li><span aria-hidden="true"></span><strong>${escapeHtml(nodes.get(id)?.display_name || id)}</strong><small>${escapeHtml(titleCase(nodes.get(id)?.runtime_status || "unknown"))}</small></li>`).join("") || "<li>No impact path published.</li>"}</ol>`;
+function graphEdgeTone(edge, nodes, projection) {
+  if (String(projection.freshness?.state || "").toUpperCase() !== "CURRENT") return "stale";
+  const tones = [nodes.get(edge.source_component_id), nodes.get(edge.target_component_id)].filter(Boolean).map((node) => graphNodeTone(node, projection));
+  if (tones.includes("affected")) return "affected";
+  return tones.every((tone) => tone === "healthy") ? "healthy" : "observed";
+}
+
+function componentMetricLabel(collection, componentId) {
+  const series = (collection?.series || []).find((item) => item.component_id === componentId && typeof item.points?.at(-1)?.value === "number");
+  const point = series?.points?.at(-1);
+  return point ? formatMetric(point.value, series.unit) : null;
 }
 
 function activityMarkup(projection, stage, { roles = null, excludeRoles = [], stageRunId = null } = {}) {
@@ -539,19 +644,6 @@ function timelineMarkup(projection, view) {
   return `<ol class="iw3-timeline">${view.rail.filter((item) => item.run).map((item) => `<li><span>${escapeHtml(shortTime(item.run.started_at))}</span><strong>${stageLabel(item.stage)}</strong><small>${stateLabel(item.status)}</small></li>`).join("")}</ol>`;
 }
 
-function hypothesisMarkup(items) {
-  return `<ol class="iw3-hypotheses">${(items || []).map((item) => `<li><div><strong>${escapeHtml(typeof item === "string" ? item : item.statement || item.title || "Hypothesis")}</strong>${typeof item === "object" && item.confidence !== undefined ? `<span>${escapeHtml(`${Math.round(Number(item.confidence) * 100)}%`)}</span>` : ""}</div>${typeof item === "object" && item.falsification_condition ? `<p>Falsify with: ${escapeHtml(item.falsification_condition)}</p>` : ""}${typeof item === "object" ? `<small>${escapeHtml(titleCase(item.status || "open"))} · ${(item.supporting_evidence_refs || []).length} supporting · ${(item.contradicting_evidence_refs || []).length} contradicting</small>` : ""}</li>`).join("") || "<li>No hypothesis published yet.</li>"}</ol>`;
-}
-
-function actionDecisionMarkup(action) {
-  return `<div class="iw3-decision-action"><strong>${escapeHtml(action.title)}</strong><p>${escapeHtml(action.summary)}</p><small>${escapeHtml(action.command_label || action.command_id)} · decision r${escapeHtml(String(action.decision_revision))}</small></div>`;
-}
-
-function factsMarkup(output) {
-  if (!output?.facts?.length) return "";
-  return `<section class="iw3-panel iw3-span-two"><h4>Detected facts</h4>${listMarkup(output.facts, "")}</section>`;
-}
-
 function listMarkup(items, empty) {
   return `<ul class="iw3-record-list">${(items || []).map((item) => `<li>${escapeHtml(typeof item === "string" ? item : item.statement || item.summary || (item.label && item.value ? `${item.label}: ${item.value}` : JSON.stringify(item)))}</li>`).join("") || `<li>${escapeHtml(empty)}</li>`}</ul>`;
 }
@@ -579,25 +671,6 @@ function thresholdCopy(thresholds, unit) {
 
 function loadingMarkup(error) {
   return `<div class="iw3-shell is-loading"><main class="iw3-loading" role="${error ? "alert" : "status"}"><span aria-hidden="true"></span><h2>${error ? "Incident unavailable" : "Opening incident"}</h2><p>${escapeHtml(error || "Loading the canonical workflow state.")}</p>${error ? '<button type="button" data-workbench-retry>Retry</button>' : ""}</main></div>`;
-}
-
-function stageHeadline(stage, run) {
-  if (run.status === "RUNNING") return `${stageLabel(stage)} is running`;
-  if (run.status === "SUCCEEDED") return `${stageLabel(stage)} is ready`;
-  if (run.status === "FAILED") return `${stageLabel(stage)} needs attention`;
-  return stageLabel(stage);
-}
-
-function stageDescription(stage) {
-  return ({ DETECT: "Confirm the live incident signal.", TRIAGE: "Bound impact and unknowns.", INVESTIGATE: "Test evidence-backed hypotheses.", DECIDE: "Choose a bounded response.", RESPOND: "Approve and execute the local repair.", VERIFY: "Evaluate fresh post-action evidence." })[stage];
-}
-
-function footerCopy(run) {
-  if (run?.status === "RUNNING") return "The next stage remains locked while this work runs.";
-  if (run?.status === "SUCCEEDED") return "Review this result, then advance when ready.";
-  if (run?.status === "FAILED") return "Retry this stage or escalate with a reason.";
-  if (run?.status === "NEEDS_HUMAN") return "Human input is required before the workflow can continue.";
-  return "Waiting for the backend to start this stage.";
 }
 
 function formatDuration(seconds) {
