@@ -6,6 +6,8 @@ import {
   applyIncidentEventV3,
   buildWorkflowCommandV3,
   incidentFlowViewV3,
+  historicalIncidentEdgeMarkupV3,
+  historicalIncidentEdgePathV3,
   metricSeriesPathsV3,
   metricTrendV3,
   parseIncidentWorkspaceUrlV3,
@@ -100,7 +102,7 @@ function projection(overrides = {}) {
   };
 }
 
-test("workbench renders one sparse stage, keeps future stages locked, and never leaks future output", () => {
+test("workbench renders one stage-native workspace, keeps future stages locked, and never leaks future output", () => {
   const value = projection();
   const view = workbenchViewV3(value, { reviewStage: null });
   const html = renderIncidentWorkbenchV3(value, { connection: "connected", now: Date.parse("2026-07-31T00:01:05Z") });
@@ -108,8 +110,11 @@ test("workbench renders one sparse stage, keeps future stages locked, and never 
   assert.equal(view.visibleStage, "TRIAGE");
   assert.equal(view.reviewingHistory, false);
   assert.match(html, /data-active-stage="TRIAGE"/);
-  assert.match(html, /1 fact · 0 open/);
-  assert.match(html, /<strong>1 fact<\/strong><strong>0 open questions<\/strong>/);
+  assert.match(html, /data-stage-workspace="triage-scope-severity"/);
+  assert.match(html, /data-stage-signature="triage-scope-severity"/);
+  assert.match(html, /Scope \/ Severity/);
+  assert.match(html, /data-agent-stage="TRIAGE"[^>]*data-agent-role="Observer"/);
+  assert.match(html, /stage-run-2/);
   assert.doesNotMatch(html, /Scope under review/);
   assert.doesNotMatch(html, /INVESTIGATE visible result|DECIDE visible result|RESPOND visible result|VERIFY visible result/);
   assert.match(html, /data-stage="INVESTIGATE"[^>]*disabled/);
@@ -122,7 +127,78 @@ test("workbench renders one sparse stage, keeps future stages locked, and never 
   assert.match(html, /<h3 id="iw3-stage-title">/);
 });
 
-test("current stage is one work-state-first operations home", () => {
+test("each stage mounts only its own workspace signature and exact stage-run Agent Rail", () => {
+  const signatures = {
+    DETECT: "detect-signal-board",
+    TRIAGE: "triage-scope-severity",
+    INVESTIGATE: "investigate-diagnosis-graph",
+    DECIDE: "decide-decision-matrix",
+    RESPOND: "respond-execution-console",
+    VERIFY: "verify-before-after-monitor"
+  };
+  const roles = {
+    DETECT: "Observer",
+    TRIAGE: "Observer",
+    INVESTIGATE: "Investigator + Critic",
+    DECIDE: "Evaluator",
+    RESPOND: "Executor",
+    VERIFY: "Verifier"
+  };
+
+  for (const stage of stages) {
+    const value = projection({ current_stage: stage });
+    const index = stages.indexOf(stage);
+    const future = stages[index + 1];
+    if (future) {
+      value.current_attempt.stage_runs.push({
+        stage: future,
+        stage_run_id: `future-${future.toLowerCase()}`,
+        status: "SUCCEEDED",
+        progress_percent: 100,
+        started_at: "2026-07-31T00:02:00Z",
+        verification_deadline_at: null,
+        completed_at: "2026-07-31T00:02:01Z",
+        summary: `FUTURE_${future}_OUTPUT_MUST_NOT_RENDER`,
+        evidence_refs: [],
+        output: { summary: `FUTURE_${future}_OUTPUT_MUST_NOT_RENDER` }
+      });
+    }
+    const html = renderIncidentWorkbenchV3(value, { connection: "connected", now: Date.parse("2026-07-31T00:01:05Z") });
+    assert.match(html, new RegExp(`data-stage-signature="${signatures[stage]}"`));
+    for (const otherStage of stages.filter((candidate) => candidate !== stage)) {
+      assert.doesNotMatch(html, new RegExp(`data-stage-signature="${signatures[otherStage]}"`));
+    }
+    const rolePattern = roles[stage].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    assert.match(html, new RegExp(`data-agent-stage="${stage}"[^>]*data-agent-role="${rolePattern}"`));
+    assert.match(html, new RegExp(`stage-run-${index + 1}`));
+    assert.doesNotMatch(html, /FUTURE_[A-Z]+_OUTPUT_MUST_NOT_RENDER/);
+  }
+});
+
+test("historical edge rendering uses one liveEdgePath with halo, core, hit target, and stale gating", () => {
+  const value = projection({ current_stage: "INVESTIGATE" });
+  const edge = value.graph.edges[0];
+  const nodeById = new Map(value.graph.nodes.map((node) => [node.component_id, node]));
+  const path = historicalIncidentEdgePathV3({ x: 32, y: 50 }, { x: 68, y: 50 });
+  assert.match(path, /^M /);
+  const active = historicalIncidentEdgeMarkupV3(edge, { x: 32, y: 50 }, { x: 68, y: 50 }, {
+    tone: "affected", active: true, nodeById
+  });
+  assert.match(active, /class="edge-line is-affected"/);
+  assert.match(active, /signal-projectile-halo/);
+  assert.match(active, /signal-projectile-core/);
+  assert.match(active, /class="edge-hit"/);
+  assert.match(active, /is-signal-active/);
+  assert.doesNotMatch(active, /marker-end=|<marker|iw3-graph-pulse/);
+
+  const stale = historicalIncidentEdgeMarkupV3(edge, { x: 32, y: 50 }, { x: 68, y: 50 }, {
+    tone: "stale", active: true, nodeById
+  });
+  assert.match(stale, /class="edge-group path-runtime relation-calls signal-observed presentation-affected iw3-graph-edge-group is-stale"/);
+  assert.doesNotMatch(stale, /is-signal-active/);
+});
+
+test("current stage keeps a shared live-vitals strip beside its stage workspace", () => {
   const value = projection();
   const series = {
     series: [
@@ -136,11 +212,10 @@ test("current stage is one work-state-first operations home", () => {
     connection: "connected", series, now: Date.parse("2026-07-31T00:01:05Z")
   });
 
-  assert.match(html, /class="iw3-operations-home"/);
-  assert.match(html, /class="iw3-work-status"/);
-  assert.match(html, /class="iw3-home-flow"/);
-  assert.match(html, /class="iw3-home-signals"/);
-  assert.match(html, /class="iw3-home-agent"/);
+  assert.match(html, /data-stage-signature="triage-scope-severity"/);
+  assert.match(html, /aria-label="Live Vitals"/);
+  assert.match(html, /Errors · Latency · Traffic/);
+  assert.match(html, /class="iw3-agent-portal iw3-agent-rail"/);
   assert.equal((html.match(/class="iw3-signal-card"/g) || []).length, 3);
   assert.match(html, /class="iw3-health-card"/);
   assert.match(html, /OTEL/);
@@ -149,13 +224,13 @@ test("current stage is one work-state-first operations home", () => {
 });
 
 test("embedded and modal Dataflow share evidence-backed identities and never infer a missing edge", () => {
-  const value = projection();
+  const value = projection({ current_stage: "DETECT" });
   const flow = incidentFlowViewV3(value, { now: Date.parse("2026-07-31T00:01:05Z") });
   assert.deepEqual(flow.nodes.map((node) => node.component_id), ["checkout", "payment"]);
   assert.deepEqual(flow.edges.map((edge) => edge.edge_id), ["checkout-payment"]);
 
   const home = renderIncidentWorkbenchV3(value, { connection: "connected", now: Date.parse("2026-07-31T00:01:05Z") });
-  const modal = renderIncidentWorkbenchV3(value, { connection: "connected", panel: "graph", now: Date.parse("2026-07-31T00:01:05Z") });
+  const modal = renderIncidentWorkbenchV3(projection({ current_stage: "INVESTIGATE" }), { connection: "connected", panel: "graph", now: Date.parse("2026-07-31T00:01:05Z") });
   assert.match(home, /data-home-graph-node="checkout"/);
   assert.match(home, /data-home-graph-edge="checkout-payment"/);
   assert.match(modal, /data-graph-node="checkout"/);
@@ -234,7 +309,7 @@ test("successful Triage facts are a bounded scope without an extra classificatio
   assert.doesNotMatch(html, /Scope under review/);
 });
 
-test("successful Verify renders a completed recovery instead of a stale countdown", () => {
+test("successful Verify renders a completed before/after monitor instead of a stale countdown", () => {
   const value = projection({ current_stage: "VERIFY" });
   const run = value.current_attempt.stage_runs.at(-1);
   run.status = "SUCCEEDED";
@@ -247,9 +322,14 @@ test("successful Verify renders a completed recovery instead of a stale countdow
     connection: "connected", now: Date.parse("2026-07-31T00:03:00Z")
   });
   assert.match(html, /Recovery confirmed/);
-  assert.match(html, /4 recovery signals/);
-  assert.match(html, /Observation window<\/span><strong>Complete<\/strong><small data-tone="healthy">Healthy/);
-  assert.doesNotMatch(html, /remaining|Waiting for post-action samples|data-verification-remaining/);
+  assert.match(html, /data-stage-signature="verify-before-after-monitor"/);
+  assert.match(html, /Before action/);
+  assert.match(html, /After action/);
+  assert.match(html, /Verification conditions/);
+  assert.match(html, /data-trace-status="not-observed"/);
+  assert.match(html, /Checkout → Payment post-action trace/);
+  assert.match(html, /Not observed/);
+  assert.doesNotMatch(html, /Waiting for post-action samples|data-verification-remaining/);
 });
 
 test("Observability reports only real retention and honest external dashboard state", () => {
@@ -343,7 +423,7 @@ test("failed stages expose a compact recovery state without raw provider text", 
   assert.doesNotMatch(html, /codex_timeout/);
 });
 
-test("Agent detail is hidden by default and Activity scopes it to the exact stage run", () => {
+test("Agent Rail stays mounted and Activity scopes it to the exact stage run", () => {
   const value = projection();
   const currentRun = value.current_attempt.stage_runs.at(-1);
   value.agent_activity = [
@@ -352,9 +432,12 @@ test("Agent detail is hidden by default and Activity scopes it to the exact stag
   ];
 
   const html = renderIncidentWorkbenchV3(value, { connection: "connected" });
-  assert.doesNotMatch(html, /CURRENT AGENT RESULT/);
+  assert.match(html, /class="iw3-agent-portal iw3-agent-rail"/);
+  assert.match(html, /data-agent-stage="TRIAGE"[^>]*data-agent-role="Observer"/);
+  assert.match(html, /stage-run-2/);
+  assert.match(html, /CURRENT AGENT RESULT/);
   assert.doesNotMatch(html, /OLD SUPERSEDED AGENT RESULT/);
-  assert.match(html, /Observer · 0 evidence · Succeeded/);
+  assert.match(html, /Current run/);
   assert.match(html, /data-open-panel="activity">Activity/);
 
   const activity = renderIncidentWorkbenchV3(value, { connection: "connected", panel: "activity" });
@@ -382,7 +465,9 @@ test("Investigate keeps query detail in Evidence while showing only compact curr
   }];
 
   const html = renderIncidentWorkbenchV3(value, { connection: "connected" });
+  assert.match(html, /data-stage-signature="investigate-diagnosis-graph"/);
   assert.match(html, /1 query/);
+  assert.match(html, /Diagnosis Graph/);
   assert.match(html, /data-open-panel="evidence">Evidence/);
   assert.match(html, /data-open-panel="graph">Dataflow/);
   assert.doesNotMatch(html, /Evidence Worker queries|incident\.current-signals\.v1|Checkout cannot reach Payment in three fresh traces|Replan triggered/);
@@ -418,10 +503,54 @@ test("Decide renders its preflight-bound candidate before any Respond action exi
   value.actions = [];
 
   const html = renderIncidentWorkbenchV3(value, { connection: "connected" });
-  assert.match(html, /Recommended action: Restore Payment reachability · Risk: bounded/);
-  assert.match(html, /Risk: bounded/);
-  assert.doesNotMatch(html, /astronomy\.restore-payment-and-recreate-checkout|Checkout only|Set the real local flag off/);
+  assert.match(html, /data-stage-signature="decide-decision-matrix"/);
+  assert.match(html, /Decision Matrix/);
+  assert.match(html, /<table class="iw3-decision-table"/);
+  assert.match(html, /scope="col"/);
+  assert.match(html, /Restore Payment reachability/);
+  assert.match(html, /Checkout only/);
+  assert.match(html, /Set the real local flag off/);
+  assert.doesNotMatch(html, /Execution Console|data-action-id/);
   assert.doesNotMatch(html, /No response candidate has been published/);
+});
+
+test("Respond execution console publishes only backend receipt fields and step states", () => {
+  const value = projection({ current_stage: "RESPOND" });
+  const run = value.current_attempt.stage_runs.at(-1);
+  value.current_attempt.action_receipt_id = "receipt-respond";
+  value.actions = [{
+    action_id: "action-respond", attempt_id: value.current_attempt.attempt_id, stage_run_id: run.stage_run_id,
+    status: "SUCCEEDED", title: "Restore Payment and recreate Checkout", summary: "Bounded local recovery",
+    component_id: "checkout", command_id: "astronomy.restore-payment-and-recreate-checkout",
+    decision_revision: value.decision_revision, expected_before: "paymentUnreachable=on", expected_after: "paymentUnreachable=off",
+    receipt: {
+      receipt_id: "receipt-respond", status: "SUCCEEDED", output_summary: "Payment restored and Checkout recreated.",
+      started_at: "2026-07-31T00:01:00Z", completed_at: "2026-07-31T00:01:05Z"
+    },
+    rollback_receipt: { rollback_receipt_id: "rollback-respond", status: "NOT_USED", output_summary: "No rollback required." },
+    execution_steps: [{ label: "Disable local fault flag", state: "SUCCEEDED" }, { label: "Recreate Checkout", state: "SUCCEEDED" }]
+  }];
+  const html = renderIncidentWorkbenchV3(value, { connection: "connected" });
+  assert.match(html, /data-stage-signature="respond-execution-console"/);
+  assert.match(html, /Receipt ID[\s\S]*receipt-respond/);
+  assert.match(html, /Started[\s\S]*Ended/);
+  assert.match(html, /Payment restored and Checkout recreated\./);
+  assert.match(html, /Rollback[\s\S]*Not Used/);
+  assert.match(html, /data-step-state="SUCCEEDED"/);
+});
+
+test("Verify only marks a Checkout to Payment trace observed from post-cutoff evidence", () => {
+  const value = projection({ current_stage: "VERIFY" });
+  const run = value.current_attempt.stage_runs.at(-1);
+  value.evidence_queries = [{
+    query_id: "verify-trace", stage_run_id: run.stage_run_id, stage: "VERIFY", edge_ids: ["checkout-payment"],
+    component_ids: ["checkout", "payment"], state: "SUCCEEDED", result_summary: "Fresh trace observed",
+    evidence_refs: ["trace-after"], observation_timestamps: ["2026-07-31T00:01:40Z"]
+  }];
+  const html = renderIncidentWorkbenchV3(value, { connection: "connected", now: Date.parse("2026-07-31T00:01:45Z") });
+  assert.match(html, /data-trace-status="observed"/);
+  assert.match(html, /Checkout → Payment post-action trace[\s\S]*Observed/);
+  assert.match(html, /trace-after/);
 });
 
 test("changed decision premises show an actionable rerun instead of a disabled Next loop", () => {
@@ -515,12 +644,15 @@ test("Verify publishes the backend-owned deadline and real signal cards show tre
   const html = renderIncidentWorkbenchV3(value, {
     connection: "connected", series, now: Date.parse("2026-07-31T00:01:45Z")
   });
-  assert.match(html, /data-verification-remaining data-deadline="2026-07-31T00:02:00Z">0m 15s/);
-  assert.match(html, /Observing post-action telemetry · 0m 15s left/);
+  assert.match(html, /data-stage-signature="verify-before-after-monitor"/);
+  assert.match(html, /data-trace-status="not-observed"/);
+  assert.match(html, /0m 15s remaining/);
+  assert.match(html, /Before action/);
+  assert.match(html, /After action/);
   assert.match(html, /data-series-id="checkout-errors" data-tone="healthy"/);
   assert.match(html, /data-series-id="checkout-traffic" data-tone="observed"/);
   assert.match(html, /iw3-signal-card-label">Errors<\/strong>|iw3-signal-card-label">Traffic<\/strong>/);
-  assert.doesNotMatch(html, /data-trend="falling">Falling 50%|0m 20s window/);
+  assert.doesNotMatch(html, /0m 20s window/);
   const monitor = renderIncidentWorkbenchV3(value, {
     connection: "connected", panel: "metrics", series, now: Date.parse("2026-07-31T00:01:45Z")
   });
@@ -815,7 +947,7 @@ test("typed metric paths preserve gaps and never connect points across series", 
   assert.equal(paths[1].segments[0].length, 2);
 });
 
-test("Investigate graph is an accessible modal without turning node review into an agent command", () => {
+test("Investigate graph is an accessible modal with historical edge projectiles", () => {
   const value = projection({ current_stage: "INVESTIGATE" });
   value.graph.nodes.push({ component_id: "catalog", display_name: "Catalog", runtime_status: "healthy", impact_status: "unaffected" });
   const html = renderIncidentWorkbenchV3(value, { connection: "connected", panel: "graph", componentId: "checkout", now: Date.parse("2026-07-31T00:01:05Z") });
@@ -830,10 +962,13 @@ test("Investigate graph is an accessible modal without turning node review into 
   assert.match(html, /data-graph-node="payment" data-graph-x="68" data-graph-y="50"/);
   assert.doesNotMatch(html, /data-graph-node="catalog"/);
   assert.doesNotMatch(html, /style="--x:/);
-  assert.match(html, /class="iw3-graph-edge/);
+  assert.match(html, /class="edge-group path-runtime relation-calls signal-impact presentation-affected iw3-graph-edge-group/);
   assert.match(html, /data-graph-edge="checkout-payment"/);
-  assert.match(html, /marker-end="url\(#iw3-graph-arrow\)"/);
-  assert.match(html, /class="iw3-graph-pulse/);
+  assert.match(html, /class="signal-projectile signal-projectile-halo/);
+  assert.match(html, /class="signal-projectile signal-projectile-core/);
+  assert.match(html, /class="edge-hit"/);
+  assert.match(html, /is-signal-active/);
+  assert.doesNotMatch(html, /marker-end=|iw3-graph-pulse|iw3-graph-edge-peek/);
   assert.doesNotMatch(html, /No evidence-backed impact graph is available/);
   assert.match(html, /data-agent-investigate="checkout"/);
   assert.doesNotMatch(html.match(/data-graph-node="checkout"[^>]*>/)?.[0] || "", /data-agent-investigate/);
@@ -850,7 +985,7 @@ test("Dataflow never turns an adjacent but unimpacted component into the inciden
   assert.doesNotMatch(html, /data-graph-node="payment"|data-graph-edge="checkout-payment"/);
 });
 
-test("Agent Portal stays hidden until a real component is selected and only exposes scoped evidence", () => {
+test("Agent Rail stays persistent while an opened context exposes scoped evidence", () => {
   const value = projection();
   value.agent_activity = [{
     activity_id: "checkout-agent", agent_run_id: "agent-checkout", stage_run_id: "stage-run-2", stage: "TRIAGE",
@@ -872,9 +1007,13 @@ test("Agent Portal stays hidden until a real component is selected and only expo
   }] };
 
   const closed = renderIncidentWorkbenchV3(value, { connection: "connected" });
-  assert.doesNotMatch(closed, /class="iw3-agent-portal"|Checkout error and dependency failure correlate/);
+  assert.match(closed, /class="iw3-agent-portal iw3-agent-rail"/);
+  assert.match(closed, /data-agent-stage="TRIAGE"[^>]*data-agent-role="Observer"/);
+  assert.match(closed, /Checkout error and dependency failure correlate/);
+  assert.match(closed, /PAYMENT ONLY/);
   assert.match(closed, /data-component-select="checkout"/);
-  assert.match(closed, /data-edge-select="checkout-payment"/);
+  assert.doesNotMatch(closed, /data-edge-select="checkout-payment"/);
+  assert.doesNotMatch(closed, /marker-end=/);
 
   const portal = renderIncidentWorkbenchV3(value, {
     connection: "connected", series, portalOpen: true, componentId: "checkout", edgeId: "checkout-payment", portalTab: "evidence"
@@ -919,8 +1058,10 @@ test("Dataflow turns stale immediately when the canonical clock expires", () => 
     connection: "connected", panel: "graph", componentId: "checkout", now: Date.parse("2026-07-31T00:02:00Z")
   });
   assert.match(html, /iw3-graph-node is-stale/);
-  assert.match(html, /iw3-graph-edge is-stale/);
-  assert.doesNotMatch(html, /iw3-graph-pulse/);
+  assert.match(html, /iw3-graph-edge-group is-stale/);
+  assert.match(html, /signal-projectile signal-projectile-halo/);
+  assert.doesNotMatch(html, /is-signal-active/);
+  assert.doesNotMatch(html, /marker-end=/);
 });
 
 test("projection refreshes coalesce while preserving one trailing refresh", async () => {
@@ -949,6 +1090,10 @@ test("controller traps modal focus, closes on Escape, restores focus, and uses i
   assert.match(source, /if \(this\.ui\.reviewStage \|\| this\.projection\.current_attempt\?\.current_stage !== "INVESTIGATE"/);
   assert.match(source, /node\.style\.left = `\$\{node\.dataset\.graphX\}%`/);
   assert.match(source, /node\.style\.top = `\$\{node\.dataset\.graphY\}%`/);
+  assert.match(source, /data-agent-rail-dialog/);
+  assert.match(source, /\["Enter", " "\]/);
+  assert.match(source, /data-edge-select/);
+  assert.match(source, /querySelector\("\[data-agent-rail-toggle\]"\)\?\.focus\(\)/);
 });
 
 test("V3 stage shell owns viewport overflow and collapses safely at 451 by 859", async () => {
@@ -956,10 +1101,14 @@ test("V3 stage shell owns viewport overflow and collapses safely at 451 by 859",
   assert.match(styles, /\.iw3-controller-root, \.iw3-shell \{ width: 100%; height: 100%; min-width: 0; min-height: 0; \}/);
   assert.match(styles, /\.app-shell\[data-incident-workspace="v3"\] > main \{ display: grid; grid-template-rows: 64px minmax\(0, 1fr\); overflow: hidden; \}/);
   assert.match(styles, /\.iw3-stage-surface \{[^}]*min-width: 0;[^}]*overflow: auto;/);
+  assert.match(styles, /\.app-shell\[data-incident-workspace="v3"\] \.iw3-workspace-body \{ display: grid; grid-template-columns: minmax\(0, 1fr\) 320px;/);
   assert.match(styles, /@media \(max-width: 640px\)[\s\S]*\.iw3-stage-rail \{ display: flex; overflow-x: auto;/);
   assert.match(styles, /@media \(max-width: 640px\)[\s\S]*\.iw3-stage-grid, \.iw3-detect-grid \{ grid-template-columns: minmax\(0, 1fr\); \}/);
   assert.match(styles, /@media \(max-width: 640px\)[\s\S]*#development-button \{ display: none !important; \}/);
-  assert.match(styles, /@media \(prefers-reduced-motion: reduce\)[\s\S]*\.iw3-graph-edge\.is-active[^}]*animation: none;/);
+  assert.match(styles, /\.is-live-source \.signal-projectile-halo[^}]*stroke-width: 5/);
+  assert.match(styles, /\.is-live-source \.signal-projectile-core[^}]*stroke-width: 2\.2/);
+  assert.match(styles, /\.is-live-source \.edge-group\.is-signal-active \.signal-projectile/);
+  assert.doesNotMatch(styles, /iw3-historical-projectile|iw3-graph-edge/);
 });
 
 test("URL-pinned Incident starts V3 directly while Live keeps a separate V3 incident adapter", async () => {

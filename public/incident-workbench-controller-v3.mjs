@@ -218,6 +218,14 @@ export class IncidentWorkbenchControllerV3 {
     if (!this.active) return;
     const retry = event.target.closest("[data-workbench-retry]");
     if (retry) return this.activate(this.caseId);
+    const railToggle = event.target.closest("[data-agent-rail-toggle]");
+    if (railToggle) {
+      this.ui.portalOpen = !this.ui.portalOpen;
+      this.persistUrl();
+      this.render();
+      if (this.ui.portalOpen) this.element.querySelector("[data-portal-close]")?.focus();
+      return;
+    }
     if (event.target.closest("[data-portal-close]")) return this.closePortal();
     const portalTab = event.target.closest("[data-portal-tab]");
     if (portalTab) {
@@ -427,8 +435,16 @@ export class IncidentWorkbenchControllerV3 {
 
   handleKeyDown(event) {
     if (!this.active) return;
+    const edge = event.target.closest?.("[data-edge-select]");
+    if (edge && ["Enter", " "].includes(event.key)) {
+      event.preventDefault();
+      this.openPortal({ componentId: edge.dataset.edgeSource || null, edgeId: edge.dataset.edgeSelect, seriesId: null });
+      return;
+    }
     const modal = this.element.querySelector("[data-workbench-modal]");
-    if (!modal) {
+    const rail = this.element.querySelector('[data-agent-rail-dialog="true"]');
+    const focusContainer = modal || rail;
+    if (!focusContainer) {
       if (event.key === "Escape" && this.ui.portalOpen) {
         event.preventDefault();
         this.closePortal();
@@ -437,15 +453,16 @@ export class IncidentWorkbenchControllerV3 {
     }
     if (event.key === "Escape") {
       event.preventDefault();
-      if (this.ui.commandDialog) {
+      if (modal && this.ui.commandDialog) {
         this.ui.commandDialog = null;
         this.render();
         this.restoreFocus();
-      } else this.closePanel();
+      } else if (modal) this.closePanel();
+      else this.closePortal();
       return;
     }
     if (event.key !== "Tab") return;
-    const focusable = [...modal.querySelectorAll('button:not([disabled]), textarea:not([disabled]), input:not([disabled]), [href], [tabindex]:not([tabindex="-1"])')];
+    const focusable = [...focusContainer.querySelectorAll('button:not([disabled]), textarea:not([disabled]), input:not([disabled]), [href], [tabindex]:not([tabindex="-1"])')];
     if (!focusable.length) return;
     const first = focusable[0];
     const last = focusable.at(-1);
@@ -475,7 +492,7 @@ export class IncidentWorkbenchControllerV3 {
     this.ui.edgeId = null;
     this.persistUrl();
     this.render();
-    this.element.querySelector("#incident-stage-surface")?.focus();
+    this.element.querySelector("[data-agent-rail-toggle]")?.focus();
   }
 
   focusModal() {
@@ -603,7 +620,7 @@ function captureFocus(root, activeElement) {
     "data-panel-close", "data-graph-close", "data-graph-node", "data-stage",
     "data-workflow-command", "data-action-decision", "data-agent-investigate",
     "data-component-select", "data-edge-select", "data-portal-component", "data-portal-close",
-    "data-portal-tab", "data-agent-question", "data-agent-question-submit"
+    "data-portal-tab", "data-agent-question", "data-agent-question-submit", "data-agent-rail-toggle"
   ];
   let selector = activeElement.id ? `#${cssEscape(activeElement.id)}` : null;
   if (!selector && typeof activeElement.hasAttribute === "function") {
