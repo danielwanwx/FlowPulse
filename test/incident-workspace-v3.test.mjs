@@ -108,7 +108,9 @@ test("workbench renders one sparse stage, keeps future stages locked, and never 
   assert.equal(view.visibleStage, "TRIAGE");
   assert.equal(view.reviewingHistory, false);
   assert.match(html, /data-active-stage="TRIAGE"/);
-  assert.match(html, /Scope under review/);
+  assert.match(html, /1 fact · 0 open/);
+  assert.match(html, /<strong>1 fact<\/strong><strong>0 open questions<\/strong>/);
+  assert.doesNotMatch(html, /Scope under review/);
   assert.doesNotMatch(html, /INVESTIGATE visible result|DECIDE visible result|RESPOND visible result|VERIFY visible result/);
   assert.match(html, /data-stage="INVESTIGATE"[^>]*disabled/);
   assert.match(html, /data-workflow-command="NEXT"/);
@@ -163,6 +165,91 @@ test("embedded and modal Dataflow share evidence-backed identities and never inf
   const missing = renderIncidentWorkbenchV3(value, { connection: "connected", now: Date.parse("2026-07-31T00:01:05Z") });
   assert.match(missing, /data-home-graph-node="checkout"/);
   assert.doesNotMatch(missing, /data-home-graph-edge|data-edge-select="checkout-payment"/);
+});
+
+test("Verify keeps a recovered dependency visible only while a current pulse anchors it", () => {
+  const value = projection({ current_stage: "VERIFY", impacted_path: ["checkout"] });
+  value.graph.nodes = value.graph.nodes.map((node) => ({
+    ...node, runtime_status: "healthy", impact_status: "healthy"
+  }));
+  value.graph.edges[0].status = "healthy";
+  value.graph.active_pulses = [{
+    pulse_id: "recovery-pulse", component_ids: ["checkout", "payment"],
+    edge_ids: ["checkout-payment"], expires_at: "2026-07-31T00:02:00Z"
+  }];
+  value.incident_clock.fresh_until = "2026-07-31T00:05:00Z";
+  value.incident_clock.max_interpolation_seconds = 240;
+
+  const active = renderIncidentWorkbenchV3(value, {
+    connection: "connected", now: Date.parse("2026-07-31T00:01:05Z")
+  });
+  assert.match(active, /data-home-graph-node="checkout"/);
+  assert.match(active, /data-home-graph-node="payment"/);
+  assert.match(active, /data-home-graph-edge="checkout-payment"/);
+  assert.match(active, /class="iw3-health-card" data-tone="healthy"/);
+  assert.doesNotMatch(active, /No evidence-backed edge/);
+
+  const expired = renderIncidentWorkbenchV3(value, {
+    connection: "connected", now: Date.parse("2026-07-31T00:02:01Z")
+  });
+  assert.match(expired, /data-home-graph-node="checkout"/);
+  assert.doesNotMatch(expired, /data-home-graph-node="payment"|data-home-graph-edge="checkout-payment"/);
+  assert.match(expired, /No evidence-backed edge/);
+});
+
+test("Resolved keeps only canonical one-hop repaired dependencies for audit", () => {
+  const value = projection({ current_stage: "VERIFY", impacted_path: ["checkout"], lifecycle_state: "RESOLVED" });
+  value.graph.nodes.push({ component_id: "email", display_name: "Email", runtime_status: "healthy", impact_status: "healthy" });
+  value.graph.edges.push({ edge_id: "payment-email", source_component_id: "payment", target_component_id: "email", status: "healthy" });
+  value.graph.active_pulses = [];
+
+  const flow = incidentFlowViewV3(value, { now: Date.parse("2026-07-31T00:01:05Z") });
+  assert.deepEqual(flow.nodes.map((node) => node.component_id), ["checkout", "payment"]);
+  assert.deepEqual(flow.edges.map((edge) => edge.edge_id), ["checkout-payment"]);
+
+  const html = renderIncidentWorkbenchV3(value, {
+    connection: "connected", now: Date.parse("2026-07-31T00:01:05Z")
+  });
+  assert.match(html, /data-home-graph-node="checkout"/);
+  assert.match(html, /data-home-graph-node="payment"/);
+  assert.match(html, /data-home-graph-edge="checkout-payment"/);
+  assert.doesNotMatch(html, /data-home-graph-node="email"|data-home-graph-edge="payment-email"/);
+});
+
+test("successful Triage facts are a bounded scope without an extra classification field", () => {
+  const value = projection({ current_stage: "TRIAGE" });
+  const run = value.current_attempt.stage_runs.at(-1);
+  run.status = "SUCCEEDED";
+  run.output = {
+    facts: Array.from({ length: 7 }, (_, index) => `fact-${index + 1}`),
+    unknowns: ["Whether the upstream retry budget is exhausted"],
+    questions: ["Did the latest deploy change retries?"]
+  };
+
+  const html = renderIncidentWorkbenchV3(value, {
+    connection: "connected", now: Date.parse("2026-07-31T00:01:05Z")
+  });
+  assert.match(html, /7 facts · 1 open/);
+  assert.match(html, /7 facts · 1 open question/);
+  assert.doesNotMatch(html, /Scope under review/);
+});
+
+test("successful Verify renders a completed recovery instead of a stale countdown", () => {
+  const value = projection({ current_stage: "VERIFY" });
+  const run = value.current_attempt.stage_runs.at(-1);
+  run.status = "SUCCEEDED";
+  run.output = {
+    summary: "Recovery confirmed with fresh telemetry.",
+    facts: ["Fresh trace", "Error rate recovered", "Latency recovered", "Traffic recovered"]
+  };
+
+  const html = renderIncidentWorkbenchV3(value, {
+    connection: "connected", now: Date.parse("2026-07-31T00:03:00Z")
+  });
+  assert.match(html, /Recovery confirmed/);
+  assert.match(html, /4 recovery signals/);
+  assert.match(html, /Observation window<\/span><strong>Complete<\/strong><small data-tone="healthy">Healthy/);
+  assert.doesNotMatch(html, /remaining|Waiting for post-action samples|data-verification-remaining/);
 });
 
 test("Observability reports only real retention and honest external dashboard state", () => {
@@ -754,6 +841,7 @@ test("Investigate graph is an accessible modal without turning node review into 
 
 test("Dataflow never turns an adjacent but unimpacted component into the incident path", () => {
   const value = projection({ current_stage: "INVESTIGATE", impacted_path: ["checkout"] });
+  value.graph.active_pulses = [];
   const html = renderIncidentWorkbenchV3(value, {
     connection: "connected", panel: "graph", componentId: "checkout", now: Date.parse("2026-07-31T00:01:05Z")
   });

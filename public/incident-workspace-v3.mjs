@@ -350,7 +350,7 @@ function stageLeadMarkup(stage, projection, run, series, now) {
     if (!bounded) return '<p class="iw3-stage-lead">Scope under review</p>';
     const facts = (run.output?.facts || []).length;
     const unknowns = (run.output?.unknowns || []).length;
-    return `<p class="iw3-stage-lead">Affected path: ${escapeHtml(path)} · ${facts} facts · ${unknowns} open question${unknowns === 1 ? "" : "s"}</p>`;
+    return `<p class="iw3-stage-lead">Affected path: ${escapeHtml(path)} · ${facts} fact${facts === 1 ? "" : "s"} · ${unknowns} open question${unknowns === 1 ? "" : "s"}</p>`;
   }
   if (stage === "INVESTIGATE") {
     const leading = leadingHypothesis((projection.hypotheses || []).filter((item) => item.stage_run_id === run.stage_run_id));
@@ -377,6 +377,7 @@ function stageLeadMarkup(stage, projection, run, series, now) {
 }
 
 function triageIsBounded(run) {
+  if (run.status === "SUCCEEDED" && (run.output?.facts || []).length > 0) return true;
   return [run.output?.scope_status, run.output?.impact_scope?.status]
     .some((value) => ["BOUNDED", "CONFIRMED"].includes(String(value || "").toUpperCase()));
 }
@@ -431,10 +432,24 @@ export function incidentFlowViewV3(projection, {
 } = {}) {
   const graph = projection?.graph || { nodes: [], edges: [], active_pulses: [] };
   const impacted = new Set(projection?.impacted_path || []);
+  const graphEdges = new Map((graph.edges || []).map((edge) => [edge.edge_id, edge]));
+  const activePulses = graphFreshness(projection, now) === "CURRENT"
+    ? (graph.active_pulses || []).filter((pulse) => Date.parse(pulse.expires_at) > now)
+    : [];
+  const pulseEdgeIds = new Set(activePulses.flatMap((pulse) => pulse.edge_ids || []).filter((edgeId) => graphEdges.has(edgeId)));
+  const pulseComponentIds = new Set(activePulses.flatMap((pulse) => pulse.component_ids || []));
+  for (const edgeId of pulseEdgeIds) {
+    const edge = graphEdges.get(edgeId);
+    pulseComponentIds.add(edge.source_component_id);
+    pulseComponentIds.add(edge.target_component_id);
+  }
+  const resolved = projection?.lifecycle_state === "RESOLVED";
   const edges = (graph.edges || []).filter((edge) => (
-    impacted.has(edge.source_component_id) && impacted.has(edge.target_component_id)
+    pulseEdgeIds.has(edge.edge_id)
+    || impacted.has(edge.source_component_id) && impacted.has(edge.target_component_id)
+    || resolved && (impacted.has(edge.source_component_id) || impacted.has(edge.target_component_id))
   ));
-  const componentIds = new Set([...impacted, ...edges.flatMap((edge) => [edge.source_component_id, edge.target_component_id])]);
+  const componentIds = new Set([...impacted, ...pulseComponentIds, ...edges.flatMap((edge) => [edge.source_component_id, edge.target_component_id])]);
   const selectedNodes = [...componentIds]
     .map((componentId) => (graph.nodes || []).find((node) => node.component_id === componentId))
     .filter(Boolean);
@@ -452,11 +467,8 @@ export function incidentFlowViewV3(projection, {
       y: 50
     }]))
     : topology.positions;
-  const activeEdgeIds = graphFreshness(projection, now) === "CURRENT"
-    ? new Set((graph.active_pulses || [])
-      .filter((pulse) => Date.parse(pulse.expires_at) > now)
-      .flatMap((pulse) => pulse.edge_ids))
-    : new Set();
+  const scopedEdgeIds = new Set(edges.map((edge) => edge.edge_id));
+  const activeEdgeIds = new Set([...pulseEdgeIds].filter((edgeId) => scopedEdgeIds.has(edgeId)));
   return {
     available: Boolean(topology.available && topology.nodes.length),
     compact,
@@ -466,7 +478,7 @@ export function incidentFlowViewV3(projection, {
       selected: node.component_id === selectedComponent,
       metric_label: componentMetricLabel(series, node.component_id)
     })) : [],
-    edges: topology.available ? topology.edges : [],
+    edges: topology.available ? topology.edges.filter((edge) => scopedEdgeIds.has(edge.edge_id)) : [],
     positions,
     activeEdgeIds
   };
@@ -527,7 +539,7 @@ function workStatusMarkup(stage, projection, run, now) {
   } else if (stage === "TRIAGE") {
     const facts = (run.output?.facts || []).length;
     const unknowns = (run.output?.unknowns || []).length;
-    primary = triageIsBounded(run) ? `${facts} facts · ${unknowns} open` : "Scope under review";
+    primary = triageIsBounded(run) ? `${facts} fact${facts === 1 ? "" : "s"} · ${unknowns} open` : "Scope under review";
     secondary = run.status === "SUCCEEDED" ? "Ready to investigate" : "Agent is bounding impact";
   } else if (stage === "INVESTIGATE") {
     const hypotheses = (projection.hypotheses || []).filter((item) => item.stage_run_id === run.stage_run_id);
@@ -544,11 +556,17 @@ function workStatusMarkup(stage, projection, run, now) {
     primary = action ? approvedActionLabel(action) || "Action ready" : "Waiting for action";
     secondary = action?.status === "AWAITING_APPROVAL" ? "Human approval required" : titleCase(action?.status || run.status);
   } else if (stage === "VERIFY") {
-    const deadline = Date.parse(run.verification_deadline_at || "");
-    const remaining = Number.isFinite(deadline) ? Math.max(0, Math.ceil((deadline - (now ?? Date.now())) / 1000)) : null;
-    const healthy = Number.isSafeInteger(run.output?.healthy_sample_count) ? run.output.healthy_sample_count : null;
-    primary = remaining === null ? "Observing recovery" : `${formatDuration(remaining)} remaining`;
-    secondary = healthy === null ? "Waiting for post-action samples" : `${healthy}/3 healthy samples`;
+    if (run.status === "SUCCEEDED") {
+      const facts = (run.output?.facts || []).length;
+      primary = "Recovery confirmed";
+      secondary = facts ? `${facts} recovery signal${facts === 1 ? "" : "s"}` : run.output?.summary || "Post-action telemetry verified";
+    } else {
+      const deadline = Date.parse(run.verification_deadline_at || "");
+      const remaining = Number.isFinite(deadline) ? Math.max(0, Math.ceil((deadline - (now ?? Date.now())) / 1000)) : null;
+      const healthy = Number.isSafeInteger(run.output?.healthy_sample_count) ? run.output.healthy_sample_count : null;
+      primary = remaining === null ? "Observing recovery" : `${formatDuration(remaining)} remaining`;
+      secondary = healthy === null ? "Waiting for post-action samples" : `${healthy}/3 healthy samples`;
+    }
   }
   return `<div><span>Current work</span><strong>${escapeHtml(primary)}</strong><small>${escapeHtml(secondary)}</small></div><div class="iw3-work-progress"><progress value="${progress}" max="100" aria-label="${escapeHtml(`${progress}% complete`)}"></progress><strong>${progress}%</strong></div>`;
 }
@@ -557,7 +575,7 @@ function stageActionMarkup(stage, projection, run, pending, now) {
   if (stage === "TRIAGE") {
   const facts = run.output?.facts || [];
   const unknowns = run.output?.unknowns || [];
-    return triageIsBounded(run) ? `<section class="iw3-stage-action"><span>Scope</span><strong>${facts.length} facts</strong><strong>${unknowns.length} open question${unknowns.length === 1 ? "" : "s"}</strong></section>` : "";
+    return triageIsBounded(run) ? `<section class="iw3-stage-action"><span>Scope</span><strong>${facts.length} fact${facts.length === 1 ? "" : "s"}</strong><strong>${unknowns.length} open question${unknowns.length === 1 ? "" : "s"}</strong></section>` : "";
   }
   if (stage === "INVESTIGATE") {
     const queries = (projection.evidence_queries || []).filter((item) => item.stage_run_id === run.stage_run_id);
@@ -565,6 +583,12 @@ function stageActionMarkup(stage, projection, run, pending, now) {
   }
   if (stage === "RESPOND") return respondActionMarkup(projection, run, pending);
   if (stage === "VERIFY") {
+    if (run.status === "SUCCEEDED") {
+      return '<section class="iw3-stage-action iw3-stage-card-observation"><span>Observation window</span><strong>Complete</strong><small data-tone="healthy">Healthy</small></section>';
+    }
+    if (run.status !== "RUNNING") {
+      return `<section class="iw3-stage-action iw3-stage-card-observation"><span>Observation window</span><strong>${escapeHtml(stateLabel(run.status))}</strong><small data-tone="${escapeHtml(graphHealth(projection, now))}">${escapeHtml(titleCase(graphHealth(projection, now)))}</small></section>`;
+    }
     const deadline = Date.parse(run.verification_deadline_at || "");
     const remaining = Number.isFinite(deadline) ? Math.max(0, Math.ceil((deadline - (now ?? Date.now())) / 1000)) : null;
     return `<section class="iw3-stage-action iw3-stage-card-observation"><span>Observation window</span><strong data-verification-remaining${Number.isFinite(deadline) ? ` data-deadline="${escapeHtml(run.verification_deadline_at)}"` : ""}>${remaining === null ? "—" : escapeHtml(formatDuration(remaining))}</strong><small data-tone="${escapeHtml(graphHealth(projection, now))}">${escapeHtml(titleCase(graphHealth(projection, now)))}</small></section>`;
@@ -709,13 +733,11 @@ function embeddedFlowMarkup(projection, now, series) {
 
 function healthCardMarkup(projection, now) {
   const connector = (projection.connectors || [])[0] || null;
-  const path = projection.impacted_path || [];
-  const edge = (projection.graph?.edges || []).find((item) => (
-    item.source_component_id === path[0] && item.target_component_id === path[1]
-  )) || null;
+  const flow = incidentFlowViewV3(projection, { now, presentation: "health" });
+  const edge = flow.edges[0] || null;
   const connectorState = connectorPresentationState(projection, connector, now);
   const tone = connectorState === "current"
-    ? edge ? graphEdgeTone(edge, new Map((projection.graph?.nodes || []).map((node) => [node.component_id, node])), projection, now) : "unavailable"
+    ? edge ? graphEdgeTone(edge, new Map(flow.nodes.map((node) => [node.component_id, node])), projection, now) : "unavailable"
     : connectorState === "degraded" ? "warning" : connectorState;
   return `<article class="iw3-health-card" data-tone="${escapeHtml(tone)}"><span class="iw3-signal-card-head"><span class="iw3-signal-icon" aria-hidden="true"><i class="ph ph-plugs-connected"></i></span><span><small>${escapeHtml(connector?.provider || "Connector")}</small><strong>Dependency health</strong></span></span><div class="iw3-health-path"><strong>${escapeHtml(edge ? titleCase(edge.status || tone) : "Unavailable")}</strong><span>${escapeHtml(edge ? `${edge.source_component_id} → ${edge.target_component_id}` : "No evidence-backed edge")}</span></div>${connectorSummaryMarkup(projection, now)}</article>`;
 }
