@@ -1303,7 +1303,7 @@ test("Live reuses the canonical navigation and exposes only safe projected Team 
   assert.match(indexHtml, /id="operations-team-rail"[^>]+aria-label="FlowPulse Team"/);
   assert.match(appJs, /function renderOperationsTeamRail\(\)/);
   assert.match(appJs, /const controls = controlSystemNodes\(\)/);
-  assert.match(appJs, /const inspectorOpen = \(mode === "live" \|\| isUnifiedRailWorkspace\(\)\) && selected\?\.type === "node" && isRailRuntimeNode\(selected\.id\) && agentTeam\.panel === "home"/);
+  assert.match(appJs, /const inspectorOpen = \(railMode === "live" \|\| unifiedRailMode\) && selected\?\.type === "node" && isRailRuntimeNode\(selected\.id\) && agentTeam\.panel === "home"/);
   assert.match(appJs, /rail\.hidden = !controls\.length;/);
   assert.match(appJs, /controlSystemTileMarkup\(node, \{ rail: true \}\)/);
   assert.match(stylesCss, /\.operations-team-rail > \.architecture-flowpulse-system \{ height: 100%; \}/);
@@ -1383,7 +1383,7 @@ test("Live Inspector owns the rail, preserves canvas continuity, and keeps its p
   const railSource = appJs.slice(appJs.indexOf("function renderOperationsTeamRail"), appJs.indexOf("function handleOperationsTeamRail"));
   const inspectorSource = appJs.slice(appJs.indexOf("function liveNodeInspectorRailMarkup"), appJs.indexOf("function agentTeamHomeMarkup"));
   const sessionSource = appJs.slice(appJs.indexOf("function agentTeamSessionMarkup"), appJs.indexOf("function boundedListMarkup"));
-  assert.match(railSource, /\(mode === "live" \|\| isUnifiedRailWorkspace\(\)\) && selected\?\.type === "node" && isRailRuntimeNode\(selected\.id\) && agentTeam\.panel === "home"/);
+  assert.match(railSource, /\(railMode === "live" \|\| unifiedRailMode\) && selected\?\.type === "node" && isRailRuntimeNode\(selected\.id\) && agentTeam\.panel === "home"/);
   assert.match(railSource, /liveNodeInspectorRailMarkup\(/);
   assert.match(inspectorSource, /data-live-inspector-close/);
   assert.match(inspectorSource, /data-live-inspector-disclosure/);
@@ -1404,7 +1404,7 @@ test("Unified Context Rail keeps one surface through workspace summaries, inspec
   const railSource = appJs.slice(appJs.indexOf("function renderOperationsTeamRail"), appJs.indexOf("function handleOperationsTeamRail"));
   const railHandler = appJs.slice(appJs.indexOf("function handleOperationsTeamRail"), appJs.indexOf("function handleAgentTeamSubmit"));
   const modeSource = appJs.slice(appJs.indexOf("function setMode"), appJs.indexOf("function configureCanvasWorld"));
-  assert.match(railSource, /isUnifiedRailWorkspace\(\)\) && selected\?\.type === "node" && isRailRuntimeNode\(selected\.id\)/);
+  assert.match(railSource, /\(railMode === "live" \|\| unifiedRailMode\) && selected\?\.type === "node" && isRailRuntimeNode\(selected\.id\)/);
   assert.match(railSource, /workspaceEvidenceRailMarkup\(\)/);
   assert.match(railSource, /workspaceSummaryRailMarkup\(\)/);
   assert.match(railHandler, /closeAgentTeamSession\(\{ restoreInspector: true \}\)/);
@@ -1881,13 +1881,15 @@ test("Live Inspector owns the existing rail and preserves the running canvas whi
   const railRender = appJs.slice(appJs.indexOf("function renderOperationsTeamRail"), appJs.indexOf("function resolveOperationsTeamControls"));
   const drawerOpen = appJs.slice(appJs.indexOf("function openDrawer"), appJs.indexOf("function closeDrawer"));
   const detailLoader = appJs.slice(appJs.indexOf("function requestLiveComponentDetail"), appJs.indexOf("function architectureDetailContext"));
-  assert.match(railRender, /\(mode === "live" \|\| isUnifiedRailWorkspace\(\)\) && selected\?\.type === "node"/);
+  assert.match(railRender, /\(railMode === "live" \|\| unifiedRailMode\) && selected\?\.type === "node"/);
   assert.match(railRender, /liveNodeInspectorRailMarkup/);
   assert.match(appJs, /captureLiveInspectorSnapshot/);
   assert.match(appJs, /restoreLiveInspectorSnapshot/);
   assert.match(appJs, /data-live-inspector-close/);
   assert.match(appJs, /data-live-inspector-disclosure/);
   assert.match(appJs, /data-focus-entity/);
+  assert.match(railRender, /rail\.dataset\.liveInspector = inspectorOpen \? "true" : "false"/);
+  assert.match(railRender, /if \(shell\) shell\.dataset\.liveInspector = inspectorOpen \? "true" : "false"/);
   assert.match(appJs, /Agent capability/);
   assert.match(appJs, /Run details/);
   assert.match(appJs, /agent-team-citations/);
@@ -1896,6 +1898,9 @@ test("Live Inspector owns the existing rail and preserves the running canvas whi
   assert.doesNotMatch(drawerOpen, /\brender\(\)|\brenderCanvas\(|startLiveSignals|stopLiveSignals/);
   assert.doesNotMatch(detailLoader, /\brender\(\)|\brenderCanvas\(|startLiveSignals|stopLiveSignals/);
   assert.match(stylesCss, /\.live-node-inspector-body \{[\s\S]+?overflow: auto;[\s\S]+?overscroll-behavior: contain;/);
+  assert.match(stylesCss, /\.app-shell\[data-mode="live"\] \.operations-team-rail\[data-live-inspector="true"\] \{ z-index: 24; \}/);
+  assert.match(stylesCss, /@media \(max-width: 900px\) \{[\s\S]+?\.app-shell\[data-mode="live"\]\[data-live-inspector="true"\] \.twin-workspace \{[\s\S]+?overflow: visible;/);
+  assert.match(stylesCss, /\.app-shell\[data-mode="live"\]\[data-live-inspector="true"\] \.operations-team-rail \{[\s\S]+?position: relative;[\s\S]+?z-index: 24;[\s\S]+?height: min\(64dvh, 620px\);/);
 });
 
 test("timeline renders only recorded milestones and labels the next evidence requirement", () => {

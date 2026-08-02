@@ -1811,6 +1811,7 @@ class GuidedWorkflowActivityDispatcherV3:
         self, packet_data: Dict[str, Any], *, now: Optional[datetime] = None,
     ) -> Dict[str, Any]:
         packet = GuidedAgentActivityPacketV3.parse_obj(packet_data)
+        now = now or datetime.now(timezone.utc)
         projection = await self.coordinator._required_projection(
             packet.tenant_id, packet.case_id,
         )
@@ -1869,14 +1870,47 @@ class GuidedWorkflowActivityDispatcherV3:
             if item.agent_run_id == packet.agent_run_id
         )
         if current_agent.state == AgentRunStateV3.RUNNING:
-            projection = await self.coordinator.update_agent_run(
+            projection = await self._persist_with_rebase(lambda: self.coordinator.update_agent_run(
                 packet.tenant_id, packet.case_id, packet.agent_run_id,
                 state=AgentRunStateV3.FAILED,
                 progress_percent=current_agent.progress_percent,
                 summary="Agent provider failed explicitly.",
                 evidence_refs=current_agent.evidence_refs,
-                failure_code=failure_code, now=datetime.now(timezone.utc),
+                failure_code=failure_code, now=now,
+            ))
+        try:
+            projection = await self._required_stage_projection(
+                packet.tenant_id, packet.case_id,
+                packet.attempt_id, packet.stage_run_id,
             )
+        except GuidedRuntimeStageObsolete as error:
+            projection = await self.coordinator._required_projection(
+                packet.tenant_id, packet.case_id,
+            )
+            return GuidedStageActivityOutcomeV3(
+                status=GuidedStageActivityStatusV3.WAITING,
+                projection=projection, reason=str(error),
+            ).dict()
+        current = projection.current_attempt.stage_runs[-1]
+        if current.status == WorkflowStageStateV3.RUNNING:
+            try:
+                projection = await self._persist_with_rebase(lambda: self.coordinator.complete_current_stage(
+                    packet.tenant_id, packet.case_id, success=False,
+                    summary="Agent provider unavailable.",
+                    evidence_refs=self._evidence_refs(projection),
+                    failure_code=failure_code, now=now,
+                    expected_stage_run_id=packet.stage_run_id,
+                ))
+            except PolicyViolation as error:
+                if "workflow_v3_stage_run_superseded" not in str(error):
+                    raise
+                projection = await self.coordinator._required_projection(
+                    packet.tenant_id, packet.case_id,
+                )
+                return GuidedStageActivityOutcomeV3(
+                    status=GuidedStageActivityStatusV3.WAITING,
+                    projection=projection, reason=str(error),
+                ).dict()
         return GuidedStageActivityOutcomeV3(
             status=GuidedStageActivityStatusV3.FAILED,
             projection=projection, reason=failure_code,

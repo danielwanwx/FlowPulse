@@ -67,6 +67,7 @@ from flowpulse_cp.workspace_v3_models import (
     WorkflowStageV3,
 )
 from flowpulse_cp.workspace_v3_runtime import (
+    GuidedRuntimeBridgeRejected,
     GuidedRuntimeBridgeUnavailable,
     GuidedWorkflowActivityDispatcherV3,
 )
@@ -266,6 +267,8 @@ class RuntimeRepository(InMemoryWorkspaceRepository):
         )
         self.race_on_terminal = False
         self.raced = False
+        self.race_on_agent_failure = False
+        self.raced_agent_failure = False
         self.inject_investigation_refresh_evidence = False
         self.investigation_projection_reads = 0
         self.realtime_source_events = {}
@@ -319,12 +322,22 @@ class RuntimeRepository(InMemoryWorkspaceRepository):
         )[:limit]
 
     async def commit_workspace_transition_v3(self, commit):
-        if (
+        is_terminal_race = (
             self.race_on_terminal
             and not self.raced
             and commit.idempotency_key.startswith("internal-stage-terminal:")
-        ):
-            self.raced = True
+        )
+        is_agent_failure_race = (
+            self.race_on_agent_failure
+            and not self.raced_agent_failure
+            and commit.idempotency_key.startswith("internal-agent:")
+            and ":FAILED:" in commit.idempotency_key
+        )
+        if is_terminal_race or is_agent_failure_race:
+            self.raced = self.raced or is_terminal_race
+            self.raced_agent_failure = (
+                self.raced_agent_failure or is_agent_failure_race
+            )
             records = self.workflow_projections_v3[(commit.tenant_id, commit.case_id)]
             current = records[-1]
             records.append(IncidentProjectionV3.parse_obj({
@@ -435,6 +448,12 @@ class LostAgentResponseBridge(RuntimeBridge):
             evidence_refs=request.evidence_refs,
             tool_requests=[],
         )
+
+
+class ExplicitFailureAgentBridge(RuntimeBridge):
+    async def run_agent(self, request):
+        self.agent_calls.append(request)
+        raise GuidedRuntimeBridgeRejected("codex_timeout", 503)
 
 
 class GuidedStageRuntimeTests(unittest.IsolatedAsyncioTestCase):
@@ -580,6 +599,56 @@ class GuidedStageRuntimeTests(unittest.IsolatedAsyncioTestCase):
             if item.bridge_request == frozen
         )
         self.assertEqual(frozen, persisted.bridge_request)
+
+    async def test_manual_agent_failure_fails_stage_and_rebases_over_realtime_race(self):
+        bridge = ExplicitFailureAgentBridge(self.now)
+        dispatcher = GuidedWorkflowActivityDispatcherV3(self.repository, bridge)
+        triage = await self.advance(self.detect, "next-triage-manual-agent-failure")
+        manual = await self.coordinator.start_agent_run(
+            "tenant-a",
+            "case-a",
+            AgentRunCommandV3(
+                attempt_id=triage.current_attempt.attempt_id,
+                expected_stage=WorkflowStageV3.TRIAGE,
+                expected_workflow_revision=triage.workflow_revision,
+                idempotency_key="manual-agent-failure",
+                component_id="payment",
+                question="Inspect the failed Payment dependency.",
+            ),
+            "subject-a",
+            self.now,
+        )
+        manual_agent = manual.projection.agent_activity[-1]
+        current = manual.projection.current_attempt.stage_runs[-1]
+        self.repository.race_on_terminal = True
+        self.repository.race_on_agent_failure = True
+
+        outcome = GuidedStageActivityOutcomeV3.parse_obj(
+            await dispatcher.run_existing_agent({
+                "tenant_id": "tenant-a",
+                "case_id": "case-a",
+                "attempt_id": manual.projection.current_attempt.attempt_id,
+                "stage_run_id": current.stage_run_id,
+                "agent_run_id": manual_agent.agent_run_id,
+                "expected_workflow_revision": manual.projection.workflow_revision,
+                "actor_subject_id": "subject-a",
+            }, now=self.now),
+        )
+
+        self.assertEqual(GuidedStageActivityStatusV3.FAILED, outcome.status)
+        self.assertTrue(self.repository.raced)
+        self.assertTrue(self.repository.raced_agent_failure)
+        run = outcome.projection.current_attempt.stage_runs[-1]
+        self.assertEqual(WorkflowStageStateV3.FAILED, run.status)
+        self.assertEqual("codex_timeout", run.failure_code)
+        self.assertEqual("FAILED", next(
+            item for item in outcome.projection.agent_activity
+            if item.agent_run_id == manual_agent.agent_run_id
+        ).state.value)
+        self.assertIn(
+            "RETRY",
+            [item.value for item in outcome.projection.available_commands],
+        )
 
     async def test_manual_graph_agent_keeps_clicked_component_and_distinct_request_identity(self):
         bridge = RuntimeBridge(self.now)

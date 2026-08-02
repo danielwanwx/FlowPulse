@@ -5,6 +5,7 @@ import { loadCoherentIncidentV3, TrailingRefreshV3 } from "../public/incident-wo
 import {
   applyIncidentEventV3,
   buildWorkflowCommandV3,
+  incidentFlowViewV3,
   metricSeriesPathsV3,
   metricTrendV3,
   parseIncidentWorkspaceUrlV3,
@@ -117,6 +118,142 @@ test("workbench renders one sparse stage, keeps future stages locked, and never 
   assert.doesNotMatch(html, /TRIAGE visible result|owner-local|<dt>Owner<\/dt>/);
   assert.match(html, /aria-labelledby="iw3-stage-title"/);
   assert.match(html, /<h3 id="iw3-stage-title">/);
+});
+
+test("current stage is one work-state-first operations home", () => {
+  const value = projection();
+  const series = {
+    series: [
+      metric("checkout-errors", "checkout.error_rate", "ratio", 1),
+      metric("checkout-latency", "checkout.mean_latency", "ms", 620),
+      metric("checkout-traffic", "checkout.request_count", "requests", 88)
+    ]
+  };
+
+  const html = renderIncidentWorkbenchV3(value, {
+    connection: "connected", series, now: Date.parse("2026-07-31T00:01:05Z")
+  });
+
+  assert.match(html, /class="iw3-operations-home"/);
+  assert.match(html, /class="iw3-work-status"/);
+  assert.match(html, /class="iw3-home-flow"/);
+  assert.match(html, /class="iw3-home-signals"/);
+  assert.match(html, /class="iw3-home-agent"/);
+  assert.equal((html.match(/class="iw3-signal-card"/g) || []).length, 3);
+  assert.match(html, /class="iw3-health-card"/);
+  assert.match(html, /OTEL/);
+  assert.doesNotMatch(html, /Checkout requests fail at the payment dependency|TRIAGE visible result/);
+  assert.match(html, /data-stage="INVESTIGATE"[^>]*disabled/);
+});
+
+test("embedded and modal Dataflow share evidence-backed identities and never infer a missing edge", () => {
+  const value = projection();
+  const flow = incidentFlowViewV3(value, { now: Date.parse("2026-07-31T00:01:05Z") });
+  assert.deepEqual(flow.nodes.map((node) => node.component_id), ["checkout", "payment"]);
+  assert.deepEqual(flow.edges.map((edge) => edge.edge_id), ["checkout-payment"]);
+
+  const home = renderIncidentWorkbenchV3(value, { connection: "connected", now: Date.parse("2026-07-31T00:01:05Z") });
+  const modal = renderIncidentWorkbenchV3(value, { connection: "connected", panel: "graph", now: Date.parse("2026-07-31T00:01:05Z") });
+  assert.match(home, /data-home-graph-node="checkout"/);
+  assert.match(home, /data-home-graph-edge="checkout-payment"/);
+  assert.match(modal, /data-graph-node="checkout"/);
+  assert.match(modal, /data-graph-edge="checkout-payment"/);
+
+  value.graph.edges = [];
+  const missing = renderIncidentWorkbenchV3(value, { connection: "connected", now: Date.parse("2026-07-31T00:01:05Z") });
+  assert.match(missing, /data-home-graph-node="checkout"/);
+  assert.doesNotMatch(missing, /data-home-graph-edge|data-edge-select="checkout-payment"/);
+});
+
+test("Observability reports only real retention and honest external dashboard state", () => {
+  const value = projection();
+  value.connectors = [{
+    connector_id: "otel-local", provider: "OTEL", state: "CONNECTED", lag_seconds: 2,
+    last_event_observed_at: "2026-07-31T00:01:00Z", fresh_until: "2026-07-31T00:01:30Z"
+  }];
+  const series = { series: [metric("checkout-errors", "checkout.error_rate", "ratio", 1)] };
+  const html = renderIncidentWorkbenchV3(value, {
+    connection: "connected", panel: "metrics", series, now: Date.parse("2026-07-31T00:01:05Z")
+  });
+  assert.match(html, /id="iw3-detail-title">Observability/);
+  assert.match(html, /External dashboard not configured/);
+  assert.match(html, /1 sample/);
+  assert.match(html, /OTEL/);
+  assert.match(html, /2s lag/);
+  assert.doesNotMatch(html, /1 week|1 month|7 days|30 days/i);
+});
+
+test("connector health never paints degraded or unavailable providers as current", () => {
+  const degraded = projection();
+  degraded.graph.nodes = degraded.graph.nodes.map((node) => ({
+    ...node, runtime_status: "healthy", impact_status: "healthy"
+  }));
+  degraded.graph.edges[0].status = "healthy";
+  degraded.connectors = [{
+    connector_id: "otel-local", provider: "OTEL", state: "DEGRADED", lag_seconds: 9,
+    last_event_observed_at: "2026-07-31T00:01:00Z", fresh_until: "2026-07-31T00:01:30Z"
+  }];
+  const degradedHtml = renderIncidentWorkbenchV3(degraded, {
+    connection: "connected", now: Date.parse("2026-07-31T00:01:05Z")
+  });
+  assert.match(degradedHtml, /class="iw3-health-card" data-tone="warning"/);
+  assert.match(degradedHtml, /class="iw3-connector-summary" data-state="degraded"/);
+  assert.match(degradedHtml, /<strong>Degraded<\/strong>/);
+  assert.doesNotMatch(degradedHtml, /iw3-connector-summary" data-state="current"/);
+
+  const unavailable = structuredClone(degraded);
+  unavailable.connectors[0].state = "UNAVAILABLE";
+  const unavailableHtml = renderIncidentWorkbenchV3(unavailable, {
+    connection: "connected", now: Date.parse("2026-07-31T00:01:05Z")
+  });
+  assert.match(unavailableHtml, /class="iw3-health-card" data-tone="unavailable"/);
+  assert.match(unavailableHtml, /class="iw3-connector-summary" data-state="unavailable"/);
+  assert.match(unavailableHtml, /<strong>Unavailable<\/strong>/);
+  assert.match(unavailableHtml, /Source Unavailable/);
+  assert.doesNotMatch(unavailableHtml, /iw3-connector-summary" data-state="current"/);
+});
+
+function metric(seriesId, metricKey, unit, value) {
+  return {
+    series_id: seriesId, metric_key: metricKey, component_id: "checkout",
+    label: seriesId, unit, thresholds: {}, freshness: "CURRENT",
+    observed_window_start: "2026-07-31T00:01:00Z", observed_window_end: "2026-07-31T00:01:00Z",
+    points: [{ timestamp: "2026-07-31T00:01:00Z", value, evidence_refs: [`evidence-${seriesId}`] }]
+  };
+}
+
+test("forward controls follow the server-issued command availability", () => {
+  const enabled = projection({ current_stage: "DETECT" });
+  const enabledHtml = renderIncidentWorkbenchV3(enabled, { connection: "connected" });
+  assert.doesNotMatch(enabledHtml, /data-workflow-command="NEXT"[^>]*disabled/);
+
+  const unavailable = projection({ current_stage: "DETECT" });
+  unavailable.available_commands = ["ESCALATE"];
+  const unavailableHtml = renderIncidentWorkbenchV3(unavailable, { connection: "connected" });
+  assert.match(unavailableHtml, /data-workflow-command="NEXT"[^>]*disabled/);
+
+  const laggingRun = projection({ current_stage: "DETECT" });
+  laggingRun.current_attempt.stage_runs.at(-1).status = "RUNNING";
+  const laggingHtml = renderIncidentWorkbenchV3(laggingRun, { connection: "connected" });
+  assert.match(laggingHtml, /data-workflow-command="NEXT"[^>]*disabled/);
+
+  const failedRun = projection({ current_stage: "DETECT" });
+  failedRun.current_attempt.stage_runs.at(-1).status = "FAILED";
+  const failedHtml = renderIncidentWorkbenchV3(failedRun, { connection: "connected" });
+  assert.match(failedHtml, /data-workflow-command="NEXT"[^>]*disabled/);
+});
+
+test("failed stages expose a compact recovery state without raw provider text", () => {
+  const value = projection();
+  const run = value.current_attempt.stage_runs.at(-1);
+  run.status = "FAILED";
+  run.failure_code = "codex_timeout";
+  value.available_commands = ["RETRY", "ESCALATE"];
+
+  const html = renderIncidentWorkbenchV3(value, { connection: "connected" });
+  assert.match(html, /Agent timed out/);
+  assert.match(html, /data-workflow-command="RETRY"/);
+  assert.doesNotMatch(html, /codex_timeout/);
 });
 
 test("Agent detail is hidden by default and Activity scopes it to the exact stage run", () => {
@@ -367,8 +504,8 @@ test("signal cards use evidence-backed visual grammars without fabricating a his
   const gapPortal = renderIncidentWorkbenchV3(value, {
     connection: "connected", series: gapped, portalOpen: true, componentId: "checkout", seriesId: "checkout-traffic"
   });
-  assert.match(gapPortal, /Latest signal<\/span><strong>No numeric sample<\/strong>/);
-  assert.doesNotMatch(gapPortal, /Latest signal<\/span><strong>Errors/);
+  assert.match(gapPortal, /Latest signal<\/span><strong>Traffic 12 requests<\/strong>/);
+  assert.match(gapPortal, /Last 12 requests/);
 });
 
 test("a completed incident keeps a compact visual summary and opens the immutable audit on demand", () => {
@@ -393,7 +530,7 @@ test("a completed incident keeps a compact visual summary and opens the immutabl
   assert.match(html, /iw3-stage-rail/);
   assert.doesNotMatch(html, /Fresh Checkout to Payment trace observed|Payment dependency recovered/);
   assert.match(html, /iw3-signal-card-label">Errors<\/strong>/);
-  assert.match(html, />0 ratio</);
+  assert.match(html, />Last 0 ratio</);
   assert.doesNotMatch(html, /Connector Stale/);
   assert.doesNotMatch(html, /Attempt lineage|Immutable stage outputs|operator-local|receipt-1|evidence-verify-fresh/);
   assert.doesNotMatch(html, /data-workflow-command|Complete incident/);
@@ -661,6 +798,13 @@ test("Agent Portal stays hidden until a real component is selected and only expo
   assert.match(portal, /metric-checkout/);
   assert.doesNotMatch(portal, /PAYMENT ONLY|evidence-payment/);
   assert.match(portal, /data-agent-question/);
+
+  const pendingPortal = renderIncidentWorkbenchV3(value, {
+    connection: "connected", series, portalOpen: true, componentId: "checkout",
+    agentNotice: { state: "pending", message: "Agent is reviewing this component…" }
+  });
+  assert.match(pendingPortal, /data-agent-run-state="pending"/);
+  assert.match(pendingPortal, /Agent is reviewing this component/);
 });
 
 test("a historical Investigate graph remains inspectable but cannot start a current-stage Agent", () => {

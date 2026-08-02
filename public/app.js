@@ -2112,12 +2112,17 @@ function isSelectionValidForMode(selection, destination) {
 
 function renderOperationsTeamRail() {
   const rail = els["operations-team-rail"];
+  const shell = document.getElementById("app-shell") || els["app-shell"];
+  const railMode = shell?.dataset.mode || mode;
+  const unifiedRailMode = railMode === "incident" || ["replay", "agents", "compare"].includes(railMode);
   const controls = controlSystemNodes();
   const activeInput = document.activeElement?.matches?.("textarea[data-agent-team-input]") ? document.activeElement : null;
   const selectionStart = activeInput?.selectionStart;
   const selectionEnd = activeInput?.selectionEnd;
-  const inspectorOpen = (mode === "live" || isUnifiedRailWorkspace()) && selected?.type === "node" && isRailRuntimeNode(selected.id) && agentTeam.panel === "home";
-  const workspaceEvidenceOpen = isUnifiedRailWorkspace() && Boolean(selected) && agentTeam.panel === "home" && !inspectorOpen;
+  const inspectorOpen = (railMode === "live" || unifiedRailMode) && selected?.type === "node" && isRailRuntimeNode(selected.id) && agentTeam.panel === "home";
+  const workspaceEvidenceOpen = unifiedRailMode && Boolean(selected) && agentTeam.panel === "home" && !inspectorOpen;
+  rail.dataset.liveInspector = inspectorOpen ? "true" : "false";
+  if (shell) shell.dataset.liveInspector = inspectorOpen ? "true" : "false";
   rail.hidden = !controls.length;
   if (rail.hidden) {
     rail.innerHTML = "";

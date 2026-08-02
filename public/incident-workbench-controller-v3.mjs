@@ -92,7 +92,7 @@ export class IncidentWorkbenchControllerV3 {
     this.eventState = { lastSequence: 0, projectionRevision: 0 };
     this.refreshLoop = new TrailingRefreshV3();
     this.previousFocus = null;
-    this.ui = { reviewStage: null, panel: null, componentId: null, edgeId: null, seriesId: null, portalOpen: false, portalTab: "now", agentDraft: "", commandDialog: null };
+    this.ui = { reviewStage: null, panel: null, componentId: null, edgeId: null, seriesId: null, portalOpen: false, portalTab: "now", agentDraft: "", agentNotice: null, commandDialog: null };
     this.onClick = (event) => { void this.handleClick(event); };
     this.onInput = (event) => {
       if (event.target.matches?.("[data-command-reason]") && this.ui.commandDialog) {
@@ -130,6 +130,7 @@ export class IncidentWorkbenchControllerV3 {
       portalOpen: restored.portalOpen,
       portalTab: restored.portalTab,
       agentDraft: "",
+      agentNotice: null,
       commandDialog: null
     };
     this.caseId = targetCaseId;
@@ -168,6 +169,7 @@ export class IncidentWorkbenchControllerV3 {
       if (!this.active || caseId !== this.caseId) return;
       this.projection = projection;
       if (!this.series || series.signal_revision >= this.series.signal_revision) this.series = series;
+      this.updatePortalAgentNotice(projection);
       const view = workbenchViewV3(projection, this.ui);
       this.ui.reviewStage = view.reviewingHistory ? view.visibleStage : null;
       this.eventState = { lastSequence: projection.sequence, projectionRevision: projection.projection_revision };
@@ -333,7 +335,9 @@ export class IncidentWorkbenchControllerV3 {
   }
 
   openPortal({ componentId = null, edgeId = null, seriesId = null }) {
+    const previousComponentId = this.ui.componentId;
     if (componentId) this.ui.componentId = componentId;
+    if (componentId && previousComponentId !== componentId) this.ui.agentNotice = null;
     this.ui.edgeId = edgeId;
     this.ui.seriesId = seriesId;
     this.ui.panel = null;
@@ -355,6 +359,7 @@ export class IncidentWorkbenchControllerV3 {
     const componentId = this.ui.componentId || this.projection.impacted_path?.[0];
     const nonce = this.window.Date?.now?.() || Date.now();
     const base = this.command("START_AGENT_RUN", `portal-agent:${this.projection.current_attempt.attempt_id}:${this.projection.workflow_revision}:${componentId}:${nonce}`);
+    this.ui.agentNotice = { state: "pending", message: "Agent is reviewing this component…", componentId, question };
     this.ui.agentDraft = "";
     await this.execute(() => this.client.startAgentRun(this.caseId, {
       ...base, component_id: componentId, question
@@ -373,12 +378,16 @@ export class IncidentWorkbenchControllerV3 {
     try {
       const receipt = await operation();
       this.projection = receipt.projection;
+      this.updatePortalAgentNotice(receipt.projection);
       this.eventState = { lastSequence: receipt.projection.sequence, projectionRevision: receipt.projection.projection_revision };
       this.connection = "connected";
       this.error = null;
       this.ui.reviewStage = null;
       await this.refresh();
     } catch (error) {
+      if (name === "START_AGENT_RUN" && this.ui.portalOpen) {
+        this.ui.agentNotice = { state: "error", message: "Agent run unavailable. Try again." };
+      }
       if (error instanceof ControlPlaneV3ClientError
         && error.code === "control_plane_revalidation_required") {
         try {
@@ -394,6 +403,25 @@ export class IncidentWorkbenchControllerV3 {
     } finally {
       this.commandPending = null;
       this.render();
+    }
+  }
+
+  updatePortalAgentNotice(projection) {
+    const notice = this.ui.agentNotice;
+    if (!notice || notice.state !== "pending" || !projection) return;
+    const activity = [...(projection.agent_activity || [])].reverse().find((item) => (
+      item.agent_run_id === notice.agentRunId
+      || item.selected_component_id === notice.componentId && item.question === notice.question
+    ));
+    if (!activity) return;
+    if (activity.state === "SUCCEEDED") {
+      this.ui.agentNotice = { state: "success", message: activity.summary || "Agent review completed." };
+    } else if (activity.state === "FAILED") {
+      this.ui.agentNotice = { state: "error", message: "Agent review failed. Retry from the portal." };
+    } else if (activity.state === "NEEDS_HUMAN") {
+      this.ui.agentNotice = { state: "error", message: "Agent review needs human attention." };
+    } else {
+      this.ui.agentNotice = { ...notice, agentRunId: activity.agent_run_id, message: activity.summary || notice.message };
     }
   }
 
@@ -527,11 +555,9 @@ export class IncidentWorkbenchControllerV3 {
     if (this.ui.panel || this.ui.commandDialog) this.applyModalInert();
     restoreCapturedFocus(this.element, focus);
     const now = Date.now();
-    const futurePulseExpiries = this.ui.panel === "graph"
-      ? (this.projection?.graph?.active_pulses || [])
-        .map((pulse) => Date.parse(pulse.expires_at || ""))
-        .filter((expiresAt) => Number.isFinite(expiresAt) && expiresAt > now)
-      : [];
+    const futurePulseExpiries = (this.projection?.graph?.active_pulses || [])
+      .map((pulse) => Date.parse(pulse.expires_at || ""))
+      .filter((expiresAt) => Number.isFinite(expiresAt) && expiresAt > now);
     this.nextGraphPulseExpiry = futurePulseExpiries.length
       ? Math.min(...futurePulseExpiries)
       : null;

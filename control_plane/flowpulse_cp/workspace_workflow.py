@@ -226,7 +226,17 @@ class IncidentWorkspaceTemporalWorkflow:
             self._accepted_realtime_transitions >= ROLLOVER_TRANSITION_LIMIT
             or info.get_current_history_length() >= ROLLOVER_HISTORY_LENGTH_LIMIT
             or info.get_current_history_size() >= ROLLOVER_HISTORY_SIZE_LIMIT
-            or info.is_continue_as_new_suggested()
+        )
+
+    def _can_rollover(self) -> bool:
+        return (
+            self._rollover_requested
+            and self._active_updates == 0
+            and not self._freshness_expiration_active
+            and all(
+                timer.deadline.deadline > workflow.now()
+                for timer in self._freshness_timers.values()
+            )
         )
 
     def _rollover_carry(self) -> WorkspaceV2RolloverCarry:
@@ -367,11 +377,7 @@ class IncidentWorkspaceTemporalWorkflow:
         if not self._rollover_enabled:
             await workflow.wait_condition(lambda: False)
             return {"state": "unreachable"}
-        while not (
-            self._rollover_requested
-            and self._active_updates == 0
-            and not self._freshness_expiration_active
-        ):
+        while not self._can_rollover():
             observed_epoch = self._freshness_timer_epoch
             timer_item = (
                 min(
@@ -387,11 +393,7 @@ class IncidentWorkspaceTemporalWorkflow:
             )
             if timer_item is None:
                 await workflow.wait_condition(lambda: (
-                    (
-                        self._rollover_requested
-                        and self._active_updates == 0
-                        and not self._freshness_expiration_active
-                    )
+                    self._can_rollover()
                     or self._freshness_timer_epoch != observed_epoch
                 ))
                 continue
@@ -403,11 +405,7 @@ class IncidentWorkspaceTemporalWorkflow:
             try:
                 await workflow.wait_condition(
                     lambda: (
-                        (
-                            self._rollover_requested
-                            and self._active_updates == 0
-                            and not self._freshness_expiration_active
-                        )
+                        self._can_rollover()
                         or self._freshness_timer_epoch != observed_epoch
                     ),
                     timeout=delay,

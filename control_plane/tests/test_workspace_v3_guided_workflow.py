@@ -667,6 +667,45 @@ class GuidedWorkflowV3Tests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual("signal.stale", events[-1].event_type.value)
 
+
+    async def test_stale_realtime_sync_clamps_an_inverted_freshness_interval(self):
+        stale_at = NOW + timedelta(seconds=31)
+        source = realtime_projection()
+        stale_health = source.connector_health[0].copy(update={
+            "state": ConnectorHealthState.STALE,
+            "checked_at": stale_at,
+            "lag_seconds": 1,
+            "reason_code": "freshness_deadline_expired",
+            "health_revision": 2,
+        })
+        stale_clock = source.incident_clock.copy(update={
+            "last_signal_at": stale_at,
+            "as_of": stale_at,
+            "elapsed_seconds": 271,
+            "freshness": FreshnessStatus.STALE,
+        })
+        stale_source = IncidentProjectionV2.parse_obj({
+            **source.dict(),
+            "projection_revision": 4,
+            "sequence": 10,
+            "source_revision": 4,
+            "connector_revision": 2,
+            "generated_at": stale_at,
+            "incident_clock": stale_clock,
+            "connector_health": [stale_health],
+            "realtime_signals": [source.realtime_signals[0].copy(update={
+                "freshness": FreshnessStatus.STALE,
+                "connector_state": ConnectorHealthState.STALE,
+                "sequence": 10,
+            })],
+        })
+        stored = await self.coordinator.sync_realtime(
+            stale_source, actor_subject_id="flowpulse-realtime", now=stale_at,
+        )
+        self.assertEqual(FreshnessStatus.STALE, stored.freshness.state)
+        self.assertEqual(stale_at, stored.freshness.observed_at)
+        self.assertEqual(stale_at, stored.freshness.fresh_until)
+
     async def test_equivalent_sample_churn_does_not_invalidate_succeeded_decide(self):
         decided = await self.reach_succeeded_decide()
         source = realtime_projection()

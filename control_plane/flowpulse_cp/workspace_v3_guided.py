@@ -71,6 +71,15 @@ def _stable_id(prefix: str, *parts: object) -> str:
     return "{}-{}".format(prefix, sha256(material.encode("utf-8")).hexdigest()[:24])
 
 
+def _freshness(source: IncidentProjectionV2, observed_at: datetime) -> FreshnessV3:
+    """Map stale source state without constructing an impossible interval."""
+    return FreshnessV3(
+        state=source.incident_clock.freshness,
+        observed_at=observed_at,
+        fresh_until=max(observed_at, source.incident_clock.fresh_until),
+    )
+
+
 ASTRONOMY_REPAIR_COMMAND_V3 = "astronomy.restore-payment-and-recreate-checkout"
 
 DETECT_METRIC_SIGNAL_KINDS_V3 = (
@@ -523,11 +532,7 @@ def bootstrap_projection_v3(
             if detect_succeeded else IncidentLifecycleStateV3.DEGRADED
         ),
         incident_clock=source.incident_clock,
-        freshness=FreshnessV3(
-            state=source.incident_clock.freshness,
-            observed_at=observed_at,
-            fresh_until=source.incident_clock.fresh_until,
-        ),
+        freshness=_freshness(source, observed_at),
         graph=IncidentGraphV3(
             **source.graph.dict(), active_pulses=source.active_graph_pulses,
         ),
@@ -748,11 +753,7 @@ class GuidedWorkflowCoordinatorV3:
             "severity": prior.severity,
             "lifecycle_state": lifecycle,
             "incident_clock": source.incident_clock,
-            "freshness": FreshnessV3(
-                state=source.incident_clock.freshness,
-                observed_at=observed_at,
-                fresh_until=source.incident_clock.fresh_until,
-            ),
+            "freshness": _freshness(source, observed_at),
             "graph": IncidentGraphV3(
                 **source.graph.dict(), active_pulses=source.active_graph_pulses,
             ),
