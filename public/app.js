@@ -58,6 +58,7 @@ import {
   topologyIntegrity
 } from "./twin-state.mjs";
 import { connectedLiveTopology } from "./live-topology-renderer.mjs";
+import { incidentFocusGraphMarkup } from "./incident-focus-graph.mjs";
 
 try {
   const cookieTheme = document.cookie.split("; ").find((value) => value.startsWith("flowpulse-theme="))?.split("=")[1];
@@ -1248,23 +1249,22 @@ function incidentFocusLayerMarkup(topology, snapshot, { layerName = "current", w
   if (workspace === "diagnose" || layerName === "before") {
     for (const node of focus.nodes) nodeStates[node.id] = "impact";
   }
-  const edges = focus.edges.map((edge, index) => fixedLiveEdgeMarkup({
-    ...edge,
-    kind: edge.relation,
-    tone: workspace === "diagnose" || layerName === "before" ? "impact" : edge.status,
-    presentation: "affected",
-    pulse,
-    order: index,
-    routeOrder: index
-  }, edge.path, focus.nodes.find((node) => node.id === edge.from)?.label || edge.from, focus.nodes.find((node) => node.id === edge.to)?.label || edge.to)).join("");
-  const nodes = focus.nodes.map((node, transitionIndex) => sourceNodeMarkup(node, {
-    layout: "incident-focus",
-    source,
-    nodeStates,
-    presentation: "affected",
-    transitionIndex
-  })).join("");
-  const markup = `<div class="twin-layer layer-${escapeHtml(layerName)} canonical-topology-layer incident-focus-workspace incident-focus-${escapeHtml(workspace)}" data-canonical-run-id="${escapeHtml(focus.run_id)}" data-canonical-incident-id="${escapeHtml(focus.incident_id)}" data-projection-revision="${escapeHtml(focus.projection_revision)}" data-node-ids="${escapeHtml(focus.node_ids.join(","))}" data-edge-ids="${escapeHtml(focus.edge_ids.join(","))}" data-focus-node-count="${focus.nodes.length}" data-focus-edge-count="${focus.edges.length}"><svg class="edge-map fixed-live-edge-map" viewBox="0 0 ${LIVE_WORLD.width} ${LIVE_WORLD.height}" preserveAspectRatio="none">${edges}</svg>${nodes}</div>`;
+  const markup = incidentFocusGraphMarkup({
+    layerName,
+    workspace,
+    identity: { runId: focus.run_id, incidentId: focus.incident_id, revision: focus.projection_revision },
+    nodes: focus.nodes.map((node) => {
+      const state = nodeStates[node.id] || "observed";
+      const profile = sourceComponentProfile(node);
+      return { ...node, state, statusLabel: incidentFocusStatusLabel(state), ariaLabel: `${profile.capability}, ${kindLabel(node.kind)}, ${incidentFocusStatusLabel(state)}`, icon: iconForLive(node), transitionKey: transitionKey(node.id) };
+    }),
+    edges: focus.edges.map((edge) => ({
+      ...edge,
+      tone: workspace === "diagnose" || layerName === "before" ? "impact" : edge.status,
+      pulse,
+      ariaLabel: `${edge.label} from ${focus.nodes.find((node) => node.id === edge.from)?.label || edge.from} to ${focus.nodes.find((node) => node.id === edge.to)?.label || edge.to}`
+    }))
+  });
   return { visual: focus, markup };
 }
 

@@ -86,6 +86,8 @@ export class IncidentWorkbenchControllerV3 {
     this.connection = "connecting";
     this.error = null;
     this.commandPending = null;
+    this.commandStartedAt = null;
+    this.commandGeneration = 0;
     this.subscription = null;
     this.clockTimer = null;
     this.nextGraphPulseExpiry = null;
@@ -222,7 +224,7 @@ export class IncidentWorkbenchControllerV3 {
     if (railToggle) {
       this.ui.portalOpen = !this.ui.portalOpen;
       this.persistUrl();
-      this.render();
+      this.render({ preserveScroll: false });
       if (this.ui.portalOpen) this.element.querySelector("[data-portal-close]")?.focus();
       return;
     }
@@ -231,7 +233,7 @@ export class IncidentWorkbenchControllerV3 {
     if (portalTab) {
       this.ui.portalTab = portalTab.dataset.portalTab;
       this.persistUrl();
-      this.render();
+      this.render({ preserveScroll: false });
       return;
     }
     const component = event.target.closest("[data-component-select], [data-portal-component]");
@@ -251,7 +253,7 @@ export class IncidentWorkbenchControllerV3 {
       this.ui.reviewStage = stage.dataset.stage === this.projection.current_attempt.current_stage ? null : stage.dataset.stage;
       this.ui.panel = null;
       this.persistUrl();
-      this.render();
+      this.render({ preserveScroll: false });
       this.element.querySelector("#incident-stage-surface")?.focus();
       return;
     }
@@ -260,7 +262,7 @@ export class IncidentWorkbenchControllerV3 {
       this.previousFocus = `[data-open-panel="${cssEscape(open.dataset.openPanel)}"]`;
       this.ui.panel = open.dataset.openPanel;
       this.persistUrl();
-      this.render();
+      this.render({ preserveScroll: false });
       this.focusModal();
       return;
     }
@@ -269,7 +271,7 @@ export class IncidentWorkbenchControllerV3 {
     if (graphNode) {
       this.ui.componentId = graphNode.dataset.graphNode;
       this.persistUrl();
-      this.render();
+      this.render({ preserveScroll: false });
       this.element.querySelector(`[data-graph-node="${cssEscape(this.ui.componentId)}"]`)?.focus();
       return;
     }
@@ -297,14 +299,14 @@ export class IncidentWorkbenchControllerV3 {
           stage: workflow.dataset.rerunStage || this.ui.reviewStage || this.projection.current_attempt.current_stage,
           draft: ""
         };
-        this.render();
+        this.render({ preserveScroll: false });
         this.focusModal();
       } else await this.runWorkflowCommand(command);
       return;
     }
     if (event.target.closest("[data-command-cancel]")) {
       this.ui.commandDialog = null;
-      this.render();
+      this.render({ preserveScroll: false });
       this.restoreFocus();
       return;
     }
@@ -352,7 +354,7 @@ export class IncidentWorkbenchControllerV3 {
     this.ui.portalOpen = true;
     this.ui.portalTab = "now";
     this.persistUrl();
-    this.render();
+    this.render({ preserveScroll: false });
     this.element.querySelector("[data-portal-close]")?.focus();
   }
 
@@ -380,11 +382,14 @@ export class IncidentWorkbenchControllerV3 {
 
   async execute(operation, name) {
     if (this.commandPending) return;
+    const generation = ++this.commandGeneration;
     this.commandPending = name;
+    this.commandStartedAt = Date.now();
     this.error = null;
     this.render();
     try {
       const receipt = await operation();
+      if (generation !== this.commandGeneration) return;
       this.projection = receipt.projection;
       this.updatePortalAgentNotice(receipt.projection);
       this.eventState = { lastSequence: receipt.projection.sequence, projectionRevision: receipt.projection.projection_revision };
@@ -393,6 +398,7 @@ export class IncidentWorkbenchControllerV3 {
       this.ui.reviewStage = null;
       await this.refresh();
     } catch (error) {
+      if (generation !== this.commandGeneration) return;
       if (name === "START_AGENT_RUN" && this.ui.portalOpen) {
         this.ui.agentNotice = { state: "error", message: "Agent run unavailable. Try again." };
       }
@@ -409,8 +415,11 @@ export class IncidentWorkbenchControllerV3 {
         this.fail(error);
       }
     } finally {
-      this.commandPending = null;
-      this.render();
+      if (generation === this.commandGeneration) {
+        this.commandPending = null;
+        this.commandStartedAt = null;
+        this.render();
+      }
     }
   }
 
@@ -455,7 +464,7 @@ export class IncidentWorkbenchControllerV3 {
       event.preventDefault();
       if (modal && this.ui.commandDialog) {
         this.ui.commandDialog = null;
-        this.render();
+        this.render({ preserveScroll: false });
         this.restoreFocus();
       } else if (modal) this.closePanel();
       else this.closePortal();
@@ -483,7 +492,7 @@ export class IncidentWorkbenchControllerV3 {
       this.ui.seriesId = null;
     }
     this.persistUrl();
-    this.render();
+    this.render({ preserveScroll: false });
     this.restoreFocus();
   }
 
@@ -491,7 +500,7 @@ export class IncidentWorkbenchControllerV3 {
     this.ui.portalOpen = false;
     this.ui.edgeId = null;
     this.persistUrl();
-    this.render();
+    this.render({ preserveScroll: false });
     this.element.querySelector("[data-agent-rail-toggle]")?.focus();
   }
 
@@ -523,6 +532,15 @@ export class IncidentWorkbenchControllerV3 {
     if (this.clockTimer) return;
     this.clockTimer = this.window.setInterval(() => {
       if (!this.active || !this.projection) return;
+      if (this.commandPending && this.commandStartedAt && Date.now() - this.commandStartedAt >= 10000) {
+        this.commandGeneration += 1;
+        this.commandPending = null;
+        this.commandStartedAt = null;
+        this.error = "control_plane_command_timeout";
+        this.connection = "degraded";
+        this.render();
+        return;
+      }
       const duration = workbenchDurationV3(this.projection);
       const output = this.element.querySelector("[data-incident-duration]");
       if (output) output.textContent = formatDuration(duration.elapsed_seconds);
@@ -553,9 +571,10 @@ export class IncidentWorkbenchControllerV3 {
     this.window.history.replaceState(null, "", url);
   }
 
-  render() {
+  render({ preserveScroll = true } = {}) {
     if (!this.active) return;
     const focus = captureFocus(this.element, this.document.activeElement);
+    const scroll = preserveScroll ? captureScrollPositions(this.element) : null;
     this.releaseModal();
     this.element.innerHTML = `<div class="iw3-controller-root">${renderIncidentWorkbenchV3(this.projection, {
       ...this.ui,
@@ -571,6 +590,7 @@ export class IncidentWorkbenchControllerV3 {
     }
     if (this.ui.panel || this.ui.commandDialog) this.applyModalInert();
     restoreCapturedFocus(this.element, focus);
+    restoreScrollPositions(this.element, scroll);
     const now = Date.now();
     const futurePulseExpiries = (this.projection?.graph?.active_pulses || [])
       .map((pulse) => Date.parse(pulse.expires_at || ""))
@@ -611,6 +631,25 @@ function cssEscape(value) {
 
 function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>'"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[character]);
+}
+
+function captureScrollPositions(root) {
+  return [...(root.querySelectorAll?.("[data-scroll-owner]") || [])].map((element) => ({
+    owner: element.dataset.scrollOwner,
+    top: element.scrollTop,
+    left: element.scrollLeft
+  }));
+}
+
+function restoreScrollPositions(root, positions) {
+  if (!positions?.length) return;
+  const owners = [...(root.querySelectorAll?.("[data-scroll-owner]") || [])];
+  for (const position of positions) {
+    const target = owners.find((element) => element.dataset.scrollOwner === position.owner);
+    if (!target) continue;
+    target.scrollTop = position.top;
+    target.scrollLeft = position.left;
+  }
 }
 
 function captureFocus(root, activeElement) {

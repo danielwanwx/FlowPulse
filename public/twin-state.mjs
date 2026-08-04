@@ -1178,7 +1178,7 @@ export function incidentFocusWorkspace(topology, snapshot, diagnoseView = null, 
   };
 }
 
-function incidentFocusPositions(nodeIds, relations) {
+export function incidentFocusPositions(nodeIds, relations) {
   const outgoing = new Map(nodeIds.map((id) => [id, []]));
   const incoming = new Map(nodeIds.map((id) => [id, 0]));
   for (const relation of relations) {

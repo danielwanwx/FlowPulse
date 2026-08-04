@@ -2063,9 +2063,9 @@ test("incident workspaces render only the strict server focus projection while A
   const diagnosisSource = appJs.slice(appJs.indexOf("function incidentFocusLayerMarkup"), appJs.indexOf("function bindCanonicalCanvasIdentity"));
   assert.match(appJs, /incidentFocusWorkspace/);
   assert.match(appJs, /diagnoseViewTopology\(state\?\.topology_views\)/);
-  assert.match(diagnosisSource, /data-focus-node-count/);
-  assert.match(diagnosisSource, /data-focus-edge-count/);
-  assert.match(diagnosisSource, /layout: "incident-focus"/);
+  assert.match(diagnosisSource, /incidentFocusGraphMarkup/);
+  assert.match(diagnosisSource, /nodes: focus\.nodes\.map/);
+  assert.match(diagnosisSource, /edges: focus\.edges\.map/);
   assert.match(appJs, /renderSourceCanvas\("architecture"\)/);
   assert.match(appJs, /renderSourceCanvas\("live", shared\?\.topology/);
   assert.match(stylesCss, /\.incident-focus-workspace \.incident-focus-node/);
@@ -2085,10 +2085,10 @@ test("incident stage panels turn recorded repair facts into readable operator ev
 test("incident focus settles every server-projected node before the review gate and isolates recovery detail", () => {
   const focusSource = appJs.slice(appJs.indexOf("function incidentFocusLayerMarkup"), appJs.indexOf("function startIncidentFocusSignals"));
   const nodeSource = appJs.slice(appJs.indexOf("function sourceNodeMarkup"), appJs.indexOf("function incidentFocusStatusLabel"));
-  assert.match(focusSource, /focus\.nodes\.map\(\(node, transitionIndex\)/);
-  assert.match(focusSource, /transitionIndex/);
+  assert.match(focusSource, /incidentFocusGraphMarkup/);
+  assert.match(focusSource, /nodes: focus\.nodes\.map/);
   assert.match(appJs, /startLiveSignalLoop\(\{ nodeFeedback: false \}\)/);
-  assert.match(nodeSource, /incident-focus-enter-\$\{transitionIndex\}/);
+  assert.match(appJs, /import \{ incidentFocusGraphMarkup \} from "\.\/incident-focus-graph\.mjs"/);
   assert.match(stylesCss, /animation: incident-focus-node-enter \.42s/);
   assert.match(stylesCss, /incident-focus-enter-5 \{ animation-delay: \.18s; \}/);
   assert.doesNotMatch(stylesCss, /incident-focus-node:nth-of-type/);

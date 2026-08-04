@@ -4374,7 +4374,16 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .incident-focus-workspace .edge-group .signal-projectile-core { stroke: var(--red); opacity: .92; }
 .incident-focus-workspace .edge-group.signal-verified .signal-projectile-halo,
 .incident-focus-workspace .edge-group.signal-verified .signal-projectile-core { stroke: var(--green); }
+.app-shell[data-incident-workspace="v3"] .incident-focus-workspace .edge-group.is-signal-active .signal-projectile {
+  display: block;
+  stroke-dasharray: 58 1000;
+  animation: iw3-incident-focus-pulse 1.35s linear infinite;
+}
 .incident-focus-workspace .edge-group .edge-hit { pointer-events: stroke; }
+@keyframes iw3-incident-focus-pulse {
+  from { stroke-dashoffset: 1058; }
+  to { stroke-dashoffset: 0; }
+}
 @keyframes incident-focus-node-enter {
   from { opacity: 0; transform: translate(-50%, -50%) translateY(10px) scale(.985); }
   to { opacity: 1; transform: translate(-50%, -50%); }
@@ -6023,6 +6032,25 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .app-shell[data-incident-workspace="v3"] .iw3-observability-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
 .app-shell[data-incident-workspace="v3"] .iw3-observability-summary > div { min-height: 92px; padding: 14px; }
 .app-shell[data-incident-workspace="v3"] .iw3-observability-summary strong { color: var(--ink); font-size: 18px; letter-spacing: -.03em; }
+
+/* V3 groups with spacing and elevation; outlines are reserved for focus. */
+.app-shell[data-incident-workspace="v3"] .iw3-stage-card,
+.app-shell[data-incident-workspace="v3"] .iw3-workspace-card-heading,
+.app-shell[data-incident-workspace="v3"] .iw3-triage-grid section,
+.app-shell[data-incident-workspace="v3"] .iw3-live-vitals,
+.app-shell[data-incident-workspace="v3"] .iw3-detail-dialog,
+.app-shell[data-incident-workspace="v3"] .iw3-status-chips span,
+.app-shell[data-incident-workspace="v3"] .iw3-command-chips span,
+.app-shell[data-incident-workspace="v3"] .iw3-stage-readiness,
+.app-shell[data-incident-workspace="v3"] .iw3-tool-row button,
+.app-shell[data-incident-workspace="v3"] .iw3-footer-actions button { border: 0; }
+
+.app-shell[data-incident-workspace="v3"] .incident-focus-node.is-impact .node-status-dot,
+.app-shell[data-incident-workspace="v3"] .incident-focus-node.is-root .node-status-dot,
+.app-shell[data-incident-workspace="v3"] .incident-focus-node.is-affected .node-status-dot { background: var(--red); }
+.app-shell[data-incident-workspace="v3"] .incident-focus-node.is-verified .node-status-dot,
+.app-shell[data-incident-workspace="v3"] .incident-focus-node.is-healthy .node-status-dot { background: var(--green); }
+.app-shell[data-incident-workspace="v3"] .incident-focus-node.is-observed .node-status-dot { background: var(--blue); }
 
 @media (max-width: 640px) {
   .app-shell[data-incident-workspace="v3"] .iw3-observability-summary { grid-template-columns: minmax(0, 1fr); }
