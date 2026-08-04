@@ -1964,6 +1964,7 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
 .incident-stage strong { overflow: hidden; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 
 .compare-handle { position: absolute; z-index: 9; top: 0; bottom: 0; left: var(--compare-percent, 50%); width: 32px; transform: translateX(-50%); cursor: ew-resize; touch-action: none; transition: left .08s linear; }
+.compare-handle[hidden], .compare-canvas-range[hidden] { display: none !important; }
 .compare-handle.is-dragging { transition: none; }
 .compare-handle > i { position: absolute; left: 50%; top: 0; bottom: 0; width: 2px; transform: translateX(-50%); background: var(--ink); pointer-events: none; }
 .compare-handle::before, .compare-handle::after { position: absolute; left: calc(50% + 8px); padding: 3px 6px; color: var(--on-inverse); background: var(--inverse); font-size: 9px; font-weight: 800; pointer-events: none; }
