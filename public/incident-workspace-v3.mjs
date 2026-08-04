@@ -1030,11 +1030,16 @@ function activityMarkup(projection, stage, { roles = null, excludeRoles = [], st
 
 function evidenceQueryMarkup(projection, run, expanded = false) {
   const queries = (projection.evidence_queries || []).filter((query) => query.stage_run_id === run?.stage_run_id);
+  const emptyCopy = (run?.evidence_refs || []).length
+    ? "Evidence accepted; no query transcript was published."
+    : run?.status === "RUNNING"
+      ? "Waiting for an allowlisted query."
+      : "No evidence query was published.";
   return `<ol class="iw3-query-list${expanded ? " is-expanded" : ""}">${queries.map((query) => {
     const scope = [...(query.component_ids || []), ...(query.edge_ids || [])];
     const observations = query.observation_timestamps || [];
     return `<li data-query-id="${escapeHtml(query.query_id)}" data-state="${escapeHtml(query.state.toLowerCase())}"><header><div><span>Allowlisted query</span><code>${escapeHtml(query.query_name)}</code></div><strong>${escapeHtml(stateLabel(query.state))}</strong></header><p>${escapeHtml(query.result_summary)}</p><footer><span>${scope.length} topology refs</span><span>${(query.evidence_refs || []).length} evidence</span><span>${observations.length} samples${observations.length ? ` · ${escapeHtml(shortTime(observations.at(-1)))}` : ""}</span>${query.triggered_replan ? "<mark>Replan triggered</mark>" : ""}</footer>${expanded ? `<dl class="iw3-record"><div><dt>Worker activity</dt><dd><code>${escapeHtml(query.worker_activity_id)}</code></dd></div><div><dt>Scope</dt><dd>${escapeHtml(scope.join(", ") || "No topology references")}</dd></div><div><dt>Observed</dt><dd>${escapeHtml(observations.join(", ") || "No completed observations")}</dd></div>${query.failure_code ? `<div><dt>Failure</dt><dd>${escapeHtml(query.failure_code)}</dd></div>` : ""}</dl><ul class="iw3-evidence-list">${(query.evidence_refs || []).map((reference) => `<li><code>${escapeHtml(reference)}</code></li>`).join("") || "<li>No query evidence references published.</li>"}</ul>` : ""}</li>`;
-  }).join("") || '<li class="iw3-empty">Waiting for the Evidence Worker to execute an allowlisted query.</li>'}</ol>`;
+  }).join("") || `<li class="iw3-empty">${emptyCopy}</li>`}</ol>`;
 }
 
 function evidenceMarkup(run, projection) {
