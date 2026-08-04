@@ -6057,3 +6057,7 @@ h1 { overflow: hidden; margin: 0; font-size: 19px; line-height: 1.15; letter-spa
   .app-shell[data-incident-workspace="v3"] .iw3-observability-summary { grid-template-columns: minmax(0, 1fr); }
   .app-shell[data-incident-workspace="v3"] .iw3-stage-action { padding: 12px; }
 }
+[data-control-plane-mode="incident"] #development-button,
+[data-control-plane-mode="live"] #development-button {
+  display: none !important;
+}

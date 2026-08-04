@@ -287,6 +287,7 @@ function reportError(error) {
 
 function render() {
   if (state.mode === "incident") {
+    els["development-button"].hidden = true;
     root.dataset.controlPlaneMode = "incident";
     root.dataset.mode = "incident";
     root.dataset.incidentWorkspace = "v3";
@@ -305,6 +306,7 @@ function render() {
   }
   if (state.mode === "live") {
     restoreLegacyV2Chrome();
+    els["development-button"].hidden = true;
     root.dataset.controlPlaneMode = "live";
     root.dataset.mode = "live";
     delete root.dataset.incidentWorkspace;
