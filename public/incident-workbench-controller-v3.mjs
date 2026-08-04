@@ -91,6 +91,7 @@ export class IncidentWorkbenchControllerV3 {
     this.subscription = null;
     this.clockTimer = null;
     this.nextGraphPulseExpiry = null;
+    this.lastRenderedStage = null;
     this.eventState = { lastSequence: 0, projectionRevision: 0 };
     this.refreshLoop = new TrailingRefreshV3();
     this.previousFocus = null;
@@ -117,6 +118,7 @@ export class IncidentWorkbenchControllerV3 {
     if (caseChanged) {
       this.projection = null;
       this.series = null;
+      this.lastRenderedStage = null;
       this.eventState = { lastSequence: 0, projectionRevision: 0 };
     }
     this.active = true;
@@ -573,8 +575,10 @@ export class IncidentWorkbenchControllerV3 {
 
   render({ preserveScroll = true } = {}) {
     if (!this.active) return;
+    const renderedStage = this.projection?.current_attempt?.current_stage || null;
+    const stageChanged = this.lastRenderedStage && renderedStage !== this.lastRenderedStage;
     const focus = captureFocus(this.element, this.document.activeElement);
-    const scroll = preserveScroll ? captureScrollPositions(this.element) : null;
+    const scroll = preserveScroll && !stageChanged ? captureScrollPositions(this.element) : null;
     this.releaseModal();
     this.element.innerHTML = `<div class="iw3-controller-root">${renderIncidentWorkbenchV3(this.projection, {
       ...this.ui,
@@ -591,6 +595,7 @@ export class IncidentWorkbenchControllerV3 {
     if (this.ui.panel || this.ui.commandDialog) this.applyModalInert();
     restoreCapturedFocus(this.element, focus);
     restoreScrollPositions(this.element, scroll);
+    this.lastRenderedStage = renderedStage;
     const now = Date.now();
     const futurePulseExpiries = (this.projection?.graph?.active_pulses || [])
       .map((pulse) => Date.parse(pulse.expires_at || ""))
